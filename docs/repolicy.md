@@ -58,6 +58,22 @@ The three names for one knob (policy key, the `gh repo list --json` field, the
 REST field the PATCH carries) are mapped in `Vocabulary`; adding a knob is one
 line there plus a row here.
 
+## The henderson-tech policy
+
+`policies/henderson-tech.yaml` holds the org's own stance — squash is the only
+button, merged branches delete themselves:
+
+```bash
+vybava repolicy audit henderson-tech --policy policies/henderson-tech.yaml
+vybava repolicy apply henderson-tech --policy policies/henderson-tech.yaml
+```
+
+It is the half of the stance GitHub cannot inherit. The org ruleset "org main:
+PR required, no direct pushes" carries `required_linear_history`, so a merge
+commit is refused server-side on every default branch — but the merge BUTTONS
+are per-repository with no org default, so a repository created tomorrow offers
+all three until `apply` runs. Audit is the alarm; apply is the fix.
+
 ## Exit codes
 
 | Code | Meaning |

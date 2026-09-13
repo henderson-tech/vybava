@@ -1,0 +1,21 @@
+# The henderson-tech merge stance, declared once.
+#
+# Squash is the only way a pull request reaches a default branch: one PR is one
+# commit, so a bad deploy reverts with a single `git revert <sha>` and `git
+# bisect` walks landings instead of agent work-in-progress. The org ruleset
+# "org main: PR required, no direct pushes" carries `required_linear_history`,
+# which blocks a merge commit server-side; this file is the other half — it
+# keeps the merge BUTTONS in step, which GitHub offers no org default for, so
+# every repository created after today starts off-policy until this runs.
+#
+#   vybava repolicy audit henderson-tech --policy policies/henderson-tech.yaml
+#   vybava repolicy apply henderson-tech --policy policies/henderson-tech.yaml
+#
+# Archived repositories are skipped unless --include-archived.
+owners:
+  - henderson-tech
+settings:
+  allowSquashMerge: true
+  allowMergeCommit: false
+  allowRebaseMerge: false
+  deleteBranchOnMerge: true
