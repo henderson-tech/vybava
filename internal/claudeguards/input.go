@@ -130,11 +130,40 @@ func stripQuotedHeredocs(cmd string) string {
 
 // segments splits a command string into independently inspectable pieces,
 // left-trimmed, empties dropped. Quoted-heredoc bodies are excluded first.
+// trimSubshell strips the wrapper a subshell leaves on a segment. segmentSplit
+// breaks `(cd /tmp && git log -n 20)` into `(cd /tmp` and `git log -n 20)`, and
+// the stray `)` made the last field "20)" — not a number, so the cap went
+// unseen and context:unbounded-output fired on a correctly capped command.
+// ~/.claude/CLAUDE.md REQUIRES `(cd <abs> && cmd)` for directory changes, so
+// this is the common shape, not an edge case. Only unbalanced trailing parens
+// are removed, leaving a legitimate `)` inside an argument alone.
+func trimSubshell(s string) string {
+	s = strings.TrimLeft(s, "( \t")
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+	}
+	for depth < 0 {
+		trimmed := strings.TrimRight(s, " \t")
+		if !strings.HasSuffix(trimmed, ")") {
+			break
+		}
+		s = trimmed[:len(trimmed)-1]
+		depth++
+	}
+	return strings.TrimRight(s, " \t")
+}
+
 func segments(cmd string) []string {
 	parts := segmentSplit.Split(stripQuotedHeredocs(cmd), -1)
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		s := strings.Trim(p, " \t\r")
+		s := trimSubshell(strings.Trim(p, " \t\r"))
 		if s != "" {
 			out = append(out, s)
 		}
