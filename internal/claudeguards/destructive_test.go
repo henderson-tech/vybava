@@ -107,8 +107,11 @@ func TestDestructiveMatch(t *testing.T) {
 }
 
 func TestSegments(t *testing.T) {
+	// `$(e)` yields the command inside the substitution, not `e)` — the stray
+	// paren is an artifact of splitting on `$(`, and leaving it attached made
+	// the last field of every subshell unrecognisable to the rules.
 	got := segments("a && b; c | d $(e) `f`\ng")
-	want := []string{"a", "b", "c", "d", "e)", "f", "g"}
+	want := []string{"a", "b", "c", "d", "e", "f", "g"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -116,5 +119,43 @@ func TestSegments(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("seg %d: got %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// A closing paren left on the last segment made the rules read a different
+// command than the one being run. CLAUDE.md REQUIRES `(cd <abs> && cmd)` for
+// directory changes, so this shape is the common case: it made every capped
+// `git log` in a subshell look uncapped, hid the uncapped ones, and let a
+// hard-banned command through inside `$(…)`.
+func TestSubshellParensDoNotHideTheCommand(t *testing.T) {
+	for _, tc := range []struct {
+		cmd   string
+		block bool
+	}{
+		{"(cd /tmp && git log --oneline -1)", false}, // capped — was a false positive
+		{"(cd /tmp && git log -n 20)", false},
+		{"(cd /tmp && git log)", true},  // uncapped — was a false negative
+		{"(cd /tmp && git diff)", true}, // ditto
+		{"echo $(git stash)", true},     // a hard ban must not escape via substitution
+		{"(cd /tmp && git stash)", true},
+		{"git log --oneline -1", false}, // unchanged outside a subshell
+		{"git log", true},
+	} {
+		// The full hook path: the substitution case is a destructive:* rule,
+		// the git log cases are context:*, and the point is that both families
+		// read the same command the shell will run.
+		in := &HookInput{CWD: t.TempDir()}
+		in.ToolInput.Command = tc.cmd
+		d := Bash(in)
+		if tc.block && d == nil {
+			t.Fatalf("%q must be blocked", tc.cmd)
+		}
+		if !tc.block && d != nil {
+			t.Fatalf("%q must be allowed, got %v", tc.cmd, d)
+		}
+	}
+	// A legitimate trailing paren inside an argument is left alone.
+	if got := segments(`grep "f(x)" file.go`); len(got) != 1 || got[0] != `grep "f(x)" file.go` {
+		t.Fatalf("balanced parens must survive: %q", got)
 	}
 }

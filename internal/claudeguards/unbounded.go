@@ -19,7 +19,7 @@ func cappedValue(f []string, flags ...string) bool {
 }
 
 func unboundedOutput(segment string, cfg Config) *Denial {
-	f := shellFields(strings.TrimLeft(segment, "( \t"))
+	f := shellFields(trimSubshell(segment))
 	for len(f) > 0 && strings.Contains(f[0], "=") {
 		f = f[1:]
 	}

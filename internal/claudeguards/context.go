@@ -316,7 +316,7 @@ func dumpSegments(cmd string, budget int) []dumpSegment {
 
 	var out []dumpSegment
 	for i, raw := range texts {
-		s := strings.Trim(raw, " \t\r")
+		s := trimSubshell(strings.Trim(raw, " \t\r"))
 		if s == "" {
 			continue
 		}
