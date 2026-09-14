@@ -130,6 +130,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "repolicy" {
 		return rt.repolicyApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "menubar-doctor" {
+		return rt.menubarApplet(), nil
+	}
 
 	root := &cobra.Command{
 		Use:           "vybava",
@@ -158,6 +161,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.codexusageCommand("codexusage"),
 		rt.worktimeCommand("worktime"),
 		rt.reconcileCommand("reconcile"),
+		rt.menubarCommand("menubar-doctor"),
 		rt.reclaimCommand("reclaim"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
