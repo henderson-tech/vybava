@@ -134,7 +134,11 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 			}
 			res.Added = append(res.Added, key)
 		}
-		wr, err := t.commit(c, "")
+		var locales []string
+		if contains(c.Config.Locales, "en") {
+			locales = []string{"en"}
+		}
+		wr, err := t.commit(c, "", locales)
 		if err != nil {
 			return res, err
 		}

@@ -199,3 +199,80 @@ func TestExemptKeys(t *testing.T) {
 }
 
 func withExempt(c CatalogConfig, e ...string) CatalogConfig { c.Exempt = e; return c }
+
+func TestAddInfersCatalogForNewKey(t *testing.T) {
+	tool := fixture(t)
+	// parent path `meta` exists only in the path catalog → dict, receipt says so
+	res, err := tool.Add("", "meta.subtitle", map[string]string{"en": "Sub", "cs": "Pod"})
+	if err != nil || res.Catalog != "dict" || strings.Join(res.Locales, ",") != "en,cs" || res.AfterWrite != nil {
+		t.Fatalf("parent-path inference: %v %+v", err, res)
+	}
+	// a sentence with no parent anywhere → the single english-as-key catalog
+	if res, err := tool.Add("", "Delete forever", map[string]string{"cs": "Smazat navždy"}); err != nil || res.Catalog != "mobile" {
+		t.Fatalf("english-as-key inference: %v %+v", err, res)
+	}
+	// a flat unknown word has no parent and is no sentence → ambiguous over every catalog
+	_, err = tool.Add("", "orphan", map[string]string{"cs": "x"})
+	if d, ok := err.(*Diag); !ok || d.Code != DiagCatalogAmbiguous || d.Fix != "pass --catalog=<dict|mobile>" {
+		t.Fatalf("no parent anywhere: %v", err)
+	}
+	// the same parent in two path catalogs → ambiguous naming only those two
+	tool.Config.Catalogs["dict2"] = CatalogConfig{Style: StylePath, Files: "dict2/{locale}.json", Locales: []string{"en"}}
+	if err := os.MkdirAll(filepath.Join(tool.Root, "dict2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tool.Root, "dict2/en.json"), []byte(`{"meta":{"x":{"y":"z"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tool.Add("", "meta.other", map[string]string{"en": "O", "cs": "J"})
+	if d, ok := err.(*Diag); !ok || d.Code != DiagCatalogAmbiguous || d.Fix != "pass --catalog=<dict|dict2>" {
+		t.Fatalf("tie: %v", err)
+	}
+	// a deeper parent wins the tie
+	if res, err := tool.Add("", "meta.x.deeper", map[string]string{"en": "D"}); err != nil || res.Catalog != "dict2" {
+		t.Fatalf("longest parent: %v %+v", err, res)
+	}
+	// an existing key still answers KEY_EXISTS from the catalog that holds it
+	if _, err := tool.Add("", "Save", map[string]string{"cs": "x"}); err == nil || err.(*Diag).Code != DiagKeyExists {
+		t.Fatalf("existing key: %v", err)
+	}
+}
+
+// A prettier-formatted catalog keeps short arrays on one line. Reflowing them
+// on every save rewrote locale files a write never touched (FixIt sk/uk on an
+// en+cs add), so the "diff shows exactly the change" promise broke.
+func TestSaveKeepsInlineArraysAndUntouchedFiles(t *testing.T) {
+	tool := fixture(t)
+	src := "{\n  \"hero\": {\n    \"chips\": [\"No fees\", \"Live\"],\n    \"title\": \"Hi\"\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(tool.Root, "dict/en.json"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obj, err := ParseObject([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(obj.Marshal()); got != src {
+		t.Fatalf("inline array must round-trip:\n%s", got)
+	}
+	res, err := tool.Set("dict", "meta.title", map[string]string{"cs": "Jen CZ"})
+	if err != nil || strings.Join(res.Written, ",") != "dict/cs.json" || strings.Join(res.Locales, ",") != "cs" {
+		t.Fatalf("a cs-only write must leave en.json alone: %v %+v", err, res)
+	}
+}
+
+func TestWriteReceiptReportsAfterWrite(t *testing.T) {
+	tool := fixture(t)
+	c := tool.Config.Catalogs["dict"]
+	c.AfterWrite = "test -f dict/en.json"
+	tool.Config.Catalogs["dict"] = c
+	res, err := tool.Set("dict", "meta.title", map[string]string{"cs": "FixIt CZ2"})
+	if err != nil || res.AfterWrite == nil || !res.AfterWrite.OK || res.AfterWrite.Cmd != c.AfterWrite || strings.Join(res.Locales, ",") != "cs" {
+		t.Fatalf("receipt: %v %+v", err, res)
+	}
+	c.AfterWrite = "false"
+	tool.Config.Catalogs["dict"] = c
+	res, err = tool.Set("dict", "meta.title", map[string]string{"cs": "FixIt CZ3"})
+	if d, ok := err.(*Diag); !ok || d.Code != DiagAfterWriteFailed || res.AfterWrite == nil || res.AfterWrite.OK {
+		t.Fatalf("failed afterWrite must still return the receipt: %v %+v", err, res)
+	}
+}
