@@ -113,16 +113,110 @@ func (t *Tool) CatalogFor(id, key string) (*Catalog, error) {
 		return hits[0], nil
 	case 0:
 		if key == "" {
-			return nil, &Diag{Code: DiagCatalogAmbiguous, Detail: "several catalogs are configured", Fix: "pass --catalog <" + strings.Join(t.CatalogIDs(), "|") + ">"}
+			return nil, ambiguous("several catalogs are configured", t.CatalogIDs())
 		}
 		return nil, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is in no catalog", key), Fix: "lok grep " + shellQuote(key)}
 	default:
-		var ids []string
-		for _, h := range hits {
-			ids = append(ids, h.ID)
-		}
-		return nil, &Diag{Code: DiagCatalogAmbiguous, Detail: fmt.Sprintf("%q exists in %s", key, strings.Join(ids, " and ")), Fix: "pass --catalog " + ids[0]}
+		return nil, ambiguous(fmt.Sprintf("%q exists in %s", key, strings.Join(catalogIDs(hits), " and ")), catalogIDs(hits))
 	}
+}
+
+// catalogForNew resolves where a key that does not exist yet should land:
+// the single catalog already holding it (so Add can say KEY_EXISTS), else
+// the path catalog whose deepest existing parent path is the longest, else
+// the single english-as-key catalog when the key reads as a sentence. Ties
+// are CATALOG_AMBIGUOUS naming only the tied candidates.
+func (t *Tool) catalogForNew(id, key string) (*Catalog, error) {
+	if id != "" || len(t.Config.Catalogs) == 1 {
+		return t.CatalogFor(id, "")
+	}
+	var all, exists, parents []*Catalog
+	depth := 0
+	for _, cid := range t.CatalogIDs() {
+		c, err := LoadCatalog(t.Root, cid, t.Config.Catalogs[cid])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, c)
+		if c.has(key) {
+			exists = append(exists, c)
+		}
+		if d := c.parentDepth(key); d > 0 && d >= depth {
+			if d > depth {
+				parents, depth = nil, d
+			}
+			parents = append(parents, c)
+		}
+	}
+	if len(exists) == 1 {
+		return exists[0], nil
+	}
+	if len(exists) > 1 {
+		return nil, ambiguous(fmt.Sprintf("%q exists in %s", key, strings.Join(catalogIDs(exists), " and ")), catalogIDs(exists))
+	}
+	if len(parents) == 1 {
+		return parents[0], nil
+	}
+	if len(parents) > 1 {
+		parent := strings.Join(strings.Split(key, ".")[:depth], ".")
+		return nil, ambiguous(fmt.Sprintf("parent %q exists in %s", parent, strings.Join(catalogIDs(parents), " and ")), catalogIDs(parents))
+	}
+	if strings.Contains(key, " ") {
+		var english []*Catalog
+		for _, c := range all {
+			if c.Config.Style == StyleEnglishAsKey {
+				english = append(english, c)
+			}
+		}
+		if len(english) == 1 {
+			return english[0], nil
+		}
+		if len(english) > 1 {
+			return nil, ambiguous(fmt.Sprintf("%q reads as an english-as-key sentence; %d catalogs use that style", key, len(english)), catalogIDs(english))
+		}
+	}
+	return nil, ambiguous(fmt.Sprintf("no catalog holds %q or any parent path of it", key), t.CatalogIDs())
+}
+
+// parentDepth counts how many leading segments of a path-style key already
+// resolve to a container in some locale; 0 for flat catalogs and unknown paths.
+func (c *Catalog) parentDepth(key string) int {
+	if c.Config.Style != StylePath {
+		return 0
+	}
+	segs := strings.Split(key, ".")
+	best := 0
+	for _, loc := range c.Locales {
+		var cur any = loc.Object
+		n := 0
+		for _, seg := range segs[:len(segs)-1] {
+			next, ok := child(cur, seg)
+			if !ok {
+				break
+			}
+			if _, leaf := next.(string); leaf {
+				break
+			}
+			cur = next
+			n++
+		}
+		if n > best {
+			best = n
+		}
+	}
+	return best
+}
+
+func ambiguous(detail string, candidates []string) *Diag {
+	return &Diag{Code: DiagCatalogAmbiguous, Detail: detail, Fix: "pass --catalog=<" + strings.Join(candidates, "|") + ">"}
+}
+
+func catalogIDs(cs []*Catalog) []string {
+	ids := make([]string, 0, len(cs))
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	return ids
 }
 
 func (c *Catalog) has(key string) bool {
@@ -277,18 +371,27 @@ func (t *Tool) Grep(catalogID, pattern string, locales []string, limit int) (Gre
 	return res, nil
 }
 
-// WriteResult reports a write: files touched and the afterWrite outcome.
+// WriteResult is the receipt of a write: the catalog it landed in, the
+// locales and files touched, and the afterWrite outcome.
 type WriteResult struct {
-	Catalog    string   `json:"catalog"`
-	Key        string   `json:"key"`
-	Written    []string `json:"written"`
-	AfterWrite string   `json:"afterWrite,omitempty"`
+	Catalog    string      `json:"catalog"`
+	Key        string      `json:"key"`
+	Locales    []string    `json:"locales"`
+	Written    []string    `json:"written"`
+	AfterWrite *AfterWrite `json:"afterWrite,omitempty"`
+}
+
+// AfterWrite reports the catalog's afterWrite command and whether it passed.
+type AfterWrite struct {
+	Cmd string `json:"cmd"`
+	OK  bool   `json:"ok"`
 }
 
 // Add inserts a new key with per-locale values. english-as-key catalogs
-// derive `en` from the key; every required locale needs a value.
+// derive `en` from the key; every required locale needs a value. Without
+// --catalog the destination is inferred from the key (see catalogForNew).
 func (t *Tool) Add(catalogID, key string, tr map[string]string) (WriteResult, error) {
-	c, err := t.CatalogFor(catalogID, "")
+	c, err := t.catalogForNew(catalogID, key)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -341,12 +444,18 @@ func (t *Tool) write(c *Catalog, key string, tr map[string]string, requireAll bo
 	if len(tr) == 0 {
 		return WriteResult{}, &Diag{Code: DiagLocaleRequired, Detail: "nothing to write", Fix: "pass --tr <locale>=<value>"}
 	}
-	for code, val := range tr {
+	var locales []string
+	for _, code := range c.Config.Locales {
+		val, ok := tr[code]
+		if !ok {
+			continue
+		}
 		if err := c.Put(code, key, val); err != nil {
 			return WriteResult{}, &Diag{Code: DiagConfigInvalid, Detail: err.Error()}
 		}
+		locales = append(locales, code)
 	}
-	return t.commit(c, key)
+	return t.commit(c, key, locales)
 }
 
 // Rm deletes a key (and, for english-as-key, its plural variants) everywhere.
@@ -355,36 +464,43 @@ func (t *Tool) Rm(catalogID, key string) (WriteResult, error) {
 	if err != nil {
 		return WriteResult{}, err
 	}
-	removed := false
+	var locales []string
 	for _, code := range c.Config.Locales {
-		if c.Remove(code, key) {
-			removed = true
-		}
+		removed := c.Remove(code, key)
 		for _, s := range c.Config.PluralSuffixes() {
 			if c.Remove(code, key+s) {
 				removed = true
 			}
 		}
+		if removed {
+			locales = append(locales, code)
+		}
 	}
-	if !removed {
+	if len(locales) == 0 {
 		return WriteResult{}, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is not in %s", key, c.ID), Fix: "lok grep " + shellQuote(key)}
 	}
-	return t.commit(c, key)
+	return t.commit(c, key, locales)
 }
 
-func (t *Tool) commit(c *Catalog, key string) (WriteResult, error) {
+// commit saves the catalog and builds the receipt; locales are the ones the
+// verb actually changed, not every file Save happened to rewrite.
+func (t *Tool) commit(c *Catalog, key string, locales []string) (WriteResult, error) {
 	written, err := c.Save()
 	if err != nil {
 		return WriteResult{}, err
 	}
-	res := WriteResult{Catalog: c.ID, Key: key, Written: rel(t.Root, written)}
+	if locales == nil {
+		locales = []string{}
+	}
+	res := WriteResult{Catalog: c.ID, Key: key, Locales: locales, Written: rel(t.Root, written)}
 	if c.Config.AfterWrite != "" && len(written) > 0 {
+		res.AfterWrite = &AfterWrite{Cmd: c.Config.AfterWrite}
 		cmd := exec.Command("sh", "-c", c.Config.AfterWrite)
 		cmd.Dir = t.Root
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return res, &Diag{Code: DiagAfterWriteFailed, Detail: fmt.Sprintf("%s: %s", c.Config.AfterWrite, lastLines(string(out), 5)), Fix: "(cd " + t.Root + " && " + c.Config.AfterWrite + ")"}
 		}
-		res.AfterWrite = c.Config.AfterWrite
+		res.AfterWrite.OK = true
 	}
 	return res, nil
 }

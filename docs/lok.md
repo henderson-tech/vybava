@@ -47,5 +47,17 @@ verbatim in source is only a hint — keys held in lookup tables, API
 messages passed through `t()`, template strings — so orphans are listed
 with a count and never deleted; `lok rm` is the explicit path.
 
-`--catalog <id>` is required only when a key exists in several catalogs or
-a write cannot be inferred; the diagnostic names the candidates.
+`--catalog=<id>` is required only when the destination cannot be inferred.
+Reads and `set`/`rm` resolve the one catalog holding the key. `add` resolves
+a NEW key in this order: the one catalog already holding it (→ `KEY_EXISTS`),
+then the path catalog whose existing parent path is longest
+(`account.gigWorker.form.newBadge` lands where `account.gigWorker.form`
+lives), then — when the key contains a space — the single english-as-key
+catalog. A tie or a miss is `CATALOG_AMBIGUOUS` naming only the tied
+candidates; use the `--catalog=<id>` form, which survives every shell's
+word splitting.
+
+Every write returns a receipt — `{catalog, key, locales, written,
+afterWrite: {cmd, ok}}` — so a generated type (`afterWrite`) is never a
+silent side effect; a failing `afterWrite` still returns the receipt next to
+`AFTER_WRITE_FAILED`.

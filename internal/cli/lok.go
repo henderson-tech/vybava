@@ -32,7 +32,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			"  lok add <key> --tr cs=… · lok set <key> --tr cs=… · lok rm <key> · lok scan [--write]",
 	}
 	var catalog string
-	root.PersistentFlags().StringVar(&catalog, "catalog", "", "catalog id (needed when a key lives in several)")
+	root.PersistentFlags().StringVar(&catalog, "catalog", "", "catalog id (only when inference is ambiguous; use --catalog=<id>)")
 
 	session := func(cmd *cobra.Command) *runx.Session {
 		return &runx.Session{Tool: "lok", JSON: rt.json, Verb: cmd.Name(), Stdout: rt.stdout, Stderr: rt.stderr}
@@ -190,7 +190,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			gaps, total, err := t.Missing(catalog, missLocales, !all, missLimit)
 			var next []string
 			if total > 0 {
-				next = []string{"lok set " + quoteArg(gaps[0].Key) + " --catalog " + gaps[0].Catalog + " --tr " + gaps[0].Locale + "=<value>"}
+				next = []string{"lok set " + quoteArg(gaps[0].Key) + " --catalog=" + gaps[0].Catalog + " --tr " + gaps[0].Locale + "=<value>"}
 			}
 			return finish(s, map[string]any{"gaps": gaps, "total": total, "truncated": total > len(gaps)}, next, err)
 		},

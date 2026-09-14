@@ -27,7 +27,12 @@ type Entry struct {
 type Object struct{ Entries []Entry }
 
 // Array is a JSON array; elements are addressed by numeric path segment.
-type Array struct{ Items []any }
+type Array struct {
+	Items []any
+	// Inline remembers a source array written on one line (prettier keeps
+	// short arrays inline), so a save never reflows arrays it did not touch.
+	Inline bool
+}
 
 // Scalar is a non-string JSON leaf kept byte-for-byte.
 type Scalar json.RawMessage
@@ -89,8 +94,14 @@ func (o *Object) Delete(key string) bool {
 }
 
 // ParseObject decodes a JSON object preserving key order.
+// parser pairs the decoder with its source so array layout can be read back.
+type parser struct {
+	*json.Decoder
+	data []byte
+}
+
 func ParseObject(data []byte) (*Object, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
+	dec := &parser{Decoder: json.NewDecoder(bytes.NewReader(data)), data: data}
 	dec.UseNumber()
 	tok, err := dec.Token()
 	if err != nil {
@@ -109,7 +120,7 @@ func ParseObject(data []byte) (*Object, error) {
 	return obj, nil
 }
 
-func parseValue(dec *json.Decoder, tok json.Token, path string) (any, error) {
+func parseValue(dec *parser, tok json.Token, path string) (any, error) {
 	switch v := tok.(type) {
 	case string:
 		return v, nil
@@ -132,7 +143,7 @@ func parseValue(dec *json.Decoder, tok json.Token, path string) (any, error) {
 	}
 }
 
-func parseObjectBody(dec *json.Decoder, path string) (*Object, error) {
+func parseObjectBody(dec *parser, path string) (*Object, error) {
 	obj := &Object{}
 	for dec.More() {
 		tok, err := dec.Token()
@@ -158,8 +169,9 @@ func parseObjectBody(dec *json.Decoder, path string) (*Object, error) {
 	return obj, err
 }
 
-func parseArrayBody(dec *json.Decoder, path string) (*Array, error) {
+func parseArrayBody(dec *parser, path string) (*Array, error) {
 	arr := &Array{}
+	start := dec.InputOffset()
 	for dec.More() {
 		vt, err := dec.Token()
 		if err != nil {
@@ -172,6 +184,7 @@ func parseArrayBody(dec *json.Decoder, path string) (*Array, error) {
 		arr.Items = append(arr.Items, val)
 	}
 	_, err := dec.Token() // closing ]
+	arr.Inline = err == nil && !bytes.Contains(dec.data[start:dec.InputOffset()], []byte("\n"))
 	return arr, err
 }
 
@@ -219,6 +232,17 @@ func writeValue(b *bytes.Buffer, v any, depth int) {
 	case *Array:
 		if len(x.Items) == 0 {
 			b.WriteString("[]")
+			return
+		}
+		if x.Inline {
+			b.WriteByte('[')
+			for i, it := range x.Items {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				writeValue(b, it, depth+1)
+			}
+			b.WriteByte(']')
 			return
 		}
 		b.WriteString("[\n")

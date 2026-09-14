@@ -32,6 +32,9 @@ type Result struct {
 }
 
 var localeRE = regexp.MustCompile(`(^|[/.])([a-z]{2}(?:-[A-Z]{2})?)(\.json$|/)`)
+
+// localeHome names directories whose JSON is a locale catalog even with a single locale.
+var localeHome = regexp.MustCompile(`(^|/)(dictionaries|locales|i18n)/`)
 var generatedPath = regexp.MustCompile(`(?i)(generated|__generated__|\.gen\.|openapi|schema|\.lock$|\.min\.)`)
 
 // ignoreMatches applies .prettierignore / .biomeignore entries with gitignore
@@ -243,7 +246,10 @@ func Discover(root string) (Result, error) {
 	sort.Strings(patterns)
 	for _, p := range patterns {
 		g := groups[p]
-		if len(g) < 2 {
+		// One locale file is a catalog only when its directory says so
+		// (FixIt's Czech-only admin dictionary); a lone `en.json` elsewhere
+		// is more often fixture data than a catalog.
+		if len(g) < 2 && !localeHome.MatchString(p) {
 			continue
 		}
 		sort.Slice(g, func(i, j int) bool { return g[i].locale < g[j].locale })

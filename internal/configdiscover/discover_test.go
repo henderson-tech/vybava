@@ -28,12 +28,16 @@ func TestDiscoverAndDrift(t *testing.T) {
 		"apps/web/i18n/strings.cs.json": `{"Save":"Uložit"}`,
 		"apps/web/i18n/strings.uk.json": `{"Save":"Зберегти"}`,
 		"apps/api/openapi.json":         "{}",
+		// A single-locale catalog counts when it lives in a locale home; a
+		// lone locale-named JSON elsewhere is fixture data, not a catalog.
+		"apps/admin-web/dictionaries/cs.json": `{"nav":{"home":"Domů"}}`,
+		"apps/api/test/fixtures/cs.json":      `{"id":"cs"}`,
 		// Both sit on a "strong" path, and both used to be proposed: a binary
 		// nobody reads as lines, and the hand-written source the no-read
 		// denial tells you to read instead.
 		"packages/generated/report.pdf":     "%PDF-1.4\n\x00\x00binary payload",
 		"scripts/openapi/export-openapi.ts": "export const run = () => {}\n",
-		"vybava.config.json":                `{"guards":{"noRead":["apps/api/openapi.json"]},"lok":{"catalogs":{"mobile":{"style":"english-as-key","files":"apps/client/locales/{locale}.json","locales":["en","cs"]},"webStrings":{"style":"path","files":"apps/web/i18n/strings.{locale}.json","locales":["cs","uk"]}}}}`,
+		"vybava.config.json":                `{"guards":{"noRead":["apps/api/openapi.json"]},"lok":{"catalogs":{"mobile":{"style":"english-as-key","files":"apps/client/locales/{locale}.json","locales":["en","cs"]},"webStrings":{"style":"path","files":"apps/web/i18n/strings.{locale}.json","locales":["cs","uk"]},"adminWebDictionaries":{"style":"path","files":"apps/admin-web/dictionaries/{locale}.json","locales":["cs"]}}}}`,
 	}
 	for p, raw := range files {
 		p = filepath.Join(root, p)
@@ -51,6 +55,14 @@ func TestDiscoverAndDrift(t *testing.T) {
 	}
 	if c := r.Lok.Catalogs["mobile"]; c.Style != lok.StyleEnglishAsKey || len(c.Plurals) != 1 {
 		t.Fatalf("mobile: %+v", c)
+	}
+	if c, ok := r.Lok.Catalogs["adminWebDictionaries"]; !ok || c.Files != "apps/admin-web/dictionaries/{locale}.json" || len(c.Locales) != 1 {
+		t.Fatalf("single-locale dictionary must be proposed: %+v %v", c, r.Lok.Catalogs)
+	}
+	for id, c := range r.Lok.Catalogs {
+		if strings.Contains(c.Files, "fixtures") {
+			t.Fatalf("fixture file proposed as catalog %s: %+v", id, c)
+		}
 	}
 	for _, unwanted := range []string{"packages/generated/report.pdf", "scripts/openapi/export-openapi.ts"} {
 		if slices.Contains(r.Guards.NoRead, unwanted) {
