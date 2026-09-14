@@ -94,6 +94,31 @@ ends one.
 claude-guards browser-teardown --session "$CLAUDE_CODE_SESSION_ID"
 ```
 
+## What counts as a command
+
+Every rule family inspects the same thing: the list of commands a string would
+actually run. That list comes from one shared layer in `input.go`, so a fix
+there lands in all of them at once. Three properties are load-bearing.
+
+**Quoting decides whether text is a command or an argument.** Separators inside
+quotes do not split, so `grep -nE "vault|env|path"` is one grep and not a pipe
+into `env`, and `git commit -m 'fix: stop the crash; git stash was the cause'`
+runs no stash. Single quotes suppress everything; double quotes suppress the
+control operators but **not** command substitution, because the shell still
+expands `$(…)` and backticks inside them — which is what keeps
+`echo "$(git stash)"` from laundering a hard ban.
+
+**Quoting does not make a payload inert.** `ssh host 'env'` and
+`docker exec c sh -c "env"` really do dump an environment, so the quoted
+arguments of a runner — `ssh`, `docker`, `kubectl`, `sh -c` and friends — are
+recursed into and scanned as command lines. Every other command's quoted
+arguments are data.
+
+**A leading `NAME=value` is environment, not the command.** `FOO=1 env` runs
+`env`, so assignment prefixes are stripped before a rule reads the first token.
+They are stripped only from the front: `env FOO=bar make build` runs `env` as a
+runner and keeps its assignment.
+
 ## Context tiers and diagnosis
 
 The hook tails at most 4 MiB of `transcript_path` and uses the latest assistant
