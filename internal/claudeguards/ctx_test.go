@@ -33,6 +33,70 @@ func TestDiagnoseContext(t *testing.T) {
 	if got, err := ResolveTranscript(filepath.Dir(p), "abc"); err != nil || got != p {
 		t.Fatal(got, err)
 	}
+	if r.Kind != "session" {
+		t.Fatalf("kind = %q, want session", r.Kind)
+	}
+}
+
+// Agent transcripts were unresolvable by any selector, so `ctx` could not
+// measure 40% of the transcript tree — exactly where delegated context hides.
+func TestResolveTranscriptReachesAgentsByExplicitSelector(t *testing.T) {
+	root := t.TempDir()
+	subagent := filepath.Join(root, "slug", "abc", "subagents", "agent-1.jsonl")
+	wfAgent := filepath.Join(root, "slug", "abc", "subagents", "workflows", "wf_x", "agent-2.jsonl")
+	for _, p := range []string{subagent, wfAgent} {
+		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for selector, want := range map[string]string{"agent-1": subagent, "agent-2": wfAgent} {
+		got, err := ResolveTranscript(root, selector)
+		if err != nil || got != want {
+			t.Fatalf("%s = %q (%v), want %q", selector, got, err, want)
+		}
+	}
+}
+
+// A subagent transcript carries the same record shape as a session, so the same
+// parse measures it; the report must say which kind it measured so a corpus
+// aggregator never averages a lead session in with the agents it spawned.
+func TestDiagnoseContextMeasuresAgentTranscripts(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "slug", "abc", "subagents", "agent-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row := `{"type":"assistant","isSidechain":true,"timestamp":"2026-09-11T10:00:00Z","message":{"id":"one","usage":{"input_tokens":10,"cache_read_input_tokens":40000,"output_tokens":70}}}`
+	if err := os.WriteFile(p, []byte(row+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := DiagnoseContext(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Responses != 1 || r.MaxContext != 40010 || r.OutputTokens != 70 {
+		t.Fatalf("report: %+v", r)
+	}
+	if r.Kind != "subagent" {
+		t.Fatalf("kind = %q, want subagent", r.Kind)
+	}
+	wf := filepath.Join(root, "slug", "abc", "subagents", "workflows", "wf_x", "agent-2.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wf), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wf, []byte(row+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiagnoseContext(wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "workflow-agent" {
+		t.Fatalf("kind = %q, want workflow-agent", got.Kind)
+	}
 }
 
 // Only PNG headers were read, so every screenshot in another format was priced

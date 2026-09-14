@@ -18,11 +18,44 @@ func cappedValue(f []string, flags ...string) bool {
 	return false
 }
 
-func unboundedOutput(segment string, cfg Config) *Denial {
-	f := shellFields(trimSubshell(segment))
-	for len(f) > 0 && strings.Contains(f[0], "=") {
-		f = f[1:]
+// gitGlobalWithValue are git's global options that consume the next field;
+// gitGlobalFlags stand alone. Both sit between `git` and the subcommand, so
+// `git -C repo log` is still a git log — the pair below read it as `git -C`,
+// found no rule, and let a fully uncapped log through.
+var gitGlobalWithValue = map[string]bool{
+	"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true,
+}
+
+var gitGlobalFlags = map[string]bool{
+	"-P": true, "--no-pager": true, "--paginate": true, "--bare": true,
+	"--no-replace-objects": true, "--literal-pathspecs": true,
+}
+
+func skipGitGlobals(f []string) []string {
+	if len(f) == 0 || commandWord(f[0]) != "git" {
+		return f
 	}
+	i := 1
+	for i < len(f) {
+		switch {
+		case gitGlobalWithValue[f[i]]:
+			i += 2
+		case gitGlobalFlags[f[i]]:
+			i++
+		default:
+			if k := strings.IndexByte(f[i], '='); k > 0 && gitGlobalWithValue[f[i][:k]] {
+				i++
+				continue
+			}
+			return append(f[:1:1], f[i:]...)
+		}
+	}
+	return f[:1]
+}
+
+func unboundedOutput(segment string, cfg Config) *Denial {
+	f := shellFields(trimAssignments(trimSubshell(segment)))
+	f = skipGitGlobals(f)
 	if len(f) < 2 {
 		return nil
 	}

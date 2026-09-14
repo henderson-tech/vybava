@@ -15,10 +15,34 @@ import (
 //   - Read: block reading raw PNGs under .e2e/ — huge, context-hostile.
 // ---------------------------------------------------------------------------
 
-var (
-	reRawSimShot    = regexp.MustCompile(`(^|[;&|][[:space:]]*)xcrun simctl io [^|;&]*screenshot`)
-	reScreencapture = regexp.MustCompile(`(^|[;&|][[:space:]]*)screencapture([[:space:]]|$)`)
-)
+// The `xcrun` and `screencapture` words are identified by commandWord (see
+// e2eScreenshotMatch), so these only have to recognise the rest of the argv.
+var reRawSimShot = regexp.MustCompile(`simctl[[:space:]]+io[[:space:]][^|;&]*screenshot`)
+
+// e2eScreenshotMatch returns "raw-screenshot", "screencapture" or "". Pure —
+// unit-testable. Matching runs per segment of the command, skipping segments
+// that merely mention text, so a quoted mention (an echoed warning, a commit
+// message, `grep -rn screencapture`) cannot fire a rule, and a leading `FOO=1`
+// cannot disarm one: commandWord sees through environment assignments.
+func e2eScreenshotMatch(cmd string) string {
+	// The downsizing exemptions are pipeline-wide: `… screenshot - | sips -Z`
+	// puts sips in a later segment, and it still makes the shot cheap.
+	exempt := strings.Contains(cmd, "sips -Z") || strings.Contains(cmd, "snap ")
+	for _, seg := range segments(cmd) {
+		if textOnly(seg) {
+			continue
+		}
+		switch commandWord(seg) {
+		case "xcrun":
+			if !exempt && reRawSimShot.MatchString(seg) {
+				return "raw-screenshot"
+			}
+		case "screencapture":
+			return "screencapture"
+		}
+	}
+	return ""
+}
 
 func guardE2EScreenshot(in *HookInput) *Denial {
 	dir := in.CWD
@@ -28,11 +52,10 @@ func guardE2EScreenshot(in *HookInput) *Denial {
 	if st, err := os.Stat(filepath.Join(dir, ".e2e")); err != nil || !st.IsDir() {
 		return nil
 	}
-	cmd := strings.TrimLeft(in.ToolInput.Command, " \t\r\n")
-	if reRawSimShot.MatchString(cmd) && !strings.Contains(cmd, "sips -Z") && !strings.Contains(cmd, "snap ") {
+	switch e2eScreenshotMatch(in.ToolInput.Command) {
+	case "raw-screenshot":
 		return deny("e2e:raw-screenshot", "raw xcrun screenshot — use: source ~/.claude/skills/e2e/references/snap.sh && snap <label>", "")
-	}
-	if reScreencapture.MatchString(cmd) {
+	case "screencapture":
 		return deny("e2e:screencapture", "screencapture is banned by /e2e — use snap", "")
 	}
 	return nil

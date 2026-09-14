@@ -42,6 +42,7 @@ type HourCost struct {
 }
 type ContextReport struct {
 	Path             string       `json:"path"`
+	Kind             string       `json:"kind"`
 	Responses        int          `json:"responses"`
 	MaxContext       int          `json:"maxContext"`
 	OutputTokens     int          `json:"outputTokens"`
@@ -91,6 +92,7 @@ type transcriptRow struct {
 
 // ResolveTranscript uses filename prefixes only; it never searches transcript
 // contents and refuses ambiguous session prefixes. latest means latest mtime.
+// An explicit selector reaches agent transcripts too — see the walk below.
 func ResolveTranscript(root, selector string) (string, error) {
 	if selector == "" || strings.ContainsAny(selector, "/\\") {
 		return "", fmt.Errorf("use a session id prefix or latest")
@@ -100,10 +102,13 @@ func ResolveTranscript(root, selector string) (string, error) {
 		if err != nil {
 			return err
 		}
-		// Subagent and workflow transcripts are not sessions. Walking into them
-		// makes `latest` resolve to whichever agent happened to write last —
-		// a few hundred tokens of someone else's context, reported as yours.
-		if d.IsDir() && (d.Name() == "subagents" || d.Name() == "workflows") {
+		// `latest` means the latest SESSION. Walking into agent transcripts makes
+		// it resolve to whichever agent happened to write last — a few hundred
+		// tokens of someone else's context, reported as yours. An explicit
+		// selector asks a different question: it names one transcript, so agent
+		// runs stay reachable. Skipping them there instead made 40% of the
+		// transcript tree unmeasurable, which is where delegated context hides.
+		if d.IsDir() && selector == "latest" && (d.Name() == "subagents" || d.Name() == "workflows") {
 			return fs.SkipDir
 		}
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".jsonl") && (selector == "latest" || strings.HasPrefix(d.Name(), selector)) {
@@ -140,8 +145,25 @@ func ResolveTranscript(root, selector string) (string, error) {
 	return latest, nil
 }
 
+// transcriptKind labels a transcript by where it sits in the projects tree, so a
+// caller aggregating a corpus never averages a lead session together with the
+// agent runs it spawned. Workflow agents live under subagents/workflows, so the
+// more specific label wins.
+func transcriptKind(path string) string {
+	kind := "session"
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		switch seg {
+		case "workflows":
+			return "workflow-agent"
+		case "subagents":
+			kind = "subagent"
+		}
+	}
+	return kind
+}
+
 func DiagnoseContext(path string) (ContextReport, error) {
-	r := ContextReport{Path: path, Tools: []ToolCost{}, TopResults: []ResultCost{}, Images: []ImageCost{}, Hours: []HourCost{}}
+	r := ContextReport{Path: path, Kind: transcriptKind(path), Tools: []ToolCost{}, TopResults: []ResultCost{}, Images: []ImageCost{}, Hours: []HourCost{}}
 	f, err := os.Open(path)
 	if err != nil {
 		return r, err
@@ -370,7 +392,7 @@ func (r ContextReport) Render(w io.Writer) error {
 			unknown++
 		}
 	}
-	_, err := fmt.Fprintf(w, "%s\n%d responses · max context %d · own output %d (thinking %d)\n%d images ≈ %d tokens (%d unknown dimensions) · SessionStart todo injections %d · malformed records %d\nText/tool/image estimates are approximate; usage counts are recorded.\n", r.Path, r.Responses, r.MaxContext, r.OutputTokens, r.ThinkingTokens, len(r.Images), imageTokens, unknown, r.TodoInjections, r.MalformedRecords)
+	_, err := fmt.Fprintf(w, "%s [%s]\n%d responses · max context %d · own output %d (thinking %d)\n%d images ≈ %d tokens (%d unknown dimensions) · SessionStart todo injections %d · malformed records %d\nText/tool/image estimates are approximate; usage counts are recorded.\n", r.Path, r.Kind, r.Responses, r.MaxContext, r.OutputTokens, r.ThinkingTokens, len(r.Images), imageTokens, unknown, r.TodoInjections, r.MalformedRecords)
 	if err != nil {
 		return err
 	}

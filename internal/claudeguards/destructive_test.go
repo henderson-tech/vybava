@@ -11,6 +11,12 @@ func TestDestructiveMatch(t *testing.T) {
 		cwd  string
 		want string // rule name, "" = pass
 	}{
+		// --- field audit: a quoted literal runs nothing ---
+		{"stash named in a grep pattern", `grep -n "a|git stash|b" f.ts`, mainClone, ""},
+		{"stash named in a commit message",
+			`git commit -m 'fix: stop the crash; git stash was the cause'`, mainClone, ""},
+		{"switch named in a grep pattern", `grep -n "a|git switch main|b" f.ts`, mainClone, ""},
+
 		// --- git stash: banned everywhere, any dir ---
 		{"stash plain", "git stash", mainClone, "git-stash"},
 		{"stash push", "git stash push -m x", mainClone, "git-stash"},

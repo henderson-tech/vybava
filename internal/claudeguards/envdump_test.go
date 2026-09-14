@@ -44,6 +44,15 @@ func TestEnvDumpMatch(t *testing.T) {
 		{"sed names", "env | sed 's/=.*//'", ""},
 		{"grep is not a name filter", "env | grep -c S3 | cut -c1", "env-dump"},
 
+		// --- field audit: an assignment prefix is not a disguise ---
+		{"assignment prefix", "FOO=1 env", "env-dump"},
+		{"valueless assignment prefix", "FOO= env", "env-dump"},
+		{"quoted assignment prefix", `FOO='a b' printenv`, "env-dump"},
+
+		// --- field audit: a quoted pattern is data, not a pipeline ---
+		{"alternation branch named env", `grep -nE "vault|env|path" a.ts`, ""},
+		{"alternation branch named printenv", `rg "a|printenv|b" f.ts`, ""},
+
 		// --- /proc environ ---
 		{"cat proc environ", "cat /proc/1234/environ", "proc-environ"},
 		{"tr proc environ", `tr '\0' '\n' < /proc/self/environ`, "proc-environ"},

@@ -83,6 +83,16 @@ refresh token, cached access token only); the manual-only skill is
 
 `internal/vconfig` loads the shared per-repo `vybava.config.ts` (bun-evaluated, cached by mtime beside the git dir) or `vybava.config.json`; applets read their section through `Config.Section` with unknown fields rejected. The TypeScript helpers are embedded (`config-helpers.ts`) and drift-checked by `vybava config check`. `internal/lok` owns locale catalogs (order-preserving JSON, alphabetical inserts, per-locale parity); `internal/claudeguards` refuses raw reads of configured catalogs. `internal/configdiscover` proposes `guards.noRead` and `lok.catalogs` from the tracked tree and backs `config check`'s drift warnings; it lives outside `vconfig` to keep a `vconfig → lok → vconfig` cycle from forming, only ever fills sections absent from the config, and is advisory — tracked files only, so a gitignored generated tree is invisible to it. Docs: `docs/config.md`, `docs/lok.md`.
 
+`internal/claudeguards/input.go` owns the ONE definition of "what commands does
+this string run" — `splitShell` (quote-aware), `trimAssignments`,
+`runnerPayloads`, reached through `segments()`. Every rule family goes through
+it; never re-derive segmentation locally. The 2026-09-14 field audit found five
+rule families each doing their own, which let quoted text be scanned as
+commands in 18 of 25 rules and let a bare `FOO=1` prefix disarm 9 — hard bans
+included. Quoting asymmetry is load-bearing: single quotes suppress everything,
+double quotes suppress control operators but NOT `$(…)`/backticks. Findings and
+the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md`.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See

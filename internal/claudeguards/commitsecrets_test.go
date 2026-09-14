@@ -50,7 +50,7 @@ func TestSecretPatterns(t *testing.T) {
 }
 
 func TestPasswordAssignments(t *testing.T) {
-	if !rePassword.MatchString(`+password = "hunter2hunter2"`) {
+	if !credentialAssignment(`+password = "hunter2hunter2"`) {
 		t.Error("literal password assignment should flag")
 	}
 	for _, l := range []string{
@@ -59,8 +59,60 @@ func TestPasswordAssignments(t *testing.T) {
 		`+secret: "changeme-please"`,
 		`+token = "<your-token-here>"`,
 	} {
-		if rePassword.MatchString(l) && !rePasswordSkip.MatchString(l) {
+		if credentialAssignment(l) {
 			t.Errorf("placeholder/env form should pass: %q", l)
+		}
+	}
+}
+
+// An env-var NAME constant is the KEY handed to os.Getenv, not the secret —
+// flagging it blocked real commits (vitrinka t/1312). Suppression demands BOTH
+// signals, so a credential that merely happens to be SCREAMING_SNAKE, or an
+// env-named identifier holding a real token, keeps flagging.
+func TestEnvVarNameConstantsAreNotCredentials(t *testing.T) {
+	flag := []string{
+		`+var password = "hunter2hunter2"`,
+		`+var apiKey = "sk_live_9f8a7b6c5d4e3f2a1b"`,
+		`+var secret = "correct horse battery staple"`,
+		`+var accessToken = "aG9yc2ViYXR0ZXJ5c3RhcGxlMTIz"`,
+		// SCREAMING_SNAKE value, but the identifier names no env var.
+		`+var password = "ADMIN_PASSWORD"`,
+		`+var secret = "SUPER_SECRET_VALUE"`,
+		`+var apiKey = "MY_API_KEY_VALUE_9"`,
+		`+var password = "A1B2_C3D4_E5F6"`,
+		// Env-named identifier, but the value is a real token, not a var name.
+		`+var envPassword = "sk_live_9f8a7b6c5d4e3f2a1b"`,
+		// Caps with no underscore keeps its entropy: a base32 TOTP seed.
+		`+var secret = "JBSWY3DPEHPK3PXP"`,
+	}
+	pass := []string{
+		`+const EnvPassword = "POSTA_APP_PASSWORD"`,
+		`+const EnvAPIKey = "FIXIT_API_KEY"`,
+		`+var passwordEnv = "DB_PASSWORD"`,
+	}
+	for _, l := range flag {
+		if !credentialAssignment(l) {
+			t.Errorf("should flag %q", l)
+		}
+	}
+	for _, l := range pass {
+		if credentialAssignment(l) {
+			t.Errorf("should pass %q", l)
+		}
+	}
+}
+
+// rePasswordSkip knew Python's os.environ and JS's process.env but not Go's,
+// Java's or Deno's spelling, so the same "this is the env var's name" line
+// flagged in Go and passed in Python.
+func TestEnvAccessorSpellingsAreSkipped(t *testing.T) {
+	const base = `+	"password": "SMTP_PASSWORD",`
+	if !credentialAssignment(base) {
+		t.Fatalf("control must flag without an env accessor: %q", base)
+	}
+	for _, accessor := range []string{"os.Getenv", "System.getenv", "Deno.env.get", "process.env", "os.environ"} {
+		if l := base + " // read via " + accessor; credentialAssignment(l) {
+			t.Errorf("%s form should pass: %q", accessor, l)
 		}
 	}
 }
