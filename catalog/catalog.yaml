@@ -7,6 +7,12 @@ items:
     description: Native metadata-only foreground application and idle sampling for opt-in automatic time capture.
     applet: worktime
 
+  - id: menubar-doctor
+    kind: applet
+    status: experimental
+    description: Find and fix macOS menu-bar items that run but never appear — Control Center files a status item under the process that launched the app, so anything started from a terminal is filed under the terminal and stays invisible while its switch is off.
+    applet: menubar-doctor
+
   - id: claude-guards
     kind: applet
     status: experimental
@@ -192,6 +198,7 @@ groups:
     items:
       - worktime
       - lok
+      - menubar-doctor
       - claude-guards
       - envbridge
       - posta
@@ -239,6 +246,7 @@ groups:
     items:
       - worktime
       - lok
+      - menubar-doctor
       - claude-guards
       - envbridge
       - posta
