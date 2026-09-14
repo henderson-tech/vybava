@@ -236,6 +236,9 @@ func reducesOutput(seg string, budget int) bool {
 		return false
 	}
 	name := filepath.Base(f[0])
+	if name == "sed" {
+		return sedCapsOutput(f[1:], budget)
+	}
 	if !reducingSinks[name] {
 		return false
 	}
@@ -243,6 +246,36 @@ func reducesOutput(seg string, budget int) bool {
 		return headTailBounded(f[1:], budget)
 	}
 	return true
+}
+
+// sedCapsOutput reports whether a sed used as a pipe sink bounds its input.
+// sed stays out of reducingSinks on purpose — `sed -n p`, `sed s/a/b/` and
+// every unmodelled script reproduce each input line. A `-n` script made only
+// of print ranges is the one exception: `sed -n '1,60p'` admits at most 60
+// lines however long the producer runs, so it caps output exactly as
+// `head -60` does. Without `-n` the same script caps nothing (`sed '1,60p'`
+// prints the whole file and repeats the range), and an open range saturates
+// through addSedRange, so both stay uncapped.
+func sedCapsOutput(args []string, budget int) bool {
+	quiet, limit := false, 0
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-n" || a == "--quiet" || a == "--silent":
+			quiet = true
+		case a == "-E" || a == "-r" || a == "--regexp-extended":
+			// expression dialect only; prints nothing extra
+		case a == "-e" && i+1 < len(args):
+			i++
+			limit = addSedRange(limit, args[i])
+		case strings.HasPrefix(a, "-"):
+			return false // an option we do not model (-i, bundled -ne, …)
+		case reSedScript.MatchString(a):
+			limit = addSedRange(limit, a)
+		default:
+			return false // a file operand: this sed reads, it does not sink
+		}
+	}
+	return quiet && limit > 0 && limit <= budget
 }
 
 // byteCapBounded reports whether an explicit `-c` cap keeps the output inside
@@ -303,29 +336,36 @@ func headTailBounded(args []string, budget int) bool {
 }
 
 func dumpSegments(cmd string, budget int) []dumpSegment {
-	src := stripQuotedHeredocs(cmd)
-	var texts []string
-	var piped []bool
-	pos := 0
-	for _, m := range segmentSplit.FindAllStringIndex(src, -1) {
-		texts = append(texts, src[pos:m[0]])
-		piped = append(piped, src[m[0]:m[1]] == "|")
-		pos = m[1]
+	// Shares the quote-aware splitter with every other rule family, so a
+	// separator inside a grep pattern or a commit message is not read as a
+	// pipeline here either. sep carries the separator that FOLLOWS a segment,
+	// which is what the pipe walk below needs.
+	parts := shellSegments(cmd)
+	texts := make([]string, len(parts))
+	piped := make([]bool, len(parts))
+	for i, p := range parts {
+		texts[i], piped[i] = p.text, p.sep == "|"
 	}
-	texts, piped = append(texts, src[pos:]), append(piped, false)
 
 	var out []dumpSegment
 	for i, raw := range texts {
-		s := trimSubshell(strings.Trim(raw, " \t\r"))
+		s := trimAssignments(trimSubshell(strings.Trim(raw, " \t\r")))
 		if s == "" {
 			continue
 		}
 		consumed := reFileRedirect.MatchString(s)
 		if piped[i] {
-			// Find the sink: the next segment with any content.
+			// Walk every stage of this pipeline, not just the first: the bound
+			// often sits further down (`git show X | awk '{print $1}' | head -20`),
+			// and stopping at stage one reads that as an uncapped dump. The walk
+			// ends at the `;`/`&&` closing the pipeline, so a later command's
+			// `| head` can never launder an earlier segment's output.
 			for j := i + 1; j < len(texts); j++ {
-				if next := strings.Trim(texts[j], " \t\r"); next != "" {
-					consumed = consumed || reducesOutput(next, budget)
+				if next := strings.Trim(texts[j], " \t\r"); next != "" && reducesOutput(next, budget) {
+					consumed = true
+					break
+				}
+				if !piped[j] {
 					break
 				}
 			}
@@ -362,17 +402,25 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		return dumpOK, "", 0, 0
 	}
 	limit := -1 // -1 = whole file
+	// windowed marks a read whose span the caller stated outright, as a closed
+	// `A,Bp` range under -n. Such a read earns the inclusive-endpoint allowance
+	// below; every other shape is budgeted at exactly maxDumpLines.
+	windowed := false
 	var paths []string
 	args := fields[1:]
 	switch fields[0] {
 	case "sed":
 		limit = 0
+		quiet := false
 		for i := 0; i < len(args); i++ {
 			a := args[i]
 			switch {
 			case a == "-n" || a == "-E" || a == "-r" || a == "--quiet" || a == "-i" || strings.HasPrefix(a, "-i"):
 				if a == "-i" || strings.HasPrefix(a, "-i") {
 					return dumpOK, "", 0, 0 // in-place edit, prints nothing
+				}
+				if a == "-n" || a == "--quiet" {
+					quiet = true
 				}
 			case a == "-e" && i+1 < len(args):
 				i++
@@ -387,6 +435,12 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if limit == 0 {
 			return dumpOK, "", 0, 0 // no print range we understand → pass
 		}
+		if !quiet {
+			// Without -n sed still prints every line and repeats the range on
+			// top, so a print range bounds nothing: this is a whole-file read.
+			limit = -1
+		}
+		windowed = quiet && limit > 0 && limit < unboundedLines
 	case "head", "tail":
 		limit = 10
 		for i := 0; i < len(args); i++ {
@@ -416,6 +470,34 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 			}
 		}
 	}
+	// allowance is the budget this read is measured against. A stated window
+	// gets exactly one line more, because an inclusive range spends its budget
+	// on strides while the budget counts lines: told to read in 200-line
+	// windows, an agent writes `sed -n 200,400p`, which delivers 201. Denying
+	// that punishes the compliant idiom — in the 2026-09-13 field audit it was
+	// the single largest false-positive class (84 firings on already-bounded
+	// sed reads, 13 at exactly 201 lines, 12 of those the round `A,A+200`
+	// window) and drove 3 of only 7 recorded uses of CLAUDE_ALLOW_CONTEXT_DUMP=1.
+	//
+	// The arithmetic stays honest: `total` still reports the 201 lines actually
+	// printed, which is the number the denial message quotes. The alternative —
+	// charging B-A instead of B-A+1 — buys the same idiom by under-reporting
+	// every range in the codebase by one, and compounds once a read carries
+	// several ranges.
+	//
+	// The concession is one line per read, the same unit every other budget
+	// here is measured in, so `-n '1,201p;400,600p'` (two ranges in one read)
+	// and a window spanning two files both still deny. Separate commands are
+	// budgeted separately, as they always have been.
+	//
+	// Deliberately NOT extended to the tightened budget-read tier: the evidence
+	// is all at 200 (context:budget-read did not fire once in the audited
+	// corpus), and that tier is an emergency valve at 70% context, not the
+	// working budget. Same arithmetic, no evidence — so it stays at 100.
+	allowance := budget
+	if windowed && budget == maxDumpLines {
+		allowance = budget + 1
+	}
 	for _, p := range paths {
 		abs := resolvePath(p, cwd)
 		if cfg.noRead(abs) {
@@ -439,14 +521,50 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if total > unboundedLines {
 			total = unboundedLines // saturate: several unmeasured files must not wrap
 		}
-		if total > budget && file == "" {
+		if total > allowance && file == "" {
 			file, lines = abs, n
 		}
 	}
-	if total > budget {
+	if total > allowance {
 		return dumpOverBudget, file, lines, total
 	}
 	return dumpOK, "", 0, 0
+}
+
+// sedWindowHint names the window a near-miss read should have asked for. A
+// single closed `-n A,Bp` range that overshoots by only a line or two is the
+// round-window idiom overshooting its stride (`200,401p` wanting 200 lines),
+// so answering with the arithmetic — not just "read a range" — is what stops
+// the next attempt from missing the same way. Anything further over budget is
+// a genuinely different read and gets no hint.
+func sedWindowHint(seg string, budget int) string {
+	f := shellFields(seg)
+	if len(f) == 0 || f[0] != "sed" {
+		return ""
+	}
+	quiet, first, span := false, 0, 0
+	for _, a := range f[1:] {
+		switch {
+		case a == "-n" || a == "--quiet" || a == "--silent":
+			quiet = true
+		case reSedScript.MatchString(a):
+			if first != 0 {
+				return "" // several ranges: no single window to name
+			}
+			m := reSedRange.FindStringSubmatch(strings.TrimSpace(a))
+			if m == nil || m[1] == "" || m[2] == "" {
+				return ""
+			}
+			first, span = atoiOr(m[1], 0), atoiOr(m[2], 0)-atoiOr(m[1], 0)+1
+		}
+	}
+	// The allowance already covers +1, so only an overshoot beyond it is worth
+	// correcting, and only while the ask is still recognisably one window.
+	if !quiet || first == 0 || span <= budget+1 || span > budget+budget/10 {
+		return ""
+	}
+	return fmt.Sprintf("%d lines; sed -n '%d,%dp' is the %d-line window from there.",
+		span, first, first+budget, budget+1)
 }
 
 // addSedRange folds one `A,Bp` / `Ap` / `A,$p` expression into a line budget;
@@ -530,7 +648,11 @@ func contextBashMatchCfg(cmd, cwd string, cfg Config) *Denial {
 		case dumpNoRead:
 			return noReadDenial(file)
 		case dumpOverBudget:
-			return deny("context:whole-file-dump", fmt.Sprintf(wholeFileMsg, linesLabel(total), cfg.MaxDumpLines, file, linesLabel(lines)), contextReadEscape)
+			msg := fmt.Sprintf(wholeFileMsg, linesLabel(total), cfg.MaxDumpLines, file, linesLabel(lines))
+			if hint := sedWindowHint(seg.text, cfg.MaxDumpLines); hint != "" {
+				msg += "\n\nThe window you asked for is " + hint
+			}
+			return deny("context:whole-file-dump", msg, contextReadEscape)
 		}
 	}
 	return nil
@@ -578,10 +700,35 @@ func contextReadMatchCfg(path string, offset, limit int, cwd string, cfg Config)
 	if offset > 1 {
 		remaining = max(0, n-offset+1)
 	}
-	if !ok || remaining <= cfg.MaxDumpLines {
+	// What the call actually delivers is the smaller of the tail after offset
+	// and the limit it asked for. The verdict is unchanged — any limit at or
+	// under budget returned above, so a limit reaching here is itself over —
+	// but the number the message quotes has to be the one the agent caused.
+	delivered := remaining
+	if limit > 0 && limit < delivered {
+		delivered = limit
+	}
+	if !ok || delivered <= cfg.MaxDumpLines {
 		return nil
 	}
-	return deny("context:whole-file-dump", fmt.Sprintf(readToolMsg, abs, linesLabel(remaining), cfg.MaxDumpLines), "")
+	if offset > 1 || limit > 0 {
+		return deny("context:whole-file-dump", fmt.Sprintf(readRangeMsg,
+			abs, linesLabel(n), readWindowLabel(offset, limit), linesLabel(delivered), cfg.MaxDumpLines), "")
+	}
+	return deny("context:whole-file-dump", fmt.Sprintf(readToolMsg, abs, linesLabel(n), cfg.MaxDumpLines), "")
+}
+
+// readWindowLabel echoes the offset/limit the caller actually passed, so the
+// denial describes their read rather than a generic one.
+func readWindowLabel(offset, limit int) string {
+	switch {
+	case offset > 1 && limit > 0:
+		return fmt.Sprintf("offset=%d, limit=%d", offset, limit)
+	case offset > 1:
+		return fmt.Sprintf("offset=%d, no limit", offset)
+	default:
+		return fmt.Sprintf("limit=%d", limit)
+	}
 }
 
 func guardContextBash(in *HookInput) *Denial {
@@ -624,6 +771,16 @@ const readToolMsg = `%s has %s lines; a Read without offset/limit puts all of it
 
 Pass offset + limit for the range you need, locate it first with Grep, or send
 a multi-file survey to an Explore agent and keep only its conclusions.`
+
+// readRangeMsg answers a Read that did pass offset/limit and is still over
+// budget. Telling such a caller they read "without offset/limit", and quoting
+// the tail length as the file's length, describes a call they did not make —
+// and this message is the whole of what the next attempt is steered by.
+const readRangeMsg = `%s has %s lines; this Read (%s) would still put %s of them into context
+(budget: %d lines per call).
+
+Narrow the window to the range you will act on, locate it first with Grep, or
+send a multi-file survey to an Explore agent and keep only its conclusions.`
 
 const transcriptMsg = `%s is a session transcript — megabytes of JSONL, mostly tool output you have
 already seen. Dumping it is pure context waste.
