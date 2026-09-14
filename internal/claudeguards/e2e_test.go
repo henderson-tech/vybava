@@ -19,16 +19,33 @@ func TestE2EReadGuardPatterns(t *testing.T) {
 }
 
 func TestE2EScreenshotPatterns(t *testing.T) {
-	if !reRawSimShot.MatchString("xcrun simctl io booted screenshot /tmp/a.png") {
-		t.Error("raw simctl screenshot should match")
+	cases := map[string]string{
+		"xcrun simctl io booted screenshot /tmp/a.png":     "raw-screenshot",
+		"sleep 1; xcrun simctl io booted screenshot x.png": "raw-screenshot",
+		"screencapture -x /tmp/s.png":                      "screencapture",
+		"man screencapture-notes":                          "",
+		// Downsized shots are the sanctioned path, even across a pipe.
+		"xcrun simctl io booted screenshot - | sips -Z 800 > x.jpg": "",
 	}
-	if !reRawSimShot.MatchString("sleep 1; xcrun simctl io booted screenshot x.png") {
-		t.Error("chained simctl screenshot should match")
+	for cmd, want := range cases {
+		if got := e2eScreenshotMatch(cmd); got != want {
+			t.Errorf("e2eScreenshotMatch(%q) = %q, want %q", cmd, got, want)
+		}
 	}
-	if !reScreencapture.MatchString("screencapture -x /tmp/s.png") {
-		t.Error("screencapture should match")
+}
+
+// A quoted mention can never execute (B2); a leading environment assignment
+// must not walk past the rule (F1).
+func TestE2EScreenshotSegmentScoped(t *testing.T) {
+	cases := map[string]string{
+		`echo "screencapture -x /tmp/s.png"`:                              "",
+		`git commit -m "guards: ban xcrun simctl io booted screenshot"`:   "",
+		"FOO=1 screencapture -x /tmp/s.png":                               "screencapture",
+		"SIMCTL_CHILD_FOO=1 xcrun simctl io booted screenshot /tmp/a.png": "raw-screenshot",
 	}
-	if reScreencapture.MatchString("man screencapture-notes") {
-		t.Error("suffixed word should not match")
+	for cmd, want := range cases {
+		if got := e2eScreenshotMatch(cmd); got != want {
+			t.Errorf("e2eScreenshotMatch(%q) = %q, want %q", cmd, got, want)
+		}
 	}
 }

@@ -66,10 +66,99 @@ func ReadInput(r io.Reader) (*HookInput, error) {
 	return &in, nil
 }
 
-// Shell separators after which a new command can start. Splitting on these
-// means `make build && git stash` is inspected too. `$(` and backtick open
-// command substitutions.
-var segmentSplit = regexp.MustCompile("\\|\\||&&|[;&|\n]|\\$\\(|`")
+// shellSegment is one inspectable piece of a command plus the separator that
+// FOLLOWS it ("" for the last piece), so callers can tell `a | b` from `a; b`.
+type shellSegment struct {
+	text string
+	sep  string
+}
+
+// splitShell splits a command on shell separators that are really separators —
+// the ones outside quotes. Quoting matters because a literal is not a command:
+// `grep -nE "vault|env"` is one grep, not a pipe into `env`, and
+// `git commit -m 'fix; git stash was the cause'` runs no stash.
+//
+// Single quotes suppress everything. Double quotes suppress the control
+// operators but NOT command substitution, because the shell still expands
+// `$(...)` and backticks inside them — so those keep splitting there, which is
+// what keeps `echo "$(git stash)"` from laundering a hard ban past the
+// destructive rules.
+//
+// A substitution opens a fresh quoting context, so the state is stacked and
+// popped at its closing paren. Nesting deeper than the shell's own rules (a
+// backtick reopened inside a substitution, say) degrades toward splitting more
+// rather than less: over-splitting costs a false positive, under-splitting
+// misses a ban.
+func splitShell(cmd string) []shellSegment {
+	var out []shellSegment
+	var stack []byte // quoting contexts of enclosing substitutions
+	var quote byte   // 0, '\'' or '"'
+	start := 0
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		// A backslash escapes the next byte everywhere but inside single
+		// quotes, where it is literal.
+		if c == '\\' && quote != '\'' {
+			i++
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == 0 && (c == '\'' || c == '"') {
+			quote = c
+			continue
+		}
+		if quote == '"' && c == '"' {
+			quote = 0
+			continue
+		}
+		// A substitution's closing paren ends the command inside it, so it is a
+		// separator too; the quoting that surrounded the substitution resumes.
+		if c == ')' && len(stack) > 0 {
+			quote, stack = stack[len(stack)-1], stack[:len(stack)-1]
+			out = append(out, shellSegment{text: cmd[start:i], sep: ")"})
+			start = i + 1
+			continue
+		}
+		sep := ""
+		switch {
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+			sep = "$("
+		case c == '`':
+			sep = "`"
+		case quote == '"':
+			// Inside double quotes nothing else separates.
+		case strings.HasPrefix(cmd[i:], "||"):
+			sep = "||"
+		case strings.HasPrefix(cmd[i:], "&&"):
+			sep = "&&"
+		case c == ';' || c == '&' || c == '|' || c == '\n':
+			sep = string(c)
+		}
+		if sep == "" {
+			continue
+		}
+		out = append(out, shellSegment{text: cmd[start:i], sep: sep})
+		i += len(sep) - 1
+		start = i + 1
+		if sep == "$(" {
+			stack = append(stack, quote)
+			quote = 0
+		}
+	}
+	return append(out, shellSegment{text: cmd[start:]})
+}
+
+// shellSegments applies splitShell to a command with quoted heredoc bodies
+// already removed — the shared entry point for every rule family that needs to
+// see the individual commands a string would run.
+func shellSegments(cmd string) []shellSegment {
+	return splitShell(stripQuotedHeredocs(cmd))
+}
 
 // A heredoc intro with a QUOTED delimiter: `<< 'EOF'` / << "EOF" (optionally
 // <<-). A quoted delimiter makes the body literal text — no expansion, no
@@ -130,7 +219,7 @@ func stripQuotedHeredocs(cmd string) string {
 
 // segments splits a command string into independently inspectable pieces,
 // left-trimmed, empties dropped. Quoted-heredoc bodies are excluded first.
-// trimSubshell strips the wrapper a subshell leaves on a segment. segmentSplit
+// trimSubshell strips the wrapper a subshell leaves on a segment. Splitting
 // breaks `(cd /tmp && git log -n 20)` into `(cd /tmp` and `git log -n 20)`, and
 // the stray `)` made the last field "20)" — not a number, so the cap went
 // unseen and context:unbounded-output fired on a correctly capped command.
@@ -159,13 +248,151 @@ func trimSubshell(s string) string {
 	return strings.TrimRight(s, " \t")
 }
 
+// A leading `NAME=value` word is an environment assignment, not the command.
+var assignPrefix = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// trimAssignments removes the leading `NAME=value` words of a segment. The
+// shell treats them as environment for the command that follows, so leaving
+// them in place let `FOO=1 env` walk past every rule that identifies a command
+// by its first token — a hard ban defeated by typing five characters.
+//
+// Leading only: `env FOO=bar make build` runs env as a runner and keeps its
+// assignment. Values may be quoted (`FOO='a b' cmd`), so the end of a value is
+// found by scanning for unquoted whitespace rather than splitting on spaces.
+func trimAssignments(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t")
+		m := assignPrefix.FindStringIndex(s)
+		if m == nil {
+			return s
+		}
+		end := endOfWord(s, m[1])
+		if end == len(s) {
+			return "" // assignments with no command after them run nothing
+		}
+		s = s[end:]
+	}
+}
+
+// endOfWord returns the index of the unquoted whitespace that ends the word
+// starting at from, or len(s) if the word runs to the end.
+func endOfWord(s string, from int) int {
+	var quote byte
+	for i := from; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == ' ' || c == '\t':
+			return i
+		}
+	}
+	return len(s)
+}
+
+// commandWord returns the command a segment actually runs, with any leading
+// `FOO=bar` assignments and any directory prefix removed. `FOO=1 env` runs env,
+// and so does `/usr/bin/env`.
+func commandWord(s string) string {
+	for _, f := range strings.Fields(s) {
+		if assignPrefix.MatchString(f) {
+			continue
+		}
+		if i := strings.LastIndexByte(f, '/'); i >= 0 {
+			f = f[i+1:]
+		}
+		return f
+	}
+	return ""
+}
+
+// Commands whose quoted arguments are themselves a command line — the payload
+// runs, just on another host, in another container, or in a nested shell.
+// Quoting makes a literal inert everywhere else; it does not here, which is why
+// `ssh host 'env'` and `docker exec c sh -c "env"` still have to be scanned.
+var commandRunners = map[string]bool{
+	"ssh": true, "docker": true, "podman": true, "kubectl": true,
+	"nerdctl": true, "lxc": true, "nsenter": true, "chroot": true,
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ash": true,
+	"sudo": true, "su": true, "doas": true, "env": true,
+	"nohup": true, "timeout": true, "xargs": true, "watch": true,
+	"arch": true, "nice": true, "time": true, "command": true, "stdbuf": true,
+}
+
+// runnerPayloads returns the quoted arguments of a segment that will be run as
+// commands elsewhere. Empty for every other command, which is exactly what
+// keeps a grep pattern, a sed script or a commit message from being read as a
+// command line.
+func runnerPayloads(s string) []string {
+	if !commandRunners[commandWord(s)] {
+		return nil
+	}
+	var out []string
+	for i := 0; i < len(s); i++ {
+		q := s[i]
+		if q != '\'' && q != '"' {
+			continue
+		}
+		j := strings.IndexByte(s[i+1:], q)
+		if j < 0 {
+			break
+		}
+		if payload := s[i+1 : i+1+j]; strings.TrimSpace(payload) != "" {
+			out = append(out, payload)
+		}
+		i += j + 1
+	}
+	return out
+}
+
+// commandChainHas reports whether a segment actually RUNS name — as its command
+// word, or as the target of a launcher chain (`sudo osascript`,
+// `arch -x86_64 osascript`, `xargs cliclick`).
+//
+// The point is to tell running a command from naming one. A quoted literal is a
+// single field, so `rg -e 'osascript … System Events'` carries no `osascript`
+// token and does not match, while `sudo osascript -e …` does. Scanning stops at
+// the first token that is neither name nor a launcher, so only a real wrapper
+// chain is followed.
+func commandChainHas(s, name string) bool {
+	toks := shellFields(trimAssignments(s))
+	for i, t := range toks {
+		if j := strings.LastIndexByte(t, '/'); j >= 0 {
+			t = t[j+1:]
+		}
+		if t == name {
+			return true
+		}
+		if i == 0 && !commandRunners[t] {
+			return false
+		}
+	}
+	return false
+}
+
+// maxRunnerDepth bounds recursion through nested runners
+// (`ssh a 'ssh b "env"'`); beyond it a payload is scanned flat.
+const maxRunnerDepth = 3
+
 func segments(cmd string) []string {
-	parts := segmentSplit.Split(stripQuotedHeredocs(cmd), -1)
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		s := trimSubshell(strings.Trim(p, " \t\r"))
-		if s != "" {
-			out = append(out, s)
+	return appendSegments(nil, cmd, 0)
+}
+
+func appendSegments(out []string, cmd string, depth int) []string {
+	for _, p := range shellSegments(cmd) {
+		s := trimAssignments(trimSubshell(strings.Trim(p.text, " \t\r")))
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+		if depth >= maxRunnerDepth {
+			continue
+		}
+		for _, payload := range runnerPayloads(s) {
+			out = appendSegments(out, payload, depth+1)
 		}
 	}
 	return out

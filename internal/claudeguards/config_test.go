@@ -62,6 +62,11 @@ func TestUnboundedOutput(t *testing.T) {
 		{"git log", "git log --max-count=10"},
 		{"git diff", "git diff --stat"},
 		{"git show HEAD", "git show HEAD -- file.go"},
+		// git's global options sit before the subcommand; the pair-forming
+		// used to read `git -C repo log` as `git -C` and allow it uncapped.
+		{"git -C /srv/repo log --oneline", "git -C /srv/repo log --oneline -20"},
+		{"git --no-pager log", "git --no-pager log -n 20"},
+		{"git -c core.pager=cat log", "git -c core.pager=cat log -n 5"},
 	} {
 		t.Run(tc.deny, func(t *testing.T) {
 			if d := contextBashMatch(tc.deny, t.TempDir()); d == nil || d.Rule != "context:unbounded-output" {
