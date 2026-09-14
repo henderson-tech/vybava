@@ -216,6 +216,78 @@ func TestFixIsANoOpWhenNothingIsBlocked(t *testing.T) {
 	}
 }
 
+func TestFixAllAlsoUnfilesItemsThatAreVisibleUnderAForeignOwner(t *testing.T) {
+	rec := &recorder{files: map[string][]byte{menubar.RegistryPath("/home"): outer(fixture())}}
+
+	result, err := menubar.Fix(context.Background(), rec.env(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(result.Restored, ",") != "com.example.adopted,com.example.bar,com.example.snap" {
+		t.Fatalf("--all repairs every foreign attribution: %+v", result.Restored)
+	}
+	staged := rec.files[filepath.Join(filepath.Dir(result.Backup), "staged.plist")]
+	var written map[string]any
+	if _, err := plist.Unmarshal(staged, &written); err != nil {
+		t.Fatal(err)
+	}
+	after, err := menubar.Parse(written[menubar.RegistryKey].([]byte))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Findings()) != 0 {
+		t.Errorf("no foreign attribution should survive --all: %+v", after.Findings())
+	}
+}
+
+func TestFixSurfacesADefaultsImportFailureAndLeavesControlCenterAlone(t *testing.T) {
+	rec := &recorder{files: map[string][]byte{menubar.RegistryPath("/home"): outer(fixture())}}
+	env := rec.env()
+	exec := env.Exec
+	env.Exec = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		_, _ = exec(ctx, name, args...)
+		if name == "defaults" {
+			return []byte("Domain … does not exist"), errors.New("exit status 1")
+		}
+		return nil, nil
+	}
+
+	_, err := menubar.Fix(context.Background(), env, false)
+	if err == nil || !strings.Contains(err.Error(), "defaults import") {
+		t.Fatalf("a failed import must be surfaced, not swallowed: %v", err)
+	}
+	for _, run := range rec.runs {
+		if run[0] == "killall" {
+			t.Errorf("Control Center is only restarted after the registry was actually written: %v", rec.runs)
+		}
+	}
+}
+
+func TestFixNeverRewritesTheRegistryWhenTheBackupCannotBeWritten(t *testing.T) {
+	original := outer(fixture())
+	rec := &recorder{files: map[string][]byte{menubar.RegistryPath("/home"): original}}
+	env := rec.env()
+	write := env.WriteFile
+	env.WriteFile = func(name string, data []byte, perm fs.FileMode) error {
+		if strings.Contains(name, "/Backups/") {
+			return errors.New("read-only file system")
+		}
+		return write(name, data, perm)
+	}
+
+	_, err := menubar.Fix(context.Background(), env, false)
+	if err == nil || !strings.Contains(err.Error(), "back up the registry") {
+		t.Fatalf("no repair without a backup: %v", err)
+	}
+	if len(rec.runs) != 0 {
+		t.Errorf("nothing may run before the backup exists: %v", rec.runs)
+	}
+	if len(rec.files) != 1 {
+		t.Errorf("no file may be staged before the backup exists: %v", rec.files)
+	}
+}
+
 func TestLaunchResolvesABundleAndDetachesItFromThisProcess(t *testing.T) {
 	info, err := plist.Marshal(map[string]any{"CFBundleExecutable": "Demo"}, plist.BinaryFormat)
 	if err != nil {

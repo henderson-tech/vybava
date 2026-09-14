@@ -23,6 +23,12 @@ func (rt *runtime) menubarApplet() *cobra.Command {
 }
 
 func (rt *runtime) menubarCommand(use string) *cobra.Command {
+	return rt.menubarCommandWithEnv(use, rt.menubarEnv)
+}
+
+// menubarCommandWithEnv takes the machine as a seam so the command surface is
+// testable off macOS, where the registry this reads does not exist.
+func (rt *runtime) menubarCommandWithEnv(use string, newEnv func() (menubar.Env, error)) *cobra.Command {
 	command := &cobra.Command{
 		Use:   use,
 		Short: "Find and fix macOS menu-bar items that run but never appear",
@@ -46,7 +52,7 @@ detached from this shell, which is how you avoid the trap in the first place.`,
   menubar-doctor launch /Applications/Foo.app     # start it attributed to itself`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			env, err := rt.menubarEnv()
+			env, err := newEnv()
 			if err != nil {
 				return err
 			}
@@ -67,11 +73,11 @@ detached from this shell, which is how you avoid the trap in the first place.`,
 			return nil
 		},
 	}
-	command.AddCommand(rt.menubarFixCommand(), rt.menubarLaunchCommand())
+	command.AddCommand(rt.menubarFixCommand(newEnv), rt.menubarLaunchCommand(newEnv))
 	return command
 }
 
-func (rt *runtime) menubarFixCommand() *cobra.Command {
+func (rt *runtime) menubarFixCommand(newEnv func() (menubar.Env, error)) *cobra.Command {
 	var all bool
 	command := &cobra.Command{
 		Use:   "fix",
@@ -88,7 +94,7 @@ Each repaired app has to be relaunched outside this shell — "menubar-doctor
 launch <app>" does it, and so does Finder or Spotlight.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			env, err := rt.menubarEnv()
+			env, err := newEnv()
 			if err != nil {
 				return err
 			}
@@ -121,7 +127,7 @@ launch <app>" does it, and so does Finder or Spotlight.`,
 	return command
 }
 
-func (rt *runtime) menubarLaunchCommand() *cobra.Command {
+func (rt *runtime) menubarLaunchCommand(newEnv func() (menubar.Env, error)) *cobra.Command {
 	return &cobra.Command{
 		Use:   "launch <app-or-binary>",
 		Short: "Start a menu-bar app detached from this shell so its item is attributed to itself",
@@ -132,7 +138,7 @@ agent starts a menu-bar app — "open -a" is what creates the invisible-item tra
 		Example: `  menubar-doctor launch /Applications/SwitcherooBar.app`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			env, err := rt.menubarEnv()
+			env, err := newEnv()
 			if err != nil {
 				return err
 			}
