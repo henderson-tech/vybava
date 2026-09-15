@@ -106,6 +106,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "reclaim" {
 		return rt.reclaimApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "plugin-gc" {
+		return rt.pluginGCApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "handoffs" {
 		return rt.handoffsApplet(), nil
 	}
@@ -163,6 +166,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.reconcileCommand("reconcile"),
 		rt.menubarCommand("menubar-doctor"),
 		rt.reclaimCommand("reclaim"),
+		rt.pluginGCCommand("plugin-gc"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
 		rt.plaudCommand("plaud"),
