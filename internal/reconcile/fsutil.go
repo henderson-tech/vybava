@@ -72,8 +72,7 @@ func isRegular(p string) bool {
 }
 
 // applyFile is `install -D -m 755|644 src dest`: the repo file's exec bit
-// decides the mode; parents are created; the write lands via same-directory
-// temp + rename so a reader never sees a torn file.
+// decides the mode; parents are created; the write lands through writeLive.
 func applyFile(src, dest string) error {
 	fi, err := os.Stat(src)
 	if err != nil {
@@ -90,7 +89,34 @@ func applyFile(src, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return atomicWrite(dest, content, mode)
+	return writeLive(dest, content, mode)
+}
+
+// writeLive lands content on a LIVE destination. An existing regular file is
+// rewritten in place (truncate + write on the same inode): a container that
+// bind-mounts that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/
+// pgbouncer.ini`) has the mount pinned to the inode, so a temp + rename swap
+// leaves the container reading the OLD content forever and a HUP or reload
+// "sees" nothing (2026-09-14, fixit-prod pgbouncer, both boxes). A new file
+// still lands via same-directory temp + rename so no reader ever opens a
+// half-written file.
+func writeLive(dest string, content []byte, mode fs.FileMode) error {
+	if !isRegular(dest) {
+		return atomicWrite(dest, content, mode)
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // copyPreserve is `cp -p src dest` for the rollback snapshots.
@@ -106,7 +132,7 @@ func copyPreserve(src, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return atomicWrite(dest, content, fi.Mode().Perm())
+	return writeLive(dest, content, fi.Mode().Perm())
 }
 
 // classifyWriteError turns a failed write into an Issue: EACCES/EPERM become

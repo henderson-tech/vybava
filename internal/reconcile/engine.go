@@ -668,7 +668,7 @@ func (e *Engine) Force(rp string) error {
 			if bak != "" {
 				content, rerr := os.ReadFile(bak)
 				if rerr == nil {
-					rerr = atomicWrite(t.Dest, content, 0o644)
+					rerr = writeLive(t.Dest, content, 0o644)
 				}
 				if rerr != nil {
 					return fail("force: nginx -t FAILED and restoring %s from %s failed too: %v", t.Dest, bak, rerr)
