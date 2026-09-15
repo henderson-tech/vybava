@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/henderson-tech/vybava/internal/plugingc"
 	"github.com/henderson-tech/vybava/internal/reclaim"
@@ -23,11 +24,12 @@ func (rt *runtime) pluginGCApplet() *cobra.Command {
 
 func (rt *runtime) pluginGCCommand(use string) *cobra.Command {
 	var (
-		apply   bool
-		only    []string
-		skip    []string
-		plugins []string
-		home    string
+		apply       bool
+		only        []string
+		skip        []string
+		plugins     []string
+		home        string
+		orphanGrace time.Duration
 	)
 	command := &cobra.Command{
 		Use:   use,
@@ -46,7 +48,11 @@ Three moves, all off until --apply, ordered by how little each can break:
           started AFTER the marker was written (a recycled PID)
   strip   delete node_modules under an INACTIVE version — almost every byte,
           without touching a marker or a running session
-  remove  delete an inactive version directory once no live marker holds it
+  remove  delete an inactive version directory once no live marker holds it,
+          and an ORPHANED one — "claude plugin uninstall" only writes an
+          .orphaned_at stamp and leaves the whole tree behind, so an
+          uninstalled plugin's cache outlives both the plugin and its
+          marketplace (kept for --orphan-grace, default 7 days)
 
 The active version comes from installed_plugins.json, never from sorting
 version strings, and is never touched; neither is the marketplaces/ tree, nor
@@ -57,6 +63,7 @@ kept.`,
   plugin-gc --apply                 # sweep dead markers, strip, remove
   plugin-gc --apply --only strip    # the safe, high-yield move alone
   plugin-gc --apply --skip remove   # never delete a version directory
+  plugin-gc --orphan-grace 720h     # keep uninstalled plugins' caches 30 days
   plugin-gc --json                  # stable report for agents`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -79,6 +86,7 @@ kept.`,
 			defer stop()
 			report, err := plugingc.Run(ctx, plugingc.Env{Home: home}, plugingc.Options{
 				Apply: apply, Only: onlyMoves, Skip: skipMoves, Plugins: plugins,
+				OrphanGrace: orphanGrace,
 			})
 			if err != nil {
 				return err
@@ -95,6 +103,7 @@ kept.`,
 	command.Flags().StringSliceVar(&skip, "skip", nil, "skip these moves (sweep, strip, remove)")
 	command.Flags().StringSliceVar(&plugins, "plugin", nil, "narrow to these plugins, by name or plugin@marketplace")
 	command.Flags().StringVar(&home, "home", "", "plugin home to operate on (default ~/.claude/plugins)")
+	command.Flags().DurationVar(&orphanGrace, "orphan-grace", plugingc.DefaultOrphanGrace, "keep an uninstalled plugin's versions this long before removing them")
 	return command
 }
 
@@ -110,13 +119,16 @@ func (rt *runtime) pluginGCReport(report plugingc.Report) {
 		}
 		fmt.Fprintf(rt.stdout, "\n%s  (%d versions, active %s)\n", plugin.Key, len(plugin.Versions), active)
 		for _, version := range plugin.Versions {
-			fmt.Fprintf(rt.stdout, "  %-14s %-7s %8s  markers %2d live / %2d dead   %s\n",
+			fmt.Fprintf(rt.stdout, "  %-14s %-8s %8s  markers %2d live / %2d dead   %s\n",
 				trunc(version.Name, 14), version.Plan, reclaim.Human(version.Bytes),
 				version.Live, version.Dead, version.Reason)
 			// A stale version leaves whole, node_modules with it — only a
 			// held one is worth naming a strip for.
 			if version.Plan == plugingc.PlanHeld && version.ModuleBytes > 0 {
-				fmt.Fprintf(rt.stdout, "  %-14s %-7s %8s  in %d node_modules tree(s)\n", "", "└ strip", reclaim.Human(version.ModuleBytes), len(version.Modules))
+				fmt.Fprintf(rt.stdout, "  %-14s %-8s %8s  in %d node_modules tree(s)\n", "", "└ strip", reclaim.Human(version.ModuleBytes), len(version.Modules))
+			}
+			if version.OrphanedAt != nil {
+				fmt.Fprintf(rt.stdout, "  %-14s %-8s %8s  uninstalled %s\n", "", "└ orphan", "", version.OrphanedAt.Format("2006-01-02 15:04"))
 			}
 		}
 	}
@@ -124,9 +136,9 @@ func (rt *runtime) pluginGCReport(report plugingc.Report) {
 	if !report.DryRun {
 		verb = "reclaimed"
 	}
-	fmt.Fprintf(rt.stdout, "\n%s %s — %s stripped, %s removed, %d dead marker(s) swept\n",
+	fmt.Fprintf(rt.stdout, "\n%s %s — %s stripped, %s removed (inactive), %s removed (orphaned — plugin uninstalled), %d dead marker(s) swept\n",
 		verb, reclaim.Human(report.Reclaimable()), reclaim.Human(report.StripBytes),
-		reclaim.Human(report.RemoveBytes), report.SweepMarkers)
+		reclaim.Human(report.RemoveBytes), reclaim.Human(report.OrphanBytes), report.SweepMarkers)
 	if report.DryRun {
 		fmt.Fprintln(rt.stdout, "nothing was deleted — re-run with --apply")
 		return

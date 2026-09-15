@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -71,6 +72,11 @@ const (
 	// PlanStale is an inactive version with no live marker: the whole
 	// directory is reclaimable.
 	PlanStale Plan = "stale"
+	// PlanOrphaned is the strongest form of stale: the version carries an
+	// .orphaned_at stamp AND its plugin is no longer installed at all.
+	// `claude plugin uninstall` writes that stamp and leaves the tree — the
+	// cache survives both uninstall and marketplace removal.
+	PlanOrphaned Plan = "orphaned"
 	// PlanKeep is a version the scan refused to judge. Reported, never
 	// touched.
 	PlanKeep Plan = "keep"
@@ -81,6 +87,15 @@ const MarkerDir = ".in_use"
 
 // modulesDir is the only tree a strip removes.
 const modulesDir = "node_modules"
+
+// orphanFile is the stamp `claude plugin uninstall` leaves behind instead of
+// deleting the version: milliseconds since the epoch, nothing else.
+const orphanFile = ".orphaned_at"
+
+// DefaultOrphanGrace is how long an orphaned version is kept before it counts
+// as reclaimable. An uninstall is often a mistake discovered the same day; a
+// week of regret is cheap at these sizes.
+const DefaultOrphanGrace = 7 * 24 * time.Hour
 
 // Version is one cached version directory.
 type Version struct {
@@ -102,6 +117,9 @@ type Version struct {
 	// node_modules with it.
 	ModuleBytes int64 `json:"module_bytes"`
 	DirBytes    int64 `json:"dir_bytes"`
+	// OrphanedAt is the .orphaned_at stamp, when the version carries one.
+	// Reported whatever the plan, because it explains the version's presence.
+	OrphanedAt *time.Time `json:"orphaned_at,omitempty"`
 }
 
 // Tree is one directory and what it holds.
@@ -116,6 +134,8 @@ type Plugin struct {
 	Name        string `json:"plugin"`
 	// Key is the "<plugin>@<marketplace>" form installed_plugins.json uses.
 	Key string `json:"key"`
+	// Path is the plugin's directory, the parent of every version.
+	Path string `json:"path"`
 	// Active lists every version the install record points at — a plugin
 	// installed at both user and project scope has more than one, and all of
 	// them are untouchable.
@@ -139,10 +159,12 @@ type Report struct {
 	// number that explains why so much is held.
 	Sessions int      `json:"live_sessions"`
 	Plugins  []Plugin `json:"plugins"`
-	// StripBytes and RemoveBytes are what the enabled moves would reclaim;
+	// StripBytes, RemoveBytes and OrphanBytes are what the enabled moves
+	// would reclaim, kept apart so the dry run can name each class;
 	// SweepMarkers is how many dead markers they would clear.
 	StripBytes   int64 `json:"strip_bytes"`
 	RemoveBytes  int64 `json:"remove_bytes"`
+	OrphanBytes  int64 `json:"orphan_bytes"`
 	SweepMarkers int   `json:"sweep_markers"`
 	// Reclaimed is what actually left the disk (zero on a dry run).
 	Reclaimed int64     `json:"reclaimed_bytes"`
@@ -151,7 +173,7 @@ type Report struct {
 }
 
 // Reclaimable is everything the enabled moves would free.
-func (r Report) Reclaimable() int64 { return r.StripBytes + r.RemoveBytes }
+func (r Report) Reclaimable() int64 { return r.StripBytes + r.RemoveBytes + r.OrphanBytes }
 
 // Options steer one run.
 type Options struct {
@@ -165,6 +187,12 @@ type Options struct {
 	// Grace is how far a process may have started after its marker was
 	// written before the PID is judged recycled (default 2 minutes).
 	Grace time.Duration
+	// OrphanGrace is how long an uninstalled version is kept before `remove`
+	// will take it (default DefaultOrphanGrace). A younger orphan is reported
+	// and left alone.
+	OrphanGrace time.Duration
+	// now is the resolved clock, filled by Run from Env.Now.
+	now time.Time
 }
 
 // Env is the machine the run reads; tests substitute it.
@@ -174,6 +202,9 @@ type Env struct {
 	// Processes lists the live process table. A run that cannot read it
 	// refuses to sweep rather than guess.
 	Processes ProcessLister
+	// Now is the clock the orphan grace is measured against; zero means
+	// time.Now.
+	Now time.Time
 }
 
 // ErrNoInstallRecord is returned when installed_plugins.json cannot be read.
@@ -187,6 +218,13 @@ var ErrNoInstallRecord = errors.New("plugin-gc: cannot read installed_plugins.js
 func Run(ctx context.Context, env Env, opts Options) (Report, error) {
 	if opts.Grace <= 0 {
 		opts.Grace = defaultGrace
+	}
+	if opts.OrphanGrace <= 0 {
+		opts.OrphanGrace = DefaultOrphanGrace
+	}
+	opts.now = env.Now
+	if opts.now.IsZero() {
+		opts.now = time.Now()
 	}
 	report := Report{Home: env.Home, DryRun: !opts.Apply}
 
@@ -252,6 +290,16 @@ func tally(report *Report, version Version, enabled map[Move]bool) {
 		report.SweepMarkers += version.Dead
 	}
 	switch version.Plan {
+	case PlanOrphaned:
+		// Counted apart from RemoveBytes so the dry run can say "this is not
+		// merely unreferenced — the plugin is gone".
+		if enabled[MoveRemove] {
+			report.OrphanBytes += version.DirBytes
+			return
+		}
+		if enabled[MoveStrip] {
+			report.StripBytes += version.ModuleBytes
+		}
 	case PlanStale:
 		if enabled[MoveRemove] {
 			report.RemoveBytes += version.DirBytes
@@ -285,7 +333,7 @@ func apply(ctx context.Context, report *Report, enabled map[Move]bool) {
 			if version.Plan == PlanActive || version.Plan == PlanKeep {
 				continue
 			}
-			if version.Plan == PlanStale && enabled[MoveRemove] {
+			if (version.Plan == PlanStale || version.Plan == PlanOrphaned) && enabled[MoveRemove] {
 				removeTree(ctx, report, MoveRemove, version.Path)
 				continue
 			}
@@ -294,6 +342,12 @@ func apply(ctx context.Context, report *Report, enabled map[Move]bool) {
 					removeTree(ctx, report, MoveStrip, tree.Path)
 				}
 			}
+		}
+		// A plugin whose last version just left would otherwise linger as an
+		// empty directory and be reported forever. os.Remove refuses a
+		// non-empty directory, so this can only ever take an empty one.
+		if report.Plugins[i].Path != "" {
+			_ = os.Remove(report.Plugins[i].Path)
 		}
 	}
 }
@@ -357,12 +411,16 @@ func scan(ctx context.Context, home string, record installed, view processView, 
 				Marketplace: marketplace.Name(),
 				Name:        name.Name(),
 				Key:         name.Name() + "@" + marketplace.Name(),
+				Path:        filepath.Join(cache, marketplace.Name(), name.Name()),
 			}
 			if !wanted(plugin) {
 				continue
 			}
 			plugin.Active = record.activeVersions(plugin.Key)
-			versions, err := scanVersions(ctx, filepath.Join(cache, marketplace.Name(), name.Name()), record, plugin, view, opts.Grace)
+			// "Installed at all" is what separates an orphan from a merely
+			// superseded version, and it is a property of the PLUGIN.
+			v := verdict{installed: len(record.Plugins[plugin.Key]) > 0, now: opts.now, orphanGrace: opts.OrphanGrace}
+			versions, err := scanVersions(ctx, filepath.Join(cache, marketplace.Name(), name.Name()), record, plugin, view, opts.Grace, v)
 			if err != nil {
 				return nil, err
 			}
@@ -374,7 +432,7 @@ func scan(ctx context.Context, home string, record installed, view processView, 
 	return plugins, nil
 }
 
-func scanVersions(ctx context.Context, dir string, record installed, plugin Plugin, view processView, grace time.Duration) ([]Version, error) {
+func scanVersions(ctx context.Context, dir string, record installed, plugin Plugin, view processView, grace time.Duration, v verdict) ([]Version, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -390,6 +448,7 @@ func scanVersions(ctx context.Context, dir string, record installed, plugin Plug
 			version.Plan = PlanActive
 			version.Reason = "installed_plugins.json points here"
 			version.Markers, version.Live, version.Dead = readMarkers(path, view, grace)
+			version.OrphanedAt = readOrphanedAt(path)
 			// An active version is never counted as yield, so its size is
 			// informational only.
 			version.Bytes, _ = dirSize(ctx, path)
@@ -404,16 +463,28 @@ func scanVersions(ctx context.Context, dir string, record installed, plugin Plug
 		for _, tree := range version.Modules {
 			version.ModuleBytes += tree.Bytes
 		}
-		decide(&version)
+		decide(&version, v)
 		versions = append(versions, version)
 	}
 	sort.Slice(versions, func(i, j int) bool { return versions[i].Name < versions[j].Name })
 	return versions, nil
 }
 
+// verdict is everything decide needs beyond the version itself.
+type verdict struct {
+	// installed says whether the OWNING PLUGIN is installed at any version.
+	// An .orphaned_at stamp on a version of a still-installed plugin only
+	// means that version was superseded; on a plugin nobody has installed it
+	// means the whole thing is gone.
+	installed   bool
+	now         time.Time
+	orphanGrace time.Duration
+}
+
 // decide sets the plan for an inactive version. Held-but-strippable is the
 // high-yield case; the refusals are deliberate and each says why.
-func decide(version *Version) {
+func decide(version *Version, v verdict) {
+	version.OrphanedAt = readOrphanedAt(version.Path)
 	if version.Live > 0 {
 		version.Plan = PlanHeld
 		version.Reason = fmt.Sprintf("%d live session(s) hold it", version.Live)
@@ -424,13 +495,59 @@ func decide(version *Version) {
 		}
 		return
 	}
-	version.Plan = PlanStale
 	version.DirBytes = version.Bytes
+
+	// An orphan is a stale version with a receipt: `claude plugin uninstall`
+	// stamped it and walked away. Only when the plugin itself is gone, and
+	// only once the regret window has passed.
+	if version.OrphanedAt != nil && !v.installed {
+		age := v.now.Sub(*version.OrphanedAt)
+		if age >= v.orphanGrace {
+			version.Plan = PlanOrphaned
+			version.Reason = fmt.Sprintf("plugin uninstalled %s ago, nothing holds it", roundDuration(age))
+			return
+		}
+		version.Plan = PlanKeep
+		version.DirBytes = 0
+		version.Modules, version.ModuleBytes = nil, 0
+		version.Reason = fmt.Sprintf("plugin uninstalled only %s ago — inside the %s orphan grace", roundDuration(age), roundDuration(v.orphanGrace))
+		return
+	}
+
+	version.Plan = PlanStale
 	switch {
 	case version.Dead > 0:
 		version.Reason = fmt.Sprintf("%d dead marker(s), no live session", version.Dead)
 	default:
 		version.Reason = "no marker, no live session"
+	}
+}
+
+// readOrphanedAt reads the .orphaned_at stamp, milliseconds since the epoch.
+// A missing, empty or unparseable file simply means "not orphaned" — the
+// stamp only ever adds confidence, never removes it.
+func readOrphanedAt(versionPath string) *time.Time {
+	body, err := os.ReadFile(filepath.Join(versionPath, orphanFile))
+	if err != nil {
+		return nil
+	}
+	millis, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+	if err != nil || millis <= 0 {
+		return nil
+	}
+	stamped := time.UnixMilli(millis)
+	return &stamped
+}
+
+// roundDuration prints an age the way a human says it.
+func roundDuration(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 

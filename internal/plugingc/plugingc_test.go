@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -261,6 +262,114 @@ func TestUnreadableProcessTableDisablesSweepAndRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "cache", "kit", "vitrinka", "3.9.0", MarkerDir, "4242")); err != nil {
 		t.Fatalf("marker must survive an unreadable process table: %v", err)
+	}
+}
+
+// orphan stamps a version the way `claude plugin uninstall` does: a
+// milliseconds-since-epoch file, the rest of the tree left in place.
+func orphan(t *testing.T, home, plugin, version string, at time.Time) {
+	t.Helper()
+	write(t, filepath.Join(home, "cache", "kit", plugin, version, orphanFile),
+		strconv.FormatInt(at.UnixMilli(), 10))
+}
+
+// `claude plugin uninstall` deletes nothing — it stamps .orphaned_at and walks
+// away, so the cache outlives the plugin. Past the grace, that whole tree goes.
+func TestUninstalledPluginsCacheIsReclaimedOnceTheOrphanGracePasses(t *testing.T) {
+	now := time.Now()
+	home := cache(t, "5.3.0", "5.3.0")
+	// A second plugin nobody has installed any more.
+	write(t, filepath.Join(home, "cache", "kit", "gone", "1.0.0", "skills", "x", "SKILL.md"), "left behind")
+	orphan(t, home, "gone", "1.0.0", now.Add(-30*24*time.Hour))
+
+	env := Env{Home: home, Processes: table(), Now: now}
+	report, err := Run(context.Background(), env, Options{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphaned := find(t, report, "1.0.0")
+	if orphaned.Plan != PlanOrphaned {
+		t.Fatalf("plan %q, want orphaned", orphaned.Plan)
+	}
+	if orphaned.OrphanedAt == nil {
+		t.Fatal("the .orphaned_at stamp must be reported")
+	}
+	if report.OrphanBytes == 0 {
+		t.Fatal("orphan bytes must be counted apart from ordinary removals")
+	}
+	if report.RemoveBytes != 0 {
+		t.Fatalf("an orphan is not an ordinary removal, got %d remove bytes", report.RemoveBytes)
+	}
+	if _, err := os.Stat(filepath.Join(home, "cache", "kit", "gone")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the uninstalled plugin's cache should be gone, got %v", err)
+	}
+}
+
+// An uninstall is often a mistake found the same day, so a fresh orphan is
+// reported and left alone.
+func TestFreshOrphanIsReportedButKept(t *testing.T) {
+	now := time.Now()
+	home := cache(t, "5.3.0", "5.3.0")
+	write(t, filepath.Join(home, "cache", "kit", "gone", "1.0.0", "skills", "x", "SKILL.md"), "left behind")
+	orphan(t, home, "gone", "1.0.0", now.Add(-2*time.Hour))
+
+	env := Env{Home: home, Processes: table(), Now: now}
+	report, err := Run(context.Background(), env, Options{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := find(t, report, "1.0.0")
+	if fresh.Plan != PlanKeep {
+		t.Fatalf("plan %q, want keep", fresh.Plan)
+	}
+	if !strings.Contains(fresh.Reason, "orphan grace") {
+		t.Fatalf("reason %q must name the grace", fresh.Reason)
+	}
+	if report.Reclaimable() != 0 || report.Reclaimed != 0 {
+		t.Fatalf("a fresh orphan must not be counted, got %d", report.Reclaimable())
+	}
+	if _, err := os.Stat(filepath.Join(home, "cache", "kit", "gone", "1.0.0")); err != nil {
+		t.Fatalf("a fresh orphan must survive: %v", err)
+	}
+}
+
+// A stamp on a version of a plugin that IS still installed only means that
+// version was superseded — it is stale, never an orphan.
+func TestOrphanStampOnAStillInstalledPluginIsOnlyStale(t *testing.T) {
+	now := time.Now()
+	home := cache(t, "5.3.0", "3.9.0", "5.3.0")
+	orphan(t, home, "vitrinka", "3.9.0", now.Add(-30*24*time.Hour))
+
+	report, err := Run(context.Background(), Env{Home: home, Processes: table(), Now: now}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	superseded := find(t, report, "3.9.0")
+	if superseded.Plan != PlanStale {
+		t.Fatalf("plan %q, want stale", superseded.Plan)
+	}
+	if superseded.OrphanedAt == nil {
+		t.Fatal("the stamp is still worth reporting on a superseded version")
+	}
+	if report.OrphanBytes != 0 {
+		t.Fatalf("a superseded version is not an orphan, got %d orphan bytes", report.OrphanBytes)
+	}
+}
+
+// A clean fixture has no .in_use directory at all; that is "no markers", never
+// an error.
+func TestMissingMarkerDirectoryIsNoMarkersNotAnError(t *testing.T) {
+	home := cache(t, "5.3.0", "4.1.0", "5.3.0")
+	report, err := Run(context.Background(), Env{Home: home, Processes: table()}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := find(t, report, "4.1.0")
+	if bare.Live != 0 || bare.Dead != 0 || len(bare.Markers) != 0 {
+		t.Fatalf("want no markers, got %d live / %d dead", bare.Live, bare.Dead)
+	}
+	if bare.Plan != PlanStale {
+		t.Fatalf("plan %q, want stale", bare.Plan)
 	}
 }
 

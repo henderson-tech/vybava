@@ -19,6 +19,7 @@ plugin-gc --plugin vitrinka       # narrow to one plugin
 plugin-gc --apply                 # sweep dead markers, strip, remove
 plugin-gc --apply --only strip    # the safe, high-yield move alone
 plugin-gc --apply --skip remove   # never delete a version directory
+plugin-gc --orphan-grace 720h     # keep uninstalled plugins' caches 30 days
 plugin-gc --json                  # stable report for agents
 plugin-gc --home /tmp/fixture     # operate on a cache that is not the live one
 ```
@@ -34,7 +35,7 @@ Ordered by how little each can possibly break. `--apply` runs all three;
 |---|---|---|
 | `sweep` | `.in_use/<pid>` markers whose PID is **proven** dead | the session behind them is gone; the marker is the only thing keeping a version alive |
 | `strip` | `node_modules` trees under an **inactive** version | the loader reads `skills/`, `agents/`, `.claude-plugin/`; `node_modules` is build residue — ~99% of the bytes, zero markers touched, no running session disturbed |
-| `remove` | an inactive version directory with **no live marker** | nothing references it, at any scope |
+| `remove` | an inactive version directory with **no live marker**, and an **orphaned** one | nothing references it, at any scope |
 
 A run sweeps before it removes, so a version freed by the sweep is reclaimed
 in the same pass. A version that `remove` takes is never also counted as a
@@ -90,8 +91,33 @@ Everything else — including a marker file whose name is not a PID at all — i
 **held**, and holds its version. The tool under-claims on purpose: a missed
 marker costs disk, a wrongly swept one breaks a live session.
 
+A version with **no `.in_use` directory at all** simply has no markers — never
+an error. A freshly installed version can look like that; a busy one carries
+dozens (43 live on the active version when this was written).
+
 If the process table cannot be read at all, `sweep` and `remove` are disabled
 for the run and a warning goes in the report; the scan still prints.
+
+## Orphans — uninstall does not delete
+
+`claude plugin uninstall` **removes nothing**. It writes a `.orphaned_at` file
+into the version directory — milliseconds since the epoch — and leaves the
+whole tree in place. The cache outlives both the plugin and its marketplace,
+so an uninstalled plugin keeps its bytes forever.
+
+A version is `orphaned` when it carries that stamp **and its plugin is no
+longer installed at any version**. `remove` takes the whole directory, and its
+bytes are reported apart from ordinary removals so the dry run can say *"this
+is not merely unreferenced — the plugin is gone"*.
+
+Because an uninstall is often a mistake found the same day, an orphan is kept
+for `--orphan-grace` (default **7 days**) and reported as `keep` with the
+reason naming the grace. A stamp on a version of a plugin that *is* still
+installed only means that version was superseded — that is `stale`, never an
+orphan, and the stamp is still reported.
+
+When a plugin's last version leaves, its now-empty directory goes too
+(`os.Remove`, which refuses a non-empty directory).
 
 ## Stripping a held version
 
@@ -111,7 +137,8 @@ are sized once — a found tree is measured whole and not descended into.
 | `active` | `installed_plugins.json` points here — content never touched |
 | `held` | inactive, a live session holds it — `strip` only |
 | `stale` | inactive, no live marker — `remove` takes the whole directory |
-| `keep` | the scan refused to judge it; reported, never touched |
+| `orphaned` | the plugin is uninstalled and the grace has passed — `remove` takes it |
+| `keep` | the scan refused to judge it (incl. an orphan inside its grace); reported, never touched |
 
 ## JSON and exit codes
 
