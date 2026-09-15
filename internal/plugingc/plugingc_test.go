@@ -264,6 +264,28 @@ func TestUnreadableProcessTableDisablesSweepAndRemove(t *testing.T) {
 	}
 }
 
+// A record this build cannot read names no plugins — reading that at face
+// value would call the version in use "stale" and delete it.
+func TestUnreadableInstallRecordShapeDisablesEveryDestructiveMove(t *testing.T) {
+	home := cache(t, "5.3.0", "5.3.0")
+	// A plausible future schema: same file, renamed container.
+	write(t, filepath.Join(home, "installed_plugins.json"), `{"version":3,"installed":{"vitrinka@kit":[]}}`)
+
+	report, err := Run(context.Background(), Env{Home: home, Processes: table()}, Options{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Fatal("want a warning that the install record was not understood")
+	}
+	if report.Reclaimed != 0 || report.Reclaimable() != 0 {
+		t.Fatalf("nothing may be destroyed on an unreadable record, got %d", report.Reclaimed)
+	}
+	if _, err := os.Stat(filepath.Join(home, "cache", "kit", "vitrinka", "5.3.0", "node_modules")); err != nil {
+		t.Fatalf("the version in use must survive: %v", err)
+	}
+}
+
 // A held version whose manifest could execute out of node_modules is reported,
 // never stripped.
 func TestHeldVersionWhoseManifestNamesNodeModulesIsKept(t *testing.T) {

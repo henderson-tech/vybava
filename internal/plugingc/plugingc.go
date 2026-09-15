@@ -212,6 +212,18 @@ func Run(ctx context.Context, env Env, opts Options) (Report, error) {
 	}
 	report.Plugins = plugins
 
+	// An install record that names nothing while the cache holds versions is
+	// not a machine with no plugins — it is a record this build cannot read
+	// (a renamed field, a schema bump, a truncated file). Reading it at face
+	// value would mark the version in use "stale" and delete it. Report, do
+	// not destroy.
+	if len(record.Plugins) == 0 && countVersions(plugins) > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"installed_plugins.json (schema version %d) names no plugins while the cache holds %d version(s) — the active version cannot be trusted, so only the report runs",
+			record.Version, countVersions(plugins)))
+		opts.Skip = append(opts.Skip, MoveStrip, MoveRemove)
+	}
+
 	enabled := enabledMoves(opts)
 	for i := range report.Plugins {
 		for j := range report.Plugins[i].Versions {
@@ -223,6 +235,14 @@ func Run(ctx context.Context, env Env, opts Options) (Report, error) {
 	}
 	apply(ctx, &report, enabled)
 	return report, nil
+}
+
+func countVersions(plugins []Plugin) int {
+	count := 0
+	for _, plugin := range plugins {
+		count += len(plugin.Versions)
+	}
+	return count
 }
 
 // tally adds one version's yield to the report's totals, counting only the

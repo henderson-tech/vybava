@@ -59,7 +59,13 @@ string. Sorting version strings is exactly the bug that made this tool
 necessary: lexically, `3.11.0` outranks `5.3.0`.
 
 If `installed_plugins.json` cannot be read the run **refuses** rather than
-guess. `~/.claude/plugins/marketplaces/` is never touched at all.
+guess. If it parses but names **no plugins while the cache holds versions**,
+that is not a machine with no plugins — it is a record this build cannot read
+(a renamed field, a schema bump, a truncated file), and taking it at face
+value would mark the version in use `stale` and delete it. The report still
+prints; `strip` and `remove` are disabled with a warning.
+
+`~/.claude/plugins/marketplaces/` is never touched at all.
 
 ## When is a marker dead? (the correctness trap)
 
