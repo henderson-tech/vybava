@@ -41,6 +41,15 @@ context:*         inline python/node scripts that write files · cat/tee over an
                   ranges included; the message points at lok get/grep/add
 ```
 
+`compose down -v` carves out worktree stacks — their databases are disposable
+by construction — but only when the call NAMES one: `-p wt-<slug>` or
+`-p wk-<slug>` (both worktree layouts), or a `wt-`/`wk-` prefixed worktree
+directory as cwd. A bare `down -v` inside a worktree stays blocked: compose
+resolves the project from that tree's `.env`, and a copied `.env` is exactly
+how one worktree's teardown dropped another stack's volumes. Script-driven
+teardown (`bun run worktree:cleanup … --remove`) never trips any of this — the
+hook sees the command Claude runs, never what that command spawns.
+
 The `context:*` family exists because the bypass-permissions harness text
 tells Claude to prefer Bash over Read, Edit and Write. Measured on one epic
 session (2026-09-10, 750k tokens): 271k of the agent's own shell-written

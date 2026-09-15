@@ -41,6 +41,22 @@ var (
 	reDumpDecrypt   = regexp.MustCompile(`[[:space:]]-d([[:space:]]|$)`)
 )
 
+// A worktree stack is a per-branch throwaway database, so dropping its volumes
+// is routine — but only when the command is provably aimed at one. Both
+// worktree layouts are in daily use (`wt-<slug>` and `wk-<slug>`), and the
+// trustworthy evidence is the project the call NAMES (-p / --project-name) or a
+// worktree directory carrying the prefix. Matching "wt-" anywhere in the string
+// (the pre-2026-09-15 rule) let an unrelated argument — a filename, a comment —
+// disarm a data-loss guard.
+var (
+	reWorktreeProject = regexp.MustCompile(`(^|[[:space:]])(-p[[:space:]]*|--project-name[[:space:]]*=?[[:space:]]*)["']?w[tk]-`)
+	reWorktreePath    = regexp.MustCompile(`(^|/)w[tk]-`)
+)
+
+func worktreeStack(seg, cwd string) bool {
+	return reWorktreeProject.MatchString(seg) || reWorktreePath.MatchString(cwd)
+}
+
 // Directories where branch switching is fine: worktrees (both the custom
 // /wk:* layout and Claude Code's native isolation layout) and throwaway clones.
 func exemptDir(cwd string) bool {
@@ -118,8 +134,9 @@ Revert only what YOU changed, by explicit path, or leave it alone.`,
 			if !reComposeDown.MatchString(s) || !reVolumesFlag.MatchString(s) {
 				return false
 			}
-			// Carve-out: wt-* worktree stacks whose worktree is gone.
-			return !strings.Contains(s+" "+cwd, "wt-")
+			// Carve-out: a wt-/wk- worktree stack, named by the command or by
+			// the worktree directory the call runs in.
+			return !worktreeStack(s, cwd)
 		},
 		msg: `docker compose down -v DESTROYS VOLUMES — all database data, permanently.
 
@@ -128,7 +145,12 @@ Safe alternatives:
   docker compose restart postgres
 
 Back up first if this touches a DB: pnpm db:backup (lovinka).
-The only carve-out is a wt-* worktree stack whose worktree is already gone.`,
+
+The only carve-out is a worktree stack — name it and the guard stands aside:
+  docker compose -p wt-<slug> down -v      # or -p wk-<slug>
+(or run from a wt-/wk- prefixed worktree directory). A bare down -v inside a
+worktree is NOT carved out: it resolves COMPOSE_PROJECT_NAME from that tree's
+.env, which is how a copied .env dropped another stack's volumes.`,
 	},
 	{
 		name: "volume-rm-db",

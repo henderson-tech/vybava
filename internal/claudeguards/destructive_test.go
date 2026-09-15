@@ -70,6 +70,12 @@ func TestDestructiveMatch(t *testing.T) {
 		{"down without -v ok", "docker compose down", mainClone, ""},
 		{"wt carve-out cmd", "docker compose -p wt-foo down -v", mainClone, ""},
 		{"wt carve-out cwd", "docker compose down -v", "/x/.worktrees/wt-foo", ""},
+		{"wk carve-out cmd", "docker compose -p wk-foo down -v", mainClone, ""},
+		{"wk carve-out cwd", "docker compose down -v", "/x/.worktrees/wk-foo", ""},
+		{"wk carve-out --project-name=", "docker compose --project-name=wk-foo down -v", mainClone, ""},
+		{"wk carve-out -p glued", "docker compose -pwk-foo down -v", mainClone, ""},
+		{"stray wt- arg does not disarm", "docker compose -f wt-compose.yml down -v", mainClone, "compose-down-volumes"},
+		{"bare down -v in unprefixed worktree", "docker compose down -v", "/x/.worktrees/feat", "compose-down-volumes"},
 
 		// --- keychain secret value dumps ---
 		{"find-generic -w", "security find-generic-password -s vitrinka -a https://vitrinka.ai -w", mainClone, "keychain-secret-dump"},
