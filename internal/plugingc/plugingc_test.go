@@ -127,11 +127,19 @@ func TestMarkerLivenessNeedsProcessIdentityNotJustALivePID(t *testing.T) {
 			if tc.running {
 				live[42] = tc.process
 			}
-			got, _ := classify(Marker{PID: 42, Written: written}, live, defaultGrace)
+			view := processView{table: live, known: true}
+			got, _ := view.classify(Marker{PID: 42, Written: written}, defaultGrace)
 			if got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+
+	// An UNREADABLE table is not an empty one: knowing nothing must hold every
+	// marker, not condemn every marker.
+	unknown := processView{table: nil, known: false}
+	if got, _ := unknown.classify(Marker{PID: 42, Written: written}, defaultGrace); got != LivenessHeld {
+		t.Fatalf("unknown process table gave %q, want held", got)
 	}
 }
 
@@ -244,6 +252,12 @@ func TestUnreadableProcessTableDisablesSweepAndRemove(t *testing.T) {
 	}
 	if report.SweepMarkers != 0 {
 		t.Fatalf("swept %d markers with no process table", report.SweepMarkers)
+	}
+	// The marker must read as HELD, not gone — an unreadable table is not an
+	// empty one, and the version must not be reported reclaimable.
+	stale := find(t, report, "3.9.0")
+	if stale.Plan != PlanHeld || stale.Dead != 0 {
+		t.Fatalf("plan %q with %d dead markers, want held/0", stale.Plan, stale.Dead)
 	}
 	if _, err := os.Stat(filepath.Join(home, "cache", "kit", "vitrinka", "3.9.0", MarkerDir, "4242")); err != nil {
 		t.Fatalf("marker must survive an unreadable process table: %v", err)

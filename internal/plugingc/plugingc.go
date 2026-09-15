@@ -196,15 +196,17 @@ func Run(ctx context.Context, env Env, opts Options) (Report, error) {
 	}
 
 	table, procErr := env.processTable(ctx)
+	view := processView{table: table, known: procErr == nil}
 	if procErr != nil {
-		// A sweep without a process table would call every marker dead. Keep
-		// the scan, drop the move.
-		report.Warnings = append(report.Warnings, fmt.Sprintf("process table unreadable (%v) — markers are all treated as live and nothing is swept", procErr))
+		// Without a process table no marker can be proven dead — and reading
+		// that as "every PID is gone" would condemn the whole machine. Every
+		// marker is held, and the moves that depend on the verdict are off.
+		report.Warnings = append(report.Warnings, fmt.Sprintf("process table unreadable (%v) — every marker is treated as live, nothing is swept or removed", procErr))
 		opts.Skip = append(opts.Skip, MoveSweep, MoveRemove)
 	}
 	report.Sessions = table.sessions()
 
-	plugins, err := scan(ctx, env.Home, record, table, opts)
+	plugins, err := scan(ctx, env.Home, record, view, opts)
 	if err != nil {
 		return report, err
 	}
@@ -308,7 +310,7 @@ func removeTree(ctx context.Context, report *Report, move Move, path string) {
 }
 
 // scan reads the cache tree into plugins, deciding a plan per version.
-func scan(ctx context.Context, home string, record installed, table ProcessTable, opts Options) ([]Plugin, error) {
+func scan(ctx context.Context, home string, record installed, view processView, opts Options) ([]Plugin, error) {
 	cache := filepath.Join(home, "cache")
 	marketplaces, err := os.ReadDir(cache)
 	if err != nil {
@@ -340,7 +342,7 @@ func scan(ctx context.Context, home string, record installed, table ProcessTable
 				continue
 			}
 			plugin.Active = record.activeVersions(plugin.Key)
-			versions, err := scanVersions(ctx, filepath.Join(cache, marketplace.Name(), name.Name()), record, plugin, table, opts.Grace)
+			versions, err := scanVersions(ctx, filepath.Join(cache, marketplace.Name(), name.Name()), record, plugin, view, opts.Grace)
 			if err != nil {
 				return nil, err
 			}
@@ -352,7 +354,7 @@ func scan(ctx context.Context, home string, record installed, table ProcessTable
 	return plugins, nil
 }
 
-func scanVersions(ctx context.Context, dir string, record installed, plugin Plugin, table ProcessTable, grace time.Duration) ([]Version, error) {
+func scanVersions(ctx context.Context, dir string, record installed, plugin Plugin, view processView, grace time.Duration) ([]Version, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -367,14 +369,14 @@ func scanVersions(ctx context.Context, dir string, record installed, plugin Plug
 		if record.isActive(plugin.Key, path) {
 			version.Plan = PlanActive
 			version.Reason = "installed_plugins.json points here"
-			version.Markers, version.Live, version.Dead = readMarkers(path, table, grace)
+			version.Markers, version.Live, version.Dead = readMarkers(path, view, grace)
 			// An active version is never counted as yield, so its size is
 			// informational only.
 			version.Bytes, _ = dirSize(ctx, path)
 			versions = append(versions, version)
 			continue
 		}
-		version.Markers, version.Live, version.Dead = readMarkers(path, table, grace)
+		version.Markers, version.Live, version.Dead = readMarkers(path, view, grace)
 		version.Bytes, version.Modules, err = measure(ctx, path)
 		if err != nil {
 			return nil, err

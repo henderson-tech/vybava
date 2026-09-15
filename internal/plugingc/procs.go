@@ -93,7 +93,7 @@ type markerBody struct {
 }
 
 // readMarkers reads a version's refcount directory and judges every marker.
-func readMarkers(versionPath string, table ProcessTable, grace time.Duration) ([]Marker, int, int) {
+func readMarkers(versionPath string, view processView, grace time.Duration) ([]Marker, int, int) {
 	dir := filepath.Join(versionPath, MarkerDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -122,7 +122,7 @@ func readMarkers(versionPath string, table ProcessTable, grace time.Duration) ([
 				marker.Recorded = parsed.ProcStart
 			}
 		}
-		marker.Liveness, marker.Command = classify(marker, table, grace)
+		marker.Liveness, marker.Command = view.classify(marker, grace)
 		if marker.Liveness.Dead() {
 			dead++
 		} else {
@@ -134,14 +134,26 @@ func readMarkers(versionPath string, table ProcessTable, grace time.Duration) ([
 	return markers, live, dead
 }
 
+// processView is the process table plus whether it could be read at all. The
+// distinction is load-bearing: an EMPTY table means every PID is gone, an
+// UNREADABLE one means nothing is known — and reading the second as the first
+// would call every marker on the machine dead.
+type processView struct {
+	table ProcessTable
+	known bool
+}
+
 // classify decides whether a marker's PID is still the process that wrote it.
 //
 // The trap this exists for: kill(pid, 0) succeeds for ANY live process and
-// macOS recycles PIDs freely, so "the PID exists" proves nothing. Two further
-// checks turn it into proof, and both fail CLOSED — an undecidable marker is
-// held, never swept.
-func classify(marker Marker, table ProcessTable, grace time.Duration) (Liveness, string) {
-	process, running := table[marker.PID]
+// macOS recycles PIDs freely, so "the PID exists" proves nothing. Three
+// further checks turn it into proof, and every one fails CLOSED — an
+// undecidable marker is held, never swept.
+func (v processView) classify(marker Marker, grace time.Duration) (Liveness, string) {
+	if !v.known {
+		return LivenessHeld, ""
+	}
+	process, running := v.table[marker.PID]
 	if !running {
 		return LivenessGone, ""
 	}
