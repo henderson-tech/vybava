@@ -34,6 +34,7 @@ root). Unknown subcommands are rejected, never run.
 | nginx conf converged | `nginx -t` via the manifest hook; reload only on pass; **transactional** — every nginx file the tick touched is restored (and its applied record re-pointed) when the test or any copy fails |
 | compose file converged | file only + `ROLL MANUALLY: <app>`; `auto_roll_apps` opt-in runs `docker compose up -d` |
 | write refused (EACCES) | `permission` error naming the destination owner, the running user and the mapping's `owner` hint |
+| existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename |
 | mode = `report` (default) | computes + alerts everything, changes **nothing** on disk |
 
 `run`, `force` and `rollback` serialize behind one flock-style lock
