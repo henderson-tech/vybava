@@ -1,4 +1,3 @@
-| `handoffs` | applet | Handoff ledger upkeep — `handoffs reconcile` judges every open handoff by whether its branches and PRs are still alive and archives the dead ones; unknown is never touched. → [docs/handoffs.md](docs/handoffs.md) |
 # Výbava
 
 Výbava is FixIt Technologies' portable engineering environment: small tools,
@@ -24,6 +23,9 @@ every item installs independently.
 | `codexusage` | applet | Explain where the Codex plan limit went — per-thread spend from `~/.codex` rollouts, the derived allowance, and the runway left at the measured burn rate. → [docs/codexusage.md](docs/codexusage.md) |
 | `repolicy` | applet | Hold GitHub repository settings to a declared policy across whole owners — GitHub inherits no organization default, so `audit` reports the drift (exit 1) and `apply` converges it, touching only the settings the policy names. → [docs/repolicy.md](docs/repolicy.md) |
 | `menubar-doctor` | applet | Find and fix macOS menu-bar items that run but never appear — since macOS 26 Control Center files a status item under the process that launched the app, so anything started from a terminal is filed under the terminal and stays invisible while its switch is off. → [docs/menubar-doctor.md](docs/menubar-doctor.md) |
+| `reclaim` | applet | Emergency disk reclaim for a dev Mac — a fixed ladder of regenerating caches deleted biggest-first with live `df` after every step, an early-stop target, and by-hand notes for what it refuses to touch. → [docs/reclaim.md](docs/reclaim.md) |
+| `plugin-gc` | applet | Garbage-collect the Claude Code plugin cache — every version ever installed is kept behind a PID refcount that abandoned sessions never release, and the payload is almost all `node_modules`; reports by default, deletes only on `--apply`. → [docs/plugin-gc.md](docs/plugin-gc.md) |
+| `handoffs` | applet | Handoff ledger upkeep — `handoffs reconcile` judges every open handoff by whether its branches and PRs are still alive and archives the dead ones; unknown is never touched. → [docs/handoffs.md](docs/handoffs.md) |
 | `press` | applet | Deterministic state for the document family — project resolution, `~/Exports/<project>/` config and index, ARES lookups, shared doctrine. → [docs/press.md](docs/press.md) |
 | `press-pdf` / `press-logo` / `press-offer` / `press-email` | skills | Offer, documentation and legal PDFs; brand marks; Czech commercial DOCX; Outlook-paste client emails. Issuer identity stays machine-local. → [docs/press.md](docs/press.md) |
 

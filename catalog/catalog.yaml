@@ -115,6 +115,12 @@ items:
     description: Emergency disk reclaim for a dev Mac — a fixed ladder of regenerating caches deleted biggest-first with live df after every step, an early-stop target, and by-hand notes for what it refuses to touch (volumes, recordings).
     applet: reclaim
 
+  - id: plugin-gc
+    kind: applet
+    status: experimental
+    description: Garbage-collect the Claude Code plugin cache — every installed version is kept forever behind a PID refcount that abandoned sessions never release, and the payload is almost all node_modules; reports by default and only on --apply sweeps dead markers, strips node_modules from inactive versions and removes the versions nothing holds.
+    applet: plugin-gc
+
   - id: handoffs
     kind: applet
     status: experimental
@@ -208,6 +214,7 @@ groups:
       - hotfix
       - hotfix-lane
       - reclaim
+      - plugin-gc
       - handoffs
       - plaud-cli
       - plaud
@@ -263,6 +270,7 @@ groups:
       - ingressgen
       - reconcile
       - reclaim
+      - plugin-gc
       - handoffs
       - plaud-cli
       - plaud

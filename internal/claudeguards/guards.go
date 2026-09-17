@@ -44,6 +44,7 @@ func deny(rule, msg, escapeHatch string) *Denial {
 func Bash(in *HookInput) *Denial {
 	for _, g := range []func(*HookInput) *Denial{
 		guardDestructive,
+		guardPluginCache,
 		guardEnvDump,
 		guardHostInput,
 		guardBudget,

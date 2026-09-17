@@ -33,6 +33,7 @@ destructive:*     git stash · checkout/switch/restore . in the primary clone ·
 secrets:*         env / printenv dumps, /proc/*/environ, docker inspect .Config.Env
 simulator:*       cliclick / AppleScript System Events against the Simulator
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
+plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
 context:*         inline python/node scripts that write files · cat/tee over an
                   existing file · cat/sed/head/tail or Read above 200 lines ·
@@ -49,6 +50,23 @@ resolves the project from that tree's `.env`, and a copied `.env` is exactly
 how one worktree's teardown dropped another stack's volumes. Script-driven
 teardown (`bun run worktree:cleanup … --remove`) never trips any of this — the
 hook sees the command Claude runs, never what that command spawns.
+
+`plugincache:package-install` is the one rule with **no escape hatch**, because
+nothing legitimately installs packages into an installed plugin's cache.
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` is a clone of a
+published plugin; the loader reads `skills/`, `agents/` and `.claude-plugin/`
+and nothing else. Measured here: 18 cached versions of one plugin carrying
+~478 MB of `node_modules/.bun` each, 8.4 GB total. Claude Code does not install
+into plugin caches, `node_modules` is not tracked in the source repo, and the
+marketplace is a GitHub source — yet every `node_modules` appeared hours after
+its version was installed (active version: installed 12:02, `node_modules`
+created 14:00). The culprit was never identified, so this rule is also the
+detector: its message asks whoever tripped it to name the workflow that led
+there. It fires on the cwd, on a `cd` into the tree earlier in the same
+command, and on an explicit `--cwd` / `--prefix` / `--dir` / `-C` pointing
+inside it. Reads, `ls`, and `bun run` / `npm run` inside the cache stay
+allowed — sessions legitimately load skill files from there. Reclaiming what
+already accumulated is `plugin-gc` (`docs/plugin-gc.md`).
 
 The `context:*` family exists because the bypass-permissions harness text
 tells Claude to prefer Bash over Read, Edit and Write. Measured on one epic

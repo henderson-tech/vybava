@@ -93,6 +93,19 @@ included. Quoting asymmetry is load-bearing: single quotes suppress everything,
 double quotes suppress control operators but NOT `$(…)`/backticks. Findings and
 the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md`.
 
+`internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules
+are load-bearing and documented in `docs/plugin-gc.md`: the active version
+comes from `installed_plugins.json` compared BY PATH — never by sorting version
+strings, which puts `3.11.0` above `5.3.0` — a `.in_use` marker is dead only
+when proven so (PID gone, PID held by something that cannot be a session, or a
+process that started AFTER the marker's own mtime), and `claude plugin
+uninstall` DELETES NOTHING: it writes `.orphaned_at` and leaves the tree, so an
+uninstalled plugin's cache outlives both it and its marketplace.
+`kill(pid, 0)` succeeding proves nothing; PIDs are recycled. Everything
+undecidable is held, and destruction only ever happens behind `--apply`.
+`internal/claudeguards/plugincache.go` is the other half: it blocks package
+installs into that tree at all, and is deliberately escape-hatch-free.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
