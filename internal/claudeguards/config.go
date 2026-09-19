@@ -17,6 +17,7 @@ type Config struct {
 	NoRead            []string `json:"noRead,omitempty"`
 	MaxDumpLines      int      `json:"maxDumpLines,omitempty"`
 	UnboundedCommands []string `json:"unboundedCommands,omitempty"`
+	AppiumSessionDirs []string `json:"appiumSessionDirs,omitempty"`
 	root              string
 }
 
@@ -38,10 +39,12 @@ func loadGuardConfig(cwd string) (Config, error) {
 	if result.MaxDumpLines <= 0 {
 		return Config{MaxDumpLines: maxDumpLines}, errors.New("guards.maxDumpLines must be positive")
 	}
-	for _, pattern := range result.NoRead {
-		for _, part := range strings.Split(pattern, "/") {
-			if _, err := path.Match(part, ""); err != nil {
-				return Config{MaxDumpLines: maxDumpLines}, fmt.Errorf("guards.noRead %q: %w", pattern, err)
+	for name, patterns := range map[string][]string{"noRead": result.NoRead, "appiumSessionDirs": result.AppiumSessionDirs} {
+		for _, pattern := range patterns {
+			for _, part := range strings.Split(pattern, "/") {
+				if _, err := path.Match(part, ""); err != nil {
+					return Config{MaxDumpLines: maxDumpLines}, fmt.Errorf("guards.%s %q: %w", name, pattern, err)
+				}
 			}
 		}
 	}
