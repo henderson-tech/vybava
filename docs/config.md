@@ -54,6 +54,11 @@ guards: {
   // Omit for built-ins; [] disables only the unbounded-output gate.
   unboundedCommands: ['docker logs', 'gh run view', 'git log', 'git diff',
     'git show', 'bun test', 'go test', 'bunx jest'],
+  // Extra trees whose scripts may open and delete a webdriverio session
+  // (simulator:appium-session-churn). Trailing slash = subtree, else a glob;
+  // matched at any depth. Built-in: appium/support/, appium/adhoc/lib/,
+  // appium/specs/, appium/**/*.spec.ts, e2e/.
+  appiumSessionDirs: ['tools/sim-probes/'],
 }
 ```
 

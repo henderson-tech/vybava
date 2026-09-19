@@ -16,7 +16,7 @@ items:
   - id: claude-guards
     kind: applet
     status: experimental
-    description: PreToolUse guard hooks for Claude Code — block destructive git/docker calls, secret and environment dumps, host-input automation, commit-time secrets, and the context-budget sinks (shell-rewritten files, whole-file dumps, transcript reads); every block names the sanctioned alternative.
+    description: PreToolUse guard hooks for Claude Code — block destructive git/docker calls, secret and environment dumps, host-input automation, commit-time secrets, whole-disk find/bfs/fd walks, per-look Appium sessions, and the context-budget sinks (shell-rewritten files, whole-file dumps, transcript reads); every block names the sanctioned alternative.
     applet: claude-guards
 
   - id: lok

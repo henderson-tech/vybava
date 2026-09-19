@@ -31,15 +31,33 @@ Rule families, each with its own escape hatch named in the block message:
 destructive:*     git stash · checkout/switch/restore . in the primary clone ·
                   compose down -v · db volume rm/prune · keychain value reads
 secrets:*         env / printenv dumps, /proc/*/environ, docker inspect .Config.Env
-simulator:*       cliclick / AppleScript System Events against the Simulator
+simulator:*       cliclick / AppleScript System Events against the Simulator ·
+                  running a script that opens a webdriverio remote() session
+                  and deleteSession()s it per look outside appium/support,
+                  appium/adhoc/lib, appium/specs, *.spec.ts or e2e
+                  (guards.appiumSessionDirs extends the allowlist)
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
 context:*         inline python/node scripts that write files · cat/tee over an
                   existing file · cat/sed/head/tail or Read above 200 lines ·
                   dumping a ~/.claude/projects transcript · any raw read of a
                   locale catalog declared in vybava.config.ts (lok.catalogs) —
-                  ranges included; the message points at lok get/grep/add
+                  ranges included; the message points at lok get/grep/add ·
+                  find/bfs/fd rooted at /, ~, /Users, /Users/<name>, /Volumes
+                  or /Library (or run there with no root) without -maxdepth
 ```
+
+The two `simulator:`/`context:` machine-health rules are incident-born
+(2026-09-19, the day a `bfs /` crawl plus a per-look Appium probe pushed the
+Mac to load 680). `context:root-walk` accepts a scoped root, `-maxdepth N`
+(`fd -d N`), and points a whole-disk name lookup at `mdfind -name`.
+`simulator:appium-session-churn` reads the script the command would run and
+fires only when the file both imports `remote` from `webdriverio` and calls
+`deleteSession(`; every fresh XCUITest session relaunches WebDriverAgent
+through `xcodebuild` (5-10 s on every core, 1-2 GB), so a screenshot is
+`xcrun simctl io <udid> screenshot <file>` and the a11y tree goes through ONE
+session kept open for the task via the repo's session factory. Neither rule has
+an escape variable: the sanctioned form is cheaper than the blocked one.
 
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or

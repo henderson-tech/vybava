@@ -48,6 +48,8 @@ export interface VybavaConfig {
     maxDumpLines?: number;
     /** Commands requiring capped output. Omit for built-ins; [] disables this rule. */
     unboundedCommands?: string[];
+    /** Extra trees whose scripts may open and delete a webdriverio session (trailing slash = subtree, else a glob; matched at any depth). Defaults: appium/support/, appium/adhoc/lib/, appium/specs/, every .spec.ts under appium/, e2e/. */
+    appiumSessionDirs?: string[];
   };
 }
 
