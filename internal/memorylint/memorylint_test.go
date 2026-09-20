@@ -266,3 +266,35 @@ func TestLintOfNestedNoteResolvesItsHome(t *testing.T) {
 		t.Fatalf("Lint(nested note) = files %d, findings %#v; want a clean single note linted against its home", report.Files, report.Findings)
 	}
 }
+
+// TestLintLedgerHome pins ledger mode: LEDGER.md is not a note, notes/ names
+// are plain kebab-case, MEMORY.md drift is an error, and a v2 home without a
+// ledger is untouched by any of it.
+func TestLintLedgerHome(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	write(t, filepath.Join(root, "LEDGER.md"), "---\nmemo: 1\nalias: t\nkind: team\n---\n- #t1 2026-09-20 project/api Fact. -> [[notes/detail]] ^t1\n")
+	write(t, filepath.Join(root, "MEMORY.md"), "# stale\n")
+	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "notes", "detail.md"), "---\nname: detail\ndescription: The long form.\ntype: project\nstatus: active\n---\n\nSee [[LEDGER#^t1]] and [[other-home/notes/x]].\n")
+
+	report, err := memorylint.Lint([]string{root})
+	if err != nil {
+		t.Fatalf("Lint() error = %v", err)
+	}
+	seen := map[string]bool{}
+	for _, f := range report.Findings {
+		seen[f.Rule] = true
+	}
+	if !seen["L006"] {
+		t.Errorf("ledger mode must report MEMORY.md drift: %#v", report.Findings)
+	}
+	for _, rule := range []string{"M001", "M002", "M006", "M009"} {
+		if seen[rule] {
+			t.Errorf("ledger mode must not report %s: %#v", rule, report.Findings)
+		}
+	}
+}
