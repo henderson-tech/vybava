@@ -59,6 +59,10 @@ guards: {
   // matched at any depth. Built-in: appium/support/, appium/adhoc/lib/,
   // appium/specs/, appium/**/*.spec.ts, e2e/.
   appiumSessionDirs: ['tools/sim-probes/'],
+  // Most workers a local playwright/vitest/jest run may ask for
+  // (machine:test-worker-cap); at least 1, default 2. Heavier suites run on
+  // the Devbox, or a deliberate run sets CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1.
+  testWorkerCap: 2,
 }
 ```
 

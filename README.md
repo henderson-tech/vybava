@@ -9,7 +9,7 @@ every item installs independently.
 | ID | Kind | What it does |
 |---|---|---|
 | `memorylint` | applet | Validate and maintain AI memory homes — schema, indexes, wikilinks, fixtures, write hooks. → [docs/memorylint.md](docs/memorylint.md) |
-| `claude-guards` | applet | PreToolUse guard hooks for Claude Code — destructive git/docker, secret dumps, host-input automation, commit secrets, whole-disk walks, per-look Appium sessions, and the context-budget rules (no shell-rewritten files, no whole-file dumps, no transcript reads). → [docs/claude-guards.md](docs/claude-guards.md) |
+| `claude-guards` | applet | PreToolUse guard hooks for Claude Code — destructive git/docker, secret dumps, host-input automation, commit secrets, whole-disk walks, per-look Appium sessions, uncapped local test runners, and the context-budget rules (no shell-rewritten files, no whole-file dumps, no transcript reads). → [docs/claude-guards.md](docs/claude-guards.md) |
 | `lok` | applet | Locale catalogs for AI sessions — configured in `vybava.config.ts`, queried by key, written by verb with every locale kept in sync, extracted from source, gated in CI. → [docs/lok.md](docs/lok.md) |
 | `vybava config` | verb | The shared per-repo `vybava.config.ts` every applet reads — `init` scaffolds it with typed helpers, `check` gates CI, `show` prints the evaluated JSON. → [docs/config.md](docs/config.md) |
 | `shrt` | applet | Terminal-safe short links on luko.to — offline repo rules, team-shared dynamic rules, minted codes; also the redirector server. → [docs/shrt.md](docs/shrt.md) |

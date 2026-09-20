@@ -18,11 +18,18 @@ type Config struct {
 	MaxDumpLines      int      `json:"maxDumpLines,omitempty"`
 	UnboundedCommands []string `json:"unboundedCommands,omitempty"`
 	AppiumSessionDirs []string `json:"appiumSessionDirs,omitempty"`
+	TestWorkerCap     int      `json:"testWorkerCap,omitempty"`
 	root              string
 }
 
+// defaultGuardConfig is what every rule reads when the repo sets nothing, or
+// when its guards section fails to load.
+func defaultGuardConfig() Config {
+	return Config{MaxDumpLines: maxDumpLines, TestWorkerCap: defaultTestWorkerCap}
+}
+
 func loadGuardConfig(cwd string) (Config, error) {
-	result := Config{MaxDumpLines: maxDumpLines}
+	result := defaultGuardConfig()
 	cfg, err := vconfig.Load(cwd)
 	if errors.Is(err, vconfig.ErrNotFound) {
 		return result, nil
@@ -33,17 +40,20 @@ func loadGuardConfig(cwd string) (Config, error) {
 	if err = cfg.Section("guards", &result); errors.Is(err, vconfig.ErrNoSection) {
 		return result, nil
 	} else if err != nil {
-		return Config{MaxDumpLines: maxDumpLines}, err
+		return defaultGuardConfig(), err
 	}
 	result.root = cfg.Root
 	if result.MaxDumpLines <= 0 {
-		return Config{MaxDumpLines: maxDumpLines}, errors.New("guards.maxDumpLines must be positive")
+		return defaultGuardConfig(), errors.New("guards.maxDumpLines must be positive")
+	}
+	if result.TestWorkerCap < 1 {
+		return defaultGuardConfig(), errors.New("guards.testWorkerCap must be at least 1")
 	}
 	for name, patterns := range map[string][]string{"noRead": result.NoRead, "appiumSessionDirs": result.AppiumSessionDirs} {
 		for _, pattern := range patterns {
 			for _, part := range strings.Split(pattern, "/") {
 				if _, err := path.Match(part, ""); err != nil {
-					return Config{MaxDumpLines: maxDumpLines}, fmt.Errorf("guards.%s %q: %w", name, pattern, err)
+					return defaultGuardConfig(), fmt.Errorf("guards.%s %q: %w", name, pattern, err)
 				}
 			}
 		}
