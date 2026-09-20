@@ -269,6 +269,26 @@ func (t *Tool) Catalogs() ([]CatalogInfo, error) {
 
 // expectedIn: plural variants are locale-specific (Czech has _few/_many,
 // English does not), so a plural key missing from another locale is not a gap.
+// wordable reports whether an english-as-key catalog lets the key carry en
+// wording that differs from the key: plural variants and exempt keys.
+func (c CatalogConfig) wordable(key string) bool {
+	_, plural := c.BaseKey(key)
+	return plural || c.Exempted(key)
+}
+
+// unwordedPlural is a plural variant whose en value is still the derived
+// literal key ("{{count}} item_one") — legal, but a translator should see it.
+func (c *Catalog) unwordedPlural(key string) bool {
+	if c.Config.Style != StyleEnglishAsKey || !contains(c.Config.Locales, "en") || c.Config.Exempted(key) {
+		return false
+	}
+	if _, plural := c.Config.BaseKey(key); !plural {
+		return false
+	}
+	v, ok := c.Lookup("en", key)
+	return ok && v == key
+}
+
 func (c *Catalog) expectedIn(locale, key string) bool {
 	if _, plural := c.Config.BaseKey(key); plural {
 		return false
@@ -416,10 +436,14 @@ func (t *Tool) Set(catalogID, key string, tr map[string]string) (WriteResult, er
 func (t *Tool) write(c *Catalog, key string, tr map[string]string, requireAll bool) (WriteResult, error) {
 	tr = cloneMap(tr)
 	if c.Config.Style == StyleEnglishAsKey && contains(c.Config.Locales, "en") {
-		if v, ok := tr["en"]; ok && v != key {
-			return WriteResult{}, &Diag{Code: DiagConfigInvalid, Detail: "english-as-key: the en value IS the key; do not pass --tr en=…"}
+		// A plural variant (`{{count}} item_one`) or an exempt key may carry
+		// real en wording; a base key never does.
+		if v, ok := tr["en"]; ok && v != key && !c.Config.wordable(key) {
+			return WriteResult{}, &Diag{Code: DiagConfigInvalid, Detail: "english-as-key: the en value IS the key; do not pass --tr en=… (plural variants and exempt keys may be worded)"}
 		}
-		tr["en"] = key
+		if _, ok := tr["en"]; !ok {
+			tr["en"] = key
+		}
 	}
 	for code := range tr {
 		if !contains(c.Config.Locales, code) {
@@ -511,6 +535,7 @@ type Gap struct {
 	Key     string `json:"key"`
 	Locale  string `json:"locale"`
 	Source  string `json:"source,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 // Missing lists keys absent from a locale that should carry them.
@@ -547,6 +572,12 @@ func (t *Tool) Missing(catalogID string, locales []string, requiredOnly bool, li
 					gaps = append(gaps, Gap{Catalog: id, Key: k, Locale: code, Source: t.sourceValue(c, k)})
 				}
 			}
+			if c.unwordedPlural(k) && (len(locales) == 0 || contains(locales, "en")) {
+				total++
+				if len(gaps) < limit {
+					gaps = append(gaps, Gap{Catalog: id, Key: k, Locale: "en", Source: k, Warning: "en plural variant not worded — pass --tr en=<wording>"})
+				}
+			}
 		}
 	}
 	if gaps == nil {
@@ -574,6 +605,8 @@ type Problem struct {
 	Key     string `json:"key,omitempty"`
 	Locale  string `json:"locale,omitempty"`
 	Detail  string `json:"detail"`
+	// Severity is "warning" for advisory findings that never fail `check`; empty means error.
+	Severity string `json:"severity,omitempty"`
 }
 
 var rePlaceholder = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_.]+)\s*\}\}`)
@@ -610,6 +643,9 @@ func (t *Tool) Check(catalogID string) ([]Problem, error) {
 				if v, ok := c.Lookup("en", k); ok && v != k {
 					problems = append(problems, Problem{Catalog: id, Kind: "english-as-key", Key: k, Locale: "en", Detail: fmt.Sprintf("en value %q must equal the key", v)})
 				}
+			}
+			if c.unwordedPlural(k) {
+				problems = append(problems, Problem{Catalog: id, Kind: "en-unworded", Key: k, Locale: "en", Severity: "warning", Detail: "en plural variant carries the literal key; word it with `lok set` --tr en=…"})
 			}
 			var ref []string
 			refLocale := ""

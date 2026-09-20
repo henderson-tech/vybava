@@ -209,8 +209,17 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, err)
 			}
 			problems, err := t.Check(catalog)
-			if err == nil && len(problems) > 0 {
-				err = &lok.Diag{Code: lok.DiagCheckFailed, Detail: fmt.Sprintf("%d problem(s); first: %s %q [%s] %s", len(problems), problems[0].Kind, problems[0].Key, problems[0].Locale, problems[0].Detail), Fix: "lok missing --json"}
+			if err == nil {
+				// Warnings (severity "warning") ride along in the output but never fail the gate.
+				var errs []lok.Problem
+				for _, p := range problems {
+					if p.Severity == "" {
+						errs = append(errs, p)
+					}
+				}
+				if len(errs) > 0 {
+					err = &lok.Diag{Code: lok.DiagCheckFailed, Detail: fmt.Sprintf("%d problem(s); first: %s %q [%s] %s", len(errs), errs[0].Kind, errs[0].Key, errs[0].Locale, errs[0].Detail), Fix: "lok missing --json"}
+				}
 			}
 			if problems == nil {
 				problems = []lok.Problem{}

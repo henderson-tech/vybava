@@ -36,6 +36,13 @@ lok scan --json                           # literal t('…') keys missing from t
 lok scan --write --json                   # add the missing (en = key) → translate via `lok missing`
 ```
 
+In an english-as-key catalog `--tr en=…` is refused for a base key (the en
+value IS the key) but accepted for a plural variant or an `exempt` key, so
+`{{count}} item_one` can read "1 item" while `_other` reads "{{count}}
+items". A variant written without it derives the literal key and is flagged
+by `lok missing` (a gap with `warning`) and `lok check` (`en-unworded`,
+severity `warning` — never fails the gate) until it is worded.
+
 Writes preserve the file's key order and insert new keys at the
 case-insensitive alphabetical slot without reordering anything else, so a
 diff shows exactly the change. Only files whose content changed are
