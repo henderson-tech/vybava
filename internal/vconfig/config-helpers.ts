@@ -11,8 +11,14 @@ export type CatalogStyle =
 export interface ScanConfig {
   /** Directories scanned for translation calls, relative to the repo root. */
   roots: string[];
-  /** Function name whose first literal argument is a key (default: t). */
-  call?: string;
+  /**
+   * Call shapes whose first literal argument is a key (default: t). A bare
+   * name (`t`) matches `t('…')` only with nothing dotted before it; the method
+   * form (`*.T`) matches `.T('…')` on any receiver — `l.T("Sites")`,
+   * `i18n.FromContext(ctx).N("{{count}} items", n)`. One list scans TS and Go
+   * into the same catalog: `['t', '*.T', '*.N']` with `.go` in `extensions`.
+   */
+  call?: string | string[];
   /** File extensions to scan (default: .ts .tsx .js .jsx). */
   extensions?: string[];
 }

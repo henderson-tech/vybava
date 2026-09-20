@@ -47,6 +47,17 @@ verbatim in source is only a hint — keys held in lookup tables, API
 messages passed through `t()`, template strings — so orphans are listed
 with a count and never deleted; `lok rm` is the explicit path.
 
+`scan.call` names the call shapes, one string or a list (default `t`). A
+bare name matches `t('…')` with nothing dotted before it — `foo.t(` is not
+a hit. The method form `*.T` matches `.T('…')` on any receiver, which is
+how Go and class-based code translate: `l.T("Sites")`,
+`i18n.FromContext(ctx).N("{{count}} items", n)`. One list scans both
+languages into one catalog; add the extension the defaults lack:
+
+```ts
+scan: { roots: ['apps/client', 'services/api'], call: ['t', '*.T', '*.N'], extensions: ['.ts', '.tsx', '.go'] }
+```
+
 `--catalog=<id>` is required only when the destination cannot be inferred.
 Reads and `set`/`rm` resolve the one catalog holding the key. `add` resolves
 a NEW key in this order: the one catalog already holding it (→ `KEY_EXISTS`),
