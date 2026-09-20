@@ -20,6 +20,11 @@ type HookInput struct {
 		FilePath string `json:"file_path"`
 		Offset   int    `json:"offset"`
 		Limit    int    `json:"limit"`
+		// Browser-MCP screenshot targets (screenshotdir.go): playwright's
+		// browser_take_screenshot `filename`, chrome-devtools' take_screenshot
+		// `filePath`.
+		Filename      string `json:"filename"`
+		FilePathCamel string `json:"filePath"`
 	} `json:"tool_input"`
 
 	guardsCfg  *Config // memoized by guards(); never set from JSON

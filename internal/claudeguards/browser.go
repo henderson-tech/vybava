@@ -128,6 +128,9 @@ func browserState(session string) (running, known bool) {
 // Browser is the PreToolUse decision for the third-party browser MCP tools
 // (settings.json matcher: mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*).
 func Browser(in *HookInput) *Denial {
+	if d := screenshotDir(in); d != nil { // local, no network: cheapest first
+		return d
+	}
 	session := onyxSessionID()
 	if session == "" {
 		return nil
