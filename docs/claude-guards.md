@@ -15,6 +15,10 @@ symlink keeps working):
 PreToolUse    Bash    claude-guards bash
 PreToolUse    Read    claude-guards read
 PreToolUse    mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*    claude-guards browser
+              # browser:onyx-first (this session's Onyx browser must be running) and
+              # browser:screenshot-dir (a screenshot file lands under .vitrinka/mcp/ —
+              # the onyx playwright wrapper's --output-dir; chrome-devtools' filePath
+              # is refused elsewhere; ignore the dir once in ~/.config/git/ignore)
 SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
