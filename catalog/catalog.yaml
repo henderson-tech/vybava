@@ -121,6 +121,12 @@ items:
     description: Emergency disk reclaim for a dev Mac — a fixed ladder of regenerating caches deleted biggest-first with live df after every step, an early-stop target, and by-hand notes for what it refuses to touch (volumes, recordings).
     applet: reclaim
 
+  - id: macwatch
+    kind: applet
+    status: experimental
+    description: Mac load sampler with owner attribution - append load, memory and the heaviest processes to a TSV every interval, each tagged with project, directory and the claude/codex session that spawned it; report integrates the file into offenders, per-project and per-session totals and a spike ledger (text, Markdown, JSON).
+    applet: macwatch
+
   - id: plugin-gc
     kind: applet
     status: experimental
@@ -228,6 +234,7 @@ groups:
       - hotfix
       - hotfix-lane
       - reclaim
+      - macwatch
       - plugin-gc
       - handoffs
       - plaud-cli
@@ -286,6 +293,7 @@ groups:
       - ingressgen
       - reconcile
       - reclaim
+      - macwatch
       - plugin-gc
       - handoffs
       - plaud-cli
