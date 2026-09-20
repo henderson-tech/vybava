@@ -267,8 +267,6 @@ func (t *Tool) Catalogs() ([]CatalogInfo, error) {
 	return out, nil
 }
 
-// expectedIn: plural variants are locale-specific (Czech has _few/_many,
-// English does not), so a plural key missing from another locale is not a gap.
 // wordable reports whether an english-as-key catalog lets the key carry en
 // wording that differs from the key: plural variants and exempt keys.
 func (c CatalogConfig) wordable(key string) bool {
@@ -289,6 +287,8 @@ func (c *Catalog) unwordedPlural(key string) bool {
 	return ok && v == key
 }
 
+// expectedIn: plural variants are locale-specific (Czech has _few/_many,
+// English does not), so a plural key missing from another locale is not a gap.
 func (c *Catalog) expectedIn(locale, key string) bool {
 	if _, plural := c.Config.BaseKey(key); plural {
 		return false
