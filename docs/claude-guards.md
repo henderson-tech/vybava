@@ -36,6 +36,11 @@ simulator:*       cliclick / AppleScript System Events against the Simulator ·
                   and deleteSession()s it per look outside appium/support,
                   appium/adhoc/lib, appium/specs, *.spec.ts or e2e
                   (guards.appiumSessionDirs extends the allowlist)
+machine:*         playwright test / vitest / jest started on this Mac with no
+                  worker cap, or one above guards.testWorkerCap (default 2);
+                  ssh and devbox payloads, bun test, --version/--help/--list
+                  and playwright install/codegen/show-report pass
+                  (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1)
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
@@ -59,6 +64,24 @@ through `xcodebuild` (5-10 s on every core, 1-2 GB), so a screenshot is
 `xcrun simctl io <udid> screenshot <file>` and the a11y tree goes through ONE
 session kept open for the task via the repo's session factory. Neither rule has
 an escape variable: the sanctioned form is cheaper than the blocked one.
+
+`machine:test-worker-cap` is the third machine-health rule (2026-09-19 again:
+six headless Chromes at 40-110% CPU each, started by one uncapped
+`playwright test`, pinned the Mac while 28 Claude sessions shared it). It reads
+every local simple command, through `timeout`/`nice`/`env` and the package
+launchers (`bunx`, `npx`, `bun run`, `npm run`/`exec`, `pnpm`, `yarn`), and
+blocks `playwright test`, `vitest` and `jest` unless a worker cap at or below
+`guards.testWorkerCap` (default 2) is on the line: `--workers N`/`-j N`,
+`--maxWorkers N`, `--poolOptions.threads.maxThreads=N`,
+`--poolOptions.forks.maxForks=N`, `--no-file-parallelism`, `--runInBand`/`-i`.
+A cap above the limit is blocked too, and a percentage (`--workers 50%`) is no
+cap. `bun test` always passes (single process, no worker flag), as do
+`--version`/`--help`/`--list`, `vitest list`, `jest --listTests` and every
+non-`test` playwright subcommand (`install`, `codegen`, `show-report`). A
+command carried by `ssh` or `devbox run` runs on the box and is never read.
+Unlike its two siblings this rule HAS an escape, because a deliberate
+full-parallel run on a quiet Mac is legitimate:
+`CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1 <command>` as the command's env prefix.
 
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or

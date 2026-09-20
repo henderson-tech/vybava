@@ -378,13 +378,27 @@ func commandChainHas(s, name string) bool {
 const maxRunnerDepth = 3
 
 func segments(cmd string) []string {
-	return appendSegments(nil, cmd, 0)
+	return appendSegments(nil, cmd, 0, false)
 }
 
-func appendSegments(out []string, cmd string, depth int) []string {
+// remoteRunners execute their command line on another machine (`ssh box
+// 'vitest'`, `devbox run -- 'jest'`), so a rule about THIS machine's load must
+// not read what they carry.
+var remoteRunners = map[string]bool{"ssh": true, "devbox": true}
+
+// localSegments is segments() with every remote runner and its payload left
+// out: the commands that run on this machine.
+func localSegments(cmd string) []string {
+	return appendSegments(nil, cmd, 0, true)
+}
+
+func appendSegments(out []string, cmd string, depth int, localOnly bool) []string {
 	for _, p := range shellSegments(cmd) {
 		s := trimAssignments(trimSubshell(strings.Trim(p.text, " \t\r")))
 		if s == "" {
+			continue
+		}
+		if localOnly && remoteRunners[commandWord(s)] {
 			continue
 		}
 		out = append(out, s)
@@ -392,7 +406,7 @@ func appendSegments(out []string, cmd string, depth int) []string {
 			continue
 		}
 		for _, payload := range runnerPayloads(s) {
-			out = appendSegments(out, payload, depth+1)
+			out = appendSegments(out, payload, depth+1, localOnly)
 		}
 	}
 	return out
