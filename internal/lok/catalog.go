@@ -6,6 +6,7 @@ package lok
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -30,8 +31,44 @@ var defaultPlurals = []string{"_zero", "_one", "_two", "_few", "_many", "_other"
 // ScanConfig is the source scan for english-as-key catalogs.
 type ScanConfig struct {
 	Roots      []string `json:"roots"`
-	Call       string   `json:"call,omitempty"`
+	Call       Calls    `json:"call,omitempty"`
 	Extensions []string `json:"extensions,omitempty"`
+}
+
+// Calls is the `scan.call` field: the call shapes whose first literal
+// argument is a key. It decodes from a plain string (`"t"`, the original
+// form) or a list. Each entry is either a bare identifier (`t` — matched
+// only when nothing dotted precedes it) or a method form (`*.T` — matched
+// as `.T(` on any receiver, the shape Go and class-based code use).
+type Calls []string
+
+func (c *Calls) UnmarshalJSON(data []byte) error {
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		*c = nil
+		if one != "" {
+			*c = Calls{one}
+		}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return errors.New("scan.call must be a string or an array of strings")
+	}
+	*c = many
+	return nil
+}
+
+var callIdent = regexp.MustCompile(`^(\*\.)?[A-Za-z_$][A-Za-z0-9_$]*$`)
+
+// Validate rejects anything that is neither an identifier nor `*.Ident`.
+func (c Calls) Validate() error {
+	for _, call := range c {
+		if !callIdent.MatchString(call) {
+			return fmt.Errorf("scan.call entry %q must be an identifier (t) or a method form (*.T)", call)
+		}
+	}
+	return nil
 }
 
 // CatalogConfig mirrors the TypeScript CatalogConfig.
@@ -80,6 +117,11 @@ func (c *Config) Validate() error {
 		}
 		if cat.Scan != nil && cat.Style != StyleEnglishAsKey {
 			return fmt.Errorf("catalog %q: scan is only supported for english-as-key catalogs", id)
+		}
+		if cat.Scan != nil {
+			if err := cat.Scan.Call.Validate(); err != nil {
+				return fmt.Errorf("catalog %q: %w", id, err)
+			}
 		}
 	}
 	return nil

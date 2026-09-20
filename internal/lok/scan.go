@@ -28,11 +28,30 @@ type ScanResult struct {
 
 var defaultExtensions = []string{".ts", ".tsx", ".js", ".jsx"}
 
-// callRegex matches `<call>(` followed by a single- or double-quoted literal,
-// across newlines and leading whitespace. Backtick templates are dynamic and
-// deliberately not matched.
-func callRegex(call string) *regexp.Regexp {
-	return regexp.MustCompile(`(?s)(?:^|[^A-Za-z0-9_$.])` + regexp.QuoteMeta(call) + `\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")`)
+// callRegex matches any configured call followed by a single- or
+// double-quoted literal, across newlines and leading whitespace. A bare
+// entry (`t`) matches `t(` only when no identifier character or dot precedes
+// it, so `foo.t(` is not a hit; a method entry (`*.T`) matches `.T(` on any
+// receiver — identifier, call result or index — so `l.T(`, `FromContext(ctx).N(`
+// and `xs[i].T(` are, while a bare `T(` is not. Backtick templates are
+// dynamic and deliberately not matched.
+func callRegex(calls Calls) *regexp.Regexp {
+	var bare, method []string
+	for _, call := range calls {
+		if name, ok := strings.CutPrefix(call, "*."); ok {
+			method = append(method, regexp.QuoteMeta(name))
+		} else {
+			bare = append(bare, regexp.QuoteMeta(call))
+		}
+	}
+	var alts []string
+	if len(bare) > 0 {
+		alts = append(alts, `(?:^|[^A-Za-z0-9_$.])(?:`+strings.Join(bare, "|")+`)`)
+	}
+	if len(method) > 0 {
+		alts = append(alts, `[A-Za-z0-9_$)\]]\.(?:`+strings.Join(method, "|")+`)`)
+	}
+	return regexp.MustCompile(`(?s)(?:` + strings.Join(alts, "|") + `)\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")`)
 }
 
 func unescape(s string) string {
@@ -51,15 +70,15 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 	if c.Config.Scan == nil {
 		return ScanResult{}, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("catalog %s has no scan config", c.ID), Fix: "add scan: { roots: [...] } to the catalog in vybava.config.ts"}
 	}
-	call := c.Config.Scan.Call
-	if call == "" {
-		call = "t"
+	calls := c.Config.Scan.Call
+	if len(calls) == 0 {
+		calls = Calls{"t"}
 	}
 	exts := c.Config.Scan.Extensions
 	if len(exts) == 0 {
 		exts = defaultExtensions
 	}
-	re := callRegex(call)
+	re := callRegex(calls)
 	res := ScanResult{Catalog: c.ID, Missing: []string{}, Added: []string{}, Orphans: []string{}, Written: []string{}}
 	seen := map[string]bool{}
 	var corpus strings.Builder

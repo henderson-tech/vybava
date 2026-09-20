@@ -27,7 +27,8 @@ export default defineConfig({
       mobile: englishAsKey('apps/client/locales/{locale}.json', ['en', 'cs'], {
         required: ['en', 'cs'],
         afterWrite: 'bun run i18n:types',
-        scan: { roots: ['apps/client'] },
+        // call: one name or a list; `*.T` matches `.T('…')` on any receiver (Go: l.T("Sites"))
+        scan: { roots: ['apps/client', 'services/api'], call: ['t', '*.T', '*.N'], extensions: ['.ts', '.tsx', '.go'] },
       }),
       webDictionaries: pathKeys('apps/web/dictionaries/{locale}.json', ['en', 'cs', 'sk', 'uk'], {
         required: ['en', 'cs'],

@@ -1,6 +1,7 @@
 package lok
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,92 @@ func TestScan(t *testing.T) {
 	problems, _ := tool.Check("mobile")
 	if len(problems) != 1 || problems[0].Kind != "missing" {
 		t.Fatalf("check must flag the gap: %+v", problems)
+	}
+}
+
+func TestEnWordingOnPluralVariants(t *testing.T) {
+	tool := fixture(t)
+	// A base key never carries en wording.
+	if _, err := tool.Add("mobile", "Item", map[string]string{"en": "An item", "cs": "Položka"}); err == nil || err.(*Diag).Code != DiagConfigInvalid {
+		t.Fatalf("base key with --tr en must be refused, got %v", err)
+	}
+	// A plural variant may: en is the wording, not the key.
+	if _, err := tool.Add("mobile", "{{count}} item_one", map[string]string{"en": "1 item", "cs": "1 položka"}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := tool.Get("", "{{count}} item_one"); v.Values["en"] != "1 item" {
+		t.Fatalf("en wording must be stored verbatim: %+v", v)
+	}
+	if _, err := tool.Set("", "{{count}} hour_one", map[string]string{"en": "{{count}} hour", "cs": "{{count}} hodina"}); err != nil {
+		t.Fatalf("set en on a plural variant must be allowed: %v", err)
+	}
+	// Without --tr en the literal key is derived — and flagged, never failed.
+	if _, err := tool.Add("mobile", "{{count}} item_other", map[string]string{"cs": "{{count}} položek"}); err != nil {
+		t.Fatal(err)
+	}
+	gaps, total, _ := tool.Missing("mobile", nil, true, 10)
+	if total != 1 || gaps[0].Key != "{{count}} item_other" || gaps[0].Locale != "en" || gaps[0].Warning == "" {
+		t.Fatalf("missing must warn about the unworded en plural variant: %d %+v", total, gaps)
+	}
+	problems, _ := tool.Check("mobile")
+	if len(problems) != 1 || problems[0].Kind != "en-unworded" || problems[0].Severity != "warning" {
+		t.Fatalf("check must warn, not fail, on an unworded en plural: %+v", problems)
+	}
+	if _, err := tool.Set("", "{{count}} item_other", map[string]string{"en": "{{count}} items"}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, _ := tool.Check("mobile"); len(problems) != 0 {
+		t.Fatalf("wording the variant clears the warning: %+v", problems)
+	}
+}
+
+func TestScanCallDecodesStringAndList(t *testing.T) {
+	var one ScanConfig
+	if err := json.Unmarshal([]byte(`{"roots":["src"],"call":"tr"}`), &one); err != nil || len(one.Call) != 1 || one.Call[0] != "tr" {
+		t.Fatalf("string form must decode as a one-entry list: %v %+v", err, one)
+	}
+	var many ScanConfig
+	if err := json.Unmarshal([]byte(`{"roots":["src"],"call":["t","*.T"]}`), &many); err != nil || len(many.Call) != 2 || many.Call[1] != "*.T" {
+		t.Fatalf("list form must decode verbatim: %v %+v", err, many)
+	}
+	var bad ScanConfig
+	if err := json.Unmarshal([]byte(`{"roots":["src"],"call":7}`), &bad); err == nil {
+		t.Fatal("a number must be rejected")
+	}
+	cfg := Config{Catalogs: map[string]CatalogConfig{"m": {Style: StyleEnglishAsKey, Files: "l/{locale}.json", Locales: []string{"en"}, Scan: &ScanConfig{Roots: []string{"src"}, Call: Calls{"a.b"}}}}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), `"a.b"`) {
+		t.Fatalf("a dotted receiver name must be rejected (use *.b): %v", err)
+	}
+}
+
+func TestScanMethodCalls(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("locales/en.json", "{\n  \"Save\": \"Save\"\n}\n")
+	write("src/a.tsx", "t('Save');\nconst m = foo.t('Not plain');\nT('Not method');\nformat.t(\"Still not plain\");\n")
+	write("src/b.go", "func f(l i18n.L) {\n\tl.T(\"Sites\")\n\ti18n.FromContext(ctx).N(\n\t\t\"{{count}} items\", n)\n\tls[i].T(`dynamic`)\n\tx.T(fmt.Sprintf(\"no literal\"))\n\tT(\"bare\")\n}\n")
+	write("vybava.config.json", `{"lok":{"catalogs":{
+	  "m":{"style":"english-as-key","files":"locales/{locale}.json","locales":["en"],"scan":{"roots":["src"],"call":["t","*.T","*.N"],"extensions":[".tsx",".go"]}}}}}`)
+	tool, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Sites", "{{count}} items"}
+	if res.Calls != 3 || strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("plain t + method .T/.N on any receiver, never foo.t( or bare T(: %+v", res)
 	}
 }
 

@@ -36,6 +36,13 @@ lok scan --json                           # literal t('…') keys missing from t
 lok scan --write --json                   # add the missing (en = key) → translate via `lok missing`
 ```
 
+In an english-as-key catalog `--tr en=…` is refused for a base key (the en
+value IS the key) but accepted for a plural variant or an `exempt` key, so
+`{{count}} item_one` can read "1 item" while `_other` reads "{{count}}
+items". A variant written without it derives the literal key and is flagged
+by `lok missing` (a gap with `warning`) and `lok check` (`en-unworded`,
+severity `warning` — never fails the gate) until it is worded.
+
 Writes preserve the file's key order and insert new keys at the
 case-insensitive alphabetical slot without reordering anything else, so a
 diff shows exactly the change. Only files whose content changed are
@@ -46,6 +53,17 @@ catalog is always a defect, so `--write` adds it. A catalog key never seen
 verbatim in source is only a hint — keys held in lookup tables, API
 messages passed through `t()`, template strings — so orphans are listed
 with a count and never deleted; `lok rm` is the explicit path.
+
+`scan.call` names the call shapes, one string or a list (default `t`). A
+bare name matches `t('…')` with nothing dotted before it — `foo.t(` is not
+a hit. The method form `*.T` matches `.T('…')` on any receiver, which is
+how Go and class-based code translate: `l.T("Sites")`,
+`i18n.FromContext(ctx).N("{{count}} items", n)`. One list scans both
+languages into one catalog; add the extension the defaults lack:
+
+```ts
+scan: { roots: ['apps/client', 'services/api'], call: ['t', '*.T', '*.N'], extensions: ['.ts', '.tsx', '.go'] }
+```
 
 `--catalog=<id>` is required only when the destination cannot be inferred.
 Reads and `set`/`rm` resolve the one catalog holding the key. `add` resolves
