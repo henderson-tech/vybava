@@ -51,13 +51,20 @@ func screenshotDir(in *HookInput) *Denial {
 	if insideScreenshotDir(path, in.CWD) {
 		return nil
 	}
+	// The sanctioned spelling differs per tool: playwright resolves a bare
+	// name against its --output-dir (already ScreenshotDir), chrome-devtools
+	// against the cwd, so only the latter needs the directory in the path.
+	sanctioned := filepath.Base(path)
+	if in.ToolName == toolDevtoolsScreenshot {
+		sanctioned = filepath.Join(ScreenshotDir, sanctioned)
+	}
 	return deny("browser:screenshot-dir",
 		fmt.Sprintf(`%s would write %s outside %s/. Browser-MCP screenshots have one
 home per repo — that directory is ignored globally and never committed; a
 bare filename lands in the repo root as an untracked file.`, in.ToolName, path, ScreenshotDir),
 		fmt.Sprintf(`Write it there instead:
   %s: %q
-or omit %s to get the image inline without a file.`, param, filepath.Join(ScreenshotDir, filepath.Base(path)), param))
+or omit %s to get the image inline without a file.`, param, sanctioned, param))
 }
 
 // insideScreenshotDir reports whether path (relative to cwd, or absolute) is

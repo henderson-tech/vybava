@@ -40,8 +40,14 @@ func TestScreenshotDirPlaywrightRelativeNamesAreTheWrappersOutputDir(t *testing.
 	if d := screenshotDir(screenshotInput(toolPlaywrightScreenshot, "home.png", "")); d != nil {
 		t.Errorf("a relative playwright filename must pass:\n%s", d.Text())
 	}
-	if d := screenshotDir(screenshotInput(toolPlaywrightScreenshot, "/repo/home.png", "")); d == nil {
-		t.Error("an absolute playwright filename outside .vitrinka/mcp must be refused")
+	d := screenshotDir(screenshotInput(toolPlaywrightScreenshot, "/repo/home.png", ""))
+	if d == nil {
+		t.Fatal("an absolute playwright filename outside .vitrinka/mcp must be refused")
+	}
+	// The fix is a bare name — the wrapper's --output-dir supplies the
+	// directory; suggesting ".vitrinka/mcp/home.png" would nest it twice.
+	if !strings.Contains(d.Text(), `filename: "home.png"`) || strings.Contains(d.Text(), `filename: ".vitrinka`) {
+		t.Errorf("playwright denial must suggest the bare filename:\n%s", d.Text())
 	}
 	if d := screenshotDir(screenshotInput("mcp__playwright__browser_navigate", "", "")); d != nil {
 		t.Error("non-screenshot browser tools are not this rule's business")
