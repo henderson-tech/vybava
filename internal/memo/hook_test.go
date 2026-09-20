@@ -124,6 +124,10 @@ func TestHookPreToolUseRefusesHandWrites(t *testing.T) {
 		{"sed print", "Bash", "", "sed -n '1,20p' " + ledger, false},
 		{"quoted mention", "Bash", "", "echo 'sed -i x " + ledger + "'", false},
 		{"relative cwd", "Bash", "", "sed -i '' 's/a/b/' LEDGER.md", true},
+		{"codex shell", "shell", "", "echo x >> " + usage, true},
+		{"codex patch update", "apply_patch", "", "*** Begin Patch\n*** Update File: " + ledger + "\n@@\n+- #t9 x\n*** End Patch\n", true},
+		{"codex patch add index", "apply_patch", "", "*** Begin Patch\n*** Add File: " + index + "\n+# x\n*** End Patch\n", true},
+		{"codex patch note", "apply_patch", "", "*** Begin Patch\n*** Update File: " + filepath.Join(home, "notes", "x.md") + "\n@@\n+safe\n*** End Patch\n", false},
 	}
 	for _, c := range cases {
 		p := HookPayload{HookEventName: "PreToolUse", ToolName: c.tool, Cwd: home}

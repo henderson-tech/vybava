@@ -76,8 +76,13 @@ func RefuseHandWrite(p HookPayload) *Diag {
 	if rewritingTools[p.ToolName] {
 		targets = append(targets, p.ToolInput.FilePath, p.ToolInput.Path)
 	}
-	if p.ToolName == "Bash" {
+	if p.ToolName == "Bash" || p.ToolName == "shell" {
 		targets = append(targets, shellWriteTargets(p.ToolInput.Command)...)
+	}
+	if p.ToolName == "apply_patch" {
+		// Codex delivers a write as a patch COMMAND: the targets are its
+		// `*** Update File:` / `*** Add File:` / `*** Delete File:` headers.
+		targets = append(targets, patchFileTargets(p.ToolInput.Command)...)
 	}
 	for _, t := range targets {
 		if abs, verb, ok := ledgerTarget(t, p.Cwd); ok {
@@ -111,6 +116,17 @@ func ledgerTarget(path, cwd string) (string, string, bool) {
 		return "", "", false
 	}
 	return path, verb, true
+}
+
+var patchHeaderRE = regexp.MustCompile(`(?m)^\*\*\* (?:Update|Add|Delete) File: (.+?)\s*$`)
+
+// patchFileTargets lists the files a Codex apply_patch command touches.
+func patchFileTargets(command string) []string {
+	var out []string
+	for _, m := range patchHeaderRE.FindAllStringSubmatch(command, -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // shellWriteTargets lists the files a command line writes: redirection
