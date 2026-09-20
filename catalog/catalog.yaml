@@ -49,6 +49,12 @@ items:
     description: Validate and maintain Obsidian-compatible AI memory files — schema, indexes, links, limits, fixture data, external references, and agent write hooks.
     applet: memorylint
 
+  - id: memo
+    kind: applet
+    status: experimental
+    description: Append-only memory ledger for AI sessions - LEDGER.md rows with stable ids, MEMORY.md rendered by usage score, citations harvested from the session transcript, Obsidian vault and local git snapshots.
+    applet: memo
+
   - id: fontfreeze
     kind: applet
     status: experimental
@@ -163,6 +169,12 @@ items:
     description: Doctrine for building AI-first CLI tools and their thin-wrapper skills — envelope contract, closed diagnostics, Go/Charm patterns.
     source: skills/cli-craft
 
+  - id: memo-ledger
+    kind: skill
+    status: experimental
+    description: Thin wrapper skill for the memo applet - capture a row, cite it as #NN, look it up; the hard laws (never hand-edit LEDGER.md, supersede instead of correcting).
+    source: skills/memo-ledger
+
   - id: hotfix-lane
     kind: skill
     status: experimental
@@ -198,6 +210,8 @@ groups:
     description: Stable baseline suitable for every workstation and project.
     items:
       - memorylint
+      - memo
+      - memo-ledger
 
   - id: experimental
     description: Early packages that are useful but still evolving.
@@ -264,6 +278,8 @@ groups:
       - hotfix-lane
       - operator
       - memorylint
+      - memo
+      - memo-ledger
       - fontfreeze
       - perfrig
       - shrt

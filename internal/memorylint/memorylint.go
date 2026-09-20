@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/memo"
 	"gopkg.in/yaml.v3"
 )
 
@@ -284,6 +285,7 @@ func Lint(paths []string) (Report, error) {
 
 func lintRoot(root string, config Config) ([]Finding, int, error) {
 	var findings []Finding
+	ledger := memo.HasLedger(root)
 	var entries []entry
 	indexes := make(map[string][]byte)
 	files := 0
@@ -304,6 +306,9 @@ func lintRoot(root string, config Config) ([]Finding, int, error) {
 			return nil
 		}
 		if item.IsDir() || !strings.EqualFold(filepath.Ext(path), ".md") {
+			return nil
+		}
+		if ledger && filepath.Base(path) == memo.LedgerFile {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -349,7 +354,7 @@ func lintRoot(root string, config Config) ([]Finding, int, error) {
 				findings = append(findings, finding("M001", SeverityError, path, 1, "name %q must match filename stem %q", parsed.Name, stem))
 			}
 		}
-		if !kebabPatternFor(config.AllowedTypes).MatchString(filepath.Base(path)) {
+		if !ledgerNote(ledger, relative) && !kebabPatternFor(config.AllowedTypes).MatchString(filepath.Base(path)) {
 			findings = append(findings, finding("M002", SeverityWarning, path, 1, "filename must be <type>-<kebab-slug>.md"))
 		}
 		if lines := lineCount(data); lines > config.MaxEntryLines {
@@ -363,9 +368,12 @@ func lintRoot(root string, config Config) ([]Finding, int, error) {
 		return nil, 0, err
 	}
 
-	findings = append(findings, linkFindings(root, entries, indexes)...)
+	findings = append(findings, linkFindings(root, entries, indexes, ledger)...)
 	findings = append(findings, identityFindings(entries)...)
-	findings = append(findings, ceilingFindings(root, entries)...)
+	findings = append(findings, ceilingFindings(root, ceilingEntries(entries, ledger))...)
+	if ledger {
+		findings = append(findings, ledgerFindings(root)...)
+	}
 	return findings, files, nil
 }
 
@@ -466,9 +474,12 @@ func parseFrontmatter(data []byte) (frontmatter, int, error) {
 	return result, 1, nil
 }
 
-func linkFindings(root string, entries []entry, indexes map[string][]byte) []Finding {
+func linkFindings(root string, entries []entry, indexes map[string][]byte, ledger bool) []Finding {
 	var findings []Finding
 	knownWiki := make(map[string]struct{})
+	if ledger {
+		knownWiki["ledger"] = struct{}{}
+	}
 	knownPaths := make(map[string]entry)
 	indexedPaths := make(map[string]struct{})
 	for _, value := range entries {
@@ -496,12 +507,15 @@ func linkFindings(root string, entries []entry, indexes map[string][]byte) []Fin
 		}
 	}
 	for _, value := range entries {
-		if _, indexed := indexedPaths[filepath.Clean(value.path)]; !indexed {
+		if _, indexed := indexedPaths[filepath.Clean(value.path)]; !indexed && !ledger {
 			findings = append(findings, finding("M009", SeverityWarning, value.path, 1, "memory is not linked from a MEMORY.md index under %s", root))
 		}
 		for _, match := range wikiLinkPattern.FindAllSubmatchIndex(value.data, -1) {
 			target := strings.ToLower(strings.TrimSpace(string(value.data[match[2]:match[3]])))
 			target = strings.TrimSuffix(target, ".md")
+			if ledger && crossHomeLink(target) {
+				continue
+			}
 			if strings.Contains(target, "/") {
 				target = strings.TrimSuffix(filepath.Base(target), ".md")
 			}
@@ -732,4 +746,46 @@ func FormatText(report Report) string {
 		_, _ = fmt.Fprintf(&output, "memorylint: %d errors, %d warnings (%d files)\n", report.Errors(), report.Warnings(), report.Files)
 	}
 	return output.String()
+}
+
+// Ledger homes (docs/memo.md): LEDGER.md is memo's, notes live under notes/
+// with plain kebab-case names, cross-home wikilinks are resolved by memo
+// against registered aliases, and the note ceiling counts notes/ only.
+
+var notesNamePattern = regexp.MustCompile(`^notes/[a-z0-9]+(?:-[a-z0-9]+)*\.md$`)
+
+func ledgerNote(ledger bool, relative string) bool {
+	return ledger && notesNamePattern.MatchString(relative)
+}
+
+// crossHomeLink is `<alias>/LEDGER` or `<alias>/notes/<slug>`; a local
+// `notes/<slug>` or `LEDGER` is not.
+func crossHomeLink(target string) bool {
+	return strings.Contains(target, "/") && !strings.HasPrefix(target, "notes/")
+}
+
+func ceilingEntries(entries []entry, ledger bool) []entry {
+	if !ledger {
+		return entries
+	}
+	var kept []entry
+	for _, e := range entries {
+		if strings.HasPrefix(e.relative, "notes/") {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// ledgerFindings runs memo's ledger rules and maps them onto this report.
+func ledgerFindings(root string) []Finding {
+	var homes []memo.Home
+	if userHome, err := os.UserHomeDir(); err == nil {
+		homes, _, _ = memo.Env{UserHome: userHome, Cwd: root}.Discover()
+	}
+	var out []Finding
+	for _, f := range memo.Lint(root, memo.AliasMap(homes), time.Now()) {
+		out = append(out, Finding{Rule: f.Rule, Severity: Severity(f.Severity), Path: f.Path, Line: f.Line, Message: f.Message})
+	}
+	return out
 }
