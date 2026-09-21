@@ -28,12 +28,17 @@ type machineProc struct {
 }
 
 // base is the command's basename (first args field).
-func (p machineProc) base() string {
+// exe is the executable path as ps printed it (argv[0]); base its file name.
+func (p machineProc) exe() string {
 	f := strings.Fields(p.args)
 	if len(f) == 0 {
 		return ""
 	}
-	return filepath.Base(f[0])
+	return f[0]
+}
+
+func (p machineProc) base() string {
+	return filepath.Base(p.exe())
 }
 
 // machineProcTable reads the live process table; tests inject their own.

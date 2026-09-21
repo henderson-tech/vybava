@@ -17,7 +17,7 @@ var fakeTable = []machineProc{
 	{pid: 201, ppid: 200, etime: "00:05:00", tty: "ttys044", args: "xcodebuild test-without-building -project WebDriverAgent.xcodeproj"},
 	{pid: 300, ppid: 1, etime: "04:00:00", tty: "??", args: "/Library/Developer/CoreSimulator/Volumes/iOS_23A/launchd_sim"},
 	{pid: 301, ppid: 1, etime: "03:00:00", tty: "??", args: "/Library/Developer/CoreSimulator/Volumes/iOS_23A/launchd_sim"},
-	{pid: 400, ppid: 1, etime: "02:10:00", tty: "??", args: "xcodebuild test-without-building -xctestrun WDA.xctestrun"},
+	{pid: 400, ppid: 1, etime: "02:10:00", tty: "??", args: "xcodebuild test-without-building -project /w/WebDriverAgent.xcodeproj -scheme WebDriverAgentRunner"},
 	{pid: 401, ppid: 1, etime: "19:00:00", tty: "??", args: "node /w/node_modules/.bin/appium --port 14006"},
 	{pid: 402, ppid: 400, etime: "02:09:00", tty: "??", args: "/Users/x/Library/Developer/Xcode/DerivedData/WebDriverAgentRunner-Runner"},
 	{pid: 500, ppid: 1, etime: "00:20:00", tty: "ttys009", args: "bun --watch src/main.ts"},

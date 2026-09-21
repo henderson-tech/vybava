@@ -13,24 +13,41 @@ package claudeguards
 import (
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"time"
 )
 
 const reapMinAge = 10 * 60
 
-// reapKind names a process the reaper knows, or "" for everything else.
+// reapKind names a process the reaper knows, or "" for everything else. The
+// executable decides, never a substring of the whole argv: `tail -f
+// appium.log`, an editor on WebDriverAgentRunner.md or a script that merely
+// names an appium path must not qualify.
 func reapKind(p machineProc) string {
 	b := p.base()
 	switch {
-	case strings.Contains(p.args, "WebDriverAgentRunner"):
+	case b == "WebDriverAgentRunner-Runner" || strings.Contains(p.exe(), "WebDriverAgentRunner-Runner.app/"):
 		return "WebDriverAgent"
-	case b == "xcodebuild" && strings.Contains(p.args, "test-without-building"):
+	case b == "xcodebuild" && strings.Contains(p.args, "test-without-building") && strings.Contains(p.args, "WebDriverAgent"):
 		return "xcodebuild"
-	case b == "appium" || ((b == "node" || b == "bun") && strings.Contains(p.args, "appium")):
+	case b == "appium" || ((b == "node" || b == "bun") && appiumEntry(p.args)):
 		return "appium"
 	}
 	return ""
+}
+
+// appiumEntry reports whether the script a node/bun process runs — its first
+// non-flag argument — is the appium server entry point.
+func appiumEntry(args string) bool {
+	fields := strings.Fields(args)
+	for _, a := range fields[1:] {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return path.Base(a) == "appium" || strings.Contains(a, "/appium/build/lib/main.js")
+	}
+	return false
 }
 
 // selectReapVictims picks the orphans: a known kind, older than reapMinAge,

@@ -230,11 +230,15 @@ var reducingSinks = map[string]bool{
 
 // inlineProgramFlags name the flag under which an interpreter takes its whole
 // program from the command line; only then is the interpreter a query sink.
+// Like `| grep .`, an inline program CAN echo its whole input — this is a
+// command-shape guard, not a byte limit — but `-p`/`--print` prints the
+// evaluated expression itself, and `node -p 'fs.readFileSync(0)'` is the
+// idiom for exactly that, so print mode is never a sink.
 var inlineProgramFlags = map[string]map[string]bool{
 	"python":  {"-c": true},
 	"python3": {"-c": true},
-	"node":    {"-e": true, "--eval": true, "-p": true, "--print": true},
-	"bun":     {"-e": true, "--eval": true, "-p": true, "--print": true},
+	"node":    {"-e": true, "--eval": true},
+	"bun":     {"-e": true, "--eval": true},
 }
 
 func inlineProgramSink(name string, args []string) bool {
