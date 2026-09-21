@@ -15,6 +15,7 @@ import (
 	"github.com/henderson-tech/vybava/internal/codexsync"
 	"github.com/henderson-tech/vybava/internal/doctor"
 	"github.com/henderson-tech/vybava/internal/fontfreeze"
+	"github.com/henderson-tech/vybava/internal/hostsetup"
 	"github.com/henderson-tech/vybava/internal/ingressgen"
 	"github.com/henderson-tech/vybava/internal/installer"
 	"github.com/henderson-tech/vybava/internal/memorylint"
@@ -159,6 +160,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.uninstallCommand(),
 		rt.updateCommand(),
 		rt.doctorCommand(),
+		rt.setupCommand(),
 		rt.memoryCommand(),
 		rt.fontfreezeCommand("fontfreeze [fonts.yaml]"),
 		rt.perfrigCommand("perfrig"),
@@ -351,6 +353,28 @@ func (rt *runtime) doctorCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// setupCommand applies idempotent host settings (`vybava setup mac`): each
+// hostsetup.Step is checked first and only applied when it does not hold.
+func (rt *runtime) setupCommand() *cobra.Command {
+	command := &cobra.Command{Use: "setup", Short: "Apply idempotent per-machine settings"}
+	var dryRun bool
+	mac := &cobra.Command{
+		Use:   "mac",
+		Short: "Host settings a Mac needs under many parallel agent sessions (Gradle daemon idle timeout, …)",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			return hostsetup.Apply(home, dryRun, rt.stdout)
+		},
+	}
+	mac.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
+	command.AddCommand(mac)
+	return command
 }
 
 func (rt *runtime) memoryCommand() *cobra.Command {

@@ -1,9 +1,11 @@
 // Package claudeguards is the single-binary PreToolUse enforcement for the
 // hard bans in ~/.claude/CLAUDE.md: destructive git/docker calls, secret and
 // environment dumps, host-input automation, /e2e screenshot hygiene,
-// commit-time secret scanning, the three machine-health rules (whole-disk
-// walks, per-look Appium sessions, uncapped local test runners) — and the context-budget rules that keep an
-// agent from dumping whole files or rewriting them through the shell.
+// commit-time secret scanning, the machine-health rules (`claude-guards list
+// machine`) — and the context-budget rules that keep an agent from dumping
+// whole files or rewriting them through the shell. Every rule id is a row of
+// Rules in registry.go; `claude-guards list` renders it and a test keeps it
+// in step with the deny() sites.
 //
 // CLAUDE.md is context, not enforcement: Claude reads it and *usually*
 // complies. These bans are incident-born and must hold unconditionally,
@@ -51,6 +53,8 @@ func Bash(in *HookInput) *Denial {
 		guardRootWalk,
 		guardAppiumChurn,
 		guardTestWorkerCap,
+		guardDevboxOnly,
+		guardMachineCap,
 		guardBudget,
 		guardContextBash,
 		guardE2EScreenshot,

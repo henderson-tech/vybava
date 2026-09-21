@@ -200,6 +200,25 @@ func TestPipeExemptionNeedsAReducingSink(t *testing.T) {
 	if d := contextBashMatch("cat "+big+" | cat", root); d == nil || d.Rule != "context:whole-file-dump" {
 		t.Fatalf("| cat reproduces the file whole and must be denied, got %v", d)
 	}
+	// An interpreter running an inline program is a query written on the spot.
+	for _, sink := range []string{"python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'", "node -e 'process.stdin'", "bun -e '1'"} {
+		if d := contextBashMatch("cat "+big+" | "+sink, root); d != nil {
+			t.Errorf("| %s is an inline-program sink and must pass, got %v", sink, d)
+		}
+	}
+	// Print mode evaluates and prints; `node -p 'fs.readFileSync(0)'` is the
+	// whole file again, so -p/--print never count as a sink.
+	for _, echo := range []string{"node -p 'require(\"fs\").readFileSync(0)'", "bun --print '1'"} {
+		if d := contextBashMatch("cat "+big+" | "+echo, root); d == nil || d.Rule != "context:whole-file-dump" {
+			t.Errorf("| %s prints its input and must be denied, got %v", echo, d)
+		}
+	}
+	if d := contextBashMatch("git show HEAD:settings.json | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))'", root); d != nil {
+		t.Errorf("git show into an inline program must pass, got %v", d)
+	}
+	if d := contextBashMatch("git show HEAD:settings.json | cat", root); d == nil || d.Rule != "context:unbounded-output" {
+		t.Errorf("git show into cat must still be capped, got %v", d)
+	}
 	// None of these bound anything — `sort` and `sed -n p` reproduce every
 	// input line, and an interpreter can do whatever it likes.
 	for _, sink := range []string{"sort", "uniq", "awk '{print}'", "sed -n p", "tee /tmp/x", "python3 -", "xargs -I{} echo {}"} {

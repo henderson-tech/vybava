@@ -64,6 +64,15 @@ guards: {
   // (machine:test-worker-cap); at least 1, default 2. Heavier suites run on
   // the Devbox, or a deliberate run sets CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1.
   testWorkerCap: 2,
+  // RE2 patterns over one local command segment; a match is refused unless
+  // it runs through `devbox run -- '<cmd>'` (machine:devbox-only). A hand
+  // test on this Mac sets CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1.
+  devboxOnly: ['^bun run (dev|run):(api|web|admin)\\b', '^bun run test(:|$)'],
+  // Most booted simulators (machine:sim-cap, default 2) and Metro/next/API
+  // dev servers (machine:dev-server-cap, default 3) this Mac may hold before
+  // another start is refused. Escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1.
+  simCap: 2,
+  devServerCap: 3,
 }
 ```
 

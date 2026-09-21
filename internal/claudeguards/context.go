@@ -215,13 +215,46 @@ type dumpSegment struct {
 // The list is deliberately short. `sort`, `uniq`, `awk`, `sed`, `cut`, `xargs`
 // and interpreters were here once, and none of them bound anything: `sort`,
 // `awk '{print}'` and `sed -n p` all reproduce every input line. Only counters,
-// head/tail, and the documented query tools earn a place. Anything else has
+// head/tail, the documented query tools, and an interpreter running an INLINE
+// program (`python3 -c`, `node -e`) earn a place: the inline program is a
+// query written on the spot (`json.load(sys.stdin)` and a few prints), so its
+// output is the answer, not the input. `python3 -` and `node` with a script
+// file stay out — the file may do anything. Anything else has
 // CLAUDE_ALLOW_CONTEXT_DUMP=1.
 var reducingSinks = map[string]bool{
 	"grep": true, "egrep": true, "fgrep": true, "rg": true, // the sanctioned query path
 	"jq": true, "yq": true, // structured query; `jq .` is the documented transcript idiom
 	"head": true, "tail": true, // genuinely bounded
 	"wc": true, "count": true, // counters emit a number
+}
+
+// inlineProgramFlags name the flag under which an interpreter takes its whole
+// program from the command line; only then is the interpreter a query sink.
+// Like `| grep .`, an inline program CAN echo its whole input — this is a
+// command-shape guard, not a byte limit — but `-p`/`--print` prints the
+// evaluated expression itself, and `node -p 'fs.readFileSync(0)'` is the
+// idiom for exactly that, so print mode is never a sink.
+var inlineProgramFlags = map[string]map[string]bool{
+	"python":  {"-c": true},
+	"python3": {"-c": true},
+	"node":    {"-e": true, "--eval": true},
+	"bun":     {"-e": true, "--eval": true},
+}
+
+func inlineProgramSink(name string, args []string) bool {
+	flags, ok := inlineProgramFlags[name]
+	if !ok {
+		return false
+	}
+	for _, a := range args {
+		if flags[a] {
+			return true
+		}
+		if !strings.HasPrefix(a, "-") {
+			return false // a script path came first
+		}
+	}
+	return false
 }
 
 // reducesOutput reports whether a pipe's downstream segment bounds its input
@@ -238,6 +271,9 @@ func reducesOutput(seg string, budget int) bool {
 	name := filepath.Base(f[0])
 	if name == "sed" {
 		return sedCapsOutput(f[1:], budget)
+	}
+	if inlineProgramSink(name, f[1:]) {
+		return true
 	}
 	if !reducingSinks[name] {
 		return false

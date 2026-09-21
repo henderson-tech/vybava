@@ -58,6 +58,12 @@ export interface VybavaConfig {
     appiumSessionDirs?: string[];
     /** Most workers a playwright/vitest/jest run may ask for on this machine (machine:test-worker-cap); at least 1, default 2. Heavier runs go to the Devbox or set CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1. */
     testWorkerCap?: number;
+    /** RE2 patterns over one local command segment; a match must run through `devbox run -- '<cmd>'` (machine:devbox-only). Escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1. */
+    devboxOnly?: string[];
+    /** Most booted simulators before a boot is refused (machine:sim-cap); at least 1, default 2. */
+    simCap?: number;
+    /** Most Metro/next/API dev servers before a start is refused (machine:dev-server-cap); at least 1, default 3. */
+    devServerCap?: number;
   };
 }
 

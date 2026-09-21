@@ -19,10 +19,18 @@ PreToolUse    mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtool
               # browser:screenshot-dir (a screenshot file lands under .vitrinka/mcp/ —
               # the onyx playwright wrapper's --output-dir; chrome-devtools' filePath
               # is refused elsewhere; ignore the dir once in ~/.config/git/ignore)
+SessionStart          claude-guards doctor --fix      # the hooks above are still wired
+SessionStart          claude-guards weather           # one line of machine pressure into context
+SessionStart          claude-guards reap              # orphaned xcodebuild/WDA/Appium of dead sessions
 SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
+SessionEnd            claude-guards reap
 ```
+
+`claude-guards hooks` prints this wiring as JSON and `doctor` checks the live
+file against it. `claude-guards list [family]` prints every rule from the
+registry (`registry.go`): id, event, what it blocks, escape hatch.
 
 A block prints its reason and the sanctioned alternative on stderr and exits 2;
 that text is what Claude sees, so every message ends in the next command, not
@@ -44,7 +52,12 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   worker cap, or one above guards.testWorkerCap (default 2);
                   ssh and devbox payloads, bun test, --version/--help/--list
                   and playwright install/codegen/show-report pass
-                  (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1)
+                  (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1) ·
+                  a command matching a repo's guards.devboxOnly run outside
+                  devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
+                  a simulator boot past guards.simCap (default 2) or a
+                  Metro/next/API dev server start past guards.devServerCap
+                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
@@ -86,6 +99,42 @@ command carried by `ssh` or `devbox run` runs on the box and is never read.
 Unlike its two siblings this rule HAS an escape, because a deliberate
 full-parallel run on a quiet Mac is legitimate:
 `CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1 <command>` as the command's env prefix.
+
+`machine:devbox-only` is config-driven: a repo lists RE2 patterns under
+`guards.devboxOnly` and any local command segment matching one (through
+`timeout`/`nice`/`env` and leading assignments) is refused unless `devbox run`
+or `ssh` carries it. FixIt's 2026-09-17 rule routing `apps/api`, `apps/web`
+and `apps/admin-web` dev servers and suites to the Devbox lived only as prose,
+and on 2026-09-19/20 three Metro bundlers, four API servers and two
+next-servers ran on the Mac anyway. The message prints the exact `devbox run
+-- '<cmd>'` form; a hand test the user asked for here sets
+`CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+
+`machine:sim-cap` and `machine:dev-server-cap` count what already runs before
+a boot or a start. A simulator boot (`xcrun simctl boot`, `expo run:ios`,
+`bun run run:sim:*`, `run.ts sim`, `emulator -avd`) is refused at
+`guards.simCap` booted simulators and emulators (default 2, one `launchd_sim`
+per booted iOS device); a dev-server start (`expo start`, `next dev`, `turbo
+dev`, `bun run dev*`, `run:api|web|admin`, `nest start`, `vite`) is refused at
+`guards.devServerCap` running Metro, next and API servers (default 3, an
+orchestrator and its leaf counted once). The process table is read only when
+the command IS a boot or a start. The message lists the running servers by
+pid and points at `/wk:pause` and the Devbox; a deliberate extra instance on
+a quiet Mac sets `CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1`.
+
+`claude-guards weather` (SessionStart) prints one line the session starts
+with — load against cores, free and compressor GB, claude and codex sessions,
+sims, metro, next and api counts — and a second, warning line only under
+pressure (free < 2 GB, load above the core count, or a cap already reached)
+that names the Devbox, `/wk:pause` and how many sessions are older than 10 h;
+`--text` adds those sessions as a table. `claude-guards reap`
+(SessionStart/SessionEnd) kills orphaned WebDriverAgent runners, `xcodebuild
+test-without-building` and Appium servers older than ten minutes whose
+claude/codex ancestor is gone; a process with a live owning session is never
+touched. On 2026-09-19/20 four booted simulators, three Metro bundlers and
+four API servers held about 25 GB and a thousand processes at the memory
+ceiling, two orphaned xcodebuilds were 2 h and 19 h old, and the load average
+peaked at 680.
 
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or
@@ -246,3 +295,31 @@ read from PNG, JPEG, GIF and WebP headers; a header we cannot read is charged
 the per-image maximum rather than zero, and counted as unknown. Output tokens
 include thinking; do not add thinking again. Saved transcripts may not retain
 every resume's hook event, so hook counts describe recorded evidence.
+
+## Self-check and host setup
+
+On 2026-09-18 Claude Code rewrote `~/.claude/settings.json` outside any tool
+call and dropped the claude-guards PreToolUse hooks; every session ran
+unguarded for 36 h, which is how a whole-disk crawl and a per-look Appium loop
+reached the machine. The wiring is therefore data (`claude-guards hooks` prints
+the manifest as JSON) and `claude-guards doctor` diffs the live file against it
+on every SessionStart. Without `--fix` it prints the missing entries to stdout,
+so the session itself learns it is unguarded; with `--fix` (the SessionStart
+wiring) it re-inserts them as a surgical merge — only the `hooks` key is
+re-marshalled, every other key is written back from its raw bytes — and points
+at `git -C ~/.claude diff settings.json`. A malformed or absent file is one
+stderr warning, never a failed session. `vybava doctor` runs the same check.
+
+```text
+claude-guards doctor            # report only
+claude-guards doctor --fix      # re-insert what a rewrite dropped
+claude-guards hooks             # the manifest
+vybava setup mac [--dry-run]    # idempotent host settings
+```
+
+`vybava setup mac` applies per-machine settings a Mac needs under many parallel
+agent sessions; each step is checked first and a machine already set up is
+left untouched. First step: `~/.gradle/gradle.properties` carries
+`org.gradle.daemon.idletimeout=600000` — Gradle's 3 h default parked 10 GB of
+idle Gradle/Kotlin daemons on 2026-09-19. The key is edited in place or
+appended; other lines are never rewritten.
