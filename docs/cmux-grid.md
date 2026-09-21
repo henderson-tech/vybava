@@ -19,10 +19,12 @@ Password and Full open access are not required. The helper never reads credentia
 ```sh
 vybava install cmux-grid
 cmux-grid plan --width 2056 --height 1290
+cmux-grid plan --width 2056 --height 1290 --json
 cmux-grid new --width 3008 --height 1692 --screen 'Pro Display XDR'
 ```
 
-`plan` prints the shape and native layout JSON without contacting cmux. `new`
+`plan` prints a human-readable grid summary without contacting cmux; `--json`
+includes the shape and full native layout. `new`
 supports `--json`, `--socket` and `--cmux`. It resolves the foreground cmux window
 through the socket, ignoring the caller's workspace environment. Failed or
 incomplete requests leave the new workspace available for inspection, never

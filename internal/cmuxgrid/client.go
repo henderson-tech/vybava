@@ -27,7 +27,7 @@ func CheckVersion(ctx context.Context, cli string) error {
 	minor, _ := strconv.Atoi(m[2])
 	patch, _ := strconv.Atoi(m[3])
 	if major == 0 && (minor < 64 || minor == 64 && patch < 25) {
-		return fmt.Errorf("cmux %s needs updating to 0.64.25 or newer for native grid layouts and pane zoom; restart cmux after updating", m[0])
+		return fmt.Errorf("%s needs updating to 0.64.25 or newer for native grid layouts and pane zoom; restart cmux after updating", m[0])
 	}
 	return nil
 }

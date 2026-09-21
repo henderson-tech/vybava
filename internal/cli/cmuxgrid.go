@@ -28,13 +28,20 @@ func (rt *runtime) cmuxGridCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&screen, "screen", "", "monitor name (Pro Display XDR always gets five columns in landscape)")
 	cmd.PersistentFlags().StringVar(&socket, "socket", "/tmp/cmux.sock", "cmux control socket")
 	cmd.PersistentFlags().StringVar(&cli, "cmux", "/Applications/cmux.app/Contents/Resources/bin/cmux", "installed cmux CLI")
-	for _, verb := range []string{"plan", "new"} {
-		cmd.AddCommand(&cobra.Command{Use: verb, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	for _, verb := range []struct{ name, description string }{
+		{"plan", "Preview the monitor's grid without changing cmux"},
+		{"new", "Create and focus a new workspace with the monitor's grid"},
+	} {
+		cmd.AddCommand(&cobra.Command{Use: verb.name, Short: verb.description, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 			shape, err := cmuxgrid.ForMonitor(width, height, screen)
 			if err != nil {
 				return err
 			}
 			if command.Name() == "plan" {
+				if !rt.json {
+					_, err := fmt.Fprintf(rt.stdout, "%d columns × %d rows (%d terminals); no workspace created\n", shape.Columns, shape.Rows, shape.Columns*shape.Rows)
+					return err
+				}
 				layout, err := cmuxgrid.Layout(shape)
 				if err != nil {
 					return err
