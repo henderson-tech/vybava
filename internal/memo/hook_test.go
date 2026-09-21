@@ -57,9 +57,9 @@ func TestHookStopRecordsDedupedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range []string{
-		"- #1 2026-09-20 feedback/git Cited. ^m1",
-		"- #2 2026-09-20 feedback/git Read via note. -> [[notes/race]] ^m2",
-		"- #3 2026-09-20 feedback/git Never used. ^m3",
+		"- #1 feedback/git Cited. ^m1",
+		"- #2 feedback/git Read via note. -> [[notes/race]] ^m2",
+		"- #3 feedback/git Never used. ^m3",
 	} {
 		if err := appendLine(filepath.Join(personal.Path, LedgerFile), r); err != nil {
 			t.Fatal(err)
@@ -128,6 +128,14 @@ func TestHookPreToolUseRefusesHandWrites(t *testing.T) {
 		{"codex patch update", "apply_patch", "", "*** Begin Patch\n*** Update File: " + ledger + "\n@@\n+- #t9 x\n*** End Patch\n", true},
 		{"codex patch add index", "apply_patch", "", "*** Begin Patch\n*** Add File: " + index + "\n+# x\n*** End Patch\n", true},
 		{"codex patch note", "apply_patch", "", "*** Begin Patch\n*** Update File: " + filepath.Join(home, "notes", "x.md") + "\n@@\n+safe\n*** End Patch\n", false},
+		{"codex patch delete", "apply_patch", "", "*** Begin Patch\n*** Delete File: " + usage + "\n*** End Patch\n", true},
+		{"codex patch move onto ledger", "apply_patch", "", "*** Begin Patch\n*** Update File: " + filepath.Join(home, "notes", "x.md") + "\n*** Move to: " + ledger + "\n*** End Patch\n", true},
+		{"codex patch move note", "apply_patch", "", "*** Begin Patch\n*** Update File: " + filepath.Join(home, "notes", "x.md") + "\n*** Move to: " + filepath.Join(home, "notes", "y.md") + "\n*** End Patch\n", false},
+		{"codex patch via shell heredoc", "shell", "", "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: " + ledger + "\n@@\n+- #t9 x\n*** End Patch\nPATCH\n", true},
+		{"codex patch via bash -lc heredoc", "Bash", "", "bash -lc \"apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: " + index + "\n+# x\n*** End Patch\nEOF\"", true},
+		{"codex patch via shell relative", "shell", "", "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: LEDGER.md\n@@\n+- #t9 x\n*** End Patch\nPATCH\n", true},
+		{"codex patch via shell note", "shell", "", "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: " + filepath.Join(home, "notes", "x.md") + "\n@@\n+safe\n*** End Patch\nPATCH\n", false},
+		{"patch header quoted, no apply_patch", "Bash", "", "echo '*** Update File: " + ledger + "'", false},
 	}
 	for _, c := range cases {
 		p := HookPayload{HookEventName: "PreToolUse", ToolName: c.tool, Cwd: home}
@@ -174,7 +182,7 @@ func TestSnapshotLogRestore(t *testing.T) {
 	if _, d, _ := Snapshot(home, "again"); d == nil || d.Code != DiagSnapshotClean {
 		t.Errorf("clean snapshot: %v", d)
 	}
-	if err := appendLine(l.Path, "- #1 2026-09-20 feedback/git Row. ^m1"); err != nil {
+	if err := appendLine(l.Path, "- #1 feedback/git Row. ^m1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, d, err := Snapshot(home, "two"); err != nil || d != nil {
@@ -199,10 +207,10 @@ func TestSnapshotLogRestore(t *testing.T) {
 func TestLintLedgerHome(t *testing.T) {
 	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 	l := newHome(t, KindTeam,
-		"- #t1 2026-09-20 project/api Fine. ^t1",
-		"- #t2 2026-09-20 project/api supersedes #t1: Once. ^t2",
-		"- #t3 2026-09-20 project/api supersedes #t1: Twice. ^t3",
-		"- #t4 2026-09-20 project/api Points nowhere. -> [[notes/none]] [[nope/LEDGER#^t1]] ^t4",
+		"- #t1 project/api Fine. ^t1",
+		"- #t2 project/api supersedes #t1: Once. ^t2",
+		"- #t3 project/api supersedes #t1: Twice. ^t3",
+		"- #t4 project/api Points nowhere. -> [[notes/none]] [[nope/LEDGER#^t1]] ^t4",
 	)
 	if err := os.MkdirAll(filepath.Join(l.Home(), NotesDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -251,7 +259,7 @@ func TestSnapshotInsideExistingWorkTree(t *testing.T) {
 		t.Fatalf("Log: %+v %v %v", entries, d, err)
 	}
 	ledger := filepath.Join(home.Path, LedgerFile)
-	if err := appendLine(ledger, "- #1 2026-09-20 feedback/git Row. ^m1"); err != nil {
+	if err := appendLine(ledger, "- #1 feedback/git Row. ^m1"); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := Restore(home, entries[0].Rev, LedgerFile); err != nil || d != nil {
@@ -280,7 +288,7 @@ func TestHookStopCreditsEnclosingRegisteredHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id := 1; id <= 106; id++ {
-		row := Row{ID: id, Team: true, Date: "2026-09-20", Type: "project", Topic: "t", Sentence: "Fact."}
+		row := Row{ID: id, Team: true, Type: "project", Topic: "t", Sentence: "Fact."}
 		if id == 50 {
 			row.Links = []string{"[[notes/x]]"}
 		}
@@ -383,22 +391,22 @@ func TestPersonalAliasFromSlugWhenCwdElsewhere(t *testing.T) {
 // TestTeamIDPrefix pins the team id space: #t12 ... ^t12 round-trips, a
 // mixed prefix is refused, and a personal-form row cannot enter a team ledger.
 func TestTeamIDPrefix(t *testing.T) {
-	line := "- #t12 2026-09-20 project/api supersedes #t3: Team fact. -> [[LEDGER#^t3]] ^t12"
+	line := "- #t12 project/api supersedes #t3: Team fact. -> [[LEDGER#^t3]] ^t12"
 	r, d := ParseRow(line)
 	if d != nil || !r.Team || r.ID != 12 || r.Supersedes() != 3 || r.Format() != line || r.Cite() != "#t12" {
 		t.Fatalf("team row: %v %+v %q", d, r, r.Format())
 	}
-	for _, bad := range []string{"- #t12 2026-09-20 project/api X. ^m12", "- #12 2026-09-20 project/api X. ^t12"} {
+	for _, bad := range []string{"- #t12 project/api X. ^m12", "- #12 project/api X. ^t12"} {
 		if _, d := ParseRow(bad); d == nil || d.Code != DiagRowSyntax {
 			t.Errorf("%q must be refused: %v", bad, d)
 		}
 	}
 	l := newHome(t, KindTeam)
-	row, d, err := l.Append(Row{Date: "2026-09-20", Type: "project", Topic: "api", Sentence: "Fact."})
-	if err != nil || d != nil || !row.Team || row.Format() != "- #t1 2026-09-20 project/api Fact. ^t1" {
+	row, d, err := l.Append(Row{Type: "project", Topic: "api", Sentence: "Fact."})
+	if err != nil || d != nil || !row.Team || row.Format() != "- #t1 project/api Fact. ^t1" {
 		t.Fatalf("Append into team: %v %v %q", d, err, row.Format())
 	}
-	if err := appendLine(l.Path, "- #2 2026-09-20 project/api Bare. ^m2"); err != nil {
+	if err := appendLine(l.Path, "- #2 project/api Bare. ^m2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, d, _ := Load(l.Path); d == nil || d.Code != DiagLedgerInvalid {
@@ -443,13 +451,13 @@ func TestWorktreeSessionSplitsPersonalAndTeam(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(personal.Path, NotesDir, "hang.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range []string{"- #83 2026-09-20 feedback/shell Personal. -> [[notes/hang]] ^m83", "- #106 2026-09-20 feedback/db Personal too. ^m106"} {
+	for _, r := range []string{"- #83 feedback/shell Personal. -> [[notes/hang]] ^m83", "- #106 feedback/db Personal too. ^m106"} {
 		if err := appendLine(pl.Path, r); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for id := 1; id <= 83; id++ {
-		if err := appendLine(tl.Path, Row{ID: id, Team: true, Date: "2026-09-20", Type: "project", Topic: "t", Sentence: "Team."}.Format()); err != nil {
+		if err := appendLine(tl.Path, Row{ID: id, Team: true, Type: "project", Topic: "t", Sentence: "Team."}.Format()); err != nil {
 			t.Fatal(err)
 		}
 	}

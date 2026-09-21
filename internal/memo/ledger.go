@@ -34,10 +34,10 @@ const (
 // that owns it.
 var TypeKind = map[string]Kind{"user": KindPersonal, "feedback": KindPersonal, "project": KindTeam, "reference": KindTeam}
 
-// Row is one ledger line. Sentence excludes the trailing block id.
+// Row is one ledger line. Sentence excludes the trailing block id. A row
+// carries no date: its creation is the `add` event in usage.jsonl.
 type Row struct {
 	ID       int      `json:"id"`
-	Date     string   `json:"date"`
 	Type     string   `json:"type"`
 	Topic    string   `json:"topic"`
 	Pinned   bool     `json:"pinned"`
@@ -60,7 +60,7 @@ type Ledger struct {
 func (l *Ledger) Home() string { return filepath.Dir(l.Path) }
 
 var (
-	rowPattern      = regexp.MustCompile(`^- #(t?)(\d+) (\d{4}-\d{2}-\d{2}) ([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
+	rowPattern      = regexp.MustCompile(`^- #(t?)(\d+) ([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
 	headPattern     = regexp.MustCompile(`^([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?)$`)
 	supersedesRE    = regexp.MustCompile(`^supersedes #t?(\d+): `)
 	retiresRE       = regexp.MustCompile(`^retires #t?(\d+)\.(?: |$)`)
@@ -70,13 +70,13 @@ var (
 	rowLinkRE       = regexp.MustCompile(`^\[\[LEDGER#\^[mt](\d+)\]\]$`)
 	aliasRowLinkRE  = regexp.MustCompile(`^\[\[([a-z0-9]+(?:-[a-z0-9]+)*)/LEDGER#\^[mt](\d+)\]\]$`)
 	aliasNoteLinkRE = regexp.MustCompile(`^\[\[([a-z0-9]+(?:-[a-z0-9]+)*)/notes/([a-z0-9]+(?:-[a-z0-9]+)*)\]\]$`)
-	grammarComment  = "<!-- - #<id> <YYYY-MM-DD> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>  (team ledger: #t<id> ... ^t<id>) -->"
+	grammarComment  = "<!-- - #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>  (team ledger: #t<id> ... ^t<id>) -->"
 )
 
 // Format renders a row in the exact ledger grammar.
 func (r Row) Format() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- #%s%d %s %s/%s", r.IDPrefix(), r.ID, r.Date, r.Type, r.Topic)
+	fmt.Fprintf(&b, "- #%s%d %s/%s", r.IDPrefix(), r.ID, r.Type, r.Topic)
 	if r.Pinned {
 		b.WriteString("!")
 	}
@@ -133,14 +133,14 @@ func ParseRow(line string) (Row, *Diag) {
 	}
 	team := m[1] == "t"
 	id, _ := strconv.Atoi(m[2])
-	block, _ := strconv.Atoi(m[9])
-	if id != block || (m[8] == "t") != team {
-		return Row{}, errorDiag(DiagRowSyntax, fmt.Sprintf("row #%s%d ends with ^%s%d; the block id must equal the row id (personal ^m, team ^t)", m[1], id, m[8], block), "")
+	block, _ := strconv.Atoi(m[8])
+	if id != block || (m[7] == "t") != team {
+		return Row{}, errorDiag(DiagRowSyntax, fmt.Sprintf("row #%s%d ends with ^%s%d; the block id must equal the row id (personal ^m, team ^t)", m[1], id, m[7], block), "")
 	}
-	if _, ok := TypeKind[m[4]]; !ok {
-		return Row{}, errorDiag(DiagRowSyntax, fmt.Sprintf("row #%s%d has type %q; use user, feedback, project or reference", m[1], id, m[4]), "")
+	if _, ok := TypeKind[m[3]]; !ok {
+		return Row{}, errorDiag(DiagRowSyntax, fmt.Sprintf("row #%s%d has type %q; use user, feedback, project or reference", m[1], id, m[3]), "")
 	}
-	sentence, links := splitLinks(m[7])
+	sentence, links := splitLinks(m[6])
 	if d := ValidateSentence(sentence); d != nil {
 		d.Detail = fmt.Sprintf("row #%d: %s", id, d.Detail)
 		return Row{}, d
@@ -151,7 +151,7 @@ func ParseRow(line string) (Row, *Diag) {
 			return Row{}, d
 		}
 	}
-	return Row{ID: id, Team: team, Date: m[3], Type: m[4], Topic: m[5], Pinned: m[6] == "!", Sentence: sentence, Links: links}, nil
+	return Row{ID: id, Team: team, Type: m[3], Topic: m[4], Pinned: m[5] == "!", Sentence: sentence, Links: links}, nil
 }
 
 // ParseHead reads the `<type>/<topic>[!]` argument of `memo add`.

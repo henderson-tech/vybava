@@ -14,7 +14,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var importRowRE = regexp.MustCompile(`^- (\d{4}-\d{2}-\d{2}) ([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+)$`)
+// An import row is the ledger grammar minus `#id` and `^mid`. A leading
+// `YYYY-MM-DD` (the pre-amendment grammar) is accepted and dropped, so a
+// draft written before rows lost their date still imports.
+var importRowRE = regexp.MustCompile(`^- (?:\d{4}-\d{2}-\d{2} )?([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+)$`)
 
 // ParseImport reads an id-less import file: the row grammar minus `#id` and
 // `^mid`; blank lines, Markdown headings and `#` comments are skipped. Every
@@ -35,14 +38,14 @@ func ParseImport(data []byte) ([]Row, []*Diag) {
 		}
 		m := importRowRE.FindStringSubmatch(text)
 		if m == nil {
-			bad(&Diag{Code: DiagImportInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("line %d is neither a row `- <YYYY-MM-DD> <type>/<topic>[!] <sentence> [-> <link> ...]` nor a heading or blank line: %s", line, text), Fix: fmt.Sprintf("edit line %d, then re-run memo import", line)})
+			bad(&Diag{Code: DiagImportInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("line %d is neither a row `- <type>/<topic>[!] <sentence> [-> <link> ...]` nor a heading or blank line: %s", line, text), Fix: fmt.Sprintf("edit line %d, then re-run memo import", line)})
 			continue
 		}
-		if _, ok := TypeKind[m[2]]; !ok {
-			bad(&Diag{Code: DiagImportInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("line %d: type %q is not user, feedback, project or reference", line, m[2]), Fix: fmt.Sprintf("edit line %d, then re-run memo import", line)})
+		if _, ok := TypeKind[m[1]]; !ok {
+			bad(&Diag{Code: DiagImportInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("line %d: type %q is not user, feedback, project or reference", line, m[1]), Fix: fmt.Sprintf("edit line %d, then re-run memo import", line)})
 			continue
 		}
-		sentence, links := splitLinks(m[5])
+		sentence, links := splitLinks(m[4])
 		if d := ValidateSentence(sentence); d != nil {
 			d.Line = line
 			d.Detail = fmt.Sprintf("line %d: %s", line, d.Detail)
@@ -64,7 +67,7 @@ func ParseImport(data []byte) ([]Row, []*Diag) {
 		if !linkOK {
 			continue
 		}
-		rows = append(rows, Row{Date: m[1], Type: m[2], Topic: m[3], Pinned: m[4] == "!", Sentence: sentence, Links: links, Line: line})
+		rows = append(rows, Row{Type: m[1], Topic: m[2], Pinned: m[3] == "!", Sentence: sentence, Links: links, Line: line})
 	}
 	if err := sc.Err(); err != nil {
 		bad(errorDiag(DiagImportInvalid, err.Error(), ""))
@@ -136,9 +139,8 @@ func Migrate(home string, today time.Time) ([]MigrateNote, string, error) {
 	}
 	sort.Slice(notes, func(i, j int) bool { return notes[i].Path < notes[j].Path })
 	var b strings.Builder
-	date := today.Format("2006-01-02")
-	fmt.Fprintf(&b, "# memo import template for %s (%d notes); lines starting with # are ignored\n", home, len(notes))
-	b.WriteString("# grammar: - <YYYY-MM-DD> <type>/<topic>[!] <sentence> [-> <link> ...]\n")
+	fmt.Fprintf(&b, "# memo import template for %s (%d notes) on %s; lines starting with # are ignored\n", home, len(notes), today.Format("2006-01-02"))
+	b.WriteString("# grammar: - <type>/<topic>[!] <sentence> [-> <link> ...]\n")
 	for _, n := range notes {
 		fmt.Fprintf(&b, "\n# %s: %s\n", filepath.Base(n.Path), n.Description)
 		topic := strings.TrimPrefix(strings.TrimSuffix(filepath.Base(n.Path), ".md"), n.Type+"-")
@@ -146,10 +148,10 @@ func Migrate(home string, today time.Time) ([]MigrateNote, string, error) {
 			topic = "topic"
 		}
 		for _, bullet := range n.Bullets {
-			fmt.Fprintf(&b, "# %s\n- %s %s/%s <one sentence>.\n", bullet, date, n.Type, Slugify(topic))
+			fmt.Fprintf(&b, "# %s\n- %s/%s <one sentence>.\n", bullet, n.Type, Slugify(topic))
 		}
 		if len(n.Bullets) == 0 {
-			fmt.Fprintf(&b, "- %s %s/%s <one sentence>.\n", date, n.Type, Slugify(topic))
+			fmt.Fprintf(&b, "- %s/%s <one sentence>.\n", n.Type, Slugify(topic))
 		}
 	}
 	return notes, b.String(), nil

@@ -274,7 +274,7 @@ func TestLintLedgerHome(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	write(t, filepath.Join(root, "LEDGER.md"), "---\nmemo: 1\nalias: t\nkind: team\n---\n- #t1 2026-09-20 project/api Fact. -> [[notes/detail]] ^t1\n")
+	write(t, filepath.Join(root, "LEDGER.md"), "---\nmemo: 1\nalias: t\nkind: team\n---\n- #t1 project/api Fact. -> [[notes/detail]] ^t1\n")
 	write(t, filepath.Join(root, "MEMORY.md"), "# stale\n")
 	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o755); err != nil {
 		t.Fatal(err)

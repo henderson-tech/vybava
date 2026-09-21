@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// Event is one line of usage.jsonl: a row was cited, shown, its note read,
-// or explicitly touched, by a session (empty for a manual CLI call).
+// Event is one line of usage.jsonl: a row was added, cited, shown, its note
+// read, or explicitly touched, by a session (empty for a manual CLI call).
+// The `add` event is the row's creation time; the ledger row carries none.
 type Event struct {
 	Row     int    `json:"row"`
 	Kind    string `json:"kind"`
@@ -20,8 +21,9 @@ type Event struct {
 	Session string `json:"session,omitempty"`
 }
 
-// Weights per event kind; unknown kinds score nothing.
-var Weights = map[string]float64{"cite": 1, "show": 1, "read": 1, "touch": 2}
+// Weights per event kind; unknown kinds score nothing. `add` records when a
+// row was created and never scores, so a fresh row is not "hot" for being new.
+var Weights = map[string]float64{"add": 0, "cite": 1, "show": 1, "read": 1, "touch": 2}
 
 const (
 	halfLifeDays = 90.0
@@ -112,20 +114,6 @@ func Score(events []Event, row int, now time.Time) float64 {
 	return total
 }
 
-func newestEvent(events []Event, row int) (time.Time, bool) {
-	var newest time.Time
-	found := false
-	for _, e := range events {
-		if e.Row != row {
-			continue
-		}
-		if at, err := time.Parse(time.RFC3339, e.At); err == nil && at.After(newest) {
-			newest, found = at, true
-		}
-	}
-	return newest, found
-}
-
 // Ranked is a row with its render order inputs.
 type Ranked struct {
 	Row   Row     `json:"row"`
@@ -158,11 +146,45 @@ func Order(l *Ledger, events []Event, now time.Time) []Ranked {
 	return out
 }
 
+// stale is the 180-day aging rule: a row created more than 180 days ago whose
+// newest usage event is older than that (or absent) drops off the surface.
+// Creation is the row's `add` event; a row without one (a legacy ledger) is
+// treated as created now, so it never vanishes for lack of a record.
 func stale(r Row, events []Event, now time.Time) bool {
-	created, err := time.Parse("2006-01-02", r.Date)
-	if err != nil || now.Sub(created).Hours()/24 <= staleDays {
+	created, found := createdAt(events, r.ID)
+	if !found || now.Sub(created).Hours()/24 <= staleDays {
 		return false
 	}
-	newest, found := newestEvent(events, r.ID)
+	newest, found := newestUsage(events, r.ID)
 	return !found || now.Sub(newest).Hours()/24 > staleDays
+}
+
+// createdAt is the time of the row's earliest `add` event.
+func createdAt(events []Event, row int) (time.Time, bool) {
+	var earliest time.Time
+	found := false
+	for _, e := range events {
+		if e.Row != row || e.Kind != "add" {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, e.At); err == nil && (!found || at.Before(earliest)) {
+			earliest, found = at, true
+		}
+	}
+	return earliest, found
+}
+
+// newestUsage is the time of the row's newest event other than `add`.
+func newestUsage(events []Event, row int) (time.Time, bool) {
+	var newest time.Time
+	found := false
+	for _, e := range events {
+		if e.Row != row || e.Kind == "add" {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, e.At); err == nil && at.After(newest) {
+			newest, found = at, true
+		}
+	}
+	return newest, found
 }

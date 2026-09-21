@@ -15,6 +15,7 @@ log: `docs/qna/2026-09-20-memo-ledger.md`.
   LEDGER.md     append-only truth, every row ever written (memo add / import)
   MEMORY.md     rendered projection (memo render), never edited by hand
   usage.jsonl   one event per line: {"row":45,"kind":"cite","at":"RFC3339","session":"<id>"}
+                kinds: add (the row's creation, written by memo add / import), cite, show, read, touch
   notes/        optional detail notes, v2 frontmatter, linked from rows
 ```
 
@@ -37,14 +38,18 @@ alias: fixit
 kind: personal
 repo: /Users/me/Work/FixIt        # personal homes only: the repo the slug encodes
 ---
-<!-- - #<id> <YYYY-MM-DD> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id> -->
+<!-- - #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id> -->
 ```
 
 ## Row grammar
 
 ```text
-- #<id> <YYYY-MM-DD> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>
+- #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>
 ```
+
+A row carries no date (amendment 2026-09-21): its creation time is the `add`
+event `memo add` / `memo import` write to `usage.jsonl`, so the ledger line
+holds only what a reader acts on.
 
 - `id`: positive integer, strictly increasing per home, never reused. In a
   personal ledger the row is `#45 ... ^m45` and is cited `#45`; in a TEAM
@@ -63,9 +68,9 @@ repo: /Users/me/Work/FixIt        # personal homes only: the repo the slug encod
   `[[<alias>/LEDGER#^m<id>]]`, `[[<alias>/notes/<slug>]]`, `https://...`.
 
 ```text
-- #45 2026-09-20 feedback/git Never `git stash`; parallel sessions share the tree. -> [[notes/git-stash-race]] ^m45
-- #46 2026-09-20 reference/macos! AX exposes only the current Space; an off-Space frame() hangs until timeout. ^m46
-- #61 2026-09-21 feedback/git supersedes #45: stash is fine inside `.worktrees/`. ^m61
+- #45 feedback/git Never `git stash`; parallel sessions share the tree. -> [[notes/git-stash-race]] ^m45
+- #46 reference/macos! AX exposes only the current Space; an off-Space frame() hangs until timeout. ^m46
+- #61 feedback/git supersedes #45: stash is fine inside `.worktrees/`. ^m61
 ```
 
 ## Rendered MEMORY.md
@@ -77,11 +82,13 @@ grammar, so a citation copied from either file is identical. Hard cap 100
 lines including the header; rows past it stay in the ledger only.
 
 Score per row: sum over its usage events of `weight * 0.5^(age_days/90)`,
-weights `cite 1`, `show 1`, `read 1` (a Read of a linked note), `touch 2`.
+weights `cite 1`, `show 1`, `read 1` (a Read of a linked note), `touch 2`;
+`add` weighs 0, so a row is never hot merely for being new.
 Order: pinned, then score descending, then newest id first. A row created
-more than 180 days ago whose newest event is more than 180 days old (or that
-never had one) is not rendered. Superseded and retired rows are never
-rendered.
+more than 180 days ago (its `add` event) whose newest usage event is more
+than 180 days old (or that never had one) is not rendered; a row without an
+`add` event (a ledger written before 2026-09-21) counts as created now, so a
+legacy ledger never vanishes. Superseded and retired rows are never rendered.
 
 ## Verbs
 
@@ -113,7 +120,10 @@ home; `--home` or an alias overrides that.
 `memo add` creates the ledger on first use: the row's type decides the kind
 (`user`/`feedback` personal, else team), the alias is the repo basename
 lowercased (`-team` suffix for the team home), and a personal ledger records
-the repo path. `memo show` and `memo touch` stamp their event with
+the repo path. `memo add` records one `add` event for the new row and `memo
+import` one per imported row (all at the same timestamp); an import file
+may still carry the pre-amendment leading `YYYY-MM-DD`, which is dropped.
+`memo show` and `memo touch` stamp their event with
 `CLAUDE_CODE_SESSION_ID` when set, so the Stop hook's harvest of the same
 session deduplicates against them.
 
