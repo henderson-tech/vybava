@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/vconfig"
@@ -19,13 +20,21 @@ type Config struct {
 	UnboundedCommands []string `json:"unboundedCommands,omitempty"`
 	AppiumSessionDirs []string `json:"appiumSessionDirs,omitempty"`
 	TestWorkerCap     int      `json:"testWorkerCap,omitempty"`
-	root              string
+	// DevboxOnly lists RE2 patterns; a local command segment matching one
+	// must run through `devbox run` (machine:devbox-only).
+	DevboxOnly []string `json:"devboxOnly,omitempty"`
+	// SimCap is the most booted simulators this Mac may hold before a boot
+	// is refused (machine:sim-cap); DevServerCap the same for Metro/next/
+	// API dev servers (machine:dev-server-cap).
+	SimCap       int `json:"simCap,omitempty"`
+	DevServerCap int `json:"devServerCap,omitempty"`
+	root         string
 }
 
 // defaultGuardConfig is what every rule reads when the repo sets nothing, or
 // when its guards section fails to load.
 func defaultGuardConfig() Config {
-	return Config{MaxDumpLines: maxDumpLines, TestWorkerCap: defaultTestWorkerCap}
+	return Config{MaxDumpLines: maxDumpLines, TestWorkerCap: defaultTestWorkerCap, SimCap: defaultSimCap, DevServerCap: defaultDevServerCap}
 }
 
 func loadGuardConfig(cwd string) (Config, error) {
@@ -48,6 +57,17 @@ func loadGuardConfig(cwd string) (Config, error) {
 	}
 	if result.TestWorkerCap < 1 {
 		return defaultGuardConfig(), errors.New("guards.testWorkerCap must be at least 1")
+	}
+	if result.SimCap < 1 {
+		return defaultGuardConfig(), errors.New("guards.simCap must be at least 1")
+	}
+	if result.DevServerCap < 1 {
+		return defaultGuardConfig(), errors.New("guards.devServerCap must be at least 1")
+	}
+	for _, pattern := range result.DevboxOnly {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return defaultGuardConfig(), fmt.Errorf("guards.devboxOnly %q: %w", pattern, err)
+		}
 	}
 	for name, patterns := range map[string][]string{"noRead": result.NoRead, "appiumSessionDirs": result.AppiumSessionDirs} {
 		for _, pattern := range patterns {

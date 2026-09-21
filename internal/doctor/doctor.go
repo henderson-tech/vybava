@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/catalog"
+	"github.com/henderson-tech/vybava/internal/claudeguards"
 	"github.com/henderson-tech/vybava/internal/state"
 )
 
@@ -118,7 +119,27 @@ func Run(c catalog.Catalog, store state.Store) Report {
 			report.Checks = append(report.Checks, Check{ID: id, Status: StatusPass, Message: installed.Destination})
 		}
 	}
+	report.Checks = append(report.Checks, guardHooksCheck())
 	return report
+}
+
+// guardHooksCheck verifies ~/.claude/settings.json still wires every
+// claude-guards hook — a harness rewrite dropped them once for 36 h.
+func guardHooksCheck() Check {
+	missing, err := claudeguards.CheckHooks("")
+	switch {
+	case errors.Is(err, claudeguards.ErrHooksMissing):
+		var names []string
+		for _, w := range missing {
+			names = append(names, w.Event+" → "+w.Command)
+		}
+		return Check{ID: "claude-guards hooks", Status: StatusFail, Message: "settings.json is missing " + strings.Join(names, ", "), Remedy: "claude-guards doctor --fix"}
+	case errors.Is(err, os.ErrNotExist):
+		return Check{ID: "claude-guards hooks", Status: StatusWarn, Message: "no ~/.claude/settings.json", Remedy: "claude-guards doctor --fix"}
+	case err != nil:
+		return Check{ID: "claude-guards hooks", Status: StatusWarn, Message: err.Error()}
+	}
+	return Check{ID: "claude-guards hooks", Status: StatusPass, Message: "every claude-guards hook is wired in ~/.claude/settings.json"}
 }
 
 func pathContains(expected string) bool {
