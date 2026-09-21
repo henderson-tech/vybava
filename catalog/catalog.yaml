@@ -1,6 +1,12 @@
 schema_version: 1
 
 items:
+  - id: cmux-grid
+    kind: applet
+    status: experimental
+    description: Open a native cmux terminal grid sized for landscape, XDR or portrait displays.
+    applet: cmux-grid
+
   - id: worktime
     kind: applet
     status: experimental
@@ -272,6 +278,7 @@ groups:
   - id: everything
     description: Every package currently published by Výbava.
     items:
+      - cmux-grid
       - worktime
       - lok
       - menubar-doctor
