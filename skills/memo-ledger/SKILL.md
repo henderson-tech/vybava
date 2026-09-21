@@ -8,7 +8,9 @@ description: "Use whenever a session learns a durable fact (a user preference, a
 `LEDGER.md` is the append-only truth of a memory home; `MEMORY.md` is
 rendered from it by usage; `usage.jsonl` is the evidence. memo owns all
 three. A session never edits them: it appends a row, cites a row, or looks a
-row up.
+row up. A row is `- #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>`
+(team: `#t<id>` / `^t<id>`) and carries no date: its creation is the `add`
+event `memo add` writes to `usage.jsonl`.
 
 ## Protocol
 

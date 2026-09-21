@@ -215,11 +215,29 @@ func stripQuotedHeredocs(cmd string) string {
 				end = bodyStart + i + 1 + len(delim) + 1
 			} else if strings.HasSuffix(rest, "\n"+delim) {
 				end = len(cmd)
+			} else if i := heredocEndBeforeQuote(rest, delim); i >= 0 {
+				// The heredoc sits inside a runner payload (`bash -lc
+				// "apply_patch <<'EOF' ... EOF"`): the delimiter line ends
+				// with the payload's closing quote, which must survive so
+				// the payload still unwraps.
+				end = bodyStart + i + 1 + len(delim)
 			}
 		}
 		pos = end
 	}
 	return b.String()
+}
+
+// heredocEndBeforeQuote finds a closing delimiter line that is immediately
+// followed by a quote character instead of a newline, and returns the index
+// of the newline that opens it, or -1.
+func heredocEndBeforeQuote(rest, delim string) int {
+	for _, q := range []string{"\"", "'"} {
+		if i := strings.Index(rest, "\n"+delim+q); i >= 0 {
+			return i
+		}
+	}
+	return -1
 }
 
 // segments splits a command string into independently inspectable pieces,

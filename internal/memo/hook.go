@@ -76,8 +76,21 @@ func RefuseHandWrite(p HookPayload) *Diag {
 	if rewritingTools[p.ToolName] {
 		targets = append(targets, p.ToolInput.FilePath, p.ToolInput.Path)
 	}
-	if p.ToolName == "Bash" {
+	if p.ToolName == "Bash" || p.ToolName == "shell" {
 		targets = append(targets, shellWriteTargets(p.ToolInput.Command)...)
+		if shellRunsApplyPatch(p.ToolInput.Command) {
+			// Codex often ships the patch through the shell tool instead:
+			// `apply_patch <<'PATCH' ... PATCH` or `bash -lc "apply_patch
+			// <<'EOF' ... EOF"`. The headers sit in the heredoc body, which
+			// segmentation strips, so they are read off the whole command.
+			targets = append(targets, patchFileTargets(p.ToolInput.Command)...)
+		}
+	}
+	if p.ToolName == "apply_patch" {
+		// Codex delivers a write as a patch COMMAND: the targets are its
+		// `*** Update File:` / `*** Add File:` / `*** Delete File:` headers
+		// and the `*** Move to:` destination of a rename.
+		targets = append(targets, patchFileTargets(p.ToolInput.Command)...)
 	}
 	for _, t := range targets {
 		if abs, verb, ok := ledgerTarget(t, p.Cwd); ok {
@@ -111,6 +124,33 @@ func ledgerTarget(path, cwd string) (string, string, bool) {
 		return "", "", false
 	}
 	return path, verb, true
+}
+
+// A patch header names a file the patch writes: the operand of Update / Add /
+// Delete File and the destination of a `*** Move to:` rename. Leading blanks
+// are tolerated because a heredoc body may be indented.
+var patchHeaderRE = regexp.MustCompile(`(?m)^[ \t]*\*\*\* (?:(?:Update|Add|Delete) File|Move to): (.+?)\s*$`)
+
+// patchFileTargets lists the files a Codex apply_patch command touches.
+func patchFileTargets(command string) []string {
+	var out []string
+	for _, m := range patchHeaderRE.FindAllStringSubmatch(command, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// shellRunsApplyPatch reports whether any segment of a shell command line
+// invokes apply_patch, through claudeguards' one segmentation (so a `bash
+// -lc "..."` payload counts and a quoted mention does not).
+func shellRunsApplyPatch(command string) bool {
+	for _, seg := range claudeguards.Segments(command) {
+		fields := claudeguards.ShellFields(seg)
+		if len(fields) > 0 && filepath.Base(fields[0]) == "apply_patch" {
+			return true
+		}
+	}
+	return false
 }
 
 // shellWriteTargets lists the files a command line writes: redirection

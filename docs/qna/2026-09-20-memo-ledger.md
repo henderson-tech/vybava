@@ -175,3 +175,21 @@ v2 homes without a `LEDGER.md` lint exactly as before.
   ledger read and written is `<this checkout>/.claude/memory` (the branch
   being edited), while `memo homes`, the registry, alias derivation and the
   vault always name the main worktree's `.claude/memory`.
+
+## Amendment 2026-09-21: no row date
+
+- Rows carry no date. The grammar is
+  `- #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>` (team:
+  `#t<id>` / `^t<id>`); the examples above predate this and read with the
+  date removed.
+- Creation time moves to `usage.jsonl`: `memo add` and `memo import` write
+  one `{"row":N,"kind":"add","at":...,"session":...}` per new row (an import
+  stamps every row with the same timestamp). `add` weighs 0 in the score.
+- The 180-day aging rule reads the row's `add` event; a row without one (a
+  ledger written before this amendment) is treated as created now, so legacy
+  ledgers never vanish.
+- `memo import` accepts a row with or without the leading date and drops it
+  when present, so draft files written under the old grammar still import.
+- The PreToolUse guard also reads `apply_patch` delivered through the shell
+  tool (`apply_patch <<'PATCH' ...` or `bash -lc "apply_patch ..."`) and
+  counts a `*** Move to:` destination as a target.

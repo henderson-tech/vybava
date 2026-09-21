@@ -47,6 +47,12 @@ func TestSegmentsQuoting(t *testing.T) {
 		{"runner payload keeps its own quoting",
 			`ssh h 'grep -nE "a|env|b" f'`,
 			[]string{`grep -nE "a|env|b" f`}, []string{"env"}},
+		// A quoted heredoc inside a runner payload ends on a delimiter line
+		// that carries the payload's closing quote; the quote must survive
+		// the body strip so the payload still unwraps.
+		{"heredoc inside a runner payload still unwraps",
+			"bash -lc \"apply_patch <<'EOF'\n*** Update File: x\nEOF\"",
+			[]string{"apply_patch <<'EOF'"}, []string{"*** Update File: x"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

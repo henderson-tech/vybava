@@ -139,13 +139,13 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
 		now := time.Now()
-		row, d, err := l.Append(memo.Row{Date: now.Format("2006-01-02"), Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence, Links: links})
+		row, d, err := l.Append(memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence, Links: links})
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
-		events, d, err := memo.LoadEvents(l.Home())
-		if d != nil || err != nil {
-			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		events, err := recordAdded(env, l.Home(), []memo.Row{row}, now)
+		if err != nil {
+			return finish(s, nil, nil, nil, err)
 		}
 		if _, err := memo.WriteIndex(l, events, now); err != nil {
 			return finish(s, nil, nil, nil, err)
@@ -367,11 +367,12 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if len(ds) > 0 {
 			return finishMany(s, ds)
 		}
-		events, d, err := memo.LoadEvents(l.Home())
-		if d != nil || err != nil {
-			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		now := time.Now()
+		events, err := recordAdded(env, l.Home(), added, now)
+		if err != nil {
+			return finish(s, nil, nil, nil, err)
 		}
-		if _, err := memo.WriteIndex(l, events, time.Now()); err != nil {
+		if _, err := memo.WriteIndex(l, events, now); err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
 		result := map[string]any{"home": l.Home(), "added": len(added), "first": added[0].ID, "last": added[len(added)-1].ID}
@@ -591,6 +592,31 @@ func matchesAll(r memo.Row, words []string) bool {
 		}
 	}
 	return true
+}
+
+// recordAdded stamps one `add` event per new row (all at now, so an import
+// shares one creation time) and returns the home's full event history for
+// the render that follows. The row itself carries no date.
+func recordAdded(env memo.Env, home string, rows []memo.Row, now time.Time) ([]memo.Event, error) {
+	existing, d, err := memo.LoadEvents(home)
+	if d != nil {
+		return nil, d
+	}
+	if err != nil {
+		return nil, err
+	}
+	incoming := make([]memo.Event, 0, len(rows))
+	for _, r := range rows {
+		incoming = append(incoming, memo.NewEvent(r.ID, "add", env.Session, now))
+	}
+	if _, err := memo.AppendEvents(home, existing, incoming); err != nil {
+		return nil, err
+	}
+	events, d, err := memo.LoadEvents(home)
+	if d != nil {
+		return nil, d
+	}
+	return events, err
 }
 
 // recordEvent appends one usage event for the session and re-renders.
