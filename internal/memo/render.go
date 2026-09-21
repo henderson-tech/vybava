@@ -57,7 +57,12 @@ func cap(rows []string, budget int) []string {
 }
 
 // WriteIndex renders and writes MEMORY.md, reporting whether the file changed.
+// In a team home it first makes sure the hot surface is gitignored, so every
+// writer (add, import, render, touch, the Stop harvest) keeps it local.
 func WriteIndex(l *Ledger, events []Event, now time.Time) (bool, error) {
+	if _, err := EnsureGitignore(l.Home(), l.Kind); err != nil {
+		return false, err
+	}
 	want := Render(l, events, now)
 	path := filepath.Join(l.Home(), IndexFile)
 	if have, err := os.ReadFile(path); err == nil && string(have) == want {

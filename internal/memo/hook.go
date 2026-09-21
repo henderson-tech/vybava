@@ -36,7 +36,8 @@ type HookResult struct {
 	Recorded int      `json:"recorded"`
 	Homes    []string `json:"homes,omitempty"`
 	Rendered []string `json:"rendered,omitempty"`
-	Skipped  string   `json:"skipped,omitempty"` // why no home was credited; a Stop is never blocked
+	Skipped  string   `json:"skipped,omitempty"`  // why no home was credited; a Stop is never blocked
+	Problems []string `json:"problems,omitempty"` // SessionStart: homes that could not be rendered; never blocks
 }
 
 var (
@@ -57,7 +58,8 @@ func ReadHookPayload(r io.Reader) (HookPayload, error) {
 }
 
 // RunHook dispatches on the event name: PreToolUse guards the ledger files,
-// Stop / SessionEnd harvest the transcript. Unknown events are a no-op.
+// Stop / SessionEnd harvest the transcript, SessionStart renders a missing
+// or stale MEMORY.md in every session home. Unknown events are a no-op.
 func (e Env) RunHook(p HookPayload, now time.Time) (HookResult, error) {
 	res := HookResult{Event: p.HookEventName}
 	switch p.HookEventName {
@@ -65,8 +67,45 @@ func (e Env) RunHook(p HookPayload, now time.Time) (HookResult, error) {
 		res.Refused = RefuseHandWrite(p)
 	case "Stop", "SessionEnd":
 		return e.harvest(p, now)
+	case "SessionStart":
+		return e.ensureAll(p, now), nil
 	}
 	return res, nil
+}
+
+// ensureAll runs EnsureHome on every session home (personal and team) that
+// exists. A home that cannot be rendered is reported in Problems and never
+// stops the others: a session start is never blocked by its memory.
+func (e Env) ensureAll(p HookPayload, now time.Time) HookResult {
+	res := HookResult{Event: p.HookEventName}
+	env := e
+	if p.Cwd != "" {
+		env.Cwd = p.Cwd
+	}
+	homes, d, err := env.Resolve("", "")
+	if err != nil {
+		res.Problems = append(res.Problems, err.Error())
+		return res
+	}
+	if d != nil {
+		res.Skipped = d.Detail
+		return res
+	}
+	for _, h := range homes {
+		r, d, err := env.EnsureHome(h, now)
+		switch {
+		case err != nil:
+			res.Problems = append(res.Problems, h.Path+": "+err.Error())
+		case d != nil:
+			res.Problems = append(res.Problems, h.Path+": "+d.Detail)
+		default:
+			res.Homes = append(res.Homes, h.Path)
+			if r.Rendered {
+				res.Rendered = append(res.Rendered, filepath.Join(h.Path, IndexFile))
+			}
+		}
+	}
+	return res
 }
 
 // RefuseHandWrite returns the refusal for a tool call that would rewrite

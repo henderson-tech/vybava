@@ -218,6 +218,10 @@ func TestLintLedgerHome(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(l.Home(), NotesDir, "orphan.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// A team home's MISSING MEMORY.md is clean (local projection); a stale one drifts.
+	if err := os.WriteFile(filepath.Join(l.Home(), IndexFile), []byte("# stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	rules := map[string]int{}
 	for _, f := range Lint(l.Home(), nil, now) {
 		rules[f.Rule]++
