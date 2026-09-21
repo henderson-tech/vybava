@@ -36,7 +36,11 @@ func TestReapKindNeedsTheExecutable(t *testing.T) {
 		"grep -r appium /w/appium",
 		"node /w/scripts/report.js --input appium/results.json",
 		"xcodebuild test-without-building -scheme MyAppTests",
+		"xcodebuild test-without-building -scheme MyAppTests -resultBundlePath /tmp/WebDriverAgent-compare",
 		"xcodebuild -scheme WebDriverAgentRunner build-for-testing",
+		"node -r appium ./build.js",
+		"node --experimental-loader appium/x main.js",
+		"node appium",
 	} {
 		if k := reapKind(machineProc{pid: 1, args: args}); k != "" {
 			t.Errorf("%q classified as %q", args, k)

@@ -29,7 +29,7 @@ func reapKind(p machineProc) string {
 	switch {
 	case b == "WebDriverAgentRunner-Runner" || strings.Contains(p.exe(), "WebDriverAgentRunner-Runner.app/"):
 		return "WebDriverAgent"
-	case b == "xcodebuild" && strings.Contains(p.args, "test-without-building") && strings.Contains(p.args, "WebDriverAgent"):
+	case b == "xcodebuild" && wdaXcodebuild(p.args):
 		return "xcodebuild"
 	case b == "appium" || ((b == "node" || b == "bun") && appiumEntry(p.args)):
 		return "appium"
@@ -37,15 +37,50 @@ func reapKind(p machineProc) string {
 	return ""
 }
 
+// wdaXcodebuild reports an xcodebuild that runs WebDriverAgent's test bundle:
+// the `test-without-building` action with the WebDriverAgent project, the
+// WebDriverAgentRunner scheme or its xctestrun as the value of that flag — a
+// user's own test run that merely mentions WebDriverAgent elsewhere does not
+// qualify.
+func wdaXcodebuild(args string) bool {
+	fields := strings.Fields(args)
+	action, wda := false, false
+	for i := 1; i < len(fields); i++ {
+		switch fields[i] {
+		case "test-without-building":
+			action = true
+		case "-project", "-workspace", "-scheme", "-xctestrun":
+			if i+1 < len(fields) && strings.HasPrefix(path.Base(fields[i+1]), "WebDriverAgent") {
+				wda = true
+			}
+			i++
+		}
+	}
+	return action && wda
+}
+
+// nodeValueFlags take the next token as their value, so that token is never
+// the script (`node -r appium ./build.js` runs build.js).
+var nodeValueFlags = map[string]bool{
+	"-r": true, "--require": true, "--import": true, "--loader": true, "--experimental-loader": true,
+	"-e": true, "--eval": true, "-p": true, "--print": true, "--input-type": true, "--env-file": true,
+	"--preload": true, "--conditions": true, "-C": true, "--define": true, "-d": true,
+}
+
 // appiumEntry reports whether the script a node/bun process runs — its first
-// non-flag argument — is the appium server entry point.
+// argument that is neither a flag nor a flag's value — is the appium server
+// entry point, by path: `<...>/.bin/appium` or the package's `main.js`.
 func appiumEntry(args string) bool {
 	fields := strings.Fields(args)
-	for _, a := range fields[1:] {
+	for i := 1; i < len(fields); i++ {
+		a := fields[i]
 		if strings.HasPrefix(a, "-") {
+			if nodeValueFlags[a] {
+				i++
+			}
 			continue
 		}
-		return path.Base(a) == "appium" || strings.Contains(a, "/appium/build/lib/main.js")
+		return strings.HasSuffix(a, "/.bin/appium") || strings.HasSuffix(a, "/appium/build/lib/main.js")
 	}
 	return false
 }
