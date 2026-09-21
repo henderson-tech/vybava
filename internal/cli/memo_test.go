@@ -35,4 +35,7 @@ func TestRecordAddedStampsOneAddEventPerRow(t *testing.T) {
 	if err != nil || len(again) != 3 {
 		t.Fatalf("duplicate add: %d events, %v", len(again), err)
 	}
+	if again[2].At != later[2].At || again[2].Row != 3 || again[2].Kind != "add" {
+		t.Errorf("re-stamp must leave the original event untouched: %+v", again[2])
+	}
 }
