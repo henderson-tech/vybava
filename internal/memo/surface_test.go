@@ -123,6 +123,29 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	if err != nil || res.Reason != "stale" || !res.Rendered {
 		t.Fatalf("stale changed: %+v %v", res, err)
 	}
+
+	// A usage event lands (the harvest wrote usage.jsonl after the render):
+	// the ranking may have moved, so the surface is stale even though the
+	// ledger did not change.
+	usageAt := future.Add(20 * time.Second)
+	events := []Event{NewEvent(2, "cite", "sess", usageAt)}
+	if _, err := AppendEvents(l2.Home(), nil, events); err != nil {
+		t.Fatal(err)
+	}
+	usage := filepath.Join(l2.Home(), UsageFile)
+	if err := os.Chtimes(usage, usageAt, usageAt); err != nil {
+		t.Fatal(err)
+	}
+	// One cite on a two-row ledger leaves the order as it was, so the file is
+	// not rewritten; what matters is that usage.jsonl alone made it stale.
+	res, err = EnsureIndex(l2, events, usageAt.Add(time.Second))
+	if err != nil || res.Reason != "stale" {
+		t.Fatalf("stale after usage: %+v %v", res, err)
+	}
+	res, err = EnsureIndex(l2, events, usageAt.Add(2*time.Second))
+	if err != nil || res.Reason != "current" {
+		t.Fatalf("current after usage render: %+v %v", res, err)
+	}
 }
 
 // TestHookSessionStartRendersHomesAndNeverBlocks: SessionStart renders every
