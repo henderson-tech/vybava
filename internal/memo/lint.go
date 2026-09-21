@@ -21,15 +21,17 @@ type Finding struct {
 // Lint rules for a ledger home. L001 grammar (incl. long dash, period, two
 // sentences, length cap), L002 id order, L003 supersede/retire target,
 // L004 link resolution, L005 length warning, L006 MEMORY.md drift, L007
-// note not linked from any row.
+// note not linked from any row, L008 a team home's hot surface (MEMORY.md,
+// usage.jsonl) is committed instead of gitignored.
 const (
-	RuleGrammar    = "L001"
-	RuleIDOrder    = "L002"
-	RuleTarget     = "L003"
-	RuleLink       = "L004"
-	RuleLength     = "L005"
-	RuleDrift      = "L006"
-	RuleNoteOrphan = "L007"
+	RuleGrammar          = "L001"
+	RuleIDOrder          = "L002"
+	RuleTarget           = "L003"
+	RuleLink             = "L004"
+	RuleLength           = "L005"
+	RuleDrift            = "L006"
+	RuleNoteOrphan       = "L007"
+	RuleSurfaceCommitted = "L008"
 )
 
 // HasLedger reports whether a home is a memo ledger home.
@@ -59,8 +61,25 @@ func Lint(home string, aliases map[string]Home, now time.Time) []Finding {
 	case d != nil:
 		out = append(out, Finding{Rule: RuleGrammar, Severity: "error", Path: filepath.Join(home, UsageFile), Line: d.Line, Message: d.Detail})
 	default:
-		if same, err := CheckIndex(l, events, now); err != nil || !same {
-			out = append(out, Finding{Rule: RuleDrift, Severity: "error", Path: filepath.Join(home, IndexFile), Line: 1, Message: "MEMORY.md differs from `memo render` output; run `memo render --home " + home + "`"})
+		// A team home's MEMORY.md is a local projection (gitignored, rendered
+		// at SessionStart), so a committed tree without one is clean; a
+		// personal home always carries its render.
+		_, statErr := os.Stat(filepath.Join(home, IndexFile))
+		if l.Kind != KindTeam || !os.IsNotExist(statErr) {
+			if same, err := CheckIndex(l, events, now); err != nil || !same {
+				out = append(out, Finding{Rule: RuleDrift, Severity: "error", Path: filepath.Join(home, IndexFile), Line: 1, Message: "MEMORY.md differs from `memo render` output; run `memo render --home " + home + "`"})
+			}
+		}
+	}
+	if l.Kind == KindTeam {
+		for _, f := range LocalFiles {
+			path := filepath.Join(home, f)
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+			if ignored, known := GitIgnored(path); known && !ignored {
+				out = append(out, Finding{Rule: RuleSurfaceCommitted, Severity: "warning", Path: path, Line: 1, Message: "team hot surface is committed (" + f + " is not gitignored); add MEMORY.md and usage.jsonl to " + filepath.Join(home, GitignoreFile) + " (`memo render --home " + home + "` writes it)"})
+			}
 		}
 	}
 	notes, _ := filepath.Glob(filepath.Join(home, NotesDir, "*.md"))

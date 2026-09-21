@@ -22,7 +22,8 @@ memo add <type>/<topic>[!] "<one sentence>." [--link '[[notes/<slug>]]'] [--supe
                                       # bare #NN is a personal row, #tNN a team row; the Stop hook harvests both
 memo show <ref> --json                # look up: the row plus its linked notes (45, #45, t12, #t12, fixit-team#12, [[LEDGER#^t12]])
 memo find <words>... [--all] --json   # search the ledger, superseded rows marked
-memo render --check --json            # CI door: exit 2 when MEMORY.md drifted from the ledger
+memo render --check --json            # local drift check: exit 2 when MEMORY.md on disk drifted from the ledger
+memo ensure --json                    # SessionStart: render MEMORY.md only when missing or stale; in a TEAM home MEMORY.md and usage.jsonl are gitignored (only LEDGER.md + notes/ are shared), CI runs memorylint check there
 memo migrate <home> > rows.md         # converting a v2 home: edit the template, then memo import rows.md --home <home>
 ```
 

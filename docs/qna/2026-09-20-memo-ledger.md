@@ -193,3 +193,22 @@ v2 homes without a `LEDGER.md` lint exactly as before.
 - The PreToolUse guard also reads `apply_patch` delivered through the shell
   tool (`apply_patch <<'PATCH' ...` or `bash -lc "apply_patch ..."`) and
   counts a `*** Move to:` destination as a target.
+
+## Amendment 2026-09-21: team hot surface is local
+
+- In a TEAM home (`<repo>/.claude/memory`, `kind: team`) only `LEDGER.md`
+  and `notes/` are shared through git. `MEMORY.md` and `usage.jsonl` are
+  per-machine projections: every memo writer in a team home first ensures
+  `<home>/.gitignore` lists both (created when missing, lines merged into an
+  existing file, other lines kept, idempotent). Personal homes are unchanged:
+  everything there is snapshotted by memo's local git as before.
+- New verb `memo ensure [--home]`: renders `MEMORY.md` when it is missing or
+  older than `LEDGER.md` / `usage.jsonl`, exits 0 fast when current. `memo
+  hook` on a `SessionStart` payload runs it for every session home and never
+  blocks (stderr + exit 0 on a home it cannot render).
+- `memo render --check` keeps comparing the file on disk, so it still works
+  locally in a team home; CI runs `memorylint check` only for team homes
+  from now on. memorylint: a team home's committed tree without
+  `MEMORY.md` / `usage.jsonl` lints clean; a team home that does commit them
+  (or leaves them unignored) is the `L008` warning, detected via
+  `git check-ignore`.

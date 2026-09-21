@@ -2,6 +2,7 @@ package memorylint_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -296,5 +297,53 @@ func TestLintLedgerHome(t *testing.T) {
 		if seen[rule] {
 			t.Errorf("ledger mode must not report %s: %#v", rule, report.Findings)
 		}
+	}
+}
+
+// TestLintLedgerTeamHomeLocalSurface pins the 2026-09-21 decision: a team
+// home's committed tree carries no MEMORY.md / usage.jsonl and lints clean;
+// a team home that leaves them unignored earns an L008 warning; gitignored
+// they are silent again.
+func TestLintLedgerTeamHomeLocalSurface(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(string(out))
+		}
+	}
+	root := filepath.Join(repo, ".claude", "memory")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "LEDGER.md"), "---\nmemo: 1\nalias: t\nkind: team\n---\n- #t1 project/api Fact. ^t1\n")
+
+	rules := func() map[string]bool {
+		t.Helper()
+		report, err := memorylint.Lint([]string{root})
+		if err != nil {
+			t.Fatalf("Lint() error = %v", err)
+		}
+		seen := map[string]bool{}
+		for _, f := range report.Findings {
+			seen[f.Rule] = true
+		}
+		return seen
+	}
+	if seen := rules(); seen["L006"] || seen["L008"] {
+		t.Errorf("a team home without its hot surface must lint clean: %v", seen)
+	}
+
+	write(t, filepath.Join(root, "MEMORY.md"), "# stale\n")
+	write(t, filepath.Join(root, "usage.jsonl"), "")
+	if seen := rules(); !seen["L008"] {
+		t.Errorf("an unignored hot surface in a team home must warn L008: %v", seen)
+	}
+
+	write(t, filepath.Join(root, ".gitignore"), "MEMORY.md\nusage.jsonl\n")
+	if seen := rules(); seen["L008"] {
+		t.Errorf("a gitignored hot surface must not warn: %v", seen)
 	}
 }

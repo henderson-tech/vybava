@@ -13,11 +13,28 @@ log: `docs/qna/2026-09-20-memo-ledger.md`.
 ```text
 <home>/
   LEDGER.md     append-only truth, every row ever written (memo add / import)
-  MEMORY.md     rendered projection (memo render), never edited by hand
+  MEMORY.md     rendered projection (memo render / ensure), never edited by hand
   usage.jsonl   one event per line: {"row":45,"kind":"cite","at":"RFC3339","session":"<id>"}
                 kinds: add (the row's creation, written by memo add / import), cite, show, read, touch
   notes/        optional detail notes, v2 frontmatter, linked from rows
+  .gitignore    team homes only: MEMORY.md and usage.jsonl (written by memo, never by hand)
 ```
+
+Which files are shared and which stay on the machine depends on the home
+kind (decision 2026-09-21: the team hot surface is local):
+
+| File | Personal home | Team home |
+|---|---|---|
+| `LEDGER.md` | snapshotted by memo's local git | committed, shared through the repo |
+| `notes/` | snapshotted | committed, shared |
+| `MEMORY.md` | snapshotted | LOCAL: gitignored, rendered per machine (`memo ensure` at SessionStart) |
+| `usage.jsonl` | snapshotted | LOCAL: gitignored, one machine's citations |
+
+In a team home every writer (`memo add`, `memo import`, `memo render`,
+`memo touch`, the Stop harvest) first makes sure `<home>/.gitignore` lists
+`MEMORY.md` and `usage.jsonl`: the file is created when missing, the two
+lines are added when absent, any other line is kept. Idempotent; a personal
+home never gets one, nor does a team home outside a git work tree.
 
 Homes: personal `~/.claude/projects/<slug>/memory/` (types `user`, `feedback`)
 and team `<repo>/.claude/memory/` (types `project`, `reference`). From a
@@ -26,8 +43,8 @@ the cwd, but the repo's memory is the one that counts); the team ledger read
 and written is the worktree's own `.claude/memory` (the branch being edited),
 while `memo homes`, the registry and the vault always name the main
 checkout's path, so a vault symlink never dies with a worktree. The personal
-home is a local git repository owned by memo; the team home is versioned by
-its repository.
+home is a local git repository owned by memo; the team home's ledger and
+notes are versioned by its repository, its rendered surface is not.
 
 `LEDGER.md` opens with a frontmatter block and the grammar comment:
 
@@ -103,7 +120,8 @@ memo add <type>/<topic>[!] "<sentence>." [--link <l>]... [--supersedes N] [--ret
 memo show <ref>                           # row + linked notes; records a show event
 memo find <words>... [--all]              # sentences and topics; superseded rows marked
 memo touch <ref>                          # explicit use, weight 2
-memo render [--check]                     # write MEMORY.md; --check exits 2 on drift (CI)
+memo render [--check]                     # write MEMORY.md; --check exits 2 on drift (compares the file on disk)
+memo ensure                               # write MEMORY.md only when missing or older than LEDGER.md / usage.jsonl
 memo import <file>                        # id-less rows, ids assigned in order; all-or-nothing
 memo migrate <home>                       # v2 notes -> import template (helper, not the judgment)
 memo homes [register <alias> <path>]
@@ -126,6 +144,17 @@ may still carry the pre-amendment leading `YYYY-MM-DD`, which is dropped.
 `memo show` and `memo touch` stamp their event with
 `CLAUDE_CODE_SESSION_ID` when set, so the Stop hook's harvest of the same
 session deduplicates against them.
+
+`memo ensure` is the SessionStart verb: per session home it renders
+`MEMORY.md` when the file is missing or its mtime is older than `LEDGER.md`
+or `usage.jsonl` (`reason: missing | stale`), and exits 0 without touching
+anything when it is current. A stale file whose render comes out identical
+gets its mtime bumped, so the next start is the fast path. This is what
+keeps a freshly cloned team home usable: the clone carries no `MEMORY.md`,
+the first session renders it. `memo render --check` keeps comparing the
+file on disk, so it still works locally in a team home whose `MEMORY.md` is
+gitignored; in CI, where the file is absent, it would only report drift,
+so CI runs `memorylint check` for team homes and nothing else.
 
 ## Homes, aliases, registry
 
@@ -160,11 +189,17 @@ registered alias wins over the alias in a ledger's frontmatter.
   note) and `memo show <ref>` Bash commands; appends events deduplicated per
   (row, kind, session) and re-renders when anything landed. Only ids that
   exist in a home count, so a PR number in prose is harmless.
+- **SessionStart**: runs `memo ensure` over every session home (personal and
+  team) that exists, so a team home just cloned or pulled has its
+  `MEMORY.md` before the harness loads it. Never blocks: a home that cannot
+  be rendered is one `memo hook: not rendered: <home>: <why>` line on
+  stderr, the other homes still render, exit 0.
 
 Claude Code `settings.json`:
 
 ```json
 {"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "memo hook"}]}],
   "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": "memo hook"}]}],
   "Stop": [{"hooks": [{"type": "command", "command": "memo hook"}]}]
 }}
@@ -204,8 +239,13 @@ exactly as before.
 | L003 | error | a supersede/retire target does not exist, is later, or was already closed by another row |
 | L004 | error | a link points at a missing note, row, or an alias no home carries |
 | L005 | warning | a sentence is over 160 characters |
-| L006 | error | `MEMORY.md` differs from `memo render` output |
+| L006 | error | `MEMORY.md` differs from `memo render` output; in a TEAM home a missing `MEMORY.md` is clean (it is a local projection) |
 | L007 | warning | a `notes/` file is linked from no row |
+| L008 | warning | a team home's `MEMORY.md` or `usage.jsonl` exists and is not gitignored (`git check-ignore`; a tracked file counts as committed); fix: add both to `<home>/.gitignore`, which `memo render --home <home>` writes |
+
+CI for a team home runs `memorylint check <repo>/.claude/memory` and nothing
+else (since 2026-09-21): `memo render --check` needs the machine-local
+`MEMORY.md`, which a checkout does not carry.
 
 In ledger mode `notes/<slug>.md` names are plain kebab-case (M002 is not
 applied), M009 (not linked from the index) is replaced by L007, cross-home

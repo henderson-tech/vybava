@@ -36,7 +36,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		Short: "Append-only memory ledger - capture a row, cite it, render the hot surface",
 		Long: "memo owns LEDGER.md (append-only truth), MEMORY.md (rendered) and usage.jsonl.\n" +
 			"  memo add <type>/<topic>[!] \"<sentence>.\" [--link <l>]... [--supersedes N] [--retires N]\n" +
-			"  memo show <ref> · memo find <words>... · memo touch <ref> · memo render [--check]\n" +
+			"  memo show <ref> · memo find <words>... · memo touch <ref> · memo render [--check] · memo ensure\n" +
 			"  memo import <file> · memo migrate <home> · memo homes [register <alias> <path>]\n" +
 			"  memo vault [--path ~/Memory] · memo snapshot [-m msg] · memo log [-n N] · memo restore <rev> <file>\n" +
 			"  memo hook  (Claude Code PreToolUse + Stop payload on stdin)",
@@ -333,6 +333,27 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 	}
 	render.Flags().BoolVar(&check, "check", false, "exit 2 when MEMORY.md on disk differs")
 
+	// ensure
+	ensure := &cobra.Command{Use: "ensure", Short: "Render MEMORY.md only when missing or older than the ledger (SessionStart)", Args: cobra.NoArgs}
+	ensure.RunE = func(cmd *cobra.Command, _ []string) error {
+		s := session(cmd)
+		env := memoEnv()
+		homes, d, err := env.Resolve(homeSpec, "")
+		if d != nil || err != nil {
+			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		}
+		now := time.Now()
+		results := []memo.EnsureResult{}
+		for _, h := range homes {
+			r, d, err := env.EnsureHome(h, now)
+			if d != nil || err != nil {
+				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
+			results = append(results, r)
+		}
+		return finish(s, map[string]any{"homes": results}, []string{"memo render --check" + flagIf(homeSpec) + " --json"}, nil, nil)
+	}
+
 	// import
 	imp := &cobra.Command{Use: "import <file>", Short: "Append id-less rows from a file, assigning ids in order", Args: cobra.ArbitraryArgs}
 	imp.RunE = func(cmd *cobra.Command, args []string) error {
@@ -542,7 +563,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 	}
 
 	// hook
-	hook := &cobra.Command{Use: "hook", Short: "Claude Code / Codex hook: guard ledger files, harvest citations", Args: cobra.NoArgs}
+	hook := &cobra.Command{Use: "hook", Short: "Claude Code / Codex hook: guard ledger files, harvest citations, render at SessionStart", Args: cobra.NoArgs}
 	hook.RunE = func(cmd *cobra.Command, _ []string) error {
 		payload, err := memo.ReadHookPayload(rt.stdin)
 		if err != nil {
@@ -556,6 +577,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if res.Skipped != "" {
 			fmt.Fprintln(rt.stderr, "memo hook: no home credited:", res.Skipped)
 		}
+		for _, problem := range res.Problems {
+			fmt.Fprintln(rt.stderr, "memo hook: not rendered:", problem)
+		}
 		if res.Refused != nil {
 			fmt.Fprintf(rt.stderr, "memo: %s\n  %s\n", res.Refused.Detail, res.Refused.Fix)
 			return runx.ExitError{Code: 2}
@@ -566,7 +590,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		return nil
 	}
 
-	root.AddCommand(add, show, find, touch, render, imp, migrate, homesCmd, vault, snapshot, logCmd, restore, hook)
+	root.AddCommand(add, show, find, touch, render, ensure, imp, migrate, homesCmd, vault, snapshot, logCmd, restore, hook)
 	return root
 }
 
