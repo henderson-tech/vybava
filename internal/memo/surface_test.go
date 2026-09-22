@@ -74,13 +74,27 @@ func TestEnsureGitignoreTeamHome(t *testing.T) {
 // and bump the mtime of a stale-but-identical render so the next call is fast.
 func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	l := newHome(t, KindTeam, "- #t1 project/api A. ^t1")
-	// The clock must track real time: this test compares the fake `now` against
-	// the real mtimes WriteIndex stamps on disk. A fixed date passes only on the
-	// day it names — 2026-09-21 12:00 UTC went red at midnight on 2026-09-22,
-	// because a ledger touched at the fake time is older than a file written now.
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	index := filepath.Join(l.Home(), IndexFile)
 	os.Remove(index)
+
+	// EnsureIndex decides staleness by comparing file mtimes, so every file it
+	// reads has to live on the test's clock. WriteIndex stamps wall-clock times,
+	// which a fixed `now` can never agree with — that mismatch is what turned
+	// this test red at midnight on 2026-09-22, a day after the date it named.
+	// pin() puts a file exactly where the assertions expect it.
+	pin := func(path string, at time.Time) {
+		t.Helper()
+		if err := os.Chtimes(path, at, at); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	pinSources := func(at time.Time) {
+		t.Helper()
+		for _, f := range []string{LedgerFile, UsageFile} {
+			pin(filepath.Join(l.Home(), f), at)
+		}
+	}
 
 	res, err := EnsureIndex(l, nil, now)
 	if err != nil || res.Reason != "missing" || !res.Rendered {
@@ -89,6 +103,10 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	if _, err := os.Stat(index); err != nil {
 		t.Fatalf("MEMORY.md not written: %v", err)
 	}
+	// The render just happened: sources are older than it, both on our clock.
+	pinSources(now.Add(-time.Second))
+	pin(index, now)
+
 	res, err = EnsureIndex(l, nil, now)
 	if err != nil || res.Reason != "current" || res.Rendered {
 		t.Fatalf("current: %+v %v", res, err)
@@ -127,6 +145,8 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	if err != nil || res.Reason != "stale" || !res.Rendered {
 		t.Fatalf("stale changed: %+v %v", res, err)
 	}
+	// That call rewrote the file, so the index carries a wall-clock mtime again.
+	pin(index, future.Add(time.Second))
 
 	// A usage event lands (the harvest wrote usage.jsonl after the render):
 	// the ranking may have moved, so the surface is stale even though the
