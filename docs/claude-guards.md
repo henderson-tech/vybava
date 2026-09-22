@@ -15,8 +15,10 @@ commit-secrets        ~2× the floor on `git commit` WITH staged changes (it
                       diffs them; no staged changes short-circuits to the floor)
 machine:sim-cap       + ~450-630 ms for one `ps -axo`, paid ONLY when the
 machine:dev-server-cap  command actually matches a boot or dev-server start
-weather · reap        the same process-table read, but unconditional and
-                      per SESSION (start, and again at end) — never per command
+weather               the same process-table read, unconditional, once per
+                      session at SessionStart — never per command
+reap                  likewise unconditional, at SessionStart and again at
+                      SessionEnd — twice per session
 ```
 
 Measured 2026-09-22 on a 14-core Mac, 1941 processes, 0.1–0.5 GB free, against

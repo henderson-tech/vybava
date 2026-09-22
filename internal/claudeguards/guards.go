@@ -18,8 +18,8 @@
 // visibility), and machine:sim-cap / machine:dev-server-cap add ~450-630 ms for
 // one `ps -axo` — but only when a command actually matches a boot or a
 // dev-server start. The weather and reap verbs read the same process table
-// unconditionally, once at SessionStart and again at SessionEnd, never per
-// command.
+// unconditionally rather than per command: weather once, at SessionStart, and
+// reap twice, at SessionStart and SessionEnd (see Hooks in hooks.go).
 //
 // Failure contract: fail OPEN on malformed input (a guard that blocks
 // everything on a parse error bricks the session), fail CLOSED only on a
