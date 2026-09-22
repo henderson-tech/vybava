@@ -4,8 +4,15 @@ claude-guards is the enforcement layer under `~/.claude/CLAUDE.md`. CLAUDE.md is
 context — Claude reads it and usually complies. The bans in this applet are
 incident-born and must hold unconditionally, including under bypass
 permissions and inside subagents, where skills do not even load. It runs as a
-Claude Code PreToolUse hook: one compiled process per Bash or Read call,
-single-digit milliseconds, no fork storms.
+Claude Code PreToolUse hook: one compiled process per Bash or Read call, about
+30 ms, no fork storms. That floor is process start for a 26 MB binary, not rule
+evaluation — it is the same for a trivial command and a git command, and it
+grows when the Mac is short of memory. A rule that reads the process table
+(`machine:sim-cap`, `machine:dev-server-cap`, and the `weather`/`reap` verbs)
+adds ~440 ms for one `ps -axo`, paid only when a command matches a boot or a
+dev-server start. Measured 2026-09-22 on a 14-core Mac with 1941 processes and
+0.1–0.4 GB free: trivial 31.6 ms, git 33.7 ms, Read 43.7 ms, simulator boot
+539.8 ms, against a 2.7 ms loop baseline.
 
 Wire it once in `~/.claude/settings.json` (the applet symlink lives at
 `~/.local/bin/claude-guards`, so an older `~/.claude/hooks/claude-guards`

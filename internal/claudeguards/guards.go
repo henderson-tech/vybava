@@ -10,8 +10,11 @@
 // CLAUDE.md is context, not enforcement: Claude reads it and *usually*
 // complies. These bans are incident-born and must hold unconditionally,
 // including under bypassPermissions and inside subagents (where skills don't
-// even load). One compiled process per Bash call keeps the cost at single-digit
-// milliseconds regardless of system load.
+// even load). One compiled process per Bash call costs about 30 ms — process
+// start for this binary, not rule evaluation, so it is flat across rules and
+// rises with memory pressure. The rules that read the process table
+// (machine:sim-cap, machine:dev-server-cap, weather, reap) add ~440 ms for one
+// `ps -axo`, and only when a command actually matches a boot or start.
 //
 // Failure contract: fail OPEN on malformed input (a guard that blocks
 // everything on a parse error bricks the session), fail CLOSED only on a
