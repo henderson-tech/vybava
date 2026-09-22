@@ -74,7 +74,11 @@ func TestEnsureGitignoreTeamHome(t *testing.T) {
 // and bump the mtime of a stale-but-identical render so the next call is fast.
 func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	l := newHome(t, KindTeam, "- #t1 project/api A. ^t1")
-	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	// The clock must track real time: this test compares the fake `now` against
+	// the real mtimes WriteIndex stamps on disk. A fixed date passes only on the
+	// day it names — 2026-09-21 12:00 UTC went red at midnight on 2026-09-22,
+	// because a ledger touched at the fake time is older than a file written now.
+	now := time.Now().UTC().Truncate(time.Second)
 	index := filepath.Join(l.Home(), IndexFile)
 	os.Remove(index)
 
