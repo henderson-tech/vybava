@@ -5,71 +5,24 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
-)
 
-// Rollout trees Codex writes to. Archived threads still count against a limit
-// that was spent before they were archived.
-var rolloutRoots = []string{"sessions", "archived_sessions"}
+	"github.com/henderson-tech/vybava/internal/transcripts"
+)
 
 // tokenCountMarker gates JSON decoding. A rollout is mostly transcript — tens
 // of megabytes of tool output per file — and only the handful of lines
 // carrying this marker are usage evidence, so the substring test runs first.
 var tokenCountMarker = []byte(`"token_count"`)
 
-type rolloutLine struct {
-	Timestamp string          `json:"timestamp"`
-	Type      string          `json:"type"`
-	Payload   json.RawMessage `json:"payload"`
-}
-
-type sessionMeta struct {
-	ID         string `json:"id"`
-	Timestamp  string `json:"timestamp"`
-	CWD        string `json:"cwd"`
-	CLIVersion string `json:"cli_version"`
-	Git        *struct {
-		Branch string `json:"branch"`
-	} `json:"git"`
-}
-
-type usageJSON struct {
-	Input      int64 `json:"input_tokens"`
-	Cached     int64 `json:"cached_input_tokens"`
-	CacheWrite int64 `json:"cache_write_input_tokens"`
-	Output     int64 `json:"output_tokens"`
-	Reasoning  int64 `json:"reasoning_output_tokens"`
-	Total      int64 `json:"total_tokens"`
-}
-
-func (u usageJSON) usage() Usage {
+func usageOf(u transcripts.CodexUsage) Usage {
 	return Usage{Input: u.Input, Cached: u.Cached, CacheWrite: u.CacheWrite, Output: u.Output, Reasoning: u.Reasoning}
 }
 
-type tokenCountPayload struct {
-	Type string `json:"type"`
-	Info *struct {
-		Total         usageJSON `json:"total_token_usage"`
-		Last          usageJSON `json:"last_token_usage"`
-		ContextWindow int64     `json:"model_context_window"`
-	} `json:"info"`
-	RateLimits *struct {
-		LimitID  string `json:"limit_id"`
-		PlanType string `json:"plan_type"`
-		Primary  *struct {
-			UsedPercent   float64 `json:"used_percent"`
-			WindowMinutes int     `json:"window_minutes"`
-			ResetsAt      int64   `json:"resets_at"`
-		} `json:"primary"`
-	} `json:"rate_limits"`
-}
-
-func (p tokenCountPayload) limit() *Limit {
+func limitOf(p transcripts.TokenCount) *Limit {
 	if p.RateLimits == nil || p.RateLimits.Primary == nil {
 		return nil
 	}
@@ -86,7 +39,7 @@ func (p tokenCountPayload) limit() *Limit {
 // A single unreadable rollout is a warning, never a failure — a partial answer
 // beats none when a limit is already burning.
 func scanSessions(env Env, since time.Time) ([]Session, []string, error) {
-	paths, err := rolloutPaths(env.Home, since)
+	paths, err := transcripts.RolloutPaths(env.Home, since)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -103,38 +56,6 @@ func scanSessions(env Env, since time.Time) ([]Session, []string, error) {
 		sessions = append(sessions, session)
 	}
 	return sessions, warnings, nil
-}
-
-// rolloutPaths prefilters by modification time. A rollout untouched since
-// before the window cannot contain a call inside it, and skipping it avoids
-// reading hundreds of megabytes of settled transcript.
-func rolloutPaths(home string, since time.Time) ([]string, error) {
-	var paths []string
-	for _, root := range rolloutRoots {
-		dir := filepath.Join(home, ".codex", root)
-		err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
-				return err
-			}
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil || info.ModTime().Before(since) {
-				return nil
-			}
-			paths = append(paths, path)
-			return nil
-		})
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
-	sort.Strings(paths)
-	return paths, nil
 }
 
 // readRollout extracts a thread's identity and its in-window calls.
@@ -154,7 +75,7 @@ func readRollout(path string, since time.Time) (Session, error) {
 		applyMeta(&session, []byte(head))
 	}
 
-	var previous usageJSON
+	var previous transcripts.CodexUsage
 	for {
 		line, err := reader.ReadSlice('\n')
 		if err == bufio.ErrBufferFull {
@@ -179,11 +100,11 @@ func readRollout(path string, since time.Time) (Session, error) {
 }
 
 func applyMeta(session *Session, line []byte) {
-	var entry rolloutLine
+	var entry transcripts.RolloutLine
 	if json.Unmarshal(line, &entry) != nil || entry.Type != "session_meta" {
 		return
 	}
-	var meta sessionMeta
+	var meta transcripts.SessionMeta
 	if json.Unmarshal(entry.Payload, &meta) != nil {
 		return
 	}
@@ -203,12 +124,12 @@ func applyMeta(session *Session, line []byte) {
 // only the rate limit refreshed. Those carry a stale last_token_usage that
 // would be billed twice, but a fresh percentage worth keeping — so the limit
 // is folded onto the existing sample instead.
-func appendSample(session *Session, line []byte, since time.Time, previous *usageJSON) {
-	var entry rolloutLine
+func appendSample(session *Session, line []byte, since time.Time, previous *transcripts.CodexUsage) {
+	var entry transcripts.RolloutLine
 	if json.Unmarshal(line, &entry) != nil || entry.Type != "event_msg" {
 		return
 	}
-	var payload tokenCountPayload
+	var payload transcripts.TokenCount
 	if json.Unmarshal(entry.Payload, &payload) != nil || payload.Type != "token_count" {
 		return
 	}
@@ -217,7 +138,7 @@ func appendSample(session *Session, line []byte, since time.Time, previous *usag
 		return
 	}
 	local := at.Local()
-	limit := payload.limit()
+	limit := limitOf(payload)
 
 	if local.Before(since) {
 		if payload.Info != nil {
@@ -237,7 +158,7 @@ func appendSample(session *Session, line []byte, since time.Time, previous *usag
 	*previous = payload.Info.Total
 	session.Samples = append(session.Samples, Sample{
 		At:            local,
-		Usage:         payload.Info.Last.usage(),
+		Usage:         usageOf(payload.Info.Last),
 		ContextWindow: payload.Info.ContextWindow,
 		Limit:         limit,
 		Billed:        true,

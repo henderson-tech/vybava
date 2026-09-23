@@ -1,0 +1,304 @@
+{
+  "generatedAt": "2026-09-23T15:30:00+02:00",
+  "timezone": "Europe/Prague",
+  "coverage": {
+    "from": "2026-09-22",
+    "complete": true,
+    "pendingBytes": 0
+  },
+  "lifetime": {
+    "tokens": {
+      "input": 1116,
+      "output": 157,
+      "cacheWrite": 100,
+      "cacheRead": 3950
+    },
+    "usd": 0.016964,
+    "responses": 8,
+    "sessions": 3
+  },
+  "days": [
+    {
+      "day": "2026-09-22",
+      "sessions": 2,
+      "longestSessionMinutes": 60,
+      "models": [
+        {
+          "model": "gpt-6-astra",
+          "lane": "openai",
+          "tokens": {
+            "input": 300,
+            "output": 70,
+            "cacheWrite": 0,
+            "cacheRead": 1300
+          },
+          "usd": 0.0078,
+          "responses": 2
+        },
+        {
+          "model": "claude-opus-5-5",
+          "lane": "anthropic",
+          "tokens": {
+            "input": 1,
+            "output": 2,
+            "cacheWrite": 0,
+            "cacheRead": 50
+          },
+          "usd": 0.000054,
+          "responses": 1
+        }
+      ],
+      "projects": [
+        {
+          "name": "tools",
+          "root": "$BASE/work/tools",
+          "tokens": 1670,
+          "usd": 0.0078,
+          "sessions": 1
+        },
+        {
+          "name": "app",
+          "root": "$BASE/work/app",
+          "tokens": 53,
+          "usd": 0.000054,
+          "sessions": 1
+        }
+      ]
+    },
+    {
+      "day": "2026-09-23",
+      "sessions": 2,
+      "longestSessionMinutes": 120,
+      "models": [
+        {
+          "model": "gpt-daybreak-blue",
+          "lane": "openai",
+          "tokens": {
+            "input": 700,
+            "output": 50,
+            "cacheWrite": 0,
+            "cacheRead": 1600
+          },
+          "usd": 0.0044399999999999995,
+          "responses": 2
+        },
+        {
+          "model": "claude-fable-5-1",
+          "lane": "anthropic",
+          "tokens": {
+            "input": 10,
+            "output": 20,
+            "cacheWrite": 100,
+            "cacheRead": 1000
+          },
+          "usd": 0.0030499999999999998,
+          "responses": 1
+        },
+        {
+          "model": "gpt-6-astra",
+          "lane": "openai",
+          "tokens": {
+            "input": 100,
+            "output": 10,
+            "cacheWrite": 0,
+            "cacheRead": 0
+          },
+          "usd": 0.0015,
+          "responses": 1
+        },
+        {
+          "model": "claude-opus-5-5",
+          "lane": "anthropic",
+          "tokens": {
+            "input": 5,
+            "output": 5,
+            "cacheWrite": 0,
+            "cacheRead": 0
+          },
+          "usd": 0.00011999999999999999,
+          "responses": 1
+        }
+      ],
+      "projects": [
+        {
+          "name": "app",
+          "root": "$BASE/work/app",
+          "tokens": 3490,
+          "usd": 0.00761,
+          "sessions": 2
+        },
+        {
+          "name": "tools",
+          "root": "$BASE/work/tools",
+          "tokens": 110,
+          "usd": 0.0015,
+          "sessions": 1
+        }
+      ]
+    }
+  ],
+  "hours": [
+    {
+      "hour": "2026-09-23T13:00:00+02:00",
+      "models": [
+        {
+          "model": "gpt-daybreak-blue",
+          "lane": "openai",
+          "tokens": 310
+        }
+      ],
+      "projects": [
+        {
+          "name": "app",
+          "root": "$BASE/work/app",
+          "tokens": 310
+        }
+      ]
+    },
+    {
+      "hour": "2026-09-23T14:00:00+02:00",
+      "models": [
+        {
+          "model": "claude-fable-5-1",
+          "lane": "anthropic",
+          "tokens": 1130
+        },
+        {
+          "model": "claude-opus-5-5",
+          "lane": "anthropic",
+          "tokens": 10
+        }
+      ],
+      "projects": [
+        {
+          "name": "app",
+          "root": "$BASE/work/app",
+          "tokens": 1140
+        }
+      ]
+    },
+    {
+      "hour": "2026-09-23T15:00:00+02:00",
+      "models": [
+        {
+          "model": "gpt-6-astra",
+          "lane": "openai",
+          "tokens": 110
+        }
+      ],
+      "projects": [
+        {
+          "name": "tools",
+          "root": "$BASE/work/tools",
+          "tokens": 110
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "app",
+      "root": "$BASE/work/app",
+      "firstDay": "2026-09-22",
+      "lastDay": "2026-09-23",
+      "activeDays": 2,
+      "sessions": 2,
+      "tokens": {
+        "input": 716,
+        "output": 77,
+        "cacheWrite": 100,
+        "cacheRead": 2650
+      },
+      "usd": 0.007664,
+      "models": [
+        {
+          "model": "gpt-daybreak-blue",
+          "tokens": 2350
+        },
+        {
+          "model": "claude-fable-5-1",
+          "tokens": 1130
+        },
+        {
+          "model": "claude-opus-5-5",
+          "tokens": 63
+        }
+      ]
+    },
+    {
+      "name": "tools",
+      "root": "$BASE/work/tools",
+      "firstDay": "2026-09-22",
+      "lastDay": "2026-09-23",
+      "activeDays": 2,
+      "sessions": 2,
+      "tokens": {
+        "input": 400,
+        "output": 80,
+        "cacheWrite": 0,
+        "cacheRead": 1300
+      },
+      "usd": 0.0093,
+      "models": [
+        {
+          "model": "gpt-6-astra",
+          "tokens": 1780
+        }
+      ]
+    }
+  ],
+  "models": [
+    {
+      "model": "gpt-daybreak-blue",
+      "lane": "openai",
+      "firstDay": "2026-09-23",
+      "lastDay": "2026-09-23",
+      "tokens": {
+        "input": 700,
+        "output": 50,
+        "cacheWrite": 0,
+        "cacheRead": 1600
+      },
+      "usd": 0.0044399999999999995
+    },
+    {
+      "model": "gpt-6-astra",
+      "lane": "openai",
+      "firstDay": "2026-09-22",
+      "lastDay": "2026-09-23",
+      "tokens": {
+        "input": 400,
+        "output": 80,
+        "cacheWrite": 0,
+        "cacheRead": 1300
+      },
+      "usd": 0.0093
+    },
+    {
+      "model": "claude-fable-5-1",
+      "lane": "anthropic",
+      "firstDay": "2026-09-23",
+      "lastDay": "2026-09-23",
+      "tokens": {
+        "input": 10,
+        "output": 20,
+        "cacheWrite": 100,
+        "cacheRead": 1000
+      },
+      "usd": 0.0030499999999999998
+    },
+    {
+      "model": "claude-opus-5-5",
+      "lane": "anthropic",
+      "firstDay": "2026-09-22",
+      "lastDay": "2026-09-23",
+      "tokens": {
+        "input": 6,
+        "output": 7,
+        "cacheWrite": 0,
+        "cacheRead": 50
+      },
+      "usd": 0.000174
+    }
+  ]
+}

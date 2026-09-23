@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
 type Source string
@@ -62,15 +64,9 @@ type Event struct {
 	Outcomes       []Outcome  `json:"outcomes,omitempty"`
 }
 
-type Cursor struct {
-	Offset     int64     `json:"offset"`
-	Size       int64     `json:"size,omitempty"`
-	Modified   int64     `json:"modified,omitempty"`
-	VerifiedAt time.Time `json:"verified_at,omitempty"`
-	// The prefix detects replacement, including replacement by a larger file.
-	Prefix     string `json:"prefix"`
-	PrefixSize int    `json:"prefix_size"`
-}
+// Cursor is the shared incremental read position; its JSON shape is part of
+// the persisted state.
+type Cursor = transcripts.Cursor
 
 type State struct {
 	Version    int               `json:"version"`
