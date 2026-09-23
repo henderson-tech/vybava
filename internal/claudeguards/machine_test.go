@@ -1,6 +1,7 @@
 package claudeguards
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,31 @@ func TestWeatherLines(t *testing.T) {
 	calm := machineStats{Cores: 14, Load1: 3, TotalGB: 96, FreeGB: 20, CompressorGB: 5}
 	if p := weatherPressure(calm, machineCounts{}, defaultGuardConfig()); p != "" {
 		t.Errorf("calm machine warned: %q", p)
+	}
+}
+
+// `weather --reap` is SessionStart's one `ps`: the sweep reuses the table the
+// line was counted from. The table holds no orphan, so nothing is signalled.
+func TestWeatherReapReadsTheTableOnce(t *testing.T) {
+	origTable, origStats := machineProcTable, readMachineStats
+	t.Cleanup(func() { machineProcTable, readMachineStats = origTable, origStats })
+	reads := 0
+	machineProcTable = func() []machineProc {
+		reads++
+		return fakeTable[:2]
+	}
+	readMachineStats = func() (machineStats, error) {
+		return machineStats{Cores: 14, Load1: 3, TotalGB: 96, FreeGB: 20, CompressorGB: 5}, nil
+	}
+	var out, errOut bytes.Buffer
+	if err := Weather(false, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 1 {
+		t.Errorf("process table read %d times, want 1", reads)
+	}
+	if !strings.HasPrefix(out.String(), "🌡️ Mac: load 3.0 on 14 cores") || errOut.Len() != 0 {
+		t.Errorf("stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
 

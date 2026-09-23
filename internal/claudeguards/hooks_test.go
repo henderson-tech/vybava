@@ -79,14 +79,14 @@ func TestMissingHooksAllPresent(t *testing.T) {
 }
 
 func TestMissingHooksReportsDropped(t *testing.T) {
-	path := fullSettings(t, "~/.claude/hooks/claude-guards", "bash", "weather", "reap")
+	path := fullSettings(t, "~/.claude/hooks/claude-guards", "bash", "weather --reap", "reap")
 	missing, err := MissingHooks(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := verbs(missing)
-	// reap is wired twice (SessionStart and SessionEnd), so it is missing twice.
-	want := []string{"bash", "weather", "reap", "reap"}
+	// The flags are part of the verb: `weather --reap` and `reap` are distinct.
+	want := []string{"bash", "weather --reap", "reap"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("missing = %v, want %v", got, want)
 	}
@@ -200,6 +200,76 @@ func TestDoctorFailsOpen(t *testing.T) {
 	}
 	if err := Doctor(filepath.Join(t.TempDir(), "absent.json"), false, &out, &errOut); err != nil {
 		t.Errorf("absent settings must not fail the session: %v", err)
+	}
+}
+
+// A rewrite leaves the other top-level keys where the file had them.
+func TestWriteSettingsKeepsKeyOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"model":"opus","hooks":{},"env":{"A":"1"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	top, groups, err := readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSettings(path, top, groups); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	s := string(raw)
+	if m, h, e := strings.Index(s, `"model"`), strings.Index(s, `"hooks"`), strings.Index(s, `"env"`); !(m < h && h < e) {
+		t.Errorf("key order changed:\n%s", s)
+	}
+}
+
+// A settings.json wired by the older manifest (separate SessionStart weather
+// and reap, on the installer's path) is upgraded in place: the retired
+// entries go, their successor comes in on the same binary path, SessionEnd's
+// reap stays — and a guard lost at the same time still raises the 🚨.
+func TestDoctorFixRetiresSupersededHooks(t *testing.T) {
+	const bin = "~/.local/bin/claude-guards"
+	path := fullSettings(t, bin, "weather --reap", "bash")
+	top, groups, err := readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range retiredHooks {
+		groups[r.Event] = insertHook(groups[r.Event], HookWiring{Event: r.Event, Command: bin + " " + r.Verb()})
+	}
+	// Another tool's hook, written raw: the rewrite must keep it byte for byte.
+	other := `{"type":"command","command":"vitrinka hook-context start 2>/dev/null || true"}`
+	groups["SessionStart"] = append(groups["SessionStart"], hookGroup{Hooks: []json.RawMessage{json.RawMessage(other)}})
+	if err := writeSettings(path, top, groups); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	if err := Doctor(path, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ℹ️ claude-guards: rewired",
+		"− SessionStart → " + bin + " weather",
+		"− SessionStart → " + bin + " reap",
+		"+ SessionStart → " + bin + " weather --reap",
+		"🚨 claude-guards: re-inserted 1 missing hook(s)",
+		"PreToolUse/Bash → " + hookBin + " bash",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("fix report lacks %q:\n%s", want, out.String())
+		}
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "2>/dev/null || true") {
+		t.Errorf("another hook's command was re-escaped:\n%s", raw)
+	}
+	_, groups, err = readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, r := missingHooks(groups), retiredWired(groups); len(m) != 0 || len(r) != 0 {
+		t.Errorf("after fix: missing %v, retired %v", verbs(m), r)
 	}
 }
 
