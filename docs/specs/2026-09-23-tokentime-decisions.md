@@ -21,6 +21,7 @@ switcheroo.
 | 6 | Codex legacy vs receipts | Receipts are exact once a rollout writes one; before that, `token_count` with a changed total charges `last_token_usage` | Matches the codexusage rule; a token_count persisted before its receipt is recognised by equal usage |
 | 7 | Project | Git root via `.git` → `gitdir` → `commondir`, per record | Worktrees live outside `.worktrees/` too; one session crosses the repo and several worktrees |
 | 8 | Prices | Built-in table (Anthropic via the claude-api skill, OpenAI's pricing page, 2026-09-23) + `prices.json` override; unknown = unpriced, reported | Never guess money; standard, short-context rates |
+| 9 | Moved checkouts | At rollup time, a dead root (gone from disk) folds into the one live root with its basename; zero or 2+ live namesakes → it stays its own project | Checkouts moved from ~/Documents/Work to ~/Work/Projects/<org>; folding at read time keeps the stored buckets untouched, so a wrong fold is undone by the next rollup, never baked in |
 
 ## Assumptions
 

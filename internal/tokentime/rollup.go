@@ -186,10 +186,11 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	if err != nil {
 		return Rollup{}, err
 	}
-	names, roots, err := s.projectNames()
+	ps, err := s.projects()
 	if err != nil {
 		return Rollup{}, err
 	}
+	names, roots := ps.names, ps.roots
 
 	firstDay := time.Date(now.Year(), now.Month(), now.Day()-(days-1), 0, 0, 0, 0, loc)
 	thisHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
@@ -200,6 +201,9 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	rows, err := s.windowRows(since)
 	if err != nil {
 		return Rollup{}, err
+	}
+	for i := range rows {
+		rows[i].project = ps.of(rows[i].project)
 	}
 	out := Rollup{
 		GeneratedAt: now.Format(time.RFC3339), Timezone: ZoneName(loc),
@@ -306,7 +310,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		}
 	}
 
-	sessDays, sessProjects, err := s.sessionDays(firstDay.Unix()-firstDay.Unix()%3600, dayKey, firstDayKey)
+	sessDays, sessProjects, err := s.sessionDays(firstDay.Unix()-firstDay.Unix()%3600, dayKey, firstDayKey, ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -359,11 +363,11 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		out.Hours = append(out.Hours, hour)
 	}
 
-	spans, err := s.projectSpans()
+	spans, err := s.projectSpans(ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
-	projSessions, err := s.projectSessions(firstDay.Unix() - firstDay.Unix()%3600)
+	projSessions, err := s.projectSessions(firstDay.Unix()-firstDay.Unix()%3600, ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -437,7 +441,7 @@ type sessDay struct {
 
 // sessionDays counts distinct sessions per local day and the longest
 // first→last span inside the day, plus distinct sessions per day and project.
-func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey string) (map[string]*sessDay, map[string]map[int64]int, error) {
+func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey string, of func(int64) int64) (map[string]*sessDay, map[string]map[int64]int, error) {
 	rs, err := s.db.Query("SELECT session, hour, project, first, last FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
 		return nil, nil, err
@@ -454,6 +458,7 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 		if err := rs.Scan(&session, &hour, &project, &first, &last); err != nil {
 			return nil, nil, err
 		}
+		project = of(project)
 		dk := dayKey(hour)
 		if dk < firstDayKey {
 			continue
@@ -495,25 +500,33 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 	return days, counts, nil
 }
 
-func (s *Store) projectSessions(since int64) (map[int64]int, error) {
-	rs, err := s.db.Query("SELECT project, COUNT(DISTINCT session) FROM session_hours WHERE hour >= ? GROUP BY project", since)
+func (s *Store) projectSessions(since int64, of func(int64) int64) (map[int64]int, error) {
+	rs, err := s.db.Query("SELECT DISTINCT project, session FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
 		return nil, err
 	}
 	defer rs.Close()
-	out := map[int64]int{}
+	// Counted per canonical project: a folded pair must not count a session twice.
+	sessions := map[int64]map[int64]bool{}
 	for rs.Next() {
-		var id int64
-		var n int
-		if err := rs.Scan(&id, &n); err != nil {
+		var id, session int64
+		if err := rs.Scan(&id, &session); err != nil {
 			return nil, err
 		}
-		out[id] = n
+		id = of(id)
+		if sessions[id] == nil {
+			sessions[id] = map[int64]bool{}
+		}
+		sessions[id][session] = true
+	}
+	out := map[int64]int{}
+	for id, set := range sessions {
+		out[id] = len(set)
 	}
 	return out, rs.Err()
 }
 
-func (s *Store) projectSpans() (map[int64][2]int64, error) {
+func (s *Store) projectSpans(of func(int64) int64) (map[int64][2]int64, error) {
 	rs, err := s.db.Query("SELECT project, MIN(hour), MAX(hour) FROM buckets GROUP BY project")
 	if err != nil {
 		return nil, err
@@ -524,6 +537,10 @@ func (s *Store) projectSpans() (map[int64][2]int64, error) {
 		var id, first, last int64
 		if err := rs.Scan(&id, &first, &last); err != nil {
 			return nil, err
+		}
+		id = of(id)
+		if prev, ok := out[id]; ok {
+			first, last = min(first, prev[0]), max(last, prev[1])
 		}
 		out[id] = [2]int64{first, last}
 	}
@@ -575,32 +592,76 @@ func (s *Store) lifetime(out *Rollup, cost func(string, Counts) (float64, bool),
 	return nil
 }
 
-// projectNames gives every project a unique display name over every root ever
-// indexed, so a name does not change while the window moves. `root` stays the
-// stable key; the name is for people.
-func (s *Store) projectNames() (map[int64]string, map[int64]string, error) {
+// projectSet is how stored project ids roll up: a moved checkout's old root
+// folds into its new one, and every canonical project has a display name.
+type projectSet struct {
+	canon map[int64]int64  // every stored id → the id it rolls up under
+	names map[int64]string // canonical id → unique display name
+	roots map[int64]string // canonical id → absolute root
+}
+
+func (p projectSet) of(id int64) int64 {
+	if c, ok := p.canon[id]; ok {
+		return c
+	}
+	return id
+}
+
+// projects reads every root ever indexed. Folding happens here, at rollup
+// time — stored buckets keep the root they were recorded under, so a wrong
+// fold is undone by the next rollup, never baked in.
+func (s *Store) projects() (projectSet, error) {
 	rs, err := s.db.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0)
 		FROM projects p LEFT JOIN buckets b ON b.project = p.id GROUP BY p.id`)
 	if err != nil {
-		return nil, nil, err
+		return projectSet{}, err
 	}
 	defer rs.Close()
 	var candidates []nameCandidate
-	roots := map[int64]string{}
 	for rs.Next() {
 		var c nameCandidate
 		if err := rs.Scan(&c.id, &c.root, &c.tokens); err != nil {
-			return nil, nil, err
+			return projectSet{}, err
 		}
 		_, statErr := os.Stat(c.root)
-		c.live = statErr == nil
+		c.live = c.root != "" && statErr == nil
 		candidates = append(candidates, c)
-		roots[c.id] = c.root
 	}
 	if err := rs.Err(); err != nil {
-		return nil, nil, err
+		return projectSet{}, err
 	}
-	return uniqueNames(candidates), roots, nil
+	return foldProjects(candidates), nil
+}
+
+// foldProjects folds a DEAD root (gone from disk) into the one LIVE root that
+// shares its basename: checkouts move (~/Documents/Work/FixIt →
+// ~/Work/Projects/Org/FixIt) and transcripts keep the old path. With no live
+// namesake, or with two or more, the dead root stays its own project — a
+// basename alone never picks between candidates. Names are assigned after
+// folding, so a folded root never takes a name of its own.
+func foldProjects(candidates []nameCandidate) projectSet {
+	ps := projectSet{canon: map[int64]int64{}, roots: map[int64]string{}}
+	base := func(root string) string { return filepath.Base(filepath.Clean(root)) }
+	liveByBase := map[string][]int64{}
+	for _, c := range candidates {
+		if c.live {
+			liveByBase[base(c.root)] = append(liveByBase[base(c.root)], c.id)
+		}
+	}
+	var kept []nameCandidate
+	for _, c := range candidates {
+		target := c.id
+		if live := liveByBase[base(c.root)]; !c.live && c.root != "" && len(live) == 1 {
+			target = live[0]
+		}
+		ps.canon[c.id] = target
+		if target == c.id {
+			kept = append(kept, c)
+			ps.roots[c.id] = c.root
+		}
+	}
+	ps.names = uniqueNames(kept)
+	return ps
 }
 
 type nameCandidate struct {

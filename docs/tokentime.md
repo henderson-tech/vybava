@@ -50,7 +50,12 @@ credential and no message content is read beyond what decoding a line needs.
   are cached forever, because a removed worktree can no longer be resolved. When
   the whole checkout has moved or been deleted, a path inside `.worktrees/` or
   `.claude/worktrees/` still folds into the directory that held it. A directory
-  outside any repository is its own project. Display names are unique across
+  outside any repository is its own project.
+- **A moved checkout is one project.** At rollup time — stored buckets keep the
+  root they were recorded under — a root that no longer exists on disk folds into
+  the ONE live root sharing its basename (`~/Documents/Work/FixIt` into
+  `~/Work/Projects/Org/FixIt`). With no live namesake, or with two or more, the
+  dead root stays its own project: a basename never picks between candidates. Display names are unique across
   every root ever indexed: among roots sharing a basename, the one still on disk
   (then the busiest) keeps it (`FixIt`); the others gain parent directories
   (`Work/FixIt`). `root` is the stable key.

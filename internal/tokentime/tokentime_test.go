@@ -253,6 +253,29 @@ func TestNamesKeepTheLiveRepositoryShort(t *testing.T) {
 	}
 }
 
+func TestAMovedCheckoutFoldsIntoItsOnlyLiveNamesake(t *testing.T) {
+	ps := foldProjects([]nameCandidate{
+		{id: 1, root: "/new/Org/FixIt", live: true},
+		{id: 2, root: "/old/Work/FixIt"},                    // moved: one live FixIt → fold
+		{id: 3, root: "/old/Work/tools"},                    // no live namesake → stays
+		{id: 4, root: "/a/lib", live: true},                 // two live libs …
+		{id: 5, root: "/b/lib", live: true},                 //
+		{id: 6, root: "/old/Work/lib"},                      // … so the dead one never guesses
+		{id: 7, root: "/new/Org/FixIt/.claude", live: true}, // a live root is never folded
+	})
+	for id, want := range map[int64]int64{1: 1, 2: 1, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7} {
+		if got := ps.of(id); got != want {
+			t.Errorf("project %d rolls up under %d, want %d", id, got, want)
+		}
+	}
+	if ps.names[1] != "FixIt" || ps.names[3] != "tools" || ps.names[6] != "Work/lib" {
+		t.Errorf("names = %v; want FixIt, tools and a qualified dead lib", ps.names)
+	}
+	if _, ok := ps.names[2]; ok {
+		t.Error("a folded root kept a name of its own")
+	}
+}
+
 func TestPricesNormalizeNamesAndHonourTheOverrideFile(t *testing.T) {
 	dir := t.TempDir()
 	put(t, filepath.Join(dir, "prices.json"), `{"claude-opus-5-5":{"input":1,"output":2,"cacheWrite5m":3,"cacheWrite1h":4,"cacheRead":0.5}}`)
