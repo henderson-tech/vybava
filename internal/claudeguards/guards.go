@@ -10,8 +10,8 @@
 // CLAUDE.md is context, not enforcement: Claude reads it and *usually*
 // complies. These bans are incident-born and must hold unconditionally,
 // including under bypassPermissions and inside subagents (where skills don't
-// even load). One compiled process per Bash call keeps the cost at single-digit
-// milliseconds regardless of system load.
+// even load). Each hook call is one compiled process; what it costs and the
+// paths that cost more are measured in docs/claude-guards.md.
 //
 // Failure contract: fail OPEN on malformed input (a guard that blocks
 // everything on a parse error bricks the session), fail CLOSED only on a
@@ -42,8 +42,13 @@ func deny(rule, msg, escapeHatch string) *Denial {
 	return &Denial{Rule: rule, Message: msg, EscapeHatch: escapeHatch}
 }
 
-// Bash evaluates every PreToolUse:Bash rule, cheapest first; commit-secrets
-// last because it may do git/network IO. The first match wins.
+// Bash evaluates every PreToolUse:Bash rule in this order; the first match
+// wins, so an allowed call runs them all and the order only decides what a
+// denied call pays. It is not by cost: the first five rules do no I/O,
+// guardAppiumChurn is the first to load the repo config (memoized for the
+// rest), guardMachineCap may fork `ps -axo`, and guardBudget and
+// guardContextBash read the transcript and files. commit-secrets runs last
+// because it forks git and may call gh.
 func Bash(in *HookInput) *Denial {
 	for _, g := range []func(*HookInput) *Denial{
 		guardDestructive,

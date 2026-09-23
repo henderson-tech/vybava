@@ -1,13 +1,15 @@
 package claudeguards
 
-// Machine snapshot — the cheap process/memory read behind `weather`,
-// `machine:sim-cap`, `machine:dev-server-cap` and `reap`.
+// Machine snapshot — the process/memory read behind `weather`,
+// `machine:sim-cap`, `machine:dev-server-cap` and `reap`. The `ps -axo` fork
+// dominates its cost (docs/claude-guards.md).
 //
 // On 2026-09-19/20 the Mac sat at the memory ceiling (95 of 96 GB used,
 // 36-49 GB in the compressor) with 4 booted simulators, 3 Metro bundlers and
 // 4 API dev servers that the Devbox rule already routed elsewhere, under 55
 // Claude sessions. No session knew any of that when it started. This file
-// gives them the number: one `ps` and one `vm_stat`, no lsof, no top.
+// gives them the number: one `ps`, one `sysctl` and one `vm_stat`, no lsof,
+// no top.
 
 import (
 	"fmt"
