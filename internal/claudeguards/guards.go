@@ -10,16 +10,8 @@
 // CLAUDE.md is context, not enforcement: Claude reads it and *usually*
 // complies. These bans are incident-born and must hold unconditionally,
 // including under bypassPermissions and inside subagents (where skills don't
-// even load). One compiled process per Bash call costs 15-30 ms, nearly all of
-// it process start for this binary: warm repeats sit at the low end, a cold
-// exec on a memory-pressured Mac at the high end. Most rules add nothing
-// measurable on top. Three paths do: commit-secrets roughly doubles the call
-// when `git commit` has staged changes (it diffs them, and may refresh repo
-// visibility), and machine:sim-cap / machine:dev-server-cap add ~450-630 ms for
-// one `ps -axo` — but only when a command actually matches a boot or a
-// dev-server start. The weather and reap verbs read the same process table
-// unconditionally rather than per command: weather once, at SessionStart, and
-// reap twice, at SessionStart and SessionEnd (see Hooks in hooks.go).
+// even load). Each hook call is one compiled process; what it costs and the
+// paths that cost more are measured in docs/claude-guards.md.
 //
 // Failure contract: fail OPEN on malformed input (a guard that blocks
 // everything on a parse error bricks the session), fail CLOSED only on a
@@ -50,8 +42,13 @@ func deny(rule, msg, escapeHatch string) *Denial {
 	return &Denial{Rule: rule, Message: msg, EscapeHatch: escapeHatch}
 }
 
-// Bash evaluates every PreToolUse:Bash rule, cheapest first; commit-secrets
-// last because it may do git/network IO. The first match wins.
+// Bash evaluates every PreToolUse:Bash rule in this order; the first match
+// wins, so an allowed call runs them all and the order only decides what a
+// denied call pays. It is not by cost: the first five rules do no I/O,
+// guardAppiumChurn is the first to load the repo config (memoized for the
+// rest), guardMachineCap may fork `ps -axo`, and guardBudget and
+// guardContextBash read the transcript and files. commit-secrets runs last
+// because it forks git and may call gh.
 func Bash(in *HookInput) *Denial {
 	for _, g := range []func(*HookInput) *Denial{
 		guardDestructive,

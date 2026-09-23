@@ -4,31 +4,65 @@ claude-guards is the enforcement layer under `~/.claude/CLAUDE.md`. CLAUDE.md is
 context — Claude reads it and usually complies. The bans in this applet are
 incident-born and must hold unconditionally, including under bypass
 permissions and inside subagents, where skills do not even load. It runs as a
-Claude Code PreToolUse hook: one compiled process per Bash or Read call,
-15–30 ms, no fork storms. That floor is process start for a 26 MB binary rather
-than rule evaluation — warm repeats sit near 13 ms, a cold exec on a
-memory-pressured Mac near 30 — so most rules cost nothing measurable on top of
-it. Three paths are not free:
+Claude Code PreToolUse hook: one compiled process per Bash, Read or browser
+call. Its main costs (measured 2026-09-22/23 on a 14-core Mac at load ~27,
+~2000 processes, under 0.5 GB free; a no-op `/usr/bin/true` takes 3–4 ms the
+same way):
 
 ```text
-commit-secrets        ~2× the floor on `git commit` WITH staged changes (it
-                      diffs them; no staged changes short-circuits to the floor)
-machine:sim-cap       + ~450-630 ms for one `ps -axo`, paid ONLY when the
-machine:dev-server-cap  command actually matches a boot or dev-server start
-weather               the same process-table read, unconditional, once per
-                      session at SessionStart — never per command
-reap                  likewise unconditional, at SessionStart and again at
-                      SessionEnd — twice per session
+every call        ~15 ms   process start: package init of every applet in the
+                           multicall binary (~5 ms, mostly the sqlite libc's
+                           netdb init) and the embedded catalog load
+                  +2–3 ms  the last ≤4 MiB of transcript_path, on every allowed
+                           call. No rule forks or calls the network outside the
+                           rows below; a few stat or read small files
+config found      +~17 ms  per config load: a `git rev-parse` (vconfig). Bash
+(vybava.config             and Read load it once; each `.json` path a Read or a
+in cwd or above)           cat/sed/head/tail names loads it again (the lok
+                           check, not memoized). The first load after the
+                           config file changes, and in every new worktree, runs
+                           `bun -e` (~0.5 s); a failed evaluation caches
+                           nothing, so every call re-runs it
+line counts       ≤4 MiB   read per file a Read names (no limit or one above
+                           guards.maxDumpLines; every text Read at ≥70%
+                           context) or a cat/sed/head/tail names
+commit-secrets    any command containing `git commit`: 3 git forks in a repo,
+                  staged or not; with added lines a 4th, plus a synchronous
+                  `gh repo view` (≤2.5 s) until one succeeds — a repo without
+                  a GitHub remote, or gh offline, pays it on every commit
+machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
+                  simulator or starts a dev server (any `dev:*` script counts)
+browser           a loopback GET to onyx (1.5 s timeout) on every
+                  playwright/chrome-devtools call
 ```
 
-Measured 2026-09-22 on a 14-core Mac, 1941 processes, 0.1–0.5 GB free, against
-a 2.7 ms loop baseline: trivial 13–29 ms, git 29.9 ms, `git commit` with staged
-changes 62.9 ms, Read 44.6 ms, simulator boot 626.7 ms. Passing
-`transcript_path` for the budget rules adds ~3 ms on a 4.3 MB transcript.
+The lifecycle hooks have no matcher, so SessionStart fires on startup, resume,
+`/clear` and every compaction, and SessionEnd on every exit reason including
+`/clear`. They run in parallel within an event:
 
-Wire it once in `~/.claude/settings.json` (the applet symlink lives at
-`~/.local/bin/claude-guards`, so an older `~/.claude/hooks/claude-guards`
-symlink keeps working):
+```text
+SessionStart  doctor --fix                reads settings.json; writes only on drift
+              weather --reap              one `ps -axo`, sysctl, vm_stat and a
+                                          config load (~0.5 s); the orphan sweep
+                                          reuses the table and, when it kills,
+                                          adds a `pgrep` per victim process and 2 s
+              swarm-teardown --dead-only  a tmux socket scan; per dead swarm
+                                          `tmux list-panes` and `kill-server`, and
+                                          a `pgrep` per process + 2 s if panes live
+SessionEnd    swarm-teardown              the same, also for this session's own
+                                          swarm, plus ≤8 `ps` up the ancestry
+              browser-teardown            an onyx lookup (1.5 s) and stop (3 s)
+              reap                        one `ps -axo`; kills as weather --reap does
+```
+
+At load ~400 the per-call figures rise by a quarter to a half (18–21 ms, 40–62
+ms with a config), fork-bound paths about double (`ps -axo` ~1 s), and
+SessionStart's weather takes 0.8–5 s.
+
+Wire it once in `~/.claude/settings.json`. `doctor --fix` writes
+`~/.claude/hooks/claude-guards`; an entry on `~/.local/bin/claude-guards` (the
+applet symlink `vybava install` creates) counts as present too, since entries
+match on the verb:
 
 ```text
 PreToolUse    Bash    claude-guards bash
