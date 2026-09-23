@@ -29,6 +29,7 @@ type Config struct {
 	SimCap       int `json:"simCap,omitempty"`
 	DevServerCap int `json:"devServerCap,omitempty"`
 	root         string
+	lokFiles     []string // the lok section's catalog files, from the same load
 }
 
 // defaultGuardConfig is what every rule reads when the repo sets nothing, or
@@ -37,16 +38,24 @@ func defaultGuardConfig() Config {
 	return Config{MaxDumpLines: maxDumpLines, TestWorkerCap: defaultTestWorkerCap, SimCap: defaultSimCap, DevServerCap: defaultDevServerCap}
 }
 
+// loadGuardConfig loads vybava.config once for everything the guards read
+// from it: the guards section and the lok catalog files.
 func loadGuardConfig(cwd string) (Config, error) {
-	result := defaultGuardConfig()
 	cfg, err := vconfig.Load(cwd)
 	if errors.Is(err, vconfig.ErrNotFound) {
-		return result, nil
+		return defaultGuardConfig(), nil
 	}
 	if err != nil {
-		return result, err
+		return defaultGuardConfig(), err
 	}
-	if err = cfg.Section("guards", &result); errors.Is(err, vconfig.ErrNoSection) {
+	result, err := guardSection(cfg)
+	result.lokFiles = lokCatalogFiles(cfg)
+	return result, err
+}
+
+func guardSection(cfg *vconfig.Config) (Config, error) {
+	result := defaultGuardConfig()
+	if err := cfg.Section("guards", &result); errors.Is(err, vconfig.ErrNoSection) {
 		return result, nil
 	} else if err != nil {
 		return defaultGuardConfig(), err

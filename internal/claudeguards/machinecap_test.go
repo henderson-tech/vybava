@@ -1,6 +1,8 @@
 package claudeguards
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,6 +15,7 @@ func withProcTable(t *testing.T, table []machineProc) {
 }
 
 func TestStartKind(t *testing.T) {
+	dir := t.TempDir() // no package.json: a dev:* script stays a start
 	for cmd, want := range map[string]string{
 		"xcrun simctl boot ABC":                         kindSim,
 		"bunx expo run:ios --device X":                  kindSim,
@@ -44,7 +47,36 @@ func TestStartKind(t *testing.T) {
 		"ssh box 'bunx expo start'":                     "",
 		"git commit -m 'xcrun simctl boot in the loop'": "",
 	} {
-		if _, got := machineStartMatch(cmd); got != want {
+		if _, got := machineStartMatch(cmd, dir); got != want {
+			t.Errorf("%q: got %q want %q", cmd, got, want)
+		}
+	}
+}
+
+// A dev:* script is a dev-server start only when its package.json body is
+// one, read where the command runs (`cd` followed).
+func TestDevScriptKindReadsTheBody(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"scripts": {
+		"dev:api": "nest start --watch",
+		"dev:web": "bun run dev:api",
+		"dev:export-structure": "tree -I node_modules > structure.txt",
+		"dev:claude:usage": "bunx ccusage@latest"
+	}}`
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app", "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]string{
+		"cd app && bun run dev:api":              "dev",
+		"cd app && bun run dev:web":              "dev",
+		"cd app && bun run dev:export-structure": "",
+		"cd app && bun run dev:claude:usage":     "",
+		"bun run dev:export-structure":           "dev", // no package.json here
+	} {
+		if _, got := machineStartMatch(cmd, dir); got != want {
 			t.Errorf("%q: got %q want %q", cmd, got, want)
 		}
 	}

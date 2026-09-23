@@ -542,7 +542,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if isTranscript(abs) {
 			return dumpTranscript, abs, 0, 0
 		}
-		if isLokCatalog(abs, cwd) {
+		if isLokCatalog(abs, cfg) {
 			return dumpCatalog, abs, 0, 0
 		}
 		n, ok := lineCount(abs)
@@ -722,7 +722,7 @@ func contextReadMatchCfg(path string, offset, limit int, cwd string, cfg Config)
 	if isTranscript(abs) {
 		return deny("context:transcript-dump", fmt.Sprintf(transcriptMsg, abs), "")
 	}
-	if isLokCatalog(abs, cwd) {
+	if isLokCatalog(abs, cfg) {
 		return catalogDenial(abs)
 	}
 	if (limit > 0 && limit <= cfg.MaxDumpLines) || noLineBudget[strings.ToLower(filepath.Ext(abs))] {

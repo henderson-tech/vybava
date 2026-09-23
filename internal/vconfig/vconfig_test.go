@@ -4,8 +4,41 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// gitDir answers what `git rev-parse --absolute-git-dir` would — in a main
+// checkout, a subdirectory and a linked worktree — without running git.
+func TestGitDirMatchesGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	main := t.TempDir()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run(main, "init", "-q")
+	run(main, "commit", "-q", "--allow-empty", "-m", "init")
+	sub := filepath.Join(main, "apps", "web")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(t.TempDir(), "wt")
+	run(main, "worktree", "add", "-q", linked)
+	for _, dir := range []string{main, sub, linked} {
+		want, _ := filepath.EvalSymlinks(run(dir, "rev-parse", "--absolute-git-dir"))
+		got, _ := filepath.EvalSymlinks(gitDir(dir))
+		if got != want {
+			t.Errorf("gitDir(%s) = %q, git says %q", dir, got, want)
+		}
+	}
+}
 
 func TestFindAndLoadJSON(t *testing.T) {
 	root := t.TempDir()

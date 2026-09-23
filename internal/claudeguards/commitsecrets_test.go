@@ -1,6 +1,10 @@
 package claudeguards
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,19 +121,110 @@ func TestEnvAccessorSpellingsAreSkipped(t *testing.T) {
 	}
 }
 
-func TestCdPrefix(t *testing.T) {
-	for cmd, want := range map[string]string{
-		`cd /x/y && git commit -m m`:     "/x/y",
-		`(cd "/a b" && git commit -m m)`: "/a b",
-		`git commit -m m`:                "",
+func TestCommitCalls(t *testing.T) {
+	for _, tc := range []struct {
+		cmd, dir string
+		worktree bool
+		paths    []string
+	}{
+		{`git commit -m m`, "/cwd", false, nil},
+		{`git -C /r -c user.name=x commit -m "a b"`, "/r", false, nil},
+		{`cd /x/y && git commit -am wip`, "/x/y", true, nil},
+		{`(cd "/a b" && git commit -m m)`, "/a b", false, nil},
+		{`git -C sub commit -m m -- a.go b.go`, "/cwd/sub", true, []string{"a.go", "b.go"}},
+		{`git commit src/x.go -m m`, "/cwd", true, []string{"src/x.go"}},
+		{`git commit -q -F - <<'EOF' 2>&1`, "/cwd", false, nil},
+		{`timeout 5 git commit --message x`, "/cwd", false, nil},
 	} {
-		got := ""
-		if m := reCdPrefix.FindStringSubmatch(cmd); m != nil {
-			got = strings.TrimSpace(m[1])
+		calls := commitCalls(tc.cmd, "/cwd")
+		if len(calls) != 1 {
+			t.Errorf("%q: %d commit calls, want 1", tc.cmd, len(calls))
+			continue
 		}
-		if got != want {
-			t.Errorf("cd prefix of %q: got %q, want %q", cmd, got, want)
+		c := calls[0]
+		if c.dir != tc.dir || c.worktree != tc.worktree || strings.Join(c.paths, " ") != strings.Join(tc.paths, " ") {
+			t.Errorf("%q: got dir=%q worktree=%v paths=%v", tc.cmd, c.dir, c.worktree, c.paths)
 		}
+	}
+	for _, cmd := range []string{
+		`grep -rn "git commit" docs`,
+		`echo "git commit -m x"`,
+		`gh pr create --body "run git commit"`,
+		`git commit-tree HEAD^{tree}`,
+		`ssh box 'git commit -am x'`,
+	} {
+		if calls := commitCalls(cmd, "/cwd"); len(calls) != 0 {
+			t.Errorf("%q is no local commit, got %+v", cmd, calls)
+		}
+	}
+}
+
+// Every way a commit takes content is scanned — `-a` and a pathspec pick up
+// an unstaged tracked change, `git -C` and `cd` reach the repo from elsewhere
+// — while a commit of nothing sensitive and a mere mention of `git commit`
+// pass.
+func TestCommitSecretsScansWhatTheCommitTakes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(cmd, cwd string, blocked bool) {
+		t.Helper()
+		in := &HookInput{CWD: cwd}
+		in.ToolInput.Command = cmd
+		if d := guardCommitSecrets(in); (d != nil) != blocked {
+			t.Errorf("%q from %s: blocked=%v, want %v", cmd, cwd, d != nil, blocked)
+		}
+	}
+	run("init", "-q")
+	write("clean\n")
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "init")
+
+	write("clean\n" + "ghp_" + strings.Repeat("a1", 12) + "\n") // tracked, not staged
+	check(`git commit -m x`, repo, false)
+	check(`git commit -am x`, repo, true)
+	check(`git commit -m x a.txt`, repo, true)
+	check(`grep -rn "git commit" .`, repo, false)
+	run("add", "a.txt")
+	check(`git -C `+repo+` commit -m x`, t.TempDir(), true)
+	check(`cd `+repo+` && git commit -m x`, "/", true)
+}
+
+// A lookup gh cannot answer (no GitHub remote, offline) is cached as unknown,
+// so the next commit does not pay for gh again.
+func TestUnknownVisibilityIsCached(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script gh stub")
+	}
+	bin, gitdir := t.TempDir(), t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	stub := "#!/bin/sh\necho x >> '" + calls + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	g := func(...string) string { return gitdir }
+	for i := 0; i < 2; i++ {
+		if vis := repoVisibility(t.TempDir(), g); vis != "" {
+			t.Fatalf("visibility %q, want unknown", vis)
+		}
+	}
+	if b, _ := os.ReadFile(calls); strings.Count(string(b), "x") != 1 {
+		t.Errorf("gh ran %d times, want 1", strings.Count(string(b), "x"))
 	}
 }
 
