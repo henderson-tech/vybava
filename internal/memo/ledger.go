@@ -60,7 +60,12 @@ type Ledger struct {
 func (l *Ledger) Home() string { return filepath.Dir(l.Path) }
 
 var (
-	rowPattern      = regexp.MustCompile(`^- #(t?)(\d+) ([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
+	// A row carries no date (amendment 2026-09-21). A ledger written before
+	// that amendment still leads each row with `YYYY-MM-DD`; the parser
+	// accepts and drops it — the same tolerance `memo import` has — so a
+	// legacy ledger keeps reading, rendering and taking `memo add` instead
+	// of refusing at its first row with no verb able to repair it.
+	rowPattern      = regexp.MustCompile(`^- #(t?)(\d+) (?:\d{4}-\d{2}-\d{2} )?([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
 	headPattern     = regexp.MustCompile(`^([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?)$`)
 	supersedesRE    = regexp.MustCompile(`^supersedes #t?(\d+): `)
 	retiresRE       = regexp.MustCompile(`^retires #t?(\d+)\.(?: |$)`)

@@ -62,7 +62,12 @@ func TestParseRowRefusals(t *testing.T) {
 		{"- #1 feedback/Git Bad topic. ^m1", DiagRowSyntax},
 		{"- #1 feedback/git Bad link. -> notes/x ^m1", DiagRowNoPeriod}, // an invalid tail is prose, and that prose lacks a period
 		{"#1 feedback/git Not a bullet. ^m1", DiagRowSyntax},
-		{"- #1 2026-09-20 feedback/git Dated rows are the old grammar. ^m1", DiagRowSyntax},
+		{"- #1 2026-9-20 feedback/git A malformed date is not the old grammar. ^m1", DiagRowSyntax},
+	}
+	// A pre-amendment row (leading YYYY-MM-DD) reads with the date dropped,
+	// so a ledger written before 2026-09-21 never refuses at its first row.
+	if r, d := ParseRow("- #1 2026-09-20 feedback/git Dated rows are the old grammar. ^m1"); d != nil || r.ID != 1 || r.Type != "feedback" || r.Topic != "git" || r.Sentence != "Dated rows are the old grammar." {
+		t.Errorf("pre-amendment dated row: got %+v, %v", r, d)
 	}
 	for _, c := range cases {
 		if _, d := ParseRow(c.line); d == nil || d.Code != c.code {
