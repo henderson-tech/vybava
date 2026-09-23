@@ -261,6 +261,46 @@ func TestHoursStayDistinctAcrossDaylightSavingChanges(t *testing.T) {
 	}
 }
 
+func TestStaleTailsAndFailingFilesNeverHoldCoverageOpen(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
+	mkdir(t, cwd)
+	torn := filepath.Join(root, "-work", "torn.jsonl")
+	line := claudeLine("s", cwd, "2026-09-23T10:00:00Z", "cut", "claude-opus-5-5", 1, 0, 0, 0, 0)
+	put(t, torn, lines(claudeLine("s", cwd, "2026-09-23T09:00:00Z", "ok", "claude-opus-5-5", 1, 0, 0, 0, 0))+line[:20])
+	hourAgo := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(torn, hourAgo, hourAgo); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(root, "-work", "locked.jsonl")
+	put(t, locked, lines(line))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o644)
+	s, err := Open(filepath.Join(base, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	opts := Options{ClaudeRoot: root, CodexDir: filepath.Join(base, "codex")}
+	for pass := 1; pass <= 2; pass++ {
+		r, err := s.Index(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.PendingBytes != 0 || len(r.StaleTails) != 1 || r.StaleTailBytes != 20 || len(r.FileErrors) != 1 || r.ErroredBytes == 0 {
+			t.Fatalf("pass %d = %+v; want 0 pending, the torn file as a 20-byte stale tail, the locked file as an error", pass, r)
+		}
+		if pass == 2 && r.Opened != 0 {
+			t.Fatalf("pass 2 reopened an unchanged tail: %+v", r)
+		}
+	}
+	if c := rollupOf(t, s, 1, 1).Coverage; !c.Complete || c.PendingBytes != 0 {
+		t.Fatalf("coverage = %+v, want complete", c)
+	}
+}
+
 func TestBucketsOutliveTheirSources(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)

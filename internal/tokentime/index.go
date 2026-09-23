@@ -29,10 +29,18 @@ type Options struct {
 
 // IndexReport summarises one pass.
 type IndexReport struct {
-	Files        int      `json:"files"`
-	Opened       int      `json:"opened"`
-	ReadBytes    int64    `json:"readBytes"`
-	PendingBytes int64    `json:"pendingBytes"`
+	Files     int   `json:"files"`
+	Opened    int   `json:"opened"`
+	ReadBytes int64 `json:"readBytes"`
+	// PendingBytes is what a later pass can still read: complete records the
+	// budget left behind. Tails and errored files are reported apart.
+	PendingBytes int64 `json:"pendingBytes"`
+	// StaleTails are files ending in an unterminated record older than
+	// staleTail — a writer that died mid-line; no pass can ever read it.
+	StaleTails     []string `json:"staleTails"`
+	StaleTailBytes int64    `json:"staleTailBytes"`
+	// ErroredBytes are the unread bytes of files that failed this pass.
+	ErroredBytes int64    `json:"erroredBytes"`
 	Responses    int64    `json:"responses"`
 	Duplicates   int64    `json:"duplicates"`
 	Resets       int      `json:"resets"`
@@ -61,7 +69,13 @@ const UnknownCodexModel = "codex-unknown"
 type fileRow struct {
 	cur   transcripts.Cursor
 	state string
+	// tail: the bytes after cur are an unterminated last record.
+	tail bool
 }
+
+// staleTail is how long an unterminated last record may wait for its writer
+// before it is reported instead of counted as pending.
+const staleTail = 10 * time.Minute
 
 type target struct {
 	path  string
@@ -107,6 +121,7 @@ type codexState struct {
 
 type indexer struct {
 	s        *Store
+	now      time.Time
 	report   IndexReport
 	buckets  map[bucketKey]*bucketVal
 	spans    map[spanKey]*span
@@ -158,10 +173,15 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return targets[i].info.ModTime().After(targets[j].info.ModTime())
 	})
 	ix.report.Files = len(targets)
-	ix.report.FileErrors = []string{}
+	ix.report.FileErrors, ix.report.StaleTails = []string{}, []string{}
+	ix.now = now()
 	for _, t := range targets {
 		row, ok := known[t.path]
 		if ok && row.cur.Unchanged(t.info) {
+			continue
+		}
+		if ok && row.tail && row.cur.Size == t.info.Size() && row.cur.Modified == t.info.ModTime().UnixNano() {
+			ix.tail(t, row.cur) // nothing appended: the same unterminated tail
 			continue
 		}
 		remaining := int64(0)
@@ -246,7 +266,7 @@ func discover(opts Options) ([]target, bool, error) {
 }
 
 func (s *Store) loadFiles() (map[string]fileRow, error) {
-	rows, err := s.db.Query("SELECT path, cursor, state FROM files")
+	rows, err := s.db.Query("SELECT path, cursor, state, tail FROM files")
 	if err != nil {
 		return nil, err
 	}
@@ -254,14 +274,15 @@ func (s *Store) loadFiles() (map[string]fileRow, error) {
 	known := map[string]fileRow{}
 	for rows.Next() {
 		var path, cursor, state string
-		if err := rows.Scan(&path, &cursor, &state); err != nil {
+		var tail bool
+		if err := rows.Scan(&path, &cursor, &state, &tail); err != nil {
 			return nil, err
 		}
 		var cur transcripts.Cursor
 		if err := json.Unmarshal([]byte(cursor), &cur); err != nil {
 			continue // unreadable cursor: re-read the file; identities stop double counting
 		}
-		known[path] = fileRow{cur: cur, state: state}
+		known[path] = fileRow{cur: cur, state: state, tail: tail}
 	}
 	return known, rows.Err()
 }
@@ -312,7 +333,7 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 		parse = ix.codexLine(&cs)
 	}
 	var read, pending int64
-	opened := false
+	opened, tail := false, false
 	for {
 		sweep := int64(sweepBytes)
 		if budget > 0 {
@@ -320,8 +341,10 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 		}
 		res, err := transcripts.Scan(t.path, cur, known, transcripts.ScanOptions{Budget: sweep, SkipOversize: true}, parse)
 		if err != nil {
+			// Retried next pass, but never counted as pending: a file that keeps
+			// failing must not hold coverage incomplete forever.
 			ix.report.FileErrors = append(ix.report.FileErrors, fmt.Sprintf("%s: %v", t.path, err))
-			ix.report.PendingBytes += max(0, t.info.Size()-cur.Offset)
+			ix.report.ErroredBytes += max(0, t.info.Size()-cur.Offset)
 			return
 		}
 		if res.Skipped {
@@ -334,6 +357,9 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 		cur, known = res.Cursor, true
 		read += res.Read
 		pending = res.Pending
+		// A sweep that stopped short of its budget hit the end of the file: what
+		// is left is an unterminated record, not unread work.
+		tail = pending > 0 && res.Read < sweep
 		if pending == 0 || res.Read == 0 || (budget > 0 && read >= budget) {
 			break
 		}
@@ -342,14 +368,28 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 		ix.report.Opened++
 	}
 	ix.report.ReadBytes += read
-	ix.report.PendingBytes += pending
+	if tail {
+		ix.tail(t, cur)
+	} else {
+		ix.report.PendingBytes += pending
+	}
 	state := ""
 	if t.codex {
 		raw, _ := json.Marshal(cs)
 		state = string(raw)
 	}
-	ix.files[t.path] = fileRow{cur: cur, state: state}
+	ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail}
 	ix.dirty += read
+}
+
+// tail classifies an unterminated last record: a fresh one is a writer still
+// at work and simply waits; one older than staleTail is reported.
+func (ix *indexer) tail(t target, cur transcripts.Cursor) {
+	if ix.now.Sub(t.info.ModTime()) < staleTail {
+		return
+	}
+	ix.report.StaleTails = append(ix.report.StaleTails, t.path)
+	ix.report.StaleTailBytes += max(0, t.info.Size()-cur.Offset)
 }
 
 func (ix *indexer) claudeLine() func([]byte, int64) error {
@@ -592,8 +632,8 @@ func (ix *indexer) commit(tx *sql.Tx) error {
 		if err != nil {
 			return fail(err)
 		}
-		if _, err := tx.Exec(`INSERT INTO files(path, cursor, state) VALUES(?, ?, ?)
-			ON CONFLICT(path) DO UPDATE SET cursor = excluded.cursor, state = excluded.state`, path, string(raw), row.state); err != nil {
+		if _, err := tx.Exec(`INSERT INTO files(path, cursor, state, tail) VALUES(?, ?, ?, ?)
+			ON CONFLICT(path) DO UPDATE SET cursor = excluded.cursor, state = excluded.state, tail = excluded.tail`, path, string(raw), row.state, row.tail); err != nil {
 			return fail(err)
 		}
 	}

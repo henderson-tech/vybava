@@ -69,7 +69,11 @@ credential and no message content is read beyond what decoding a line needs.
   stepped over without being held. `index --budget` and `rollup --index-budget`
   (default 64 MiB) bound a pass; the next pass continues where it stopped. Files already under a
   cursor go first, then new files newest-first: a cold start under a budget
-  shows today before it fills history.
+  shows today before it fills history. `coverage.complete` turns false only for
+  complete records a budget left unread: a last record still unterminated after
+  10 minutes (a writer that died mid-line) is reported as `STALE_TAIL`, a file
+  that fails to read as `FILE_ERROR` — both retried every pass, neither counted
+  as pending.
   Aggregates, identities and cursors commit in one transaction.
 
 ## The rollup

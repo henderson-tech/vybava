@@ -58,7 +58,7 @@ const (
 const schema = `
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, root TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS roots(cwd TEXT PRIMARY KEY, root TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buckets(
@@ -85,8 +85,14 @@ CREATE TABLE IF NOT EXISTS session_hours(
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS session_hours_by_hour ON session_hours(hour);
 CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, src INTEGER NOT NULL, day INTEGER NOT NULL);
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 `
+
+// migrations bring an older schema up to date, keyed by the version they start from.
+var migrations = map[int]string{
+	// v1 → v2: a file whose unread bytes are an unterminated tail.
+	1: "ALTER TABLE files ADD COLUMN tail INTEGER NOT NULL DEFAULT 0",
+}
 
 // Seen-identity sources. Claude message ids are pruned once no transcript can
 // still hold a copy; Codex response ids are kept, because an old thread can be
@@ -128,9 +134,15 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 1 {
+	if version > 2 {
 		db.Close()
 		return nil, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
+	}
+	if m, ok := migrations[version]; ok {
+		if _, err := db.Exec(m); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
+		}
 	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

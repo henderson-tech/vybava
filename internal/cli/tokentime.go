@@ -19,6 +19,7 @@ const (
 	diagIndexBusy     = "INDEX_BUSY"
 	diagIndexPartial  = "INDEX_PARTIAL"
 	diagFileError     = "FILE_ERROR"
+	diagStaleTail     = "STALE_TAIL"
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
 )
@@ -108,6 +109,12 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		var next []string
 		for _, e := range r.FileErrors {
 			diags = append(diags, runx.Diagnostic{Code: diagFileError, Severity: "warning", Detail: e})
+		}
+		if n := len(r.StaleTails); n > 0 {
+			shown := r.StaleTails[:min(n, 3)]
+			diags = append(diags, runx.Diagnostic{Code: diagStaleTail, Severity: "info",
+				Detail: fmt.Sprintf("%d file(s) end in an unfinished record older than 10 minutes (%s, not counted as pending): %s",
+					n, humanBytes(r.StaleTailBytes), strings.Join(shown, ", "))})
 		}
 		if r.PendingBytes > 0 {
 			diags = append(diags, runx.Diagnostic{Code: diagIndexPartial, Severity: "info",
