@@ -47,10 +47,13 @@ credential and no message content is read beyond what decoding a line needs.
 - **Projects are git repositories.** Each record's `cwd` resolves to its
   repository root: a linked worktree's `.git` file leads through `gitdir` and
   `commondir` to the main checkout, wherever the worktree lives. Exact answers
-  are cached forever, because a removed worktree can no longer be resolved. A
-  directory outside any repository is its own project. Display names are the
-  root's basename, parent-qualified on a clash (`ADF/forge`) across every root
-  ever indexed; `root` is the stable key.
+  are cached forever, because a removed worktree can no longer be resolved. When
+  the whole checkout has moved or been deleted, a path inside `.worktrees/` or
+  `.claude/worktrees/` still folds into the directory that held it. A directory
+  outside any repository is its own project. Display names are unique across
+  every root ever indexed: among roots sharing a basename, the one still on disk
+  (then the busiest) keeps it (`FixIt`); the others gain parent directories
+  (`Work/FixIt`). `root` is the stable key.
 - **Buckets are permanent.** Hour × project × model buckets outlive their
   sources — Claude Code deletes transcripts after `cleanupPeriodDays` — so
   lifetime totals never shrink. Cursors of vanished files are dropped.

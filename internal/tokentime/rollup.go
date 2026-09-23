@@ -575,57 +575,78 @@ func (s *Store) lifetime(out *Rollup, cost func(string, Counts) (float64, bool),
 	return nil
 }
 
-// projectNames gives every project a unique display name: the root's
-// basename, parent-qualified on a clash ("ADF/forge"), the full path as a
-// last resort. Names are computed over every project ever seen, so they stay
-// stable while the window moves.
+// projectNames gives every project a unique display name over every root ever
+// indexed, so a name does not change while the window moves. `root` stays the
+// stable key; the name is for people.
 func (s *Store) projectNames() (map[int64]string, map[int64]string, error) {
-	rs, err := s.db.Query("SELECT id, root FROM projects")
+	rs, err := s.db.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0)
+		FROM projects p LEFT JOIN buckets b ON b.project = p.id GROUP BY p.id`)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rs.Close()
+	var candidates []nameCandidate
 	roots := map[int64]string{}
 	for rs.Next() {
-		var id int64
-		var root string
-		if err := rs.Scan(&id, &root); err != nil {
+		var c nameCandidate
+		if err := rs.Scan(&c.id, &c.root, &c.tokens); err != nil {
 			return nil, nil, err
 		}
-		roots[id] = root
+		_, statErr := os.Stat(c.root)
+		c.live = statErr == nil
+		candidates = append(candidates, c)
+		roots[c.id] = c.root
 	}
 	if err := rs.Err(); err != nil {
 		return nil, nil, err
 	}
-	return uniqueNames(roots), roots, nil
+	return uniqueNames(candidates), roots, nil
 }
 
-func uniqueNames(roots map[int64]string) map[int64]string {
+type nameCandidate struct {
+	id     int64
+	root   string
+	tokens int64
+	live   bool
+}
+
+// uniqueNames: among roots sharing a basename, the one still on disk — then
+// the one with the most tokens — keeps the bare basename ("FixIt"); the others
+// are qualified by as many parent directories as it takes ("Work/FixIt"), the
+// full path as a last resort. A moved checkout therefore never pushes the
+// live repository off its short name.
+func uniqueNames(candidates []nameCandidate) map[int64]string {
 	short := func(root string, depth int) string {
-		if root == "" {
-			return "unknown"
-		}
 		parts := strings.Split(filepath.ToSlash(filepath.Clean(root)), "/")
 		return strings.Join(parts[max(0, len(parts)-depth):], "/")
 	}
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.live != b.live {
+			return a.live
+		}
+		if a.tokens != b.tokens {
+			return a.tokens > b.tokens
+		}
+		return a.root < b.root
+	})
 	names := map[int64]string{}
-	for depth := 1; depth <= 2; depth++ {
-		count := map[string]int{}
-		for id, root := range roots {
-			if _, done := names[id]; !done {
-				count[short(root, depth)]++
+	taken := map[string]bool{}
+	for _, c := range candidates {
+		name := c.root
+		if c.root == "" {
+			name = "unknown"
+		} else {
+			parts := len(strings.Split(filepath.ToSlash(filepath.Clean(c.root)), "/"))
+			for depth := 1; depth < parts; depth++ {
+				if candidate := short(c.root, depth); !taken[candidate] {
+					name = candidate
+					break
+				}
 			}
 		}
-		for id, root := range roots {
-			if _, done := names[id]; !done && count[short(root, depth)] == 1 {
-				names[id] = short(root, depth)
-			}
-		}
-	}
-	for id, root := range roots {
-		if _, done := names[id]; !done {
-			names[id] = root
-		}
+		taken[name] = true
+		names[c.id] = name
 	}
 	return names
 }

@@ -238,6 +238,21 @@ func TestRollupMatchesTheGolden(t *testing.T) {
 	}
 }
 
+func TestNamesKeepTheLiveRepositoryShort(t *testing.T) {
+	names := uniqueNames([]nameCandidate{
+		{id: 1, root: "/old/Work/FixIt", tokens: 900, live: false}, // the checkout before it moved
+		{id: 2, root: "/new/Projects/Org/FixIt", tokens: 100, live: true},
+		{id: 3, root: "/old/Work/tools", tokens: 5, live: false},
+		{id: 4, root: "/elsewhere/Work/FixIt", tokens: 1, live: false},
+	})
+	want := map[int64]string{1: "Work/FixIt", 2: "FixIt", 3: "tools", 4: "elsewhere/Work/FixIt"}
+	for id, name := range want {
+		if names[id] != name {
+			t.Errorf("name %d = %q, want %q (all: %v)", id, names[id], name, names)
+		}
+	}
+}
+
 func TestPricesNormalizeNamesAndHonourTheOverrideFile(t *testing.T) {
 	dir := t.TempDir()
 	put(t, filepath.Join(dir, "prices.json"), `{"claude-opus-5-5":{"input":1,"output":2,"cacheWrite5m":3,"cacheWrite1h":4,"cacheRead":0.5}}`)

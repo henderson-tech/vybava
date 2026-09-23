@@ -15,7 +15,10 @@ import (
 //
 // Worktrees anywhere on disk fold into their repository — a path heuristic on
 // ".worktrees/" would miss the ones created elsewhere. A cwd that no longer
-// exists (a removed worktree) resolves from its nearest existing ancestor.
+// exists (a removed worktree) resolves from its nearest existing ancestor;
+// when no ancestor holds a repository either (the whole checkout moved or was
+// deleted), a path inside a ".worktrees/" or ".claude/worktrees/" directory
+// still folds lexically into the directory that held it.
 // exact is false when no repository was found or the cwd is gone, so callers
 // can cache exact answers and re-resolve the rest.
 func GitRoot(cwd string) (root string, exact bool) {
@@ -41,9 +44,21 @@ func GitRoot(cwd string) (root string, exact bool) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return cwd, false
+			return worktreeOwner(cwd), false
 		}
 	}
+}
+
+// worktreeOwner cuts a path at its worktree-holding directory:
+// /a/repo/.worktrees/x/sub and /a/repo/.claude/worktrees/x both give /a/repo.
+func worktreeOwner(path string) string {
+	slashed := filepath.ToSlash(path)
+	for _, marker := range []string{"/.claude/worktrees/", "/.worktrees/"} {
+		if i := strings.Index(slashed, marker); i > 0 {
+			return filepath.FromSlash(slashed[:i])
+		}
+	}
+	return path
 }
 
 // linkedRoot follows a .git file to the main repository's working tree.

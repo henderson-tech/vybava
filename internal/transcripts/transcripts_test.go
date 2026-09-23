@@ -154,6 +154,9 @@ func TestGitRootFoldsWorktreesAndSubmodules(t *testing.T) {
 		{sub, sub, true},
 		{filepath.Join(repo, ".worktrees", "removed"), repo, false}, // deleted worktree
 		{filepath.Join(base, "plain"), filepath.Join(base, "plain"), false},
+		// The whole checkout moved away: its worktrees still fold into it.
+		{filepath.Join(base, "old", "app", ".worktrees", "gone", "apps", "api"), filepath.Join(base, "old", "app"), false},
+		{filepath.Join(base, "old", "app", ".claude", "worktrees", "gone"), filepath.Join(base, "old", "app"), false},
 	}
 	for _, c := range cases {
 		got, exact := GitRoot(c.cwd)
