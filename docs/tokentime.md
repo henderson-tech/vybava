@@ -85,6 +85,9 @@ The JSON is a contract with claude-switcheroo's Arcade
 (`timezone` names the IANA zone) and dense — an empty day is still listed.
 `projects` covers the requested days (tokens, usd, sessions, activeDays),
 with lifetime `firstDay`/`lastDay`; `models` and `lifetime` cover everything.
+A day's `sessions` counts the sessions active that day; `longestSessionMinutes`
+is the longest session that ENDED that day, measured over its whole first→last
+span — an overnight ten-hour session counts as ten hours, once, on its last day.
 
 `usd` is the API-equivalent value at list prices, never a bill: standard tier,
 short-context rates. A model without a price row reports `UNPRICED_MODEL` and

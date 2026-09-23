@@ -438,8 +438,10 @@ type sessDay struct {
 	longestMs int64
 }
 
-// sessionDays counts distinct sessions per local day and the longest
-// first→last span inside the day, plus distinct sessions per day and project.
+// sessionDays counts distinct sessions active per local day and per day and
+// project, and the longest session per day: a session's WHOLE first→last
+// span, attributed to the local day it ended — an overnight ten-hour session
+// counts as ten hours, once.
 func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey string, of func(int64) int64) (map[string]*sessDay, map[string]map[int64]int, error) {
 	rs, err := s.db.Query("SELECT session, hour, project, first, last FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
@@ -450,7 +452,7 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 		day     string
 		session int64
 	}
-	spans := map[key]*span{}
+	active := map[key]bool{}
 	perProject := map[string]map[int64]map[int64]bool{}
 	for rs.Next() {
 		var session, hour, project, first, last int64
@@ -462,12 +464,7 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 		if dk < firstDayKey {
 			continue
 		}
-		k := key{dk, session}
-		if sp := spans[k]; sp == nil {
-			spans[k] = &span{first: first, last: last}
-		} else {
-			sp.first, sp.last = min(sp.first, first), max(sp.last, last)
-		}
+		active[key{dk, session}] = true
 		if perProject[dk] == nil {
 			perProject[dk] = map[int64]map[int64]bool{}
 		}
@@ -480,14 +477,32 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 		return nil, nil, err
 	}
 	days := map[string]*sessDay{}
-	for k, sp := range spans {
-		d := days[k.day]
-		if d == nil {
-			d = &sessDay{}
-			days[k.day] = d
+	day := func(dk string) *sessDay {
+		if days[dk] == nil {
+			days[dk] = &sessDay{}
 		}
-		d.sessions++
-		d.longestMs = max(d.longestMs, sp.last-sp.first)
+		return days[dk]
+	}
+	for k := range active {
+		day(k.day).sessions++
+	}
+	longest, err := s.db.Query("SELECT MIN(first), MAX(last) FROM session_hours GROUP BY session HAVING MAX(last) >= ?", since*1000)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer longest.Close()
+	for longest.Next() {
+		var first, last int64
+		if err := longest.Scan(&first, &last); err != nil {
+			return nil, nil, err
+		}
+		if dk := dayKey(last / 1000); dk >= firstDayKey {
+			d := day(dk)
+			d.longestMs = max(d.longestMs, last-first)
+		}
+	}
+	if err := longest.Err(); err != nil {
+		return nil, nil, err
 	}
 	counts := map[string]map[int64]int{}
 	for dk, projects := range perProject {

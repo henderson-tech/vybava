@@ -322,6 +322,29 @@ func TestAnUnreadableDirectoryKeepsItsCursors(t *testing.T) {
 	}
 }
 
+func TestAnOvernightSessionCountsWholeOnTheDayItEnded(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
+	mkdir(t, cwd)
+	put(t, filepath.Join(root, "-work", "night.jsonl"), lines(
+		claudeLine("night", cwd, "2026-09-22T18:00:00Z", "n1", "claude-opus-5-5", 1, 0, 0, 0, 0), // 20:00 Prague
+		claudeLine("night", cwd, "2026-09-22T21:30:00Z", "n2", "claude-opus-5-5", 1, 0, 0, 0, 0),
+		claudeLine("night", cwd, "2026-09-23T04:00:00Z", "n3", "claude-opus-5-5", 1, 0, 0, 0, 0), // 06:00 next day
+	))
+	s, err := Open(filepath.Join(base, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Index(Options{ClaudeRoot: root, CodexDir: filepath.Join(base, "codex")}); err != nil {
+		t.Fatal(err)
+	}
+	days := rollupOf(t, s, 2, 1).Days
+	if days[0].Sessions != 1 || days[0].LongestSessionMinutes != 0 || days[1].Sessions != 1 || days[1].LongestSessionMinutes != 600 {
+		t.Fatalf("days = %+v; want the session active on both days and its 600 minutes counted once, on the 23rd", days)
+	}
+}
+
 func TestBucketsOutliveTheirSources(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)
