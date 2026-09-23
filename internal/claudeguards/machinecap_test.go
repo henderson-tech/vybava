@@ -60,8 +60,11 @@ func TestDevScriptKindReadsTheBody(t *testing.T) {
 	pkg := `{"scripts": {
 		"dev:api": "nest start --watch",
 		"dev:web": "bun run dev:api",
+		"dev:server": "bun --watch src/main.ts",
+		"dev:all": "turbo run dev --parallel",
 		"dev:export-structure": "tree -I node_modules > structure.txt",
-		"dev:claude:usage": "bunx ccusage@latest"
+		"dev:claude:usage": "bunx ccusage@latest",
+		"dev:seed": "bunx tsx scripts/dev-seed/index.ts prep"
 	}}`
 	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
 		t.Fatal(err)
@@ -72,8 +75,11 @@ func TestDevScriptKindReadsTheBody(t *testing.T) {
 	for cmd, want := range map[string]string{
 		"cd app && bun run dev:api":              "dev",
 		"cd app && bun run dev:web":              "dev",
+		"cd app && bun run dev:server":           "dev",
+		"cd app && bun run dev:all":              "dev",
 		"cd app && bun run dev:export-structure": "",
 		"cd app && bun run dev:claude:usage":     "",
+		"cd app && bun run dev:seed":             "",
 		"bun run dev:export-structure":           "dev", // no package.json here
 	} {
 		if _, got := machineStartMatch(cmd, dir); got != want {

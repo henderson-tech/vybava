@@ -13,11 +13,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// guardCommitSecrets — blocks `git commit` when what it commits contains
-// secrets or private info: the staged diff, plus the working-tree changes
-// `-a`, `--patch` or a pathspec take along. Every real invocation counts
-// (`git -C <dir> commit`, `cd <dir> && git commit`); a mention in a quoted
-// string, a grep pattern or `git commit-tree` does not.
+// guardCommitSecrets — blocks `git commit` when what it could commit contains
+// secrets or private info: staged and unstaged changes to tracked files in
+// every repo the command names, plus untracked files when the command also
+// runs `git add`. It fails closed: an unrelated uncommitted secret blocks the
+// commit too, and COMMIT_GUARD_ALLOW=1 says it is not part of it.
 //
 // Always blocked (any repo):    private keys, cloud/API tokens, key-material files
 // Blocked only in PUBLIC repos: known-infra strings (private-strings.txt) and
@@ -29,10 +29,11 @@ import (
 // thing that ever made this guard slow. Policy here: any cached value is used
 // immediately (stale-while-revalidate; a stale one triggers a detached
 // background refresh); only a repo with NO cache at all pays a synchronous
-// lookup, hard-capped at 2.5s. A failed lookup (no GitHub remote, gh offline)
-// is cached as unknown and retried in the background after ten minutes, so it
-// is paid once, not on every commit. Unknown visibility → public-only checks
-// are skipped (fail open), same as the shell version.
+// lookup, hard-capped at 2.5s. A failed lookup (no GitHub remote, gh offline
+// or slow) is cached as unknown and retried in the background at once and
+// then every ten minutes, so it is paid once, not on every commit. Unknown
+// visibility → public-only checks are skipped (fail open), same as the shell
+// version.
 // ---------------------------------------------------------------------------
 
 const (
@@ -80,152 +81,120 @@ func credentialAssignment(l string) bool {
 		!reEnvNameConst.MatchString(l)
 }
 
+// The guard reads the command as text, never as a parsed shell line, and fails
+// closed: which of a repo's changes one commit takes (`-a`, a pathspec, a
+// `git add` earlier in the same command, `$(…)` in the message) is not
+// modelled, so every change it could take is scanned.
+var (
+	// A `git` word, then only global options (`-C <dir>`, `-c k=v`,
+	// `--git-dir=…`, `--no-pager` …), then `commit` as its own word — behind
+	// `if`, `then`, `eval`, `bash -c "…"` or a line continuation alike.
+	reGitCommit = regexp.MustCompile(`\bgit` + gitGlobals + `\s+commit(?:$|[\s;&|)"'])`)
+	reGitAdd    = regexp.MustCompile(`\bgit` + gitGlobals + `\s+add(?:$|[\s;&|)"'])`)
+
+	// Where the command points git: `cd` and `-C` targets, --git-dir and
+	// --work-tree (or their GIT_* assignments).
+	reDirArg      = regexp.MustCompile(`(?:\bcd|\s-C)\s+` + shellWord)
+	reGitDirArg   = regexp.MustCompile(`(?:--git-dir[=\s]\s*|\bGIT_DIR=)` + shellWord)
+	reWorkTreeArg = regexp.MustCompile(`(?:--work-tree[=\s]\s*|\bGIT_WORK_TREE=)` + shellWord)
+)
+
+const (
+	shellWord  = `("[^"]*"|'[^']*'|[^\s;&|)]+)`
+	gitGlobals = `(?:\s+(?:-[Cc]|--git-dir|--work-tree|--namespace|--config-env)(?:\s+|=)` + shellWord + `|\s+--?[A-Za-z][\w-]*(?:=\S+)?)*`
+)
+
 func guardCommitSecrets(in *HookInput) *Denial {
-	cmd := in.ToolInput.Command
-	if !strings.Contains(cmd, "commit") || escapeHatch(cmd, "COMMIT_GUARD_ALLOW") {
+	cmd := strings.ReplaceAll(in.ToolInput.Command, "\\\n", " ")
+	if !reGitCommit.MatchString(cmd) || escapeHatch(cmd, "COMMIT_GUARD_ALLOW") {
 		return nil
 	}
+	adds := reGitAdd.MatchString(cmd)
 	var findings strings.Builder
-	for _, c := range commitCalls(cmd, in.CWD) {
-		scanCommit(c, &findings)
+	seen := map[string]bool{}
+	for _, t := range commitTargets(cmd, in.CWD) {
+		scanRepo(t, adds, seen, &findings)
 	}
 	if findings.Len() > 0 {
-		return deny("commit-secrets", "the commit would add sensitive content:\n\n"+findings.String()+"\nFix: unstage/redact the flagged content (secrets -> env vars or repo secrets; IPs in public repos -> repo variables).", "If this is a false positive and intentional, re-run with COMMIT_GUARD_ALLOW=1 prefixed to the command.")
+		scope := "staged and unstaged changes to tracked files"
+		if adds {
+			scope += ", and untracked files (the command runs git add)"
+		}
+		return deny("commit-secrets", "the commit could add sensitive content:\n\n"+findings.String()+
+			"\nScanned: "+scope+" — whatever this commit can take.\nFix: unstage/redact the flagged content (secrets -> env vars or repo secrets; IPs in public repos -> repo variables).",
+			"If this is a false positive, or the flagged lines are not part of this commit, re-run with COMMIT_GUARD_ALLOW=1 prefixed to the command.")
 	}
 	return nil
 }
 
-// commitCall is one `git … commit` a Bash command runs on this machine.
-type commitCall struct {
-	dir      string   // where git runs, `cd` and `-C` applied
-	globals  []string // --git-dir / --work-tree, replayed on every git call
-	worktree bool     // -a, --patch, a pathspec: working-tree changes are committed too
-	paths    []string // the pathspec, when there is one
+// repoTarget is a repository the command may commit in: a directory git runs
+// in, plus the --git-dir / --work-tree it was given.
+type repoTarget struct {
+	dir     string
+	globals []string
 }
 
-var gitCommand = map[string]bool{"git": true}
-
-// commitCalls finds the `git commit` invocations among cmd's local segments,
-// following `cd` from the session cwd.
-func commitCalls(cmd, cwd string) []commitCall {
-	dir := cwd
+// commitTargets lists every repository the command names: the session cwd,
+// each `cd` and `-C` target (relative ones against the cwd and against every
+// `cd`), and each --git-dir with its work tree. Scanning one too many is a
+// few forks; missing the one that commits is a leak.
+func commitTargets(cmd, cwd string) []repoTarget {
 	home, _ := os.UserHomeDir()
-	var out []commitCall
-	for _, seg := range localSegments(cmd) {
-		if f := shellFields(seg); len(f) > 1 && f[0] == "cd" {
-			dir = resolveDir(f[1], dir, home)
-			continue
-		}
-		if argv := chainCommand(seg, gitCommand); argv != nil {
-			if c, ok := parseCommit(argv[1:], dir, home); ok {
-				out = append(out, c)
+	word := func(m []string) string {
+		w := strings.Trim(m[1], `"'`)
+		for _, h := range []string{"${HOME}", "$HOME"} {
+			if strings.HasPrefix(w, h) {
+				return home + w[len(h):]
 			}
+		}
+		return w
+	}
+	bases := []string{cwd}
+	for _, m := range reDirArg.FindAllStringSubmatch(cmd, -1) {
+		if strings.HasPrefix(strings.TrimSpace(m[0]), "cd") {
+			bases = append(bases, resolveDir(word(m), cwd, home))
 		}
 	}
-	return out
-}
-
-// parseCommit reads git's global options up to the subcommand; ok only when
-// that subcommand is `commit`.
-func parseCommit(args []string, dir, home string) (c commitCall, ok bool) {
-	c.dir = dir
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "-C" && i+1 < len(args):
-			i++
-			c.dir = resolveDir(args[i], c.dir, home)
-		case (a == "--git-dir" || a == "--work-tree") && i+1 < len(args):
-			i++
-			c.globals = append(c.globals, a+"="+args[i])
-		case strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree="):
-			c.globals = append(c.globals, a)
-		case (a == "-c" || a == "--config-env" || a == "--namespace") && i+1 < len(args):
-			i++ // a value that changes nothing about what is committed
-		case strings.HasPrefix(a, "-"):
-			// --no-pager, -P, --bare and the other flag-only globals
-		default:
-			if a != "commit" {
-				return c, false
-			}
-			c.readArgs(args[i+1:])
-			return c, true
+	targets := []repoTarget{{dir: cwd}}
+	for _, m := range reDirArg.FindAllStringSubmatch(cmd, -1) {
+		for _, b := range bases {
+			targets = append(targets, repoTarget{dir: resolveDir(word(m), b, home)})
 		}
 	}
-	return c, false
-}
-
-// commitValueLong are the long options that take the next word as their
-// value; the short ones are mFCct.
-var commitValueLong = map[string]bool{
-	"--message": true, "--file": true, "--reuse-message": true, "--reedit-message": true,
-	"--author": true, "--date": true, "--fixup": true, "--squash": true,
-	"--template": true, "--cleanup": true, "--trailer": true,
-}
-
-// A redirection word (`2>&1`, `<<EOF`, `>out`); a bare operator (`>`, `<<`)
-// takes the next word as its target.
-var (
-	reRedirect   = regexp.MustCompile(`^[0-9]*[<>&]`)
-	reRedirectOp = regexp.MustCompile(`^[0-9]*(<<<|<<-?|<>|>>|>\||&>>?|[<>])$`)
-)
-
-func (c *commitCall) readArgs(args []string) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			c.paths = append(c.paths, args[i+1:]...)
-			c.worktree = c.worktree || len(args) > i+1
-			return
-		case reRedirect.MatchString(a):
-			if reRedirectOp.MatchString(a) {
-				i++
-			}
-		case a == "--all" || a == "--patch" || a == "--interactive" || strings.HasPrefix(a, "--pathspec-from-file"):
-			c.worktree = true
-		case strings.HasPrefix(a, "--"):
-			if commitValueLong[a] {
-				i++ // `--message x`; `--message=x` carries its own
-			}
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			for j := 1; j < len(a); j++ {
-				switch ch := a[j]; {
-				case ch == 'a' || ch == 'p':
-					c.worktree = true
-				case strings.IndexByte("mFCct", ch) >= 0:
-					if j == len(a)-1 {
-						i++ // the value is the next word
-					}
-					j = len(a) // or the rest of this one
-				case ch == 'S' || ch == 'u':
-					j = len(a) // an optional value, attached only
-				}
-			}
-		default:
-			c.paths = append(c.paths, a)
-			c.worktree = true
-		}
+	workTree := cwd
+	if m := reWorkTreeArg.FindStringSubmatch(cmd); m != nil {
+		workTree = resolveDir(word(m), cwd, home)
 	}
+	for _, m := range reGitDirArg.FindAllStringSubmatch(cmd, -1) {
+		targets = append(targets, repoTarget{dir: workTree, globals: []string{
+			"--git-dir=" + resolveDir(word(m), cwd, home), "--work-tree=" + workTree}})
+	}
+	return targets
 }
 
-// scanCommit appends what c would commit that must not be committed.
-func scanCommit(c commitCall, findings *strings.Builder) {
-	if st, err := os.Stat(c.dir); err != nil || !st.IsDir() {
+// scanRepo appends what a commit in t could take that must not be committed;
+// seen skips a repository another target already scanned.
+func scanRepo(t repoTarget, adds bool, seen map[string]bool, findings *strings.Builder) {
+	if st, err := os.Stat(t.dir); err != nil || !st.IsDir() {
 		return
 	}
-	g := func(args ...string) string { return git(c.dir, append(c.globals, args...)...) }
-	if g("rev-parse", "--git-dir") == "" {
+	g := func(args ...string) string { return git(t.dir, append(t.globals, args...)...) }
+	dirs := splitLines(g("rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir"))
+	if len(dirs) != 2 || seen[dirs[0]] {
 		return
 	}
+	seen[dirs[0]] = true
 	names := splitLines(g("diff", "--cached", "--name-only", "--diff-filter=ACM"))
+	names = append(names, splitLines(g("diff", "--name-only", "--diff-filter=ACM"))...)
 	diff := splitLines(g("diff", "--cached", "--no-ext-diff", "-U0"))
-	if c.worktree {
-		spec := append([]string{"--"}, c.paths...)
-		names = append(names, splitLines(g(append([]string{"diff", "--name-only", "--diff-filter=ACM"}, spec...)...))...)
-		diff = append(diff, splitLines(g(append([]string{"diff", "--no-ext-diff", "-U0"}, spec...)...))...)
+	diff = append(diff, splitLines(g("diff", "--no-ext-diff", "-U0"))...)
+	if adds {
+		untracked := splitLines(g("ls-files", "--others", "--exclude-standard"))
+		names = append(names, untracked...)
+		diff = append(diff, untrackedLines(t.dir, untracked)...)
 	}
 
-	// --- 1. Committed files that are key material (regardless of content) ---
+	// --- 1. Changed files that are key material (regardless of content) ---
 	var badFiles []string
 	for _, f := range names {
 		if reBadFile.MatchString(f) && !reEnvExample.MatchString(f) {
@@ -233,7 +202,7 @@ func scanCommit(c commitCall, findings *strings.Builder) {
 		}
 	}
 	if len(badFiles) > 0 {
-		fmt.Fprintf(findings, "Key/credential files committed:\n%s\n", strings.Join(badFiles, "\n"))
+		fmt.Fprintf(findings, "Key/credential files among the changes:\n%s\n", strings.Join(badFiles, "\n"))
 	}
 
 	// --- 2. Secret patterns in added lines (any repo) ---
@@ -245,7 +214,7 @@ func scanCommit(c commitCall, findings *strings.Builder) {
 	}
 	if len(added) > 0 {
 		if hits := grepN(added, 10, func(l string) bool { return reSecret.MatchString(l) }); len(hits) > 0 {
-			fmt.Fprintf(findings, "Secret-shaped content in the committed diff:\n%s\n", strings.Join(hits, "\n"))
+			fmt.Fprintf(findings, "Secret-shaped content in the changes:\n%s\n", strings.Join(hits, "\n"))
 		}
 		if hits := grepN(added, 10, credentialAssignment); len(hits) > 0 {
 			fmt.Fprintf(findings, "Hardcoded credential assignments:\n%s\n", strings.Join(hits, "\n"))
@@ -253,7 +222,7 @@ func scanCommit(c commitCall, findings *strings.Builder) {
 	}
 
 	// --- 3. Public-repo-only checks: infra strings + public IPs ---
-	if len(added) > 0 && repoVisibility(c.dir, g) == "PUBLIC" {
+	if len(added) > 0 && repoVisibility(t.dir, dirs[1]) == "PUBLIC" {
 		home, _ := os.UserHomeDir()
 		if denylist, err := os.ReadFile(filepath.Join(home, ".claude", "hooks", "private-strings.txt")); err == nil {
 			needles := splitLines(string(denylist))
@@ -287,35 +256,38 @@ func scanCommit(c commitCall, findings *strings.Builder) {
 	}
 }
 
-// repoVisibility returns "PUBLIC"/"PRIVATE"/… or "" when unknown; g runs git
-// in the repo. Cache file lives inside .git/ (visibility rarely changes;
-// survives clones' lifetime).
-func repoVisibility(dir string, g func(...string) string) string {
-	gitdir := g("rev-parse", "--absolute-git-dir")
-	if gitdir == "" {
-		return ""
-	}
-	cache := filepath.Join(gitdir, visibilityCacheName)
+// repoVisibility returns "PUBLIC"/"PRIVATE"/… or "" when unknown. The cache
+// file lives in the repository's common git dir, so every worktree of it
+// shares one lookup (visibility rarely changes; survives clones' lifetime).
+func repoVisibility(dir, commonDir string) string {
+	cache := filepath.Join(commonDir, visibilityCacheName)
 	if b, err := os.ReadFile(cache); err == nil {
 		vis, ttl := strings.TrimSpace(string(b)), visibilityTTL
 		if vis == unknownVisibility {
 			vis, ttl = "", unknownVisibilityTTL
 		}
 		if st, err := os.Stat(cache); err == nil && time.Since(st.ModTime()) > ttl {
-			refreshVisibilityDetached(dir, cache)
+			spawnVisibilityRefresh(dir, cache)
 		}
 		return vis
 	}
 	// No cache at all: one synchronous lookup, hard-capped. A failure is
-	// cached as unknown too, so it is not paid again on the next commit.
+	// cached as unknown, so the next commit does not pay it again, and retried
+	// at once in the background — a lookup that merely timed out corrects
+	// itself within seconds instead of leaving a public repo unchecked.
 	vis := ghVisibility(dir, ghSyncTimeout)
-	record := vis
-	if record == "" {
-		record = unknownVisibility
+	if vis != "" {
+		_ = os.WriteFile(cache, []byte(vis), 0o644)
+		return vis
 	}
-	_ = os.WriteFile(cache, []byte(record), 0o644)
-	return vis
+	_ = os.WriteFile(cache, []byte(unknownVisibility), 0o644)
+	spawnVisibilityRefresh(dir, cache)
+	return ""
 }
+
+// spawnVisibilityRefresh is refreshVisibilityDetached; tests replace it, since
+// re-executing a test binary would run the tests again.
+var spawnVisibilityRefresh = refreshVisibilityDetached
 
 // refreshVisibilityDetached re-execs this binary as a detached child so the
 // hook returns immediately; the child owns the (slow) network call.
@@ -367,6 +339,28 @@ func git(dir string, args ...string) string {
 		return ""
 	}
 	return strings.TrimRight(out.String(), "\n")
+}
+
+// untrackedBudget caps how much untracked content one hook call reads, so a
+// big generated tree that is not ignored cannot stall it.
+const untrackedBudget = 4 << 20
+
+// untrackedLines reads the untracked files `git add` could stage as added
+// diff lines; binary files and anything past the budget are skipped.
+func untrackedLines(dir string, files []string) []string {
+	var out []string
+	budget := untrackedBudget
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil || len(b) > budget || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
+			continue
+		}
+		budget -= len(b)
+		for _, l := range strings.Split(string(b), "\n") {
+			out = append(out, "+"+l)
+		}
+	}
+	return out
 }
 
 func splitLines(s string) []string {

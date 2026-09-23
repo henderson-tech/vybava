@@ -136,6 +136,9 @@ func gitDir(dir string) string {
 			if target = strings.TrimSpace(target); !filepath.IsAbs(target) {
 				target = filepath.Join(dir, target)
 			}
+			if st, err := os.Stat(target); err != nil || !st.IsDir() {
+				return "" // a pruned worktree: never create its git dir for a cache
+			}
 			return target
 		}
 		parent := filepath.Dir(dir)

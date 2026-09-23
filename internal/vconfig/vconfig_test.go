@@ -38,6 +38,14 @@ func TestGitDirMatchesGit(t *testing.T) {
 			t.Errorf("gitDir(%s) = %q, git says %q", dir, got, want)
 		}
 	}
+	// A worktree whose git dir was pruned has none: the cache falls back.
+	stale := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stale, ".git"), []byte("gitdir: "+filepath.Join(stale, "gone")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := gitDir(stale); d != "" {
+		t.Errorf("gitDir of a pruned worktree = %q, want none", d)
+	}
 }
 
 func TestFindAndLoadJSON(t *testing.T) {

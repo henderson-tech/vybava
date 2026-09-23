@@ -9,6 +9,13 @@ import (
 	"testing"
 )
 
+// TestMain keeps every test from spawning the detached visibility refresh: it
+// re-executes os.Executable(), which under `go test` is the test binary.
+func TestMain(m *testing.M) {
+	spawnVisibilityRefresh = func(string, string) {}
+	os.Exit(m.Run())
+}
+
 func TestBadFilePatterns(t *testing.T) {
 	block := []string{
 		"id_rsa", "keys/id_ed25519.bak", "cert.pem", "server.key", "app.p12",
@@ -121,49 +128,60 @@ func TestEnvAccessorSpellingsAreSkipped(t *testing.T) {
 	}
 }
 
-func TestCommitCalls(t *testing.T) {
-	for _, tc := range []struct {
-		cmd, dir string
-		worktree bool
-		paths    []string
-	}{
-		{`git commit -m m`, "/cwd", false, nil},
-		{`git -C /r -c user.name=x commit -m "a b"`, "/r", false, nil},
-		{`cd /x/y && git commit -am wip`, "/x/y", true, nil},
-		{`(cd "/a b" && git commit -m m)`, "/a b", false, nil},
-		{`git -C sub commit -m m -- a.go b.go`, "/cwd/sub", true, []string{"a.go", "b.go"}},
-		{`git commit src/x.go -m m`, "/cwd", true, []string{"src/x.go"}},
-		{`git commit -q -F - <<'EOF' 2>&1`, "/cwd", false, nil},
-		{`timeout 5 git commit --message x`, "/cwd", false, nil},
+// The trigger is text-level on purpose: a commit behind a shell keyword,
+// eval, a nested shell or a line continuation counts like a plain one.
+func TestCommitTrigger(t *testing.T) {
+	for _, cmd := range []string{
+		`git commit -m m`,
+		`git -C /r -c user.name=x commit -m "a b"`,
+		`git --no-pager --git-dir=/r/.git --work-tree /r commit -am wip`,
+		`if [ -n "$(git status --porcelain)" ]; then git commit -m x; fi`,
+		`true && { git commit -m x; }`,
+		`eval "git commit -m x"`,
+		`bash -c 'cd /r && git commit -m x'`,
+		"git diff --cached --stat && \\\n  git commit -m x",
+		"git -C /r \\\n  commit -m x",
 	} {
-		calls := commitCalls(tc.cmd, "/cwd")
-		if len(calls) != 1 {
-			t.Errorf("%q: %d commit calls, want 1", tc.cmd, len(calls))
-			continue
-		}
-		c := calls[0]
-		if c.dir != tc.dir || c.worktree != tc.worktree || strings.Join(c.paths, " ") != strings.Join(tc.paths, " ") {
-			t.Errorf("%q: got dir=%q worktree=%v paths=%v", tc.cmd, c.dir, c.worktree, c.paths)
+		if !reGitCommit.MatchString(strings.ReplaceAll(cmd, "\\\n", " ")) {
+			t.Errorf("%q should trigger", cmd)
 		}
 	}
-	for _, cmd := range []string{
-		`grep -rn "git commit" docs`,
-		`echo "git commit -m x"`,
-		`gh pr create --body "run git commit"`,
-		`git commit-tree HEAD^{tree}`,
-		`ssh box 'git commit -am x'`,
-	} {
-		if calls := commitCalls(cmd, "/cwd"); len(calls) != 0 {
-			t.Errorf("%q is no local commit, got %+v", cmd, calls)
+	for _, cmd := range []string{`git commit-tree HEAD^{tree}`, `git log --grep commit`, `git status && echo commit`} {
+		if reGitCommit.MatchString(cmd) {
+			t.Errorf("%q should not trigger", cmd)
 		}
 	}
 }
 
-// Every way a commit takes content is scanned — `-a` and a pathspec pick up
-// an unstaged tracked change, `git -C` and `cd` reach the repo from elsewhere
-// — while a commit of nothing sensitive and a mere mention of `git commit`
-// pass.
-func TestCommitSecretsScansWhatTheCommitTakes(t *testing.T) {
+// Every repository the command names is a target, whatever the shell does
+// with scoping: cwd, cd and -C (relative ones against cwd and each cd), and
+// --git-dir with its work tree.
+func TestCommitTargets(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	has := func(ts []repoTarget, dir string, globals ...string) bool {
+		for _, t := range ts {
+			if t.dir == dir && strings.Join(t.globals, " ") == strings.Join(globals, " ") {
+				return true
+			}
+		}
+		return false
+	}
+	ts := commitTargets(`(cd "/a b" && git log -1) && git -C sub commit -m x`, "/cwd")
+	for _, dir := range []string{"/cwd", "/a b", "/cwd/sub", "/a b/sub"} {
+		if !has(ts, dir) {
+			t.Errorf("targets lack %s: %+v", dir, ts)
+		}
+	}
+	ts = commitTargets(`git --git-dir $HOME/.cfg --work-tree ~ commit -m x`, "/cwd")
+	if !has(ts, home, "--git-dir="+home+"/.cfg", "--work-tree="+home) {
+		t.Errorf("bare-repo target missing: %+v", ts)
+	}
+}
+
+// Fail closed: whatever a commit could take is scanned — an unstaged tracked
+// change, an untracked file a same-command `git add` stages, the repo `git -C`
+// or `cd` points at — and a clean tree commits.
+func TestCommitSecretsFailsClosed(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -175,9 +193,9 @@ func TestCommitSecretsScansWhatTheCommitTakes(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	write := func(body string) {
+	write := func(name, body string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -189,42 +207,54 @@ func TestCommitSecretsScansWhatTheCommitTakes(t *testing.T) {
 			t.Errorf("%q from %s: blocked=%v, want %v", cmd, cwd, d != nil, blocked)
 		}
 	}
+	token := "ghp_" + strings.Repeat("a1", 12)
 	run("init", "-q")
-	write("clean\n")
+	write("a.txt", "clean\n")
 	run("add", "a.txt")
 	run("commit", "-q", "-m", "init")
 
-	write("clean\n" + "ghp_" + strings.Repeat("a1", 12) + "\n") // tracked, not staged
-	check(`git commit -m x`, repo, false)
+	write("a.txt", "clean\n"+token+"\n") // tracked, not staged
 	check(`git commit -am x`, repo, true)
-	check(`git commit -m x a.txt`, repo, true)
-	check(`grep -rn "git commit" .`, repo, false)
-	run("add", "a.txt")
+	check(`git commit -m "$(date)" -- a.txt`, repo, true)
 	check(`git -C `+repo+` commit -m x`, t.TempDir(), true)
-	check(`cd `+repo+` && git commit -m x`, "/", true)
+	check(`(cd `+repo+` && git status) && git commit -m x`, t.TempDir(), true)
+	check(`git status`, repo, false)
+	write("a.txt", "clean\n")
+
+	write("new.txt", token+"\n") // untracked
+	check(`git commit -m x`, repo, false)
+	check(`git add new.txt && git commit -m x`, repo, true)
+	if err := os.Remove(filepath.Join(repo, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	check(`git add -A && git commit -am x`, repo, false)
 }
 
-// A lookup gh cannot answer (no GitHub remote, offline) is cached as unknown,
-// so the next commit does not pay for gh again.
+// A lookup gh cannot answer (no GitHub remote, offline, slow) is cached as
+// unknown and retried in the background at once, so the next commit neither
+// pays for gh nor stays unchecked for long.
 func TestUnknownVisibilityIsCached(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script gh stub")
 	}
-	bin, gitdir := t.TempDir(), t.TempDir()
+	bin, common := t.TempDir(), t.TempDir()
 	calls := filepath.Join(bin, "calls")
 	stub := "#!/bin/sh\necho x >> '" + calls + "'\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	g := func(...string) string { return gitdir }
+	spawns := 0
+	save := spawnVisibilityRefresh
+	spawnVisibilityRefresh = func(string, string) { spawns++ }
+	t.Cleanup(func() { spawnVisibilityRefresh = save })
 	for i := 0; i < 2; i++ {
-		if vis := repoVisibility(t.TempDir(), g); vis != "" {
+		if vis := repoVisibility(t.TempDir(), common); vis != "" {
 			t.Fatalf("visibility %q, want unknown", vis)
 		}
 	}
-	if b, _ := os.ReadFile(calls); strings.Count(string(b), "x") != 1 {
-		t.Errorf("gh ran %d times, want 1", strings.Count(string(b), "x"))
+	if b, _ := os.ReadFile(calls); strings.Count(string(b), "x") != 1 || spawns != 1 {
+		t.Errorf("gh ran %d times, refresh spawned %d times; want 1 and 1", strings.Count(string(b), "x"), spawns)
 	}
 }
 

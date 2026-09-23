@@ -178,8 +178,10 @@ func machineStartMatch(cmd, cwd string) (segment, kind string) {
 }
 
 // devScriptKind classifies the `dev:*` script argv runs by its body in cwd's
-// package.json. A script it cannot read stays a dev-server start, and so does
-// a body that runs another `dev:*` script.
+// package.json. It errs toward counting: a script it cannot read stays a
+// dev-server start, and so does a body that runs another `dev:*` script or
+// has a server word (`bun --watch`, `nx serve`, `turbo run dev`); only a body
+// with none (`tree …`, `bunx ccusage`) is not a start.
 func devScriptKind(argv []string, cwd string) string {
 	name := ""
 	for _, a := range argv {
@@ -203,8 +205,16 @@ func devScriptKind(argv []string, cwd string) string {
 			}
 		}
 	}
+	for _, w := range strings.Fields(body) {
+		if w = strings.Trim(w, `"'`); serverWords[w] || strings.HasPrefix(w, "dev:") {
+			return "dev"
+		}
+	}
 	return ""
 }
+
+// serverWords mark a script body as a long-running server whatever tool runs it.
+var serverWords = map[string]bool{"dev": true, "serve": true, "start": true, "watch": true, "--watch": true, "--hot": true}
 
 func packageScript(dir, name string) (string, bool) {
 	b, err := os.ReadFile(filepath.Join(dir, "package.json"))

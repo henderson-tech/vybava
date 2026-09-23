@@ -5,7 +5,7 @@ context — Claude reads it and usually complies. The bans in this applet are
 incident-born and must hold unconditionally, including under bypass
 permissions and inside subagents, where skills do not even load. It runs as a
 Claude Code PreToolUse hook: one compiled process per Bash, Read or browser
-call. Its main costs (measured 2026-09-22/23 on a 14-core Mac at load ~27,
+call. Its main costs (measured 2026-09-22/23 on a 14-core Mac at load 11–27,
 ~2000 processes, under 0.5 GB free; a no-op `/usr/bin/true` takes 3–4 ms the
 same way):
 
@@ -16,22 +16,25 @@ every call        ~15 ms   process start: package init of every applet in the
                   +2–3 ms  the last ≤4 MiB of transcript_path, on every allowed
                            call. No rule forks or calls the network outside the
                            rows below; a few stat or read small files
-config found      +~17 ms  per config load: a `git rev-parse` (vconfig). Bash
-(vybava.config             and Read load it once; each `.json` path a Read or a
-in cwd or above)           cat/sed/head/tail names loads it again (the lok
-                           check, not memoized). The first load after the
-                           config file changes, and in every new worktree, runs
-                           `bun -e` (~0.5 s); a failed evaluation caches
-                           nothing, so every call re-runs it
+config found      +~2 ms   one load per call: a stat walk to the config, the
+(vybava.config             git dir found without forking git, the cached
+in cwd or above)           document read; the lok check reuses it. The first
+                           load after the config file changes, and in every
+                           new worktree, runs `bun -e` (~0.5 s); a failed
+                           evaluation caches nothing, so every call re-runs it
 line counts       ≤4 MiB   read per file a Read names (no limit or one above
                            guards.maxDumpLines; every text Read at ≥70%
                            context) or a cat/sed/head/tail names
-commit-secrets    any command containing `git commit`: 3 git forks in a repo,
-                  staged or not; with added lines a 4th, plus a synchronous
-                  `gh repo view` (≤2.5 s) until one succeeds — a repo without
-                  a GitHub remote, or gh offline, pays it on every commit
+commit-secrets    any `git … commit` in the command text (fail closed, no
+                  shell parsing): per repo it names (cwd, `cd`, `-C`,
+                  `--git-dir`) 5 git forks, staged and unstaged diffs; with
+                  `git add` in the command also the untracked files (≤4 MiB
+                  read). With added lines, a synchronous `gh repo view`
+                  (≤2.5 s) once per repo — a failure is cached as unknown and
+                  retried in the background (~80 ms per commit without gh)
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
-                  simulator or starts a dev server (any `dev:*` script counts)
+                  simulator or starts a dev server (a `dev:*` script counts
+                  when its package.json body is one)
 browser           a loopback GET to onyx (1.5 s timeout) on every
                   playwright/chrome-devtools call
 ```
@@ -55,14 +58,14 @@ SessionEnd    swarm-teardown              the same, also for this session's own
               reap                        one `ps -axo`; kills as weather --reap does
 ```
 
-At load ~400 the per-call figures rise by a quarter to a half (18–21 ms, 40–62
-ms with a config), fork-bound paths about double (`ps -axo` ~1 s), and
-SessionStart's weather takes 0.8–5 s.
+At load ~400 the per-call figure rises by a quarter to a half (18–21 ms),
+fork-bound paths about double (`ps -axo` ~1 s), and SessionStart's weather
+takes 0.8–5 s.
 
 Wire it once in `~/.claude/settings.json`. `doctor --fix` writes
-`~/.claude/hooks/claude-guards`; an entry on `~/.local/bin/claude-guards` (the
-applet symlink `vybava install` creates) counts as present too, since entries
-match on the verb:
+`~/.local/bin/claude-guards`, the applet symlink `vybava install` creates; an
+entry on the older `~/.claude/hooks/claude-guards` counts as present too,
+since entries match on the verb:
 
 ```text
 PreToolUse    Bash    claude-guards bash
