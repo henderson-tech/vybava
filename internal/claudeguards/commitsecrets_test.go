@@ -134,6 +134,8 @@ func TestCommitTrigger(t *testing.T) {
 	for _, cmd := range []string{
 		`git commit -m m`,
 		`git -C /r -c user.name=x commit -m "a b"`,
+		`git -c user.name="Claude Code" -c user.email=a@b commit -m x`,
+		`git -C "$(git rev-parse --show-toplevel)" commit -am x`,
 		`git --no-pager --git-dir=/r/.git --work-tree /r commit -am wip`,
 		`if [ -n "$(git status --porcelain)" ]; then git commit -m x; fi`,
 		`true && { git commit -m x; }`,
@@ -225,6 +227,21 @@ func TestCommitSecretsFailsClosed(t *testing.T) {
 	check(`git commit -m x`, repo, false)
 	check(`git add new.txt && git commit -m x`, repo, true)
 	if err := os.Remove(filepath.Join(repo, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	// From a subdirectory `git add -A` still stages the whole repo, and a
+	// non-ASCII name is read, not C-quoted away.
+	sub := filepath.Join(repo, "apps", "web")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "nabídka"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join("nabídka", "cfg.txt"), token+"\n")
+	check(`git add -A && git commit -m x`, sub, true)
+	if err := os.RemoveAll(filepath.Join(repo, "nabídka")); err != nil {
 		t.Fatal(err)
 	}
 	check(`git add -A && git commit -am x`, repo, false)

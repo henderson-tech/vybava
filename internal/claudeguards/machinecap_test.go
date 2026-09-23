@@ -62,6 +62,7 @@ func TestDevScriptKindReadsTheBody(t *testing.T) {
 		"dev:web": "bun run dev:api",
 		"dev:server": "bun --watch src/main.ts",
 		"dev:all": "turbo run dev --parallel",
+		"dev:hmr": "WEBPACK_HMR=true webpack-cli build & sleep 2 && node --enable-source-maps dist/main.js",
 		"dev:export-structure": "tree -I node_modules > structure.txt",
 		"dev:claude:usage": "bunx ccusage@latest",
 		"dev:seed": "bunx tsx scripts/dev-seed/index.ts prep"
@@ -77,6 +78,7 @@ func TestDevScriptKindReadsTheBody(t *testing.T) {
 		"cd app && bun run dev:web":              "dev",
 		"cd app && bun run dev:server":           "dev",
 		"cd app && bun run dev:all":              "dev",
+		"cd app && bun run dev:hmr":              "dev",
 		"cd app && bun run dev:export-structure": "",
 		"cd app && bun run dev:claude:usage":     "",
 		"cd app && bun run dev:seed":             "",

@@ -100,7 +100,8 @@ var (
 )
 
 const (
-	shellWord  = `("[^"]*"|'[^']*'|[^\s;&|)]+)`
+	// A word may join quoted, `$(…)` and plain parts: user.name="Claude Code".
+	shellWord  = `((?:"[^"]*"|'[^']*'|\$\([^)]*\)|[^\s;&|)"'])+)`
 	gitGlobals = `(?:\s+(?:-[Cc]|--git-dir|--work-tree|--namespace|--config-env)(?:\s+|=)` + shellWord + `|\s+--?[A-Za-z][\w-]*(?:=\S+)?)*`
 )
 
@@ -184,12 +185,16 @@ func scanRepo(t repoTarget, adds bool, seen map[string]bool, findings *strings.B
 		return
 	}
 	seen[dirs[0]] = true
-	names := splitLines(g("diff", "--cached", "--name-only", "--diff-filter=ACM"))
-	names = append(names, splitLines(g("diff", "--name-only", "--diff-filter=ACM"))...)
+	// NUL-separated names: git C-quotes a non-ASCII path otherwise, and a
+	// quoted name matches no pattern and opens no file.
+	names := splitNUL(g("diff", "--cached", "--name-only", "-z", "--diff-filter=ACM"))
+	names = append(names, splitNUL(g("diff", "--name-only", "-z", "--diff-filter=ACM"))...)
 	diff := splitLines(g("diff", "--cached", "--no-ext-diff", "-U0"))
 	diff = append(diff, splitLines(g("diff", "--no-ext-diff", "-U0"))...)
 	if adds {
-		untracked := splitLines(g("ls-files", "--others", "--exclude-standard"))
+		// `:/` lists the whole repo from a subdirectory too, as `git add -A`
+		// stages it; paths stay relative to t.dir.
+		untracked := splitNUL(g("ls-files", "-z", "--others", "--exclude-standard", ":/"))
 		names = append(names, untracked...)
 		diff = append(diff, untrackedLines(t.dir, untracked)...)
 	}
@@ -351,13 +356,30 @@ func untrackedLines(dir string, files []string) []string {
 	var out []string
 	budget := untrackedBudget
 	for _, f := range files {
-		b, err := os.ReadFile(filepath.Join(dir, f))
-		if err != nil || len(b) > budget || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
+		if budget <= 0 {
+			break
+		}
+		p := filepath.Join(dir, f)
+		if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() || st.Size() > int64(budget) {
+			continue // `git add` stages a symlink itself, never what it points to
+		}
+		b, err := os.ReadFile(p)
+		if err != nil || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
 			continue
 		}
 		budget -= len(b)
 		for _, l := range strings.Split(string(b), "\n") {
 			out = append(out, "+"+l)
+		}
+	}
+	return out
+}
+
+func splitNUL(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, "\x00") {
+		if f != "" {
+			out = append(out, f)
 		}
 	}
 	return out
