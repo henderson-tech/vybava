@@ -97,6 +97,12 @@ items:
     description: Explain where the Codex plan limit went — per-thread spend from ~/.codex rollouts, the derived allowance, and the runway left at the measured burn rate.
     applet: codexusage
 
+  - id: tokentime
+    kind: applet
+    status: experimental
+    description: Where your AI tokens went — Claude Code transcripts and Codex rollouts indexed incrementally into permanent hour × project × model buckets (worktrees fold into their repo), rolled up by day, hour, project and model with an API-equivalent USD value.
+    applet: tokentime
+
   - id: repolicy
     kind: applet
     status: experimental
@@ -230,6 +236,7 @@ groups:
       - posta
       - codexsync
       - codexusage
+      - tokentime
       - repolicy
       - hotfix
       - hotfix-lane
@@ -280,6 +287,7 @@ groups:
       - posta
       - codexsync
       - codexusage
+      - tokentime
       - repolicy
       - hotfix
       - hotfix-lane

@@ -77,6 +77,15 @@ rate-limit refresh, not a call — recorded unbilled so its percentage survives 
 double-billing. `rollout.go` owns parsing and the mtime prefilter; `live.go` owns
 `ps`/`lsof` enrichment and must always degrade to a warning.
 
+`internal/transcripts` owns reading agent logs: the incremental cursor (offset, size,
+mtime, prefix digest; never a partial last record), Claude transcript and Codex
+rollout decoding, the projects-tree walk and git-root resolution. operator and
+codexusage read through it; never add a fourth parser. `internal/tokentime`
+builds on it: buckets are permanent (transcripts are deleted, totals must not
+shrink), every response is counted once through the `seen` identities committed
+in the same transaction as buckets and cursors, and the rollup JSON is a contract
+with claude-switcheroo (`src/arcade/contract.ts`). Rules: `docs/tokentime.md`.
+
 `internal/plaud` reads the Plaud account directly (PKCE login, vault-injected
 refresh token, cached access token only); the manual-only skill is
 `skills/plaud/`. `docs/plaud.md` has the auth model and the API map.
