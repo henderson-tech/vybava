@@ -93,9 +93,12 @@ The JSON is a contract with claude-switcheroo's Arcade
 (`timezone` names the IANA zone) and dense — an empty day is still listed.
 `projects` covers the requested days (tokens, usd, sessions, activeDays),
 with lifetime `firstDay`/`lastDay`; `models` and `lifetime` cover everything.
-A day's `sessions` counts the sessions active that day; `longestSessionMinutes`
-is the longest session that ENDED that day, measured over its whole first→last
-span — an overnight ten-hour session counts as ten hours, once, on its last day.
+A day's `sessions` counts the sessions active that day. `longestSessionMinutes`
+is the longest run of consecutive active local hours of any single session — an
+hour counts when that session had at least one response in it, an idle hour
+breaks the run — × 60, attributed to the local day the run ended. An overnight
+ten-hour run counts as 600 once, on its last day; a session resumed the next
+day is two runs, never the gap between them.
 
 `usd` is the API-equivalent value at list prices, never a bill: standard tier,
 short-context rates. A model without a price row reports `UNPRICED_MODEL` and

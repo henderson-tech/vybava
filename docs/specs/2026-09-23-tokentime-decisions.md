@@ -22,6 +22,7 @@ switcheroo.
 | 7 | Project | Git root via `.git` → `gitdir` → `commondir`, per record | Worktrees live outside `.worktrees/` too; one session crosses the repo and several worktrees |
 | 8 | Prices | Built-in table (Anthropic via the claude-api skill, OpenAI's pricing page, 2026-09-23) + `prices.json` override; unknown = unpriced, reported | Never guess money; standard, short-context rates |
 | 9 | Moved checkouts | At rollup time, a dead root (gone from disk) folds into the one live root with its basename; zero or 2+ live namesakes → it stays its own project | Checkouts moved from ~/Documents/Work to ~/Work/Projects/<org>; folding at read time keeps the stored buckets untouched, so a wrong fold is undone by the next rollup, never baked in |
+| 10 | Longest session | The longest run of consecutive active hours of one session (an hour with ≥1 response; an idle hour breaks it) × 60, on the local day the run ended | A whole first→last span over-counts resumed threads (a thread resumed the next day read as 28 h). Derived from the existing per-session active hours (`session_hours`), so no schema change and it applies to all history retroactively |
 
 ## Assumptions
 

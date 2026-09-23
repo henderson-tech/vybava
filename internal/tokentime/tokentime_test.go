@@ -323,14 +323,23 @@ func TestAnUnreadableDirectoryKeepsItsCursors(t *testing.T) {
 	}
 }
 
-func TestAnOvernightSessionCountsWholeOnTheDayItEnded(t *testing.T) {
+func TestTheLongestSessionIsItsLongestRunOfActiveHours(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
 	mkdir(t, cwd)
-	put(t, filepath.Join(root, "-work", "night.jsonl"), lines(
-		claudeLine("night", cwd, "2026-09-22T18:00:00Z", "n1", "claude-opus-5-5", 1, 0, 0, 0, 0), // 20:00 Prague
-		claudeLine("night", cwd, "2026-09-22T21:30:00Z", "n2", "claude-opus-5-5", 1, 0, 0, 0, 0),
-		claudeLine("night", cwd, "2026-09-23T04:00:00Z", "n3", "claude-opus-5-5", 1, 0, 0, 0, 0), // 06:00 next day
+	// Ten consecutive active hours, 20:xx on the 22nd to 05:xx on the 23rd (Prague).
+	var night []string
+	for h := range 10 {
+		ts := time.Date(2026, 9, 22, 18+h, 30, 0, 0, time.UTC).Format(time.RFC3339)
+		night = append(night, claudeLine("night", cwd, ts, fmt.Sprintf("n%d", h), "claude-opus-5-5", 1, 0, 0, 0, 0))
+	}
+	put(t, filepath.Join(root, "-work", "night.jsonl"), lines(night...))
+	// Three active hours on the 22nd, resumed for one hour the next morning.
+	put(t, filepath.Join(root, "-work", "resumed.jsonl"), lines(
+		claudeLine("resumed", cwd, "2026-09-22T08:15:00Z", "r1", "claude-opus-5-5", 1, 0, 0, 0, 0), // 10:15 Prague
+		claudeLine("resumed", cwd, "2026-09-22T09:15:00Z", "r2", "claude-opus-5-5", 1, 0, 0, 0, 0),
+		claudeLine("resumed", cwd, "2026-09-22T10:15:00Z", "r3", "claude-opus-5-5", 1, 0, 0, 0, 0),
+		claudeLine("resumed", cwd, "2026-09-23T07:15:00Z", "r4", "claude-opus-5-5", 1, 0, 0, 0, 0), // 09:15 next day
 	))
 	s, err := Open(filepath.Join(base, "state"))
 	if err != nil {
@@ -341,8 +350,10 @@ func TestAnOvernightSessionCountsWholeOnTheDayItEnded(t *testing.T) {
 		t.Fatal(err)
 	}
 	days := rollupOf(t, s, 2, 1).Days
-	if days[0].Sessions != 1 || days[0].LongestSessionMinutes != 0 || days[1].Sessions != 1 || days[1].LongestSessionMinutes != 600 {
-		t.Fatalf("days = %+v; want the session active on both days and its 600 minutes counted once, on the 23rd", days)
+	// The 22nd: the resumed session's 3-hour run (the overnight run ends on the 23rd).
+	// The 23rd: the overnight 10-hour run — never the resumed session's 23-hour gap.
+	if days[0].Sessions != 2 || days[0].LongestSessionMinutes != 180 || days[1].Sessions != 2 || days[1].LongestSessionMinutes != 600 {
+		t.Fatalf("days = %+v; want 180 minutes on the 22nd and 600 on the 23rd, both sessions active both days", days)
 	}
 }
 

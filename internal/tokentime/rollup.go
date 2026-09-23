@@ -318,7 +318,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		dk := d.Format(time.DateOnly)
 		day := Day{Day: dk, Models: []ModelSlice{}, Projects: []DayProject{}}
 		if sd := sessDays[dk]; sd != nil {
-			day.Sessions, day.LongestSessionMinutes = sd.sessions, sd.longestMs/60000
+			day.Sessions, day.LongestSessionMinutes = sd.sessions, sd.longestHours*60
 		}
 		if a := dayAggs[dk]; a != nil {
 			for model, ms := range a.models {
@@ -434,14 +434,16 @@ func (s *Store) windowRows(since int64) ([]row, error) {
 }
 
 type sessDay struct {
-	sessions  int
-	longestMs int64
+	sessions     int
+	longestHours int64
 }
 
 // sessionDays counts distinct sessions active per local day and per day and
-// project, and the longest session per day: a session's WHOLE first→last
-// span, attributed to the local day it ended — an overnight ten-hour session
-// counts as ten hours, once.
+// project, and the longest session per day: the longest run of CONSECUTIVE
+// active hours of any one session (an hour counts when the session had a
+// response in it; an idle hour breaks the run), attributed to the local day
+// the run ended. An overnight ten-hour run counts as ten hours, once, on its
+// last day; a session resumed the next day is two runs, never the gap.
 func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey string, of func(int64) int64) (map[string]*sessDay, map[string]map[int64]int, error) {
 	rs, err := s.db.Query("SELECT session, hour, project, first, last FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
@@ -486,21 +488,38 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 	for k := range active {
 		day(k.day).sessions++
 	}
-	longest, err := s.db.Query("SELECT MIN(first), MAX(last) FROM session_hours GROUP BY session HAVING MAX(last) >= ?", since*1000)
+	// Every active hour of each session that touched the window, in order: a run
+	// ending in the window may have started before it. session_hours holds one
+	// row per session, hour and project, so DISTINCT folds the projects.
+	longest, err := s.db.Query(`SELECT DISTINCT session, hour FROM session_hours
+		WHERE session IN (SELECT session FROM session_hours WHERE hour >= ?) ORDER BY session, hour`, since)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer longest.Close()
-	for longest.Next() {
-		var first, last int64
-		if err := longest.Scan(&first, &last); err != nil {
-			return nil, nil, err
+	var current, runStart, runEnd int64 = -1, 0, 0
+	endRun := func() {
+		if current < 0 {
+			return
 		}
-		if dk := dayKey(last / 1000); dk >= firstDayKey {
+		if dk := dayKey(runEnd); dk >= firstDayKey {
 			d := day(dk)
-			d.longestMs = max(d.longestMs, last-first)
+			d.longestHours = max(d.longestHours, (runEnd-runStart)/3600+1)
 		}
 	}
+	for longest.Next() {
+		var session, hour int64
+		if err := longest.Scan(&session, &hour); err != nil {
+			return nil, nil, err
+		}
+		if session == current && hour == runEnd+3600 {
+			runEnd = hour
+			continue
+		}
+		endRun()
+		current, runStart, runEnd = session, hour, hour
+	}
+	endRun()
 	if err := longest.Err(); err != nil {
 		return nil, nil, err
 	}
