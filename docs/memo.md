@@ -66,7 +66,9 @@ repo: /Users/me/Work/FixIt        # personal homes only: the repo the slug encod
 
 A row carries no date (amendment 2026-09-21): its creation time is the `add`
 event `memo add` / `memo import` write to `usage.jsonl`, so the ledger line
-holds only what a reader acts on.
+holds only what a reader acts on. A ledger written before the amendment
+still leads each row with `YYYY-MM-DD`; the parser drops it, so a legacy
+ledger keeps reading and taking `memo add` — nothing rewrites its rows.
 
 - `id`: positive integer, strictly increasing per home, never reused. In a
   personal ledger the row is `#45 ... ^m45` and is cited `#45`; in a TEAM
