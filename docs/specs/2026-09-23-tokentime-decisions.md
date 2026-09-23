@@ -32,6 +32,7 @@ switcheroo.
 
 ## Architecture notes
 
-`index` walks both roots, skips unchanged files by cursor, reads the rest oldest-first in 64 MiB sweeps, aggregates
+`index` walks both roots, skips unchanged files by cursor, reads the rest — files under a cursor first, then new files newest-first, so a budgeted cold start shows
+today before history — in 64 MiB sweeps, aggregates
 in memory and commits aggregates + identities + cursors per 64 MiB. `rollup` runs a bounded pass first (skipped
 with `INDEX_BUSY` when another pass holds the lock) and aggregates the buckets in the local zone.

@@ -67,7 +67,9 @@ credential and no message content is read beyond what decoding a line needs.
   partially written last record waits for its writer, and a replaced file is
   re-read from byte 0 (identities stop double counting). Records over 16 MiB are
   stepped over without being held. `index --budget` and `rollup --index-budget`
-  (default 64 MiB) bound a pass; the next pass continues where it stopped.
+  (default 64 MiB) bound a pass; the next pass continues where it stopped. Files already under a
+  cursor go first, then new files newest-first: a cold start under a budget
+  shows today before it fills history.
   Aggregates, identities and cursors commit in one transaction.
 
 ## The rollup

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,6 +181,37 @@ func TestIndexIsIncrementalAndNeverCountsTwice(t *testing.T) {
 	after := rollupOf(t, s, 2, 3).Lifetime
 	if after.Responses != before.Responses+1 || after.Tokens.Input != before.Tokens.Input+7 {
 		t.Fatalf("lifetime %+v → %+v, want exactly msg_E added", before, after)
+	}
+}
+
+func TestABudgetedColdPassFillsTodayFirst(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
+	mkdir(t, cwd)
+	var history []string
+	for i := range 200 {
+		history = append(history, claudeLine("old", cwd, "2026-09-20T10:00:00Z", fmt.Sprintf("old_%d", i), "claude-opus-5-5", 1, 1, 0, 0, 0))
+	}
+	oldPath, newPath := filepath.Join(root, "-work", "old.jsonl"), filepath.Join(root, "-work", "new.jsonl")
+	put(t, oldPath, lines(history...))
+	put(t, newPath, lines(claudeLine("new", cwd, "2026-09-23T13:00:00Z", "today_1", "claude-opus-5-5", 40, 2, 0, 0, 0)))
+	week := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldPath, week, week); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(newPath)
+	s, err := Open(filepath.Join(base, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	report, err := s.Index(Options{ClaudeRoot: root, CodexDir: filepath.Join(base, "codex"), Budget: info.Size()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rollupOf(t, s, 1, 1)
+	if got := r.Days[0].Models; len(got) != 1 || sumTokens(got[0].Tokens) != 42 || report.PendingBytes == 0 {
+		t.Fatalf("first budgeted pass: today = %+v, pending %d; want today's 42 tokens and history still pending", got, report.PendingBytes)
 	}
 }
 

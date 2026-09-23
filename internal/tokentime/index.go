@@ -146,6 +146,17 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	defer ix.seenStmt.Close()
+	// Files already under a cursor first — live sessions append there — then
+	// new files newest-first, so a cold backfill under a budget fills today
+	// before history. Order never changes totals: dedupe is by identity.
+	sort.SliceStable(targets, func(i, j int) bool {
+		_, ki := known[targets[i].path]
+		_, kj := known[targets[j].path]
+		if ki != kj {
+			return ki
+		}
+		return targets[i].info.ModTime().After(targets[j].info.ModTime())
+	})
 	ix.report.Files = len(targets)
 	ix.report.FileErrors = []string{}
 	for _, t := range targets {
@@ -231,9 +242,6 @@ func discover(opts Options) ([]target, bool, error) {
 		}
 		targets = append(targets, target{path: path, codex: true, info: info})
 	}
-	// Oldest first: a backfill interrupted by its budget still fills history
-	// in order, and a fork's source is read before the fork.
-	sort.SliceStable(targets, func(i, j int) bool { return targets[i].info.ModTime().Before(targets[j].info.ModTime()) })
 	return targets, walked, nil
 }
 
