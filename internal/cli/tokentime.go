@@ -20,6 +20,7 @@ const (
 	diagIndexPartial  = "INDEX_PARTIAL"
 	diagFileError     = "FILE_ERROR"
 	diagStaleTail     = "STALE_TAIL"
+	diagPriceGap      = "PRICE_INCOMPLETE"
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
 )
@@ -103,6 +104,14 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 		}
 		return state, opts, nil
+	}
+	priceDiags := func(p tokentime.Prices) []runx.Diagnostic {
+		if len(p.Incomplete) == 0 {
+			return nil
+		}
+		return []runx.Diagnostic{{Code: diagPriceGap, Severity: "warning",
+			Detail: "override rows for models without a built-in price leave rates out, which price at $0: " + strings.Join(p.Incomplete, "; "),
+			Fix:    "complete them in " + p.OverridePath}}
 	}
 	indexDiags := func(r tokentime.IndexReport) ([]runx.Diagnostic, []string) {
 		var diags []runx.Diagnostic
@@ -195,8 +204,9 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			if err != nil {
 				return finish(s, nil, diags, next, err)
 			}
+			prices, _ := tokentime.LoadPrices(state)
+			diags = append(diags, priceDiags(prices)...)
 			if len(out.Unpriced) > 0 {
-				prices, _ := tokentime.LoadPrices(state)
 				diags = append(diags, runx.Diagnostic{Code: diagUnpricedModel, Severity: "warning",
 					Detail: "no price for " + strings.Join(out.Unpriced, ", ") + "; their tokens are left out of every usd figure",
 					Fix:    "add them to " + prices.OverridePath})
@@ -264,7 +274,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			if overridden == nil {
 				overridden = []string{}
 			}
-			return finish(s, map[string]any{"asOf": tokentime.PricesAsOf, "overridePath": p.OverridePath, "overridden": overridden, "models": rows}, nil, nil, nil)
+			return finish(s, map[string]any{"asOf": tokentime.PricesAsOf, "overridePath": p.OverridePath, "overridden": overridden, "models": rows}, priceDiags(p), nil, nil)
 		},
 	}
 

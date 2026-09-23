@@ -440,7 +440,11 @@ func TestAMovedCheckoutFoldsIntoItsOnlyLiveNamesake(t *testing.T) {
 
 func TestPricesNormalizeNamesAndHonourTheOverrideFile(t *testing.T) {
 	dir := t.TempDir()
-	put(t, filepath.Join(dir, "prices.json"), `{"claude-opus-5-5":{"input":1,"output":2,"cacheWrite5m":3,"cacheWrite1h":4,"cacheRead":0.5}}`)
+	put(t, filepath.Join(dir, "prices.json"), `{
+		"claude-opus-5-5":{"input":1,"output":2,"cacheWrite5m":3,"cacheWrite1h":4,"cacheRead":0.5},
+		"gpt-6-astra":{"output":60},
+		"house-model":{"input":2,"output":8}
+	}`)
 	p, err := LoadPrices(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -460,6 +464,14 @@ func TestPricesNormalizeNamesAndHonourTheOverrideFile(t *testing.T) {
 	}
 	if usd, _ := p.Cost("claude-opus-5-5", Counts{CacheWrite1h: 1_000_000}); usd != 4 {
 		t.Fatalf("override not applied: %v", usd)
+	}
+	// A partial row merges over the built-in one: astra keeps its $10 input.
+	if astra, _ := p.Lookup("gpt-6-astra"); astra.Output != 60 || astra.Input != 10 || astra.CacheRead != 1 {
+		t.Fatalf("astra = %+v; want output overridden to 60 and every other built-in rate kept", astra)
+	}
+	// An unknown model without cache rates is said, never silently $0.
+	if len(p.Incomplete) != 1 || p.Incomplete[0] != "house-model (no cacheWrite5m, cacheWrite1h, cacheRead)" {
+		t.Fatalf("incomplete = %v", p.Incomplete)
 	}
 	if _, ok := p.Cost("mystery-model", Counts{Input: 1}); ok {
 		t.Fatal("an unknown model was priced")

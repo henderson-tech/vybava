@@ -94,5 +94,8 @@ short-context rates. A model without a price row reports `UNPRICED_MODEL` and
 is left out of every usd figure rather than guessed. Override or extend the
 table in `<state-dir>/prices.json` — a map of model id to
 `{input, output, cacheWrite5m, cacheWrite1h, cacheRead}` in USD per million
-tokens. Model names are compared without `[1m]`, a date suffix or `-latest`;
+tokens. A row merges over the built-in one field by field, so overriding
+one rate keeps the others; a row for a model the table does not know that
+leaves a rate out is reported as `PRICE_INCOMPLETE` (those components price at
+$0). Model names are compared without `[1m]`, a date suffix or `-latest`;
 OpenAI's Daybreak aliases bill as the model behind them.

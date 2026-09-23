@@ -96,10 +96,23 @@ type Prices struct {
 	Table        map[string]Price
 	OverridePath string
 	Overridden   []string
+	// Incomplete names override rows for models the built-in table does not
+	// know that leave a rate out: those components price at $0, so it is said.
+	Incomplete []string
+}
+
+// priceOverride is one prices.json row; an absent field keeps the built-in rate.
+type priceOverride struct {
+	Input        *float64 `json:"input"`
+	Output       *float64 `json:"output"`
+	CacheWrite5m *float64 `json:"cacheWrite5m"`
+	CacheWrite1h *float64 `json:"cacheWrite1h"`
+	CacheRead    *float64 `json:"cacheRead"`
 }
 
 // LoadPrices merges <stateDir>/prices.json over the built-in table. The file
-// maps model id → Price; a missing file is not an error.
+// maps model id → Price; a row merges field by field over the built-in row,
+// so overriding one rate never zeroes the others. A missing file is not an error.
 func LoadPrices(stateDir string) (Prices, error) {
 	p := Prices{Table: map[string]Price{}, OverridePath: filepath.Join(stateDir, "prices.json")}
 	for k, v := range builtinPrices {
@@ -112,16 +125,37 @@ func LoadPrices(stateDir string) (Prices, error) {
 	if err != nil {
 		return p, err
 	}
-	var override map[string]Price
+	var override map[string]priceOverride
 	if err := json.Unmarshal(raw, &override); err != nil {
 		return p, fmt.Errorf("%s: %w", p.OverridePath, err)
 	}
-	for k, v := range override {
+	for k, o := range override {
 		k = CanonicalModel(k)
-		p.Table[k] = v
+		row, builtin := p.Table[k]
+		var missing []string
+		for _, f := range []struct {
+			name string
+			src  *float64
+			dst  *float64
+		}{
+			{"input", o.Input, &row.Input}, {"output", o.Output, &row.Output},
+			{"cacheWrite5m", o.CacheWrite5m, &row.CacheWrite5m}, {"cacheWrite1h", o.CacheWrite1h, &row.CacheWrite1h},
+			{"cacheRead", o.CacheRead, &row.CacheRead},
+		} {
+			if f.src != nil {
+				*f.dst = *f.src
+			} else if !builtin {
+				missing = append(missing, f.name)
+			}
+		}
+		p.Table[k] = row
 		p.Overridden = append(p.Overridden, k)
+		if len(missing) > 0 {
+			p.Incomplete = append(p.Incomplete, k+" (no "+strings.Join(missing, ", ")+")")
+		}
 	}
 	sort.Strings(p.Overridden)
+	sort.Strings(p.Incomplete)
 	return p, nil
 }
 
