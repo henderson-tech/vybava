@@ -138,15 +138,19 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
 	}
-	if m, ok := migrations[version]; ok {
-		if _, err := db.Exec(m); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
+	// An up-to-date store is opened without a single write, so a rollup never
+	// waits on the busy timeout behind a concurrent or orphaned index pass.
+	if version < 2 {
+		if m, ok := migrations[version]; ok {
+			if _, err := db.Exec(m); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
+			}
 		}
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("init %s: %w", path, err)
+		if _, err := db.Exec(schema); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("init %s: %w", path, err)
+		}
 	}
 	return &Store{Dir: dir, db: db}, nil
 }

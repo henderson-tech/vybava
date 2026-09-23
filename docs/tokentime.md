@@ -76,7 +76,15 @@ credential and no message content is read beyond what decoding a line needs.
   10 minutes (a writer that died mid-line) is reported as `STALE_TAIL`, a file
   that fails to read as `FILE_ERROR` — both retried every pass, neither counted
   as pending.
-  Aggregates, identities and cursors commit in one transaction.
+  Aggregates, identities and cursors commit together, in bounded chunks —
+  every 16 MiB read (also between sweeps of one long file), 256 files or
+  second — so a pass killed at any moment keeps everything before its last
+  chunk and the next pass continues there. SIGTERM or SIGINT stops a pass
+  cleanly: it commits what it read and exits with `INDEX_INTERRUPTED`.
+- **A held lock never blocks a rollup.** One pass at a time holds
+  `index.lock`; `rollup` finding it held skips its own pass and serves the
+  store as committed, with `INDEX_BUSY`. Opening an up-to-date store writes
+  nothing, so a concurrent writer cannot stall it either.
 
 ## The rollup
 

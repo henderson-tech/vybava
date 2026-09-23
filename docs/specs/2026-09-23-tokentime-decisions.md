@@ -34,5 +34,7 @@ switcheroo.
 
 `index` walks both roots, skips unchanged files by cursor, reads the rest — files under a cursor first, then new files newest-first, so a budgeted cold start shows
 today before history — in 64 MiB sweeps, aggregates
-in memory and commits aggregates + identities + cursors per 64 MiB. `rollup` runs a bounded pass first (skipped
-with `INDEX_BUSY` when another pass holds the lock) and aggregates the buckets in the local zone.
+in memory and commits aggregates + identities + cursors together in bounded chunks (16 MiB, 256 files or 1 s), so a killed
+pass keeps its progress; SIGTERM commits and exits. `rollup` runs a bounded pass first — skipped with `INDEX_BUSY` when
+another pass holds the lock, serving the committed store (opening a current store writes nothing) — and aggregates the
+buckets in the local zone.

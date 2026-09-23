@@ -2,6 +2,7 @@ package tokentime
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -342,6 +343,36 @@ func TestAnOvernightSessionCountsWholeOnTheDayItEnded(t *testing.T) {
 	days := rollupOf(t, s, 2, 1).Days
 	if days[0].Sessions != 1 || days[0].LongestSessionMinutes != 0 || days[1].Sessions != 1 || days[1].LongestSessionMinutes != 600 {
 		t.Fatalf("days = %+v; want the session active on both days and its 600 minutes counted once, on the 23rd", days)
+	}
+}
+
+func TestAnInterruptedPassKeepsWhatItCommitted(t *testing.T) {
+	f := newFixture(t)
+	s := f.open(t)
+	// Killed dead after the third file: files one and two were committed.
+	killed := f.options()
+	killed.commitFiles, killed.killAfter = 1, 3
+	if _, err := s.Index(killed); !errors.Is(err, errKilled) {
+		t.Fatalf("killed pass = %v", err)
+	}
+	if st, _ := s.Status(); st.Files != 2 {
+		t.Fatalf("after the kill %d cursors survive, want the 2 committed files", st.Files)
+	}
+	// Stopped by a signal before it starts: nothing read, everything pending.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopped := f.options()
+	stopped.Context = ctx
+	if r, err := s.Index(stopped); !errors.Is(err, context.Canceled) || r.ReadBytes != 0 || r.PendingBytes == 0 {
+		t.Fatalf("cancelled pass = %+v, %v; want nothing read and the rest pending", r, err)
+	}
+	// The next pass reads only what was never committed and counts nothing twice.
+	r := f.index(t, s)
+	if r.Opened != 3 {
+		t.Fatalf("resumed pass opened %d files, want the 3 never committed", r.Opened)
+	}
+	if life := rollupOf(t, s, 2, 3).Lifetime; life.Responses != 8 {
+		t.Fatalf("lifetime responses = %d after the interruptions, want exactly 8", life.Responses)
 	}
 }
 

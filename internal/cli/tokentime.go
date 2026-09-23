@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/tokentime"
@@ -21,6 +24,7 @@ const (
 	diagFileError     = "FILE_ERROR"
 	diagStaleTail     = "STALE_TAIL"
 	diagPriceGap      = "PRICE_INCOMPLETE"
+	diagInterrupted   = "INDEX_INTERRUPTED"
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
 )
@@ -113,6 +117,13 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			Detail: "override rows for models without a built-in price leave rates out, which price at $0: " + strings.Join(p.Incomplete, "; "),
 			Fix:    "complete them in " + p.OverridePath}}
 	}
+	// A pass stopped by SIGTERM or SIGINT commits what it read and exits; the
+	// next pass continues from there.
+	stoppable := func() (context.Context, context.CancelFunc) {
+		return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	}
+	interrupted := runx.DiagError{Diag: runx.Diagnostic{Code: diagInterrupted, Severity: "error",
+		Detail: "stopped by a signal; everything read so far is committed", Fix: "tokentime index"}}
 	indexDiags := func(r tokentime.IndexReport) ([]runx.Diagnostic, []string) {
 		var diags []runx.Diagnostic
 		var next []string
@@ -152,7 +163,13 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 			defer store.Close()
 			opts.Budget = limit
+			ctx, stop := stoppable()
+			defer stop()
+			opts.Context = ctx
 			report, err := store.Index(opts)
+			if errors.Is(err, context.Canceled) {
+				return finish(s, report, nil, nil, interrupted)
+			}
 			if errors.Is(err, tokentime.ErrBusy) {
 				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagIndexBusy, Severity: "error", Detail: err.Error(), Fix: "tokentime status"}})
 			}
@@ -189,8 +206,13 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			var next []string
 			if !noIndex {
 				opts.Budget = limit
+				ctx, stop := stoppable()
+				defer stop()
+				opts.Context = ctx
 				report, err := store.Index(opts)
 				switch {
+				case errors.Is(err, context.Canceled):
+					return finish(s, nil, nil, nil, interrupted)
 				case errors.Is(err, tokentime.ErrBusy):
 					// Another pass is catching up; read what it has committed.
 					diags = append(diags, runx.Diagnostic{Code: diagIndexBusy, Severity: "info", Detail: err.Error()})

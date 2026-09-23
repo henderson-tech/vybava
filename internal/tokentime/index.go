@@ -1,6 +1,7 @@
 package tokentime
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,7 +26,27 @@ type Options struct {
 	Budget int64
 	// Now overrides the clock (tests).
 	Now func() time.Time
+	// Context stops a pass between files and between sweeps of one file;
+	// everything read before that is committed.
+	Context context.Context
+
+	// commitFiles overrides how many files a commit waits for (tests).
+	commitFiles int
+	// killAfter stops the pass dead after that many files, skipping the
+	// final commit — what SIGKILL does (tests).
+	killAfter int
 }
+
+// Commit cadence: a pass killed at any moment keeps everything committed
+// before it, so progress is committed in bounded chunks, never once per pass.
+const (
+	commitBytes = 16 * 1024 * 1024 // read since the last commit, also mid-file
+	commitFiles = 256              // files touched since the last commit
+	commitEvery = time.Second      // wall time since the last commit
+)
+
+// errKilled is what a test-simulated SIGKILL returns.
+var errKilled = errors.New("tokentime: pass killed (test)")
 
 // IndexReport summarises one pass.
 type IndexReport struct {
@@ -51,9 +72,6 @@ type IndexReport struct {
 
 // ErrBusy means another pass holds the index lock.
 var ErrBusy = errors.New("another tokentime index pass is running")
-
-// flushEvery bounds the uncommitted aggregate.
-const flushEvery = 64 * 1024 * 1024
 
 // sweepBytes bounds one Scan call inside a file.
 const sweepBytes = 16 * transcripts.DefaultBudget
@@ -116,6 +134,7 @@ type codexState struct {
 
 type indexer struct {
 	s        *Store
+	ctx      context.Context
 	now      time.Time
 	report   IndexReport
 	buckets  map[bucketKey]*bucketVal
@@ -170,8 +189,23 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 	ix.report.Files = len(targets)
 	ix.report.FileErrors, ix.report.StaleTails = []string{}, []string{}
 	ix.now = now()
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ix.ctx = ctx
+	perCommit := commitFiles
+	if opts.commitFiles > 0 {
+		perCommit = opts.commitFiles
+	}
+	touched, sinceCommit, lastCommit := 0, 0, time.Now()
 	for _, t := range targets {
 		row, ok := known[t.path]
+		if ctx.Err() != nil {
+			// Stopped: what is left is pending, what was read gets committed.
+			ix.report.PendingBytes += max(0, t.info.Size()-row.cur.Offset)
+			continue
+		}
 		if ok && row.cur.Unchanged(t.info) {
 			continue
 		}
@@ -187,11 +221,19 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 				continue
 			}
 		}
-		ix.file(t, row, ok, remaining)
-		if ix.dirty >= flushEvery {
+		if err := ix.file(t, row, ok, remaining); err != nil {
+			return IndexReport{}, err
+		}
+		touched++
+		sinceCommit++
+		if opts.killAfter > 0 && touched == opts.killAfter {
+			return IndexReport{}, errKilled
+		}
+		if ix.dirty >= commitBytes || sinceCommit >= perCommit || time.Since(lastCommit) >= commitEvery {
 			if err := ix.flush(); err != nil {
 				return IndexReport{}, err
 			}
+			sinceCommit, lastCommit = 0, time.Now()
 		}
 	}
 	tx, err := ix.begin()
@@ -225,7 +267,7 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	ix.report.DurationMs = time.Since(started).Milliseconds()
-	return ix.report, nil
+	return ix.report, ctx.Err() // stopped early: progress kept, the caller learns why
 }
 
 // discover lists every transcript and rollout. walked is false when a root
@@ -313,9 +355,9 @@ func (ix *indexer) reset() {
 	ix.dirty = 0
 }
 
-// file reads one transcript or rollout until it is caught up or the pass
-// budget runs out.
-func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
+// file reads one transcript or rollout until it is caught up, the pass budget
+// runs out or the pass is stopped. A long file commits between sweeps.
+func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 	cur := row.cur
 	var cs codexState
 	if t.codex && row.state != "" {
@@ -325,8 +367,18 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 	if t.codex {
 		parse = ix.codexLine(&cs)
 	}
-	var read, pending int64
+	var read, pending, unsaved int64
 	opened, tail := false, false
+	save := func() {
+		state := ""
+		if t.codex {
+			raw, _ := json.Marshal(cs)
+			state = string(raw)
+		}
+		ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail}
+		ix.dirty += unsaved
+		unsaved = 0
+	}
 	for {
 		sweep := int64(sweepBytes)
 		if budget > 0 {
@@ -338,10 +390,11 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 			// failing must not hold coverage incomplete forever.
 			ix.report.FileErrors = append(ix.report.FileErrors, fmt.Sprintf("%s: %v", t.path, err))
 			ix.report.ErroredBytes += max(0, t.info.Size()-cur.Offset)
-			return
+			ix.report.ReadBytes += read
+			return nil
 		}
 		if res.Skipped {
-			return
+			return nil
 		}
 		opened = true
 		if res.Reset {
@@ -349,12 +402,19 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 		}
 		cur, known = res.Cursor, true
 		read += res.Read
+		unsaved += res.Read
 		pending = res.Pending
 		// A sweep that stopped short of its budget hit the end of the file: what
 		// is left is an unterminated record, not unread work.
 		tail = pending > 0 && res.Read < sweep
-		if pending == 0 || res.Read == 0 || (budget > 0 && read >= budget) {
+		if pending == 0 || res.Read == 0 || (budget > 0 && read >= budget) || ix.ctx.Err() != nil {
 			break
+		}
+		if ix.dirty+unsaved >= commitBytes {
+			save()
+			if err := ix.flush(); err != nil {
+				return err
+			}
 		}
 	}
 	if opened {
@@ -366,13 +426,8 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) {
 	} else {
 		ix.report.PendingBytes += pending
 	}
-	state := ""
-	if t.codex {
-		raw, _ := json.Marshal(cs)
-		state = string(raw)
-	}
-	ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail}
-	ix.dirty += read
+	save()
+	return nil
 }
 
 // tail classifies an unterminated last record: a fresh one is a writer still
