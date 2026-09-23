@@ -210,10 +210,9 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		Days: []Day{}, Hours: []Hour{}, Projects: []Project{}, Models: []Model{},
 	}
 	dayKey := func(unix int64) string { return time.Unix(unix, 0).In(loc).Format(time.DateOnly) }
-	hourKey := func(unix int64) string {
-		t := time.Unix(unix, 0).In(loc)
-		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, loc).Format(time.RFC3339)
-	}
+	// Buckets start on whole UTC hours; formatting the instant keeps the offset,
+	// so the repeated 02:00 of a DST fall-back stays two distinct hours.
+	hourKey := func(unix int64) string { return time.Unix(unix, 0).In(loc).Format(time.RFC3339) }
 	unpriced := map[string]bool{}
 	cost := func(model string, c Counts) (float64, bool) {
 		v, ok := prices.Cost(model, c)

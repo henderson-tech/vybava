@@ -215,6 +215,52 @@ func TestABudgetedColdPassFillsTodayFirst(t *testing.T) {
 	}
 }
 
+func TestHoursStayDistinctAcrossDaylightSavingChanges(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
+	mkdir(t, cwd)
+	put(t, filepath.Join(root, "-work", "s.jsonl"), lines(
+		claudeLine("s", cwd, "2026-10-25T00:30:00Z", "cest", "claude-opus-5-5", 1, 0, 0, 0, 0), // 02:30 CEST
+		claudeLine("s", cwd, "2026-10-25T01:30:00Z", "cet", "claude-opus-5-5", 2, 0, 0, 0, 0),  // 02:30 CET, one hour later
+	))
+	s, err := Open(filepath.Join(base, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Index(Options{ClaudeRoot: root, CodexDir: filepath.Join(base, "codex")}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		now  time.Time
+		want []string
+	}{
+		{"fall-back", time.Date(2026, 10, 25, 4, 30, 0, 0, prague),
+			[]string{"01:00+02:00", "02:00+02:00=1", "02:00+01:00=2", "03:00+01:00", "04:00+01:00"}},
+		{"spring-forward", time.Date(2026, 3, 29, 4, 30, 0, 0, prague),
+			[]string{"00:00+01:00", "01:00+01:00", "03:00+02:00", "04:00+02:00"}},
+	}
+	for _, c := range cases {
+		r, err := s.Rollup(RollupOptions{Days: 1, Hours: len(c.want), Now: c.now, Location: prague})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, h := range r.Hours {
+			key := h.Hour[strings.IndexByte(h.Hour, 'T')+1:]
+			key = strings.Replace(key, ":00:00", ":00", 1)
+			if len(h.Models) > 0 {
+				key += fmt.Sprintf("=%d", h.Models[0].Tokens)
+			}
+			got = append(got, key)
+		}
+		if strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%s hours = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestBucketsOutliveTheirSources(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)
