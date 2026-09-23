@@ -301,12 +301,33 @@ func TestStaleTailsAndFailingFilesNeverHoldCoverageOpen(t *testing.T) {
 	}
 }
 
+func TestAnUnreadableDirectoryKeepsItsCursors(t *testing.T) {
+	f := newFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	hidden := filepath.Join(f.claude, "-work-app", "s1", "subagents")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Index(f.options()); err != nil {
+		os.Chmod(hidden, 0o755)
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Had the unseen subagent cursors been dropped, this pass would re-read them.
+	if r := f.index(t, s); r.ReadBytes != 0 || r.Responses != 0 {
+		t.Fatalf("after the directory came back: %+v, want nothing re-read", r)
+	}
+}
+
 func TestBucketsOutliveTheirSources(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)
 	f.index(t, s)
 	before := rollupOf(t, s, 2, 3).Lifetime
-	if err := os.RemoveAll(f.claude); err != nil {
+	if err := os.RemoveAll(filepath.Join(f.claude, "-work-app")); err != nil { // transcripts deleted, root still there
 		t.Fatal(err)
 	}
 	f.index(t, s)

@@ -94,9 +94,9 @@ var migrations = map[int]string{
 	1: "ALTER TABLE files ADD COLUMN tail INTEGER NOT NULL DEFAULT 0",
 }
 
-// Seen-identity sources. Claude message ids are pruned once no transcript can
-// still hold a copy; Codex response ids are kept, because an old thread can be
-// archived — moved to a new path — at any time.
+// Seen-identity sources. Every identity is kept forever: a transcript or
+// rollout can reappear at any age (restored from a backup, archived to a new
+// path, re-read after its cursor was lost) and must never count twice.
 const (
 	srcClaude = 0
 	srcCodex  = 1

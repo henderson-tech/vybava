@@ -101,9 +101,9 @@ func TestWalkClaudeFindsSessionsSubagentsAndWorkflowAgentsOnly(t *testing.T) {
 	} {
 		write(t, filepath.Join(root, p), "{}\n")
 	}
-	files, err := WalkClaude(root)
-	if err != nil {
-		t.Fatal(err)
+	files, skipped, err := WalkClaude(root)
+	if err != nil || skipped != 0 {
+		t.Fatal(skipped, err)
 	}
 	var got []string
 	for _, f := range files {
@@ -115,8 +115,8 @@ func TestWalkClaudeFindsSessionsSubagentsAndWorkflowAgentsOnly(t *testing.T) {
 	if strings.Join(got, " ") != want {
 		t.Fatalf("WalkClaude = %v\nwant %s", got, want)
 	}
-	if missing, err := WalkClaude(filepath.Join(root, "absent")); err != nil || len(missing) != 0 {
-		t.Fatalf("missing root = %v, %v; want empty", missing, err)
+	if missing, skipped, err := WalkClaude(filepath.Join(root, "absent")); err != nil || len(missing) != 0 || skipped != 1 {
+		t.Fatalf("missing root = %v, %d, %v; want empty and reported as skipped", missing, skipped, err)
 	}
 }
 

@@ -52,11 +52,6 @@ type IndexReport struct {
 // ErrBusy means another pass holds the index lock.
 var ErrBusy = errors.New("another tokentime index pass is running")
 
-// claudeSeenDays is how long a Claude message id is remembered: longer than
-// any transcript can live (cleanupPeriodDays), so a fork or a replaced file
-// can never re-count a message whose source still exists.
-const claudeSeenDays = 60
-
 // flushEvery bounds the uncommitted aggregate.
 const flushEvery = 64 * 1024 * 1024
 
@@ -218,11 +213,6 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 			}
 		}
 	}
-	today := now().Unix() / 86400
-	if _, err := tx.Exec("DELETE FROM seen WHERE src = ? AND day < ?", srcClaude, today-claudeSeenDays); err != nil {
-		tx.Rollback()
-		return IndexReport{}, err
-	}
 	if err := setMeta(tx, "pending_bytes", strconv.FormatInt(ix.report.PendingBytes, 10)); err != nil {
 		tx.Rollback()
 		return IndexReport{}, err
@@ -243,9 +233,12 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 func discover(opts Options) ([]target, bool, error) {
 	var targets []target
 	walked := true
-	claude, err := transcripts.WalkClaude(opts.ClaudeRoot)
+	claude, skipped, err := transcripts.WalkClaude(opts.ClaudeRoot)
 	if err != nil {
 		return nil, false, fmt.Errorf("list %s: %w", opts.ClaudeRoot, err)
+	}
+	if skipped > 0 {
+		walked = false // an unseen file is not a vanished one
 	}
 	for _, f := range claude {
 		targets = append(targets, target{path: f.Path, info: f.Info})

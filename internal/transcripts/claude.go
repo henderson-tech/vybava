@@ -95,12 +95,14 @@ type ClaudeFile struct {
 // WalkClaude lists every transcript under root (~/.claude/projects): main
 // sessions, subagents and workflow agents. Workflow journals, memory usage
 // logs and *.meta.json sidecars are not transcripts and are excluded. A
-// missing root is empty, not an error.
-func WalkClaude(root string) ([]ClaudeFile, error) {
-	var files []ClaudeFile
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+// missing root is empty, not an error. skipped counts what the walk could not
+// see (a missing root, an unreadable directory, an entry that vanished
+// mid-walk): while it is > 0 a caller must not treat an unlisted file as gone.
+func WalkClaude(root string) (files []ClaudeFile, skipped int, err error) {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) || os.IsPermission(err) {
+				skipped++
 				return nil
 			}
 			return err
@@ -122,15 +124,16 @@ func WalkClaude(root string) ([]ClaudeFile, error) {
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil // removed after the directory listing
+			skipped++ // removed after the directory listing
+			return nil
 		}
 		files = append(files, ClaudeFile{Path: path, Kind: kind, Info: info})
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return nil, skipped, err
 	}
-	return files, nil
+	return files, skipped, nil
 }
 
 func claudeKind(parts []string) (ClaudeFileKind, bool) {

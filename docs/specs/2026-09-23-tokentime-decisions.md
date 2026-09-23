@@ -17,7 +17,7 @@ switcheroo.
 | 2 | Shared reading | `internal/transcripts`: the operator cursor, Claude/Codex decoding, the tree walk, git-root resolution; operator and codexusage re-import it | A third parser of the same files would drift; `claudeguards/ctx.go` left alone (different job, safety-critical) |
 | 3 | Storage | SQLite (modernc) hour × project × model buckets, permanent | Transcripts are deleted after `cleanupPeriodDays`; lifetime totals must not shrink |
 | 4 | Dedup | A 64-bit hash of each response identity in a `seen` table, committed with the buckets and cursors | Forks, archived rollouts and replaced files re-present old responses; a per-file memory cannot see them |
-| 5 | Seen retention | Claude ids 60 days; Codex ids forever | A Claude copy can only come from a live transcript; a Codex rollout can be archived (moved) at any age |
+| 5 | Seen retention | Every identity (Claude message ids and Codex response ids) forever | Any source can reappear at any age — restored from a backup, archived to a new path, re-read after a lost cursor; a 64-bit id per response is cheap |
 | 6 | Codex legacy vs receipts | Receipts are exact once a rollout writes one; before that, `token_count` with a changed total charges `last_token_usage` | Matches the codexusage rule; a token_count persisted before its receipt is recognised by equal usage |
 | 7 | Project | Git root via `.git` → `gitdir` → `commondir`, per record | Worktrees live outside `.worktrees/` too; one session crosses the repo and several worktrees |
 | 8 | Prices | Built-in table (Anthropic via the claude-api skill, OpenAI's pricing page, 2026-09-23) + `prices.json` override; unknown = unpriced, reported | Never guess money; standard, short-context rates |

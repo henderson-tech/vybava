@@ -37,9 +37,9 @@ credential and no message content is read beyond what decoding a line needs.
   and writes. Codex's `cached_input_tokens` (and cache writes) are SUBSETS of its
   input and are subtracted before they land in `input`.
 - **Every response counts once.** Claude repeats one message per content block
-  with identical usage; the message id is counted once, and remembered for 60
-  days — longer than any transcript lives — so a fork or a replaced file cannot
-  re-count it. Codex receipts are counted when their `thread_id` is the
+  with identical usage; the message id is counted once and remembered forever,
+  like every Codex response id, so a fork, a replaced or restored file, or a
+  re-read after a lost cursor can never re-count it. Codex receipts are counted when their `thread_id` is the
   rollout's owner (the first `session_meta`); copied fork history keeps the
   ancestor's id and is skipped. Once a rollout writes receipts, its
   `token_count` events are bookkeeping. In older rollouts an unchanged
@@ -61,7 +61,9 @@ credential and no message content is read beyond what decoding a line needs.
   (`Work/FixIt`). `root` is the stable key.
 - **Buckets are permanent.** Hour × project × model buckets outlive their
   sources — Claude Code deletes transcripts after `cleanupPeriodDays` — so
-  lifetime totals never shrink. Cursors of vanished files are dropped.
+  lifetime totals never shrink. Cursors of vanished files are dropped —
+  but only after a walk that saw every directory: a file the walk failed to see
+  (unreadable directory, missing root) keeps its cursor.
 - **Reads are incremental and bounded.** A per-file cursor (offset, size,
   mtime, 256-byte prefix digest) means an unchanged file is never opened, a
   partially written last record waits for its writer, and a replaced file is

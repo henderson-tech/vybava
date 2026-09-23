@@ -135,7 +135,13 @@ func RolloutPathsIn(codexDir string, since time.Time) ([]string, error) {
 				return nil
 			}
 			info, err := entry.Info()
-			if err != nil || info.ModTime().Before(since) {
+			if err != nil {
+				if since.IsZero() {
+					paths = append(paths, path) // a full listing keeps it; the caller's stat decides
+				}
+				return nil
+			}
+			if info.ModTime().Before(since) {
 				return nil
 			}
 			paths = append(paths, path)
