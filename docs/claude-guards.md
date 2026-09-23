@@ -29,7 +29,8 @@ commit-secrets    any `git … commit` in the command text (fail closed, no
                   shell parsing): per repo it names (cwd, `cd`, `-C`,
                   `--git-dir`) 5 git forks, staged and unstaged diffs; with
                   `git add` in the command also the untracked files (≤4 MiB
-                  read). With added lines, a synchronous `gh repo view`
+                  of text read; more is refused, never skipped). With added
+                  lines, a synchronous `gh repo view`
                   (≤2.5 s) once per repo — a failure is cached as unknown and
                   retried in the background (~80 ms per commit without gh)
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a

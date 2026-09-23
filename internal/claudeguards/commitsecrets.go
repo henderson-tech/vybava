@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,7 +197,12 @@ func scanRepo(t repoTarget, adds bool, seen map[string]bool, findings *strings.B
 		// stages it; paths stay relative to t.dir.
 		untracked := splitNUL(g("ls-files", "-z", "--others", "--exclude-standard", ":/"))
 		names = append(names, untracked...)
-		diff = append(diff, untrackedLines(t.dir, untracked)...)
+		lines, unscanned := untrackedLines(t.dir, untracked)
+		diff = append(diff, lines...)
+		if len(unscanned) > 0 {
+			fmt.Fprintf(findings, "Untracked text past the %d MiB this hook reads, so not scanned:\n%s\nRun `git add` in its own call first: the commit then scans the staged diff in full.\n",
+				untrackedBudget>>20, strings.Join(unscanned[:min(len(unscanned), 10)], "\n"))
+		}
 	}
 
 	// --- 1. Changed files that are key material (regardless of content) ---
@@ -351,28 +357,42 @@ func git(dir string, args ...string) string {
 const untrackedBudget = 4 << 20
 
 // untrackedLines reads the untracked files `git add` could stage as added
-// diff lines; binary files and anything past the budget are skipped.
-func untrackedLines(dir string, files []string) []string {
-	var out []string
-	budget := untrackedBudget
+// diff lines. Binary files are skipped, as a diff shows no lines for them
+// either. Text past the budget is returned as unscanned: the guard refuses
+// it rather than let it through unread.
+func untrackedLines(dir string, files []string) (lines, unscanned []string) {
+	budget := int64(untrackedBudget)
 	for _, f := range files {
-		if budget <= 0 {
-			break
-		}
 		p := filepath.Join(dir, f)
-		if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() || st.Size() > int64(budget) {
+		st, err := os.Lstat(p)
+		if err != nil || !st.Mode().IsRegular() {
 			continue // `git add` stages a symlink itself, never what it points to
 		}
-		b, err := os.ReadFile(p)
-		if err != nil || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
+		fh, err := os.Open(p)
+		if err != nil {
 			continue
 		}
-		budget -= len(b)
+		head := make([]byte, 8000)
+		n, _ := io.ReadFull(fh, head)
+		fh.Close()
+		if bytes.IndexByte(head[:n], 0) >= 0 {
+			continue
+		}
+		if st.Size() > budget {
+			unscanned = append(unscanned, f)
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			unscanned = append(unscanned, f)
+			continue
+		}
+		budget -= int64(len(b))
 		for _, l := range strings.Split(string(b), "\n") {
-			out = append(out, "+"+l)
+			lines = append(lines, "+"+l)
 		}
 	}
-	return out
+	return lines, unscanned
 }
 
 func splitNUL(s string) []string {

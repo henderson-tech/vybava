@@ -244,6 +244,19 @@ func TestCommitSecretsFailsClosed(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(repo, "nabídka")); err != nil {
 		t.Fatal(err)
 	}
+
+	// Untracked text past the read budget is refused, never let through
+	// unread; a binary file of any size is not text to scan.
+	write("big.log", strings.Repeat("plain log line\n", untrackedBudget/14))
+	check(`git add -A && git commit -m x`, repo, true)
+	if err := os.Remove(filepath.Join(repo, "big.log")); err != nil {
+		t.Fatal(err)
+	}
+	write("big.bin", "\x00"+strings.Repeat("x", untrackedBudget))
+	check(`git add -A && git commit -m x`, repo, false)
+	if err := os.Remove(filepath.Join(repo, "big.bin")); err != nil {
+		t.Fatal(err)
+	}
 	check(`git add -A && git commit -am x`, repo, false)
 }
 
