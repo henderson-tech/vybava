@@ -293,14 +293,18 @@ func parseVMStat(out string) (freeGB, compressorGB float64, err error) {
 // what SessionStart injects into the model's context: one line always, a
 // second only under pressure. --text adds the stale-session table for a
 // human. Any sampling failure prints nothing — a weather report must never
-// brick a session start.
-func Weather(text bool, w io.Writer) error {
-	stats, err := readMachineStats()
-	if err != nil {
-		return nil
-	}
+// brick a session start. With reap (the SessionStart hook form) the same
+// table then feeds the orphan sweep: one `ps` per session start, not two.
+func Weather(text, reap bool, w, stderr io.Writer) error {
 	table := machineProcTable()
 	if table == nil {
+		return nil
+	}
+	if reap {
+		defer reapTable(table, stderr)
+	}
+	stats, err := readMachineStats()
+	if err != nil {
 		return nil
 	}
 	c := countMachine(table)

@@ -39,8 +39,8 @@ PreToolUse    mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtool
               # the onyx playwright wrapper's --output-dir; chrome-devtools' filePath
               # is refused elsewhere; ignore the dir once in ~/.config/git/ignore)
 SessionStart          claude-guards doctor --fix      # the hooks above are still wired
-SessionStart          claude-guards weather           # one line of machine pressure into context
-SessionStart          claude-guards reap              # orphaned xcodebuild/WDA/Appium of dead sessions
+SessionStart          claude-guards weather --reap    # one line of machine pressure into context, then
+                                                      # reap orphaned xcodebuild/WDA/Appium from the same `ps`
 SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
@@ -48,7 +48,9 @@ SessionEnd            claude-guards reap
 ```
 
 `claude-guards hooks` prints this wiring as JSON and `doctor` checks the live
-file against it. `claude-guards list [family]` prints every rule from the
+file against it; `doctor --fix` also removes wirings an older manifest
+installed (`retiredHooks` — the separate SessionStart `weather` and `reap`
+that `weather --reap` replaced). `claude-guards list [family]` prints every rule from the
 registry (`registry.go`): id, event, what it blocks, escape hatch.
 
 A block prints its reason and the sanctioned alternative on stderr and exits 2;
@@ -146,8 +148,9 @@ with — load against cores, free and compressor GB, claude and codex sessions,
 sims, metro, next and api counts — and a second, warning line only under
 pressure (free < 2 GB, load above the core count, or a cap already reached)
 that names the Devbox, `/wk:pause` and how many sessions are older than 10 h;
-`--text` adds those sessions as a table. `claude-guards reap`
-(SessionStart/SessionEnd) kills orphaned WebDriverAgent runners, `xcodebuild
+`--text` adds those sessions as a table. `claude-guards reap` (SessionEnd,
+and SessionStart through `weather --reap`, which hands over the process table
+it already read) kills orphaned WebDriverAgent runners, `xcodebuild
 test-without-building` and Appium servers older than ten minutes whose
 claude/codex ancestor is gone; a process with a live owning session is never
 touched. On 2026-09-19/20 four booted simulators, three Metro bundlers and

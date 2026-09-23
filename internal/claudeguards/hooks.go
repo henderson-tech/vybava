@@ -47,12 +47,27 @@ var Hooks = []HookWiring{
 	{Event: "PreToolUse", Matcher: "Read", Command: hookBin + " read", Timeout: 5},
 	{Event: "PreToolUse", Matcher: browserMatcher, Command: hookBin + " browser"},
 	{Event: "SessionStart", Command: hookBin + " doctor --fix", Timeout: 10},
-	{Event: "SessionStart", Command: hookBin + " weather", Timeout: 10},
-	{Event: "SessionStart", Command: hookBin + " reap", Timeout: 20},
+	{Event: "SessionStart", Command: hookBin + " weather --reap", Timeout: 20},
 	{Event: "SessionStart", Command: hookBin + " swarm-teardown --dead-only", Timeout: 20},
 	{Event: "SessionEnd", Command: hookBin + " swarm-teardown", Timeout: 20},
 	{Event: "SessionEnd", Command: hookBin + " browser-teardown", Timeout: 10},
 	{Event: "SessionEnd", Command: hookBin + " reap", Timeout: 20},
+}
+
+// retiredHook is a wiring an older manifest installed and the verb of the
+// manifest entry (same event and matcher) that replaced it.
+type retiredHook struct {
+	HookWiring
+	By string
+}
+
+// retiredHooks are what `doctor --fix` swaps for their successors.
+// SessionStart ran `weather` and `reap` as two processes, each paying its own
+// `ps -axo` (~0.5 s under load) for the same table — `weather --reap` reads
+// it once.
+var retiredHooks = []retiredHook{
+	{HookWiring{Event: "SessionStart", Command: hookBin + " weather"}, "weather --reap"},
+	{HookWiring{Event: "SessionStart", Command: hookBin + " reap"}, "weather --reap"},
 }
 
 // Verb returns the part of the command after `claude-guards ` — the identity
@@ -160,31 +175,89 @@ func Doctor(settingsPath string, fix bool, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "claude-guards doctor: cannot check hooks: %v\n", err)
 		return nil
 	}
-	missing := missingHooks(groups)
-	if len(missing) == 0 {
+	missing, retired := missingHooks(groups), retiredWired(groups)
+	if len(missing) == 0 && len(retired) == 0 {
 		return nil
 	}
 	if !fix {
-		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: claude-guards doctor --fix\n", len(missing), settingsPath)
-		for _, w := range missing {
-			fmt.Fprintf(stdout, "   %s\n", w.describe())
+		if len(missing) > 0 {
+			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: claude-guards doctor --fix\n", len(missing), settingsPath)
+			for _, w := range missing {
+				fmt.Fprintf(stdout, "   %s\n", w.describe())
+			}
+		}
+		if len(retired) > 0 {
+			fmt.Fprintf(stdout, "ℹ️ claude-guards: %d retired hook(s) still wired in %s. Fix: claude-guards doctor --fix\n", len(retired), settingsPath)
+			for _, w := range retired {
+				fmt.Fprintf(stdout, "   %s\n", w.describe())
+			}
 		}
 		return nil
 	}
+	// A retired entry's successor is an upgrade, not a loss: it keeps the
+	// binary path the machine already runs and reports as ℹ️. Every other
+	// missing entry is a harness rewrite and keeps the 🚨.
+	type slot struct{ event, matcher, verb string }
+	successorBin := map[slot]string{}
+	var removed, upgraded, lost []HookWiring
+	for _, r := range retired {
+		var cmds []string
+		groups[r.Event], cmds = removeHook(groups[r.Event], r.HookWiring)
+		for _, c := range cmds {
+			removed = append(removed, HookWiring{Event: r.Event, Matcher: r.Matcher, Command: c})
+			successorBin[slot{r.Event, r.Matcher, r.By}] = hookBinOf(c)
+		}
+	}
 	for _, w := range missing {
+		if bin, ok := successorBin[slot{w.Event, w.Matcher, w.Verb()}]; ok {
+			w.Command = bin + w.Verb()
+			upgraded = append(upgraded, w)
+		} else {
+			lost = append(lost, w)
+		}
 		groups[w.Event] = insertHook(groups[w.Event], w)
 	}
 	if err := writeSettings(settingsPath, top, groups); err != nil {
-		fmt.Fprintf(stderr, "claude-guards doctor: could not re-insert hooks: %v\n", err)
-		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s and the fix failed: %v\n", len(missing), settingsPath, err)
+		fmt.Fprintf(stderr, "claude-guards doctor: could not rewrite hooks: %v\n", err)
+		if len(lost) > 0 {
+			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s and the fix failed: %v\n", len(lost), settingsPath, err)
+		}
 		return nil
 	}
-	fmt.Fprintf(stdout, "🚨 claude-guards: re-inserted %d missing hook(s) into %s (the file had been rewritten; restart the session to load them):\n", len(missing), settingsPath)
-	for _, w := range missing {
-		fmt.Fprintf(stdout, "   %s\n", w.describe())
+	if len(removed) > 0 {
+		fmt.Fprintf(stdout, "ℹ️ claude-guards: rewired %s to the current hook manifest (restart the session to load it):\n", settingsPath)
+		for _, w := range removed {
+			fmt.Fprintf(stdout, "   − %s\n", w.describe())
+		}
+		for _, w := range upgraded {
+			fmt.Fprintf(stdout, "   + %s\n", w.describe())
+		}
+	}
+	if len(lost) > 0 {
+		fmt.Fprintf(stdout, "🚨 claude-guards: re-inserted %d missing hook(s) into %s (the file had been rewritten; restart the session to load them):\n", len(lost), settingsPath)
+		for _, w := range lost {
+			fmt.Fprintf(stdout, "   %s\n", w.describe())
+		}
 	}
 	fmt.Fprintf(stdout, "   settings.json is git-tracked: review with `git -C %s diff settings.json`\n", filepath.Dir(settingsPath))
 	return nil
+}
+
+// hookBinOf is a live command's binary part, through `claude-guards `.
+func hookBinOf(command string) string {
+	command = strings.TrimSpace(command)
+	return command[:strings.Index(command, "claude-guards ")+len("claude-guards ")]
+}
+
+// retiredWired returns the retired wirings the live file still carries.
+func retiredWired(groups map[string][]hookGroup) []retiredHook {
+	var out []retiredHook
+	for _, w := range retiredHooks {
+		if hookPresent(groups, w.HookWiring) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func (w HookWiring) describe() string {
@@ -207,20 +280,45 @@ func insertHook(groups []hookGroup, w HookWiring) []hookGroup {
 	return append(groups, hookGroup{Matcher: w.Matcher, Hooks: []json.RawMessage{entry}})
 }
 
+// removeHook drops every entry with w's matcher and verb — a group left
+// empty goes with it — and returns the removed live commands.
+func removeHook(groups []hookGroup, w HookWiring) ([]hookGroup, []string) {
+	var out []hookGroup
+	var removed []string
+	for _, g := range groups {
+		if g.Matcher == w.Matcher {
+			var kept []json.RawMessage
+			for _, raw := range g.Hooks {
+				var e hookEntry
+				if json.Unmarshal(raw, &e) == nil && hookVerb(e.Command) == w.Verb() {
+					removed = append(removed, strings.TrimSpace(e.Command))
+					continue
+				}
+				kept = append(kept, raw)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			g.Hooks = kept
+		}
+		out = append(out, g)
+	}
+	return out, removed
+}
+
 // writeSettings re-marshals only the hooks key; every other key is written
-// from its raw bytes, in sorted key order (Claude Code sorts on its own
-// rewrites, so this keeps diffs small).
+// from its raw bytes, in the file's own key order. HTML escaping stays off so
+// other hooks' `2>/dev/null` and `&&` are not rewritten as unicode escapes —
+// the diff shows only the hooks doctor touched.
 func writeSettings(path string, top map[string]json.RawMessage, groups map[string][]hookGroup) error {
-	hooks, err := json.Marshal(groups)
-	if err != nil {
+	var hooks bytes.Buffer
+	enc := json.NewEncoder(&hooks)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(groups); err != nil {
 		return err
 	}
-	top["hooks"] = hooks
-	keys := make([]string, 0, len(top))
-	for k := range top {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	top["hooks"] = bytes.TrimRight(hooks.Bytes(), "\n")
+	keys := keyOrder(path, top)
 	var b strings.Builder
 	b.WriteString("{\n")
 	for i, k := range keys {
@@ -245,6 +343,36 @@ func writeSettings(path string, top map[string]json.RawMessage, groups map[strin
 		return err
 	}
 	return nil
+}
+
+// keyOrder is the order a rewrite writes top's keys in: the file's own
+// order, then any key it lacked, sorted.
+func keyOrder(path string, top map[string]json.RawMessage) []string {
+	var keys []string
+	seen := map[string]bool{}
+	if raw, err := os.ReadFile(path); err == nil {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		if t, err := dec.Token(); err == nil && t == json.Delim('{') {
+			for dec.More() {
+				t, err := dec.Token()
+				var v json.RawMessage
+				if err != nil || dec.Decode(&v) != nil {
+					break
+				}
+				if k, ok := t.(string); ok && top[k] != nil && !seen[k] {
+					keys, seen[k] = append(keys, k), true
+				}
+			}
+		}
+	}
+	var added []string
+	for k := range top {
+		if !seen[k] {
+			added = append(added, k)
+		}
+	}
+	sort.Strings(added)
+	return append(keys, added...)
 }
 
 // ErrHooksMissing is what callers that want a failing status (vybava doctor)

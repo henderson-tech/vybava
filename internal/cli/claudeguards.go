@@ -33,7 +33,7 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			"including under bypass permissions and inside subagents. Wire it in settings.json:\n" +
 			"  PreToolUse Bash → claude-guards bash · PreToolUse Read → claude-guards read\n" +
 			"  PreToolUse mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.* → claude-guards browser\n" +
-			"  SessionStart → claude-guards doctor --fix · claude-guards weather · claude-guards reap · claude-guards swarm-teardown --dead-only\n" +
+			"  SessionStart → claude-guards doctor --fix · claude-guards weather --reap · claude-guards swarm-teardown --dead-only\n" +
 			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap\n" +
 			"`claude-guards hooks` prints this wiring as JSON; `doctor` checks the live file against it.\n" +
 			"A block prints its reason and the sanctioned alternative on stderr and exits 2.",
@@ -172,21 +172,22 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 		},
 	})
 
-	var weatherText bool
+	var weatherText, weatherReap bool
 	weather := &cobra.Command{
 		Use:   "weather",
 		Short: "One line of machine pressure (load, memory, sims, dev servers, sessions) as SessionStart additionalContext; --text for humans",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return claudeguards.Weather(weatherText, rt.stdout)
+			return claudeguards.Weather(weatherText, weatherReap, rt.stdout, rt.stderr)
 		},
 	}
 	weather.Flags().BoolVar(&weatherText, "text", false, "print the human report (with stale sessions) instead of the hook JSON")
+	weather.Flags().BoolVar(&weatherReap, "reap", false, "then run reap on the same process table (the SessionStart hook form)")
 	root.AddCommand(weather)
 
 	root.AddCommand(&cobra.Command{
 		Use:   "reap",
-		Short: "Kill orphaned xcodebuild/WebDriverAgent/Appium processes whose owning session is gone (SessionStart/SessionEnd)",
+		Short: "Kill orphaned xcodebuild/WebDriverAgent/Appium processes whose owning session is gone (SessionEnd; SessionStart runs it via weather --reap)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			claudeguards.Reap(rt.stderr)
