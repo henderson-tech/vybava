@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,8 +14,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// guardCommitSecrets — blocks `git commit` when the STAGED diff contains
-// secrets or private info.
+// guardCommitSecrets — blocks `git commit` when what it could commit contains
+// secrets or private info: staged and unstaged changes to tracked files in
+// every repo the command names, plus untracked files when the command also
+// runs `git add`. It fails closed: an unrelated uncommitted secret blocks the
+// commit too, and COMMIT_GUARD_ALLOW=1 says it is not part of it.
 //
 // Always blocked (any repo):    private keys, cloud/API tokens, key-material files
 // Blocked only in PUBLIC repos: known-infra strings (private-strings.txt) and
@@ -26,19 +30,22 @@ import (
 // thing that ever made this guard slow. Policy here: any cached value is used
 // immediately (stale-while-revalidate; a stale one triggers a detached
 // background refresh); only a repo with NO cache at all pays a synchronous
-// lookup, hard-capped at 2.5s. Unknown visibility → public-only checks are
-// skipped (fail open), same as the shell version.
+// lookup, hard-capped at 2.5s. A failed lookup (no GitHub remote, gh offline
+// or slow) is cached as unknown and retried in the background at once and
+// then every ten minutes, so it is paid once, not on every commit. Unknown
+// visibility → public-only checks are skipped (fail open), same as the shell
+// version.
 // ---------------------------------------------------------------------------
 
 const (
-	visibilityCacheName = "claude-repo-visibility"
-	visibilityTTL       = 24 * time.Hour
-	ghSyncTimeout       = 2500 * time.Millisecond
+	visibilityCacheName  = "claude-repo-visibility"
+	visibilityTTL        = 24 * time.Hour
+	unknownVisibility    = "UNKNOWN"
+	unknownVisibilityTTL = 10 * time.Minute
+	ghSyncTimeout        = 2500 * time.Millisecond
 )
 
 var (
-	reCdPrefix = regexp.MustCompile(`^\(?[[:space:]]*cd[[:space:]]+"?([^"&;)]+)"?[[:space:]]*&&`)
-
 	reBadFile    = regexp.MustCompile(`(^|/)(id_rsa|id_ed25519|id_ecdsa|id_dsa)[^/]*$|\.(pem|key|p12|pfx|crt|cer|der|jks|keystore|ppk|kubeconfig)$|(^|/)\.env(\..*)?$|(^|/)(\.netrc|known_hosts|authorized_keys)$`)
 	reEnvExample = regexp.MustCompile(`\.env\.example$`)
 
@@ -75,59 +82,158 @@ func credentialAssignment(l string) bool {
 		!reEnvNameConst.MatchString(l)
 }
 
+// The guard reads the command as text, never as a parsed shell line, and fails
+// closed: which of a repo's changes one commit takes (`-a`, a pathspec, a
+// `git add` earlier in the same command, `$(…)` in the message) is not
+// modelled, so every change it could take is scanned.
+var (
+	// A `git` word, then only global options (`-C <dir>`, `-c k=v`,
+	// `--git-dir=…`, `--no-pager` …), then `commit` as its own word — behind
+	// `if`, `then`, `eval`, `bash -c "…"` or a line continuation alike.
+	reGitCommit = regexp.MustCompile(`\bgit` + gitGlobals + `\s+commit(?:$|[\s;&|)"'])`)
+	reGitAdd    = regexp.MustCompile(`\bgit` + gitGlobals + `\s+add(?:$|[\s;&|)"'])`)
+
+	// Where the command points git: `cd` and `-C` targets, --git-dir and
+	// --work-tree (or their GIT_* assignments).
+	reDirArg      = regexp.MustCompile(`(?:\bcd|\s-C)\s+` + shellWord)
+	reGitDirArg   = regexp.MustCompile(`(?:--git-dir[=\s]\s*|\bGIT_DIR=)` + shellWord)
+	reWorkTreeArg = regexp.MustCompile(`(?:--work-tree[=\s]\s*|\bGIT_WORK_TREE=)` + shellWord)
+)
+
+const (
+	// A word may join quoted, `$(…)` and plain parts: user.name="Claude Code".
+	shellWord  = `((?:"[^"]*"|'[^']*'|\$\([^)]*\)|[^\s;&|)"'])+)`
+	gitGlobals = `(?:\s+(?:-[Cc]|--git-dir|--work-tree|--namespace|--config-env)(?:\s+|=)` + shellWord + `|\s+--?[A-Za-z][\w-]*(?:=\S+)?)*`
+)
+
 func guardCommitSecrets(in *HookInput) *Denial {
-	cmd := in.ToolInput.Command
-	if !strings.Contains(cmd, "git commit") || escapeHatch(cmd, "COMMIT_GUARD_ALLOW") {
+	cmd := strings.ReplaceAll(in.ToolInput.Command, "\\\n", " ")
+	if !reGitCommit.MatchString(cmd) || escapeHatch(cmd, "COMMIT_GUARD_ALLOW") {
 		return nil
 	}
+	adds := reGitAdd.MatchString(cmd)
+	var findings strings.Builder
+	seen := map[string]bool{}
+	for _, t := range commitTargets(cmd, in.CWD) {
+		scanRepo(t, adds, seen, &findings)
+	}
+	if findings.Len() > 0 {
+		scope := "staged and unstaged changes to tracked files"
+		if adds {
+			scope += ", and untracked files (the command runs git add)"
+		}
+		return deny("commit-secrets", "the commit could add sensitive content:\n\n"+findings.String()+
+			"\nScanned: "+scope+" — whatever this commit can take.\nFix: unstage/redact the flagged content (secrets -> env vars or repo secrets; IPs in public repos -> repo variables).",
+			"If this is a false positive, or the flagged lines are not part of this commit, re-run with COMMIT_GUARD_ALLOW=1 prefixed to the command.")
+	}
+	return nil
+}
 
-	// Repo dir: honor a leading `cd <path> &&` / `(cd <path> &&`, else session cwd.
-	dir := in.CWD
-	if m := reCdPrefix.FindStringSubmatch(cmd); m != nil {
-		dir = strings.TrimSpace(m[1])
-		if strings.HasPrefix(dir, "~") {
-			home, _ := os.UserHomeDir()
-			dir = home + dir[1:]
+// repoTarget is a repository the command may commit in: a directory git runs
+// in, plus the --git-dir / --work-tree it was given.
+type repoTarget struct {
+	dir     string
+	globals []string
+}
+
+// commitTargets lists every repository the command names: the session cwd,
+// each `cd` and `-C` target (relative ones against the cwd and against every
+// `cd`), and each --git-dir with its work tree. Scanning one too many is a
+// few forks; missing the one that commits is a leak.
+func commitTargets(cmd, cwd string) []repoTarget {
+	home, _ := os.UserHomeDir()
+	word := func(m []string) string {
+		w := strings.Trim(m[1], `"'`)
+		for _, h := range []string{"${HOME}", "$HOME"} {
+			if strings.HasPrefix(w, h) {
+				return home + w[len(h):]
+			}
+		}
+		return w
+	}
+	bases := []string{cwd}
+	for _, m := range reDirArg.FindAllStringSubmatch(cmd, -1) {
+		if strings.HasPrefix(strings.TrimSpace(m[0]), "cd") {
+			bases = append(bases, resolveDir(word(m), cwd, home))
 		}
 	}
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return nil
+	targets := []repoTarget{{dir: cwd}}
+	for _, m := range reDirArg.FindAllStringSubmatch(cmd, -1) {
+		for _, b := range bases {
+			targets = append(targets, repoTarget{dir: resolveDir(word(m), b, home)})
+		}
 	}
-	if git(dir, "rev-parse", "--git-dir") == "" {
-		return nil
+	workTree := cwd
+	if m := reWorkTreeArg.FindStringSubmatch(cmd); m != nil {
+		workTree = resolveDir(word(m), cwd, home)
+	}
+	for _, m := range reGitDirArg.FindAllStringSubmatch(cmd, -1) {
+		targets = append(targets, repoTarget{dir: workTree, globals: []string{
+			"--git-dir=" + resolveDir(word(m), cwd, home), "--work-tree=" + workTree}})
+	}
+	return targets
+}
+
+// scanRepo appends what a commit in t could take that must not be committed;
+// seen skips a repository another target already scanned.
+func scanRepo(t repoTarget, adds bool, seen map[string]bool, findings *strings.Builder) {
+	if st, err := os.Stat(t.dir); err != nil || !st.IsDir() {
+		return
+	}
+	g := func(args ...string) string { return git(t.dir, append(t.globals, args...)...) }
+	dirs := splitLines(g("rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir"))
+	if len(dirs) != 2 || seen[dirs[0]] {
+		return
+	}
+	seen[dirs[0]] = true
+	// NUL-separated names: git C-quotes a non-ASCII path otherwise, and a
+	// quoted name matches no pattern and opens no file.
+	names := splitNUL(g("diff", "--cached", "--name-only", "-z", "--diff-filter=ACM"))
+	names = append(names, splitNUL(g("diff", "--name-only", "-z", "--diff-filter=ACM"))...)
+	diff := splitLines(g("diff", "--cached", "--no-ext-diff", "-U0"))
+	diff = append(diff, splitLines(g("diff", "--no-ext-diff", "-U0"))...)
+	if adds {
+		// `:/` lists the whole repo from a subdirectory too, as `git add -A`
+		// stages it; paths stay relative to t.dir.
+		untracked := splitNUL(g("ls-files", "-z", "--others", "--exclude-standard", ":/"))
+		names = append(names, untracked...)
+		lines, unscanned := untrackedLines(t.dir, untracked)
+		diff = append(diff, lines...)
+		if len(unscanned) > 0 {
+			fmt.Fprintf(findings, "Untracked text past the %d MiB this hook reads, so not scanned:\n%s\nRun `git add` in its own call first: the commit then scans the staged diff in full.\n",
+				untrackedBudget>>20, strings.Join(unscanned[:min(len(unscanned), 10)], "\n"))
+		}
 	}
 
-	var findings strings.Builder
-
-	// --- 1. Staged files that are key material (regardless of content) ---
+	// --- 1. Changed files that are key material (regardless of content) ---
 	var badFiles []string
-	for _, f := range splitLines(git(dir, "diff", "--cached", "--name-only", "--diff-filter=ACM")) {
+	for _, f := range names {
 		if reBadFile.MatchString(f) && !reEnvExample.MatchString(f) {
 			badFiles = append(badFiles, f)
 		}
 	}
 	if len(badFiles) > 0 {
-		fmt.Fprintf(&findings, "Key/credential files staged:\n%s\n", strings.Join(badFiles, "\n"))
+		fmt.Fprintf(findings, "Key/credential files among the changes:\n%s\n", strings.Join(badFiles, "\n"))
 	}
 
 	// --- 2. Secret patterns in added lines (any repo) ---
 	var added []string
-	for _, l := range splitLines(git(dir, "diff", "--cached", "-U0")) {
+	for _, l := range diff {
 		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") {
 			added = append(added, l)
 		}
 	}
 	if len(added) > 0 {
 		if hits := grepN(added, 10, func(l string) bool { return reSecret.MatchString(l) }); len(hits) > 0 {
-			fmt.Fprintf(&findings, "Secret-shaped content in staged diff:\n%s\n", strings.Join(hits, "\n"))
+			fmt.Fprintf(findings, "Secret-shaped content in the changes:\n%s\n", strings.Join(hits, "\n"))
 		}
 		if hits := grepN(added, 10, credentialAssignment); len(hits) > 0 {
-			fmt.Fprintf(&findings, "Hardcoded credential assignments:\n%s\n", strings.Join(hits, "\n"))
+			fmt.Fprintf(findings, "Hardcoded credential assignments:\n%s\n", strings.Join(hits, "\n"))
 		}
 	}
 
 	// --- 3. Public-repo-only checks: infra strings + public IPs ---
-	if len(added) > 0 && repoVisibility(dir) == "PUBLIC" {
+	if len(added) > 0 && repoVisibility(t.dir, dirs[1]) == "PUBLIC" {
 		home, _ := os.UserHomeDir()
 		if denylist, err := os.ReadFile(filepath.Join(home, ".claude", "hooks", "private-strings.txt")); err == nil {
 			needles := splitLines(string(denylist))
@@ -139,7 +245,7 @@ func guardCommitSecrets(in *HookInput) *Denial {
 				}
 				return false
 			}); len(hits) > 0 {
-				fmt.Fprintf(&findings, "Known private infra strings (from private-strings.txt) in a PUBLIC repo:\n%s\n", strings.Join(hits, "\n"))
+				fmt.Fprintf(findings, "Known private infra strings (from private-strings.txt) in a PUBLIC repo:\n%s\n", strings.Join(hits, "\n"))
 			}
 		}
 		seen := map[string]bool{}
@@ -156,38 +262,43 @@ func guardCommitSecrets(in *HookInput) *Denial {
 			pubIPs = pubIPs[:10]
 		}
 		if len(pubIPs) > 0 {
-			fmt.Fprintf(&findings, "Public IPv4 addresses in a PUBLIC repo (use repo variables instead):\n%s\n", strings.Join(pubIPs, "\n"))
+			fmt.Fprintf(findings, "Public IPv4 addresses in a PUBLIC repo (use repo variables instead):\n%s\n", strings.Join(pubIPs, "\n"))
 		}
 	}
-
-	if findings.Len() > 0 {
-		return deny("commit-secrets", "staged changes contain sensitive content:\n\n"+findings.String()+"\nFix: unstage/redact the flagged content (secrets -> env vars or repo secrets; IPs in public repos -> repo variables).", "If this is a false positive and intentional, re-run with COMMIT_GUARD_ALLOW=1 prefixed to the command.")
-	}
-	return nil
 }
 
-// repoVisibility returns "PUBLIC"/"PRIVATE"/… or "" when unknown.
-// Cache file lives inside .git/ (visibility rarely changes; survives clones' lifetime).
-func repoVisibility(dir string) string {
-	gitdir := git(dir, "rev-parse", "--absolute-git-dir")
-	if gitdir == "" {
-		return ""
-	}
-	cache := filepath.Join(gitdir, visibilityCacheName)
+// repoVisibility returns "PUBLIC"/"PRIVATE"/… or "" when unknown. The cache
+// file lives in the repository's common git dir, so every worktree of it
+// shares one lookup (visibility rarely changes; survives clones' lifetime).
+func repoVisibility(dir, commonDir string) string {
+	cache := filepath.Join(commonDir, visibilityCacheName)
 	if b, err := os.ReadFile(cache); err == nil {
-		vis := strings.TrimSpace(string(b))
-		if st, err := os.Stat(cache); err == nil && time.Since(st.ModTime()) > visibilityTTL {
-			refreshVisibilityDetached(dir, cache)
+		vis, ttl := strings.TrimSpace(string(b)), visibilityTTL
+		if vis == unknownVisibility {
+			vis, ttl = "", unknownVisibilityTTL
+		}
+		if st, err := os.Stat(cache); err == nil && time.Since(st.ModTime()) > ttl {
+			spawnVisibilityRefresh(dir, cache)
 		}
 		return vis
 	}
-	// No cache at all: one synchronous lookup, hard-capped.
+	// No cache at all: one synchronous lookup, hard-capped. A failure is
+	// cached as unknown, so the next commit does not pay it again, and retried
+	// at once in the background — a lookup that merely timed out corrects
+	// itself within seconds instead of leaving a public repo unchecked.
 	vis := ghVisibility(dir, ghSyncTimeout)
 	if vis != "" {
 		_ = os.WriteFile(cache, []byte(vis), 0o644)
+		return vis
 	}
-	return vis
+	_ = os.WriteFile(cache, []byte(unknownVisibility), 0o644)
+	spawnVisibilityRefresh(dir, cache)
+	return ""
 }
+
+// spawnVisibilityRefresh is refreshVisibilityDetached; tests replace it, since
+// re-executing a test binary would run the tests again.
+var spawnVisibilityRefresh = refreshVisibilityDetached
 
 // refreshVisibilityDetached re-execs this binary as a detached child so the
 // hook returns immediately; the child owns the (slow) network call.
@@ -239,6 +350,59 @@ func git(dir string, args ...string) string {
 		return ""
 	}
 	return strings.TrimRight(out.String(), "\n")
+}
+
+// untrackedBudget caps how much untracked content one hook call reads, so a
+// big generated tree that is not ignored cannot stall it.
+const untrackedBudget = 4 << 20
+
+// untrackedLines reads the untracked files `git add` could stage as added
+// diff lines. Binary files are skipped, as a diff shows no lines for them
+// either. Text past the budget is returned as unscanned: the guard refuses
+// it rather than let it through unread.
+func untrackedLines(dir string, files []string) (lines, unscanned []string) {
+	budget := int64(untrackedBudget)
+	for _, f := range files {
+		p := filepath.Join(dir, f)
+		st, err := os.Lstat(p)
+		if err != nil || !st.Mode().IsRegular() {
+			continue // `git add` stages a symlink itself, never what it points to
+		}
+		fh, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		head := make([]byte, 8000)
+		n, _ := io.ReadFull(fh, head)
+		fh.Close()
+		if bytes.IndexByte(head[:n], 0) >= 0 {
+			continue
+		}
+		if st.Size() > budget {
+			unscanned = append(unscanned, f)
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			unscanned = append(unscanned, f)
+			continue
+		}
+		budget -= int64(len(b))
+		for _, l := range strings.Split(string(b), "\n") {
+			lines = append(lines, "+"+l)
+		}
+	}
+	return lines, unscanned
+}
+
+func splitNUL(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, "\x00") {
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func splitLines(s string) []string {

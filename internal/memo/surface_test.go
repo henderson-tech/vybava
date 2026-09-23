@@ -80,19 +80,23 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 
 	// EnsureIndex decides staleness by comparing file mtimes, so every file it
 	// reads has to live on the test's clock. WriteIndex stamps wall-clock times,
-	// which a fixed `now` can never agree with — that mismatch is what turned
-	// this test red at midnight on 2026-09-22, a day after the date it named.
+	// which a fixed `now` can never agree with — the unpinned version went red
+	// once the real clock passed its fake `later`, 2026-09-21 12:00:02 UTC.
 	// pin() puts a file exactly where the assertions expect it.
 	pin := func(path string, at time.Time) {
 		t.Helper()
-		if err := os.Chtimes(path, at, at); err != nil && !os.IsNotExist(err) {
+		if err := os.Chtimes(path, at, at); err != nil {
 			t.Fatal(err)
 		}
 	}
 	pinSources := func(at time.Time) {
 		t.Helper()
 		for _, f := range []string{LedgerFile, UsageFile} {
-			pin(filepath.Join(l.Home(), f), at)
+			p := filepath.Join(l.Home(), f)
+			if _, err := os.Stat(p); f == UsageFile && os.IsNotExist(err) {
+				continue // no usage event has landed yet
+			}
+			pin(p, at)
 		}
 	}
 
@@ -110,6 +114,14 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	res, err = EnsureIndex(l, nil, now)
 	if err != nil || res.Reason != "current" || res.Rendered {
 		t.Fatalf("current: %+v %v", res, err)
+	}
+	// A ledger write in the same second as the render (`memo add`, then
+	// SessionStart, on a 1 s mtime filesystem) is still current: only a
+	// strictly newer source makes the index stale.
+	pinSources(now)
+	res, err = EnsureIndex(l, nil, now)
+	if err != nil || res.Reason != "current" || res.Rendered {
+		t.Fatalf("same-second: %+v %v", res, err)
 	}
 
 	// Ledger newer than the render, content unchanged: stale, not rewritten, mtime bumped.
@@ -163,7 +175,7 @@ func TestEnsureIndexMissingStaleCurrent(t *testing.T) {
 	// One cite on a two-row ledger leaves the order as it was, so the file is
 	// not rewritten; what matters is that usage.jsonl alone made it stale.
 	res, err = EnsureIndex(l2, events, usageAt.Add(time.Second))
-	if err != nil || res.Reason != "stale" {
+	if err != nil || res.Reason != "stale" || res.Rendered {
 		t.Fatalf("stale after usage: %+v %v", res, err)
 	}
 	res, err = EnsureIndex(l2, events, usageAt.Add(2*time.Second))

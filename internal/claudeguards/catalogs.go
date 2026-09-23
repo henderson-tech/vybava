@@ -13,17 +13,13 @@ import (
 // context:locale-catalog — a file that vybava.config.ts declares as a `lok`
 // catalog is never read raw, not even a 200-line range: the catalog is
 // queried through `lok get/grep` and written through `lok add/set/rm`, which
-// keep every locale in sync. The config comes through vconfig, whose on-disk
-// cache makes this a file read per call; a load failure means "no catalogs"
-// for THIS call only and is never remembered.
+// keep every locale in sync. The catalog files come from the config load the
+// guards section already made (Config.lokFiles); a load failure means "no
+// catalogs" for THIS call only and is never remembered.
 // ---------------------------------------------------------------------------
 
-// lokCatalogFiles resolves the configured catalog files for cwd.
-func lokCatalogFiles(cwd string) []string {
-	cfg, err := vconfig.Load(cwd)
-	if err != nil {
-		return nil
-	}
+// lokCatalogFiles resolves the catalog files a loaded config declares.
+func lokCatalogFiles(cfg *vconfig.Config) []string {
 	raw, ok := cfg.Sections["lok"]
 	if !ok {
 		return nil
@@ -46,11 +42,11 @@ func lokCatalogFiles(cwd string) []string {
 	return files
 }
 
-func isLokCatalog(abs, cwd string) bool {
+func isLokCatalog(abs string, cfg Config) bool {
 	if !strings.HasSuffix(abs, ".json") {
 		return false
 	}
-	for _, f := range lokCatalogFiles(cwd) {
+	for _, f := range cfg.lokFiles {
 		if f == abs {
 			return true
 		}

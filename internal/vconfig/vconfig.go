@@ -104,14 +104,49 @@ type cacheEntry struct {
 func cachePath(root, path string) string {
 	// Prefer the git dir (per worktree, never committed); fall back to the
 	// user cache dir keyed by the config's absolute path.
-	if out, err := exec.Command("git", "-C", root, "rev-parse", "--absolute-git-dir").Output(); err == nil {
-		return filepath.Join(strings.TrimSpace(string(out)), "vybava-config-cache.json")
+	if dir := gitDir(root); dir != "" {
+		return filepath.Join(dir, "vybava-config-cache.json")
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "vybava", "config-cache", strings.NewReplacer("/", "_", ":", "_").Replace(path)+".json")
+}
+
+// gitDir finds the git dir of the repository holding dir without forking
+// git, which every hook call would otherwise pay: a `.git` directory, or the
+// `gitdir:` a linked worktree's or submodule's `.git` file points to. "" when
+// dir is in no repository.
+func gitDir(dir string) string {
+	for {
+		p := filepath.Join(dir, ".git")
+		if st, err := os.Stat(p); err == nil {
+			if st.IsDir() {
+				return p
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return ""
+			}
+			target, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+			if !ok {
+				return ""
+			}
+			if target = strings.TrimSpace(target); !filepath.IsAbs(target) {
+				target = filepath.Join(dir, target)
+			}
+			if st, err := os.Stat(target); err != nil || !st.IsDir() {
+				return "" // a pruned worktree: never create its git dir for a cache
+			}
+			return target
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func evaluate(root, path string) (json.RawMessage, error) {

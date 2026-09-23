@@ -1,9 +1,20 @@
 package claudeguards
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// TestMain keeps every test from spawning the detached visibility refresh: it
+// re-executes os.Executable(), which under `go test` is the test binary.
+func TestMain(m *testing.M) {
+	spawnVisibilityRefresh = func(string, string) {}
+	os.Exit(m.Run())
+}
 
 func TestBadFilePatterns(t *testing.T) {
 	block := []string{
@@ -117,19 +128,163 @@ func TestEnvAccessorSpellingsAreSkipped(t *testing.T) {
 	}
 }
 
-func TestCdPrefix(t *testing.T) {
-	for cmd, want := range map[string]string{
-		`cd /x/y && git commit -m m`:     "/x/y",
-		`(cd "/a b" && git commit -m m)`: "/a b",
-		`git commit -m m`:                "",
+// The trigger is text-level on purpose: a commit behind a shell keyword,
+// eval, a nested shell or a line continuation counts like a plain one.
+func TestCommitTrigger(t *testing.T) {
+	for _, cmd := range []string{
+		`git commit -m m`,
+		`git -C /r -c user.name=x commit -m "a b"`,
+		`git -c user.name="Claude Code" -c user.email=a@b commit -m x`,
+		`git -C "$(git rev-parse --show-toplevel)" commit -am x`,
+		`git --no-pager --git-dir=/r/.git --work-tree /r commit -am wip`,
+		`if [ -n "$(git status --porcelain)" ]; then git commit -m x; fi`,
+		`true && { git commit -m x; }`,
+		`eval "git commit -m x"`,
+		`bash -c 'cd /r && git commit -m x'`,
+		"git diff --cached --stat && \\\n  git commit -m x",
+		"git -C /r \\\n  commit -m x",
 	} {
-		got := ""
-		if m := reCdPrefix.FindStringSubmatch(cmd); m != nil {
-			got = strings.TrimSpace(m[1])
+		if !reGitCommit.MatchString(strings.ReplaceAll(cmd, "\\\n", " ")) {
+			t.Errorf("%q should trigger", cmd)
 		}
-		if got != want {
-			t.Errorf("cd prefix of %q: got %q, want %q", cmd, got, want)
+	}
+	for _, cmd := range []string{`git commit-tree HEAD^{tree}`, `git log --grep commit`, `git status && echo commit`} {
+		if reGitCommit.MatchString(cmd) {
+			t.Errorf("%q should not trigger", cmd)
 		}
+	}
+}
+
+// Every repository the command names is a target, whatever the shell does
+// with scoping: cwd, cd and -C (relative ones against cwd and each cd), and
+// --git-dir with its work tree.
+func TestCommitTargets(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	has := func(ts []repoTarget, dir string, globals ...string) bool {
+		for _, t := range ts {
+			if t.dir == dir && strings.Join(t.globals, " ") == strings.Join(globals, " ") {
+				return true
+			}
+		}
+		return false
+	}
+	ts := commitTargets(`(cd "/a b" && git log -1) && git -C sub commit -m x`, "/cwd")
+	for _, dir := range []string{"/cwd", "/a b", "/cwd/sub", "/a b/sub"} {
+		if !has(ts, dir) {
+			t.Errorf("targets lack %s: %+v", dir, ts)
+		}
+	}
+	ts = commitTargets(`git --git-dir $HOME/.cfg --work-tree ~ commit -m x`, "/cwd")
+	if !has(ts, home, "--git-dir="+home+"/.cfg", "--work-tree="+home) {
+		t.Errorf("bare-repo target missing: %+v", ts)
+	}
+}
+
+// Fail closed: whatever a commit could take is scanned — an unstaged tracked
+// change, an untracked file a same-command `git add` stages, the repo `git -C`
+// or `cd` points at — and a clean tree commits.
+func TestCommitSecretsFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(cmd, cwd string, blocked bool) {
+		t.Helper()
+		in := &HookInput{CWD: cwd}
+		in.ToolInput.Command = cmd
+		if d := guardCommitSecrets(in); (d != nil) != blocked {
+			t.Errorf("%q from %s: blocked=%v, want %v", cmd, cwd, d != nil, blocked)
+		}
+	}
+	token := "ghp_" + strings.Repeat("a1", 12)
+	run("init", "-q")
+	write("a.txt", "clean\n")
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "init")
+
+	write("a.txt", "clean\n"+token+"\n") // tracked, not staged
+	check(`git commit -am x`, repo, true)
+	check(`git commit -m "$(date)" -- a.txt`, repo, true)
+	check(`git -C `+repo+` commit -m x`, t.TempDir(), true)
+	check(`(cd `+repo+` && git status) && git commit -m x`, t.TempDir(), true)
+	check(`git status`, repo, false)
+	write("a.txt", "clean\n")
+
+	write("new.txt", token+"\n") // untracked
+	check(`git commit -m x`, repo, false)
+	check(`git add new.txt && git commit -m x`, repo, true)
+	if err := os.Remove(filepath.Join(repo, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	// From a subdirectory `git add -A` still stages the whole repo, and a
+	// non-ASCII name is read, not C-quoted away.
+	sub := filepath.Join(repo, "apps", "web")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "nabídka"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join("nabídka", "cfg.txt"), token+"\n")
+	check(`git add -A && git commit -m x`, sub, true)
+	if err := os.RemoveAll(filepath.Join(repo, "nabídka")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Untracked text past the read budget is refused, never let through
+	// unread; a binary file of any size is not text to scan.
+	write("big.log", strings.Repeat("plain log line\n", untrackedBudget/14))
+	check(`git add -A && git commit -m x`, repo, true)
+	if err := os.Remove(filepath.Join(repo, "big.log")); err != nil {
+		t.Fatal(err)
+	}
+	write("big.bin", "\x00"+strings.Repeat("x", untrackedBudget))
+	check(`git add -A && git commit -m x`, repo, false)
+	if err := os.Remove(filepath.Join(repo, "big.bin")); err != nil {
+		t.Fatal(err)
+	}
+	check(`git add -A && git commit -am x`, repo, false)
+}
+
+// A lookup gh cannot answer (no GitHub remote, offline, slow) is cached as
+// unknown and retried in the background at once, so the next commit neither
+// pays for gh nor stays unchecked for long.
+func TestUnknownVisibilityIsCached(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script gh stub")
+	}
+	bin, common := t.TempDir(), t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	stub := "#!/bin/sh\necho x >> '" + calls + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	spawns := 0
+	save := spawnVisibilityRefresh
+	spawnVisibilityRefresh = func(string, string) { spawns++ }
+	t.Cleanup(func() { spawnVisibilityRefresh = save })
+	for i := 0; i < 2; i++ {
+		if vis := repoVisibility(t.TempDir(), common); vis != "" {
+			t.Fatalf("visibility %q, want unknown", vis)
+		}
+	}
+	if b, _ := os.ReadFile(calls); strings.Count(string(b), "x") != 1 || spawns != 1 {
+		t.Errorf("gh ran %d times, refresh spawned %d times; want 1 and 1", strings.Count(string(b), "x"), spawns)
 	}
 }
 

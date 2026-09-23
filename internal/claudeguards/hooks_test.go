@@ -113,7 +113,7 @@ func TestDoctorReportsWithoutFix(t *testing.T) {
 	if err := Doctor(path, false, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "1 hook(s) missing") || !strings.Contains(out.String(), "PreToolUse/Read → ~/.claude/hooks/claude-guards read") {
+	if !strings.Contains(out.String(), "1 hook(s) missing") || !strings.Contains(out.String(), "PreToolUse/Read → ~/.local/bin/claude-guards read") {
 		t.Errorf("unexpected report:\n%s", out.String())
 	}
 	after, _ := os.ReadFile(path)

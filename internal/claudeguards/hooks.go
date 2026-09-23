@@ -33,10 +33,12 @@ type HookWiring struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
-// hookBin is the path every wired command starts with. An older
-// ~/.local/bin/claude-guards path counts as present too — the match is on
-// the verb after `claude-guards `, never on the path.
-const hookBin = "~/.claude/hooks/claude-guards"
+// hookBin is the path every inserted command starts with: the applet symlink
+// `vybava install` creates. Nothing here creates the older
+// ~/.claude/hooks/claude-guards, so wiring it on a fresh machine would run a
+// missing file; an existing entry on either path counts as present — the
+// match is on the verb after `claude-guards `, never on the path.
+const hookBin = "~/.local/bin/claude-guards"
 
 const browserMatcher = "mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*"
 

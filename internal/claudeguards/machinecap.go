@@ -1,7 +1,9 @@
 package claudeguards
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -13,8 +15,10 @@ import (
 // bundlers and four API dev servers sat on this machine - roughly 25 GB and a
 // thousand processes - while the memory compressor held 36-49 GB of 96. The
 // rule reads the process table only when the command IS a boot or a start, so
-// every other Bash call costs nothing. A deliberate extra instance on a quiet
-// Mac sets CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1.
+// every other Bash call costs nothing. A `dev:*` package script is a start only
+// when its package.json body is one (`dev:export-structure` → `tree` is not).
+// A deliberate extra instance on a quiet Mac sets
+// CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1.
 // ---------------------------------------------------------------------------
 
 const (
@@ -30,6 +34,10 @@ var machineStarters = map[string]bool{
 }
 
 var devScripts = map[string]bool{"dev": true, "run:api": true, "run:web": true, "run:admin": true}
+
+// kindDevScript is a `dev:*` package script, which its body classifies
+// (devScriptKind).
+const kindDevScript = "dev-script"
 
 // startKind classifies one argv as a simulator boot ("sim"), a dev-server
 // start ("dev") or neither. Package launchers are unwrapped the way the
@@ -125,8 +133,10 @@ func scriptKind(payload []string) string {
 	switch {
 	case strings.HasPrefix(name, "run:sim:"):
 		return kindSim
-	case devScripts[name] || strings.HasPrefix(name, "dev:"):
+	case devScripts[name]:
 		return "dev"
+	case strings.HasPrefix(name, "dev:"):
+		return kindDevScript
 	}
 	if filepath.Base(name) == "run.ts" && len(payload) > 1 {
 		switch payload[1] {
@@ -140,9 +150,15 @@ func scriptKind(payload []string) string {
 }
 
 // machineStartMatch returns the first local segment that boots a simulator or
-// starts a dev server, with its kind.
-func machineStartMatch(cmd string) (segment, kind string) {
+// starts a dev server, with its kind; cwd, followed through `cd`, is where a
+// `dev:*` script's package.json is read.
+func machineStartMatch(cmd, cwd string) (segment, kind string) {
+	home, _ := os.UserHomeDir()
 	for _, seg := range localSegments(cmd) {
+		if f := shellFields(seg); len(f) > 1 && f[0] == "cd" {
+			cwd = resolveDir(f[1], cwd, home)
+			continue
+		}
 		if textOnly(seg) {
 			continue
 		}
@@ -150,11 +166,72 @@ func machineStartMatch(cmd string) (segment, kind string) {
 		if argv == nil {
 			continue
 		}
-		if k := startKind(argv); k != "" {
+		k := startKind(argv)
+		if k == kindDevScript {
+			k = devScriptKind(argv, cwd)
+		}
+		if k != "" {
 			return strings.TrimSpace(trimAssignments(trimSubshell(seg))), k
 		}
 	}
 	return "", ""
+}
+
+// devScriptKind classifies the `dev:*` script argv runs by its body in cwd's
+// package.json. It errs toward counting: a script it cannot read stays a
+// dev-server start, and so does a body that runs another `dev:*` script,
+// backgrounds a job or has a server word (`bun --watch`, `nx serve`, `turbo
+// run dev`); only a body with none (`tree …`, `bunx ccusage`) is not a start.
+func devScriptKind(argv []string, cwd string) string {
+	name := ""
+	for _, a := range argv {
+		if strings.HasPrefix(a, "dev:") {
+			name = a
+			break
+		}
+	}
+	body, ok := packageScript(cwd, name)
+	if !ok {
+		return "dev"
+	}
+	for _, seg := range localSegments(body) {
+		if a := chainCommand(trimSubshell(seg), machineStarters); a != nil {
+			switch k := startKind(a); k {
+			case "":
+			case kindDevScript:
+				return "dev"
+			default:
+				return k
+			}
+		}
+	}
+	if strings.Contains(body, " & ") {
+		return "dev" // a backgrounded job: `webpack build & node dist/main.js`
+	}
+	for _, w := range strings.Fields(body) {
+		if w = strings.Trim(w, `"'`); serverWords[w] || strings.HasPrefix(w, "dev:") {
+			return "dev"
+		}
+	}
+	return ""
+}
+
+// serverWords mark a script body as a long-running server whatever tool runs it.
+var serverWords = map[string]bool{"dev": true, "serve": true, "start": true, "watch": true, "--watch": true, "--hot": true}
+
+func packageScript(dir, name string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return "", false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if json.Unmarshal(b, &pkg) != nil {
+		return "", false
+	}
+	body, ok := pkg.Scripts[name]
+	return body, ok
 }
 
 const machineCapEscape = "A deliberate extra instance on a quiet Mac: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1 <command>"
@@ -164,7 +241,7 @@ func guardMachineCap(in *HookInput) *Denial {
 	if cmd == "" || escapeHatch(cmd, "CLAUDE_GUARDS_ALLOW_MACHINE_CAP") {
 		return nil
 	}
-	seg, kind := machineStartMatch(cmd)
+	seg, kind := machineStartMatch(cmd, in.CWD)
 	if kind == "" {
 		return nil
 	}
