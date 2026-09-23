@@ -79,14 +79,14 @@ func TestMissingHooksAllPresent(t *testing.T) {
 }
 
 func TestMissingHooksReportsDropped(t *testing.T) {
-	path := fullSettings(t, "~/.claude/hooks/claude-guards", "bash", "weather", "reap")
+	path := fullSettings(t, "~/.claude/hooks/claude-guards", "bash", "weather --reap", "reap")
 	missing, err := MissingHooks(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := verbs(missing)
-	// reap is wired twice (SessionStart and SessionEnd), so it is missing twice.
-	want := []string{"bash", "weather", "reap", "reap"}
+	// The flags are part of the verb: `weather --reap` and `reap` are distinct.
+	want := []string{"bash", "weather --reap", "reap"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("missing = %v, want %v", got, want)
 	}
@@ -200,6 +200,40 @@ func TestDoctorFailsOpen(t *testing.T) {
 	}
 	if err := Doctor(filepath.Join(t.TempDir(), "absent.json"), false, &out, &errOut); err != nil {
 		t.Errorf("absent settings must not fail the session: %v", err)
+	}
+}
+
+// A settings.json wired by the older manifest (separate SessionStart weather
+// and reap) is upgraded in place: the retired entries go, their successor
+// comes in, and SessionEnd's reap stays.
+func TestDoctorFixRetiresSupersededHooks(t *testing.T) {
+	path := fullSettings(t, hookBin, "weather --reap")
+	top, groups, err := readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range retiredHooks {
+		groups[w.Event] = insertHook(groups[w.Event], w)
+	}
+	if err := writeSettings(path, top, groups); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	if err := Doctor(path, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rewired", "− SessionStart → " + hookBin + " reap", "+ SessionStart → " + hookBin + " weather --reap"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("fix report lacks %q:\n%s", want, out.String())
+		}
+	}
+	_, groups, err = readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, r := missingHooks(groups), retiredWired(groups); len(m) != 0 || len(r) != 0 {
+		t.Errorf("after fix: missing %v, retired %v", verbs(m), verbs(r))
 	}
 }
 

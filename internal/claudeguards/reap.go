@@ -1,6 +1,6 @@
 package claudeguards
 
-// Orphan reaper — SessionStart/SessionEnd hook.
+// Orphan reaper — SessionEnd hook, and SessionStart through `weather --reap`.
 //
 // A `timeout N bunx tsx <probe>` that opens an Appium session leaves its
 // xcodebuild (WebDriverAgent's `test-without-building`) and the Appium server
@@ -108,9 +108,15 @@ func selectReapVictims(table []machineProc) []machineProc {
 	return out
 }
 
-// Reap is the hook entry point. Never blocks the session; exit stays 0.
+// Reap is the SessionEnd hook entry point. Never blocks the session; exit
+// stays 0.
 func Reap(stderr io.Writer) {
-	table := machineProcTable()
+	reapTable(machineProcTable(), stderr)
+}
+
+// reapTable sweeps an already-read table — SessionStart's `weather --reap`
+// hands over the one it counted.
+func reapTable(table []machineProc, stderr io.Writer) {
 	victims := selectReapVictims(table)
 	if len(victims) == 0 {
 		return

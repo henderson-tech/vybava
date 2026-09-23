@@ -47,12 +47,20 @@ var Hooks = []HookWiring{
 	{Event: "PreToolUse", Matcher: "Read", Command: hookBin + " read", Timeout: 5},
 	{Event: "PreToolUse", Matcher: browserMatcher, Command: hookBin + " browser"},
 	{Event: "SessionStart", Command: hookBin + " doctor --fix", Timeout: 10},
-	{Event: "SessionStart", Command: hookBin + " weather", Timeout: 10},
-	{Event: "SessionStart", Command: hookBin + " reap", Timeout: 20},
+	{Event: "SessionStart", Command: hookBin + " weather --reap", Timeout: 20},
 	{Event: "SessionStart", Command: hookBin + " swarm-teardown --dead-only", Timeout: 20},
 	{Event: "SessionEnd", Command: hookBin + " swarm-teardown", Timeout: 20},
 	{Event: "SessionEnd", Command: hookBin + " browser-teardown", Timeout: 10},
 	{Event: "SessionEnd", Command: hookBin + " reap", Timeout: 20},
+}
+
+// retiredHooks are wirings an older manifest installed; `doctor --fix`
+// removes them. SessionStart ran `weather` and `reap` as two processes, each
+// paying its own `ps -axo` (~0.5 s under load) for the same table —
+// `weather --reap` reads it once.
+var retiredHooks = []HookWiring{
+	{Event: "SessionStart", Command: hookBin + " weather"},
+	{Event: "SessionStart", Command: hookBin + " reap"},
 }
 
 // Verb returns the part of the command after `claude-guards ` — the identity
@@ -160,31 +168,66 @@ func Doctor(settingsPath string, fix bool, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "claude-guards doctor: cannot check hooks: %v\n", err)
 		return nil
 	}
-	missing := missingHooks(groups)
-	if len(missing) == 0 {
+	missing, retired := missingHooks(groups), retiredWired(groups)
+	if len(missing) == 0 && len(retired) == 0 {
 		return nil
 	}
 	if !fix {
-		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: claude-guards doctor --fix\n", len(missing), settingsPath)
-		for _, w := range missing {
-			fmt.Fprintf(stdout, "   %s\n", w.describe())
+		if len(missing) > 0 {
+			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: claude-guards doctor --fix\n", len(missing), settingsPath)
+			for _, w := range missing {
+				fmt.Fprintf(stdout, "   %s\n", w.describe())
+			}
+		}
+		if len(retired) > 0 {
+			fmt.Fprintf(stdout, "ℹ️ claude-guards: %d retired hook(s) still wired in %s. Fix: claude-guards doctor --fix\n", len(retired), settingsPath)
+			for _, w := range retired {
+				fmt.Fprintf(stdout, "   %s\n", w.describe())
+			}
 		}
 		return nil
+	}
+	for _, w := range retired {
+		groups[w.Event] = removeHook(groups[w.Event], w)
 	}
 	for _, w := range missing {
 		groups[w.Event] = insertHook(groups[w.Event], w)
 	}
 	if err := writeSettings(settingsPath, top, groups); err != nil {
-		fmt.Fprintf(stderr, "claude-guards doctor: could not re-insert hooks: %v\n", err)
-		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s and the fix failed: %v\n", len(missing), settingsPath, err)
+		fmt.Fprintf(stderr, "claude-guards doctor: could not rewrite hooks: %v\n", err)
+		if len(missing) > 0 {
+			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s and the fix failed: %v\n", len(missing), settingsPath, err)
+		}
 		return nil
 	}
-	fmt.Fprintf(stdout, "🚨 claude-guards: re-inserted %d missing hook(s) into %s (the file had been rewritten; restart the session to load them):\n", len(missing), settingsPath)
-	for _, w := range missing {
-		fmt.Fprintf(stdout, "   %s\n", w.describe())
+	if len(retired) > 0 {
+		// A manifest upgrade, not a harness rewrite: the retired entries' successors are the missing ones.
+		fmt.Fprintf(stdout, "ℹ️ claude-guards: rewired %s to the current hook manifest (restart the session to load it):\n", settingsPath)
+		for _, w := range retired {
+			fmt.Fprintf(stdout, "   − %s\n", w.describe())
+		}
+		for _, w := range missing {
+			fmt.Fprintf(stdout, "   + %s\n", w.describe())
+		}
+	} else {
+		fmt.Fprintf(stdout, "🚨 claude-guards: re-inserted %d missing hook(s) into %s (the file had been rewritten; restart the session to load them):\n", len(missing), settingsPath)
+		for _, w := range missing {
+			fmt.Fprintf(stdout, "   %s\n", w.describe())
+		}
 	}
 	fmt.Fprintf(stdout, "   settings.json is git-tracked: review with `git -C %s diff settings.json`\n", filepath.Dir(settingsPath))
 	return nil
+}
+
+// retiredWired returns the retired wirings the live file still carries.
+func retiredWired(groups map[string][]hookGroup) []HookWiring {
+	var out []HookWiring
+	for _, w := range retiredHooks {
+		if hookPresent(groups, w) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func (w HookWiring) describe() string {
@@ -205,6 +248,30 @@ func insertHook(groups []hookGroup, w HookWiring) []hookGroup {
 		}
 	}
 	return append(groups, hookGroup{Matcher: w.Matcher, Hooks: []json.RawMessage{entry}})
+}
+
+// removeHook drops every entry with w's matcher and verb; a group left empty
+// goes with it.
+func removeHook(groups []hookGroup, w HookWiring) []hookGroup {
+	var out []hookGroup
+	for _, g := range groups {
+		if g.Matcher == w.Matcher {
+			var kept []json.RawMessage
+			for _, raw := range g.Hooks {
+				var e hookEntry
+				if json.Unmarshal(raw, &e) == nil && hookVerb(e.Command) == w.Verb() {
+					continue
+				}
+				kept = append(kept, raw)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			g.Hooks = kept
+		}
+		out = append(out, g)
+	}
+	return out
 }
 
 // writeSettings re-marshals only the hooks key; every other key is written
