@@ -201,10 +201,16 @@ them into hours: your attention and agent time, combined per client.
   is a completed `UserMessage` item (older rollouts: a `user_message` event)
   in a thread a person drives: the owner's `session_meta` has a string
   `source` other than `exec` and is not from `codex_exec`. A spawned thread
-  (an object `source`: subagent, guardian) and `codex exec` are agents.
+  (an object `source`: subagent, guardian) and `codex exec` are agents, and a
+  header naming no source is unknown — never a person.
   Copied fork history, older than the thread, is never a new prompt.
-- **ai** — a minute an agent answered in: every record the rollup charges,
-  from any session — subagents, workflows, headless runs and forks alike.
+- **ai** — a minute an agent answered in: the minute of each response the
+  rollup charges, from any session — subagents, workflows, headless runs
+  alike — recorded where it is charged, so a copy of a charged response adds
+  no minute, just as it adds no tokens. The backlog below cannot tell a copy
+  from its original (all of them were charged before beats existed): it
+  counts a message's repeated blocks once and copied fork history not at all,
+  and a copy keeping its record's time and cwd lands on the original's minute.
 
 Beats are stored per minute × project × kind and kept forever, like
 buckets, so they outlive transcript cleanup. A project is the rollup's:
@@ -223,7 +229,9 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   complete: the day after the oldest Claude transcript still on disk when
   beats began (sessions that ended before it were deleted unread), never
   before the first beat. Rollouts are not cleaned up, so they never move it.
-  A store without beats has `null`. `pendingBytes` is what the index still
+  A file that vanishes before its backlog is paid takes its unread beats
+  with it: coverage moves to the day after its last write rather than
+  claiming days it cannot vouch for. A store without beats has `null`. `pendingBytes` is what the index still
   owes beats: unread records plus the backlog below; `complete` is false
   while any is.
 - **The backlog.** A store indexed before beats existed has read its files
@@ -232,5 +240,12 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   budget they left — newest files first, so recent weeks fill before older
   history. The backlog reads beats only: it neither charges a token nor
   touches the `seen` identities, so no total can move. Everything a pass
-  reads from then on records its beats as it goes. `index --json` reports
-  what is left as `beatsPendingBytes`.
+  reads from then on records its beats as it goes — except where a token
+  read re-reads a file that still owes (replaced, or re-read after its
+  cursor was lost): its responses are seen, so the debt grows to cover what
+  that read covered, and a backlog that finds the file replaced reads the
+  new content from byte 0. `index --json` reports what is left as
+  `beatsPendingBytes`.
+- **Migrations** add one column each, and only when it is missing: a pass
+  killed between a migration and the version bump leaves the column behind,
+  and the next pass finishes the migration rather than failing on it.

@@ -305,14 +305,27 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 	if err != nil {
 		return IndexReport{}, err
 	}
+	// Beats are complete from the day after beatsSince (unix seconds).
+	beatsSince, _ := strconv.ParseInt(since, 10, 64)
+	if since == "" {
+		// Claude Code deletes transcripts: the oldest still on disk when beats
+		// began bounds how far back its beats can be complete. Rollouts are
+		// kept, so they never bound it.
+		beatsSince = oldestClaude(targets)
+	}
 	if walked {
-		// Cursors of vanished files go; their buckets stay forever.
+		// Cursors of vanished files go; their buckets and beats stay forever.
 		present := make(map[string]bool, len(targets))
 		for _, t := range targets {
 			present[t.path] = true
 		}
-		for path := range known {
+		for path, row := range known {
 			if !present[path] {
+				if row.beats != beatsDone && !lagOf(row.beats, row.cur).done() {
+					// Gone with beats unread: no day up to its last write is
+					// complete any more.
+					beatsSince = max(beatsSince, row.cur.Modified/int64(time.Second))
+				}
 				if _, err := tx.Exec("DELETE FROM files WHERE path = ?", path); err != nil {
 					tx.Rollback()
 					return IndexReport{}, err
@@ -328,11 +341,8 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		tx.Rollback()
 		return IndexReport{}, err
 	}
-	if since == "" {
-		// Claude Code deletes transcripts: the oldest still on disk when beats
-		// began bounds how far back its beats can be complete. Rollouts are
-		// kept, so they never bound it. Set once, by the first pass with beats.
-		if err := setMeta(tx, "beats_since", strconv.FormatInt(oldestClaude(targets), 10)); err != nil {
+	if next := strconv.FormatInt(beatsSince, 10); next != since {
+		if err := setMeta(tx, "beats_since", next); err != nil {
 			tx.Rollback()
 			return IndexReport{}, err
 		}
@@ -454,18 +464,20 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 			raw, _ := json.Marshal(cs)
 			state = string(raw)
 		}
-		beats := beatsDone // read from byte 0 with beats on
-		if !fresh {
-			lag := lagOf(row.beats, row.cur)
-			if t.codex && cs.Human == nil {
-				// State from before beats cannot tell a person's prompt from a
-				// spawned thread's: owe what this read, until the backlog read
-				// learns it from the owner header.
-				lag.Until = max(lag.Until, cur.Offset)
-			}
-			beats = lag.encode()
+		lag := lagOf(row.beats, row.cur)
+		switch {
+		case fresh:
+			// Never read before: every response it charges records its minute.
+			lag = beatsLag{}
+		case !lag.done() || t.codex && cs.Human == nil:
+			// An open debt tracks the token cursor: a file replaced or re-read
+			// while it owes beats holds responses charged before beats existed,
+			// which this read finds seen and records no minute for. State from
+			// before beats cannot tell a person's prompt from a spawned
+			// thread's until the backlog reads the owner header either.
+			lag.Until = max(lag.Until, cur.Offset)
 		}
-		ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail, beats: beats}
+		ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail, beats: lag.encode()}
 		ix.read[t.path] = ix.files[t.path]
 		ix.dirty += unsaved
 		unsaved = 0
@@ -490,7 +502,6 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 		opened = true
 		if res.Reset {
 			ix.report.Resets++
-			fresh = true
 		}
 		cur, known = res.Cursor, true
 		read += res.Read
@@ -556,18 +567,19 @@ func (ix *indexer) claudeLine(tokens bool) func([]byte, int64) error {
 		if rec.Type != "assistant" || u == nil || model == "" || model == transcripts.SyntheticModel || rec.Timestamp.IsZero() {
 			return nil
 		}
-		ix.beat(rec.Timestamp, rec.Cwd, beatAI)
-		if !tokens {
-			return nil
-		}
 		id := firstNonEmpty(rec.Message.ID, rec.RequestID, rec.UUID)
 		if id == "" || id == lastID {
 			return nil // repeats of one message sit next to each other, one per content block
 		}
 		lastID = id
-		if ix.seen(identity("claude", id), srcClaude, rec.Timestamp) {
+		if !tokens {
+			ix.beat(rec.Timestamp, rec.Cwd, beatAI) // the backlog: see catchUp
 			return nil
 		}
+		if ix.seen(identity("claude", id), srcClaude, rec.Timestamp) {
+			return nil // a copy: its minute is the charged original's
+		}
+		ix.beat(rec.Timestamp, rec.Cwd, beatAI)
 		w5, w1 := u.CacheWrites()
 		c := Counts{Input: u.InputTokens, Output: u.OutputTokens, CacheWrite5m: w5, CacheWrite1h: w1, CacheRead: u.CacheReadInputTokens, Responses: 1}
 		session := "claude:" + rec.SessionID
@@ -625,20 +637,23 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 			}
 			first := !cs.Receipts
 			cs.Receipts = true
-			ix.beat(ts, cs.Cwd, beatAI)
-			if !tokens {
-				return nil
-			}
 			key := identity("codex-receipt", cs.Owner, r.ResponseID)
 			if first && cs.LastLegacy != nil && sameUsage(*cs.LastLegacy, r.Usage) {
 				// The producer persisted this response's token_count first; it
-				// is already charged. Remember the receipt, charge nothing.
-				ix.seen(key, srcCodex, ts)
+				// is already charged — and beat. Remember the receipt, charge nothing.
+				if tokens {
+					ix.seen(key, srcCodex, ts)
+				}
+				return nil
+			}
+			if !tokens {
+				ix.beat(ts, cs.Cwd, beatAI) // the backlog: see catchUp
 				return nil
 			}
 			if ix.seen(key, srcCodex, ts) {
 				return nil
 			}
+			ix.beat(ts, cs.Cwd, beatAI)
 			ix.chargeCodex(ts, cs, r.Usage)
 		case transcripts.RolloutEventMsg:
 			if transcripts.RolloutUserLine(line) {
@@ -668,8 +683,9 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 			if !last.Valid() || last.Input+last.Output == 0 {
 				return nil
 			}
-			ix.beat(ts, cs.Cwd, beatAI)
 			if !tokens {
+				cs.LastLegacy = &last
+				ix.beat(ts, cs.Cwd, beatAI) // the backlog: see catchUp
 				return nil
 			}
 			key := identity("codex-count", cs.Owner, strconv.FormatInt(total.Input, 10), strconv.FormatInt(total.Cached, 10),
@@ -678,6 +694,7 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 				return nil
 			}
 			cs.LastLegacy = &last
+			ix.beat(ts, cs.Cwd, beatAI)
 			ix.chargeCodex(ts, cs, last)
 		}
 		return nil
@@ -801,6 +818,14 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 // catchUp reads one file's backlog until it is paid, the budget runs out or
 // the pass is stopped. A rollout's token state learns from it whether a
 // person drives the thread, so later token reads record that person's prompts.
+//
+// The backlog cannot follow the charge the way a token read does: every
+// response in it was charged before beats existed, so seen holds all of them,
+// and which copy was charged is not recorded. It applies every rule that
+// needs no seen — a message's repeated content blocks count once, copied fork
+// history and a receipt already charged through its token_count count
+// nothing — and records the rest. A copy keeping its record's time and cwd
+// lands on the original's minute; one that changed them adds its own.
 func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (beatsLag, error) {
 	var cs codexState
 	if lag.State != nil {
@@ -822,11 +847,11 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 			ix.report.FileErrors = append(ix.report.FileErrors, fmt.Sprintf("%s: beats: %v", t.path, err))
 			break
 		}
-		if res.Skipped || res.Reset {
-			// Gone, or replaced since its token read — whose next read starts
-			// from byte 0 with beats on. Nothing here is owed any more.
-			return beatsLag{}, nil
+		if res.Skipped {
+			break // gone: what it owed is lost, and Index moves coverage past it
 		}
+		// A replaced file restarts at byte 0 of its new content (Scan already
+		// did); what it owes is still bounded by Until.
 		lag.Cursor = res.Cursor
 		ix.report.ReadBytes += res.Read
 		ix.dirty += res.Read

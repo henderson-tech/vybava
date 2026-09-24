@@ -137,9 +137,11 @@ func runs(minutes []int64) []BeatRun {
 }
 
 // beatsCoverage: from is the first local day whose beats are complete — the
-// day after the oldest Claude transcript still on disk when beats began (the
-// ones before it were deleted unread), never before the first beat. A store
-// without beats has none. Beats are pending while tokens or the backlog are.
+// day after beats_since, never before the first beat. beats_since starts at
+// the oldest Claude transcript still on disk when beats began (the ones
+// before it were deleted unread) and moves to the last write of any file that
+// vanished before its backlog was paid. A store without beats has none. Beats
+// are pending while tokens or the backlog are.
 func beatsCoverage(q querier, loc *time.Location) (Coverage, error) {
 	var c Coverage
 	var first sql.NullInt64

@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
 // beatsFixture is newFixture plus prompts: typed ones that count, injected
@@ -139,10 +141,32 @@ func TestTheBeatsBacklogReadsOldHistoryOnceAndChargesNothing(t *testing.T) {
 	appendFile(t, filepath.Join(f.codex, "sessions", "2026", "09", "23", "rollout-2026-09-23T15-00-00-thread-H.jsonl"), lines(
 		rollout("2026-09-23T15:20:00Z", "event_msg", map[string]any{"type": "item_completed", "item": map[string]any{"type": "UserMessage"}})))
 	beats[0].Human = append(beats[0].Human, BeatRun{at("2026-09-23T15:20:00Z"), 1})
+	// A transcript replaced half-way through its backlog: its token read
+	// starts over and finds every response seen, and the backlog, finding it
+	// replaced too, still owes the new content its minutes.
+	replaced := filepath.Join(f.claude, "-work-app", "s1.jsonl")
+	old, err := os.ReadFile(replaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beats[0].Human = append([]BeatRun{{at("2026-09-23T08:00:00Z"), 1}}, beats[0].Human...)
+	halfPaid := func() bool {
+		var stored string
+		if err := s.db.QueryRow("SELECT beats FROM files WHERE path = ?", replaced).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		l := lagOf(stored, transcripts.Cursor{})
+		return stored != "" && !l.done() && l.Cursor.Offset > 0
+	}
 
 	s = f.open(t)
-	passes := 0
+	passes, replacedAt := 0, -1
 	for ; passes < 100; passes++ {
+		if replacedAt < 0 && passes > 0 && halfPaid() { // pass 0 migrates the store
+			put(t, replaced, mustJSON(map[string]any{"type": "user", "sessionId": "s1", "cwd": f.repo, "timestamp": "2026-09-23T08:00:00Z",
+				"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": "again"}})+"\n"+string(old))
+			replacedAt = passes
+		}
 		opts := f.options()
 		opts.Budget = 1 // one record per pass
 		r, err := s.Index(opts)
@@ -152,12 +176,12 @@ func TestTheBeatsBacklogReadsOldHistoryOnceAndChargesNothing(t *testing.T) {
 		if passes == 0 && (r.BeatsPendingBytes == 0 || beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage.Complete) {
 			t.Fatalf("first budgeted pass left %d bytes owed; want a backlog and incomplete coverage", r.BeatsPendingBytes)
 		}
-		if r.BeatsPendingBytes == 0 {
+		if r.BeatsPendingBytes == 0 && replacedAt >= 0 {
 			break
 		}
 	}
-	if passes < 2 || passes == 100 {
-		t.Fatalf("backlog paid after %d passes, want several and an end", passes)
+	if replacedAt < 0 || passes == 100 {
+		t.Fatalf("backlog after %d passes, s1 replaced at pass %d: want it caught half-paid and the backlog to end", passes, replacedAt)
 	}
 	gotRollup, gotBeats := answer(s)
 	if gotRollup != rollup {
@@ -165,5 +189,63 @@ func TestTheBeatsBacklogReadsOldHistoryOnceAndChargesNothing(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotBeats, beats) {
 		t.Fatalf("backlog beats:\n got %+v\nwant %+v", gotBeats, beats)
+	}
+}
+
+// A transcript deleted before its backlog is paid takes its unread beats
+// with it: coverage moves past its last write rather than claiming a day it
+// cannot vouch for. A file deleted after its beats were read moves nothing.
+func TestATranscriptLostBeforeItsBacklogMovesCoveragePastIt(t *testing.T) {
+	f := beatsFixture(t)
+	lost := filepath.Join(f.claude, "-work-app", "s2.jsonl")
+	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(lost, written, written); err != nil {
+		t.Fatal(err)
+	}
+	s := f.open(t)
+	f.index(t, s)
+	if _, err := s.db.Exec(dropBeats + "DELETE FROM meta WHERE key LIKE 'beats_%'; PRAGMA user_version=3"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if err := os.Remove(lost); err != nil {
+		t.Fatal(err)
+	}
+	s = f.open(t)
+	if r := f.index(t, s); r.BeatsPendingBytes != 0 {
+		t.Fatalf("backlog left %d bytes, want it paid", r.BeatsPendingBytes)
+	}
+	if got := beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage; got.From == nil || *got.From != "2026-09-24" || !got.Complete {
+		t.Fatalf("coverage after losing a transcript written 23.09 = %+v, want complete from 2026-09-24", got)
+	}
+
+	if err := os.Remove(filepath.Join(f.codex, "sessions", "2026", "09", "23", "rollout-2026-09-23T16-00-00-thread-X.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	f.index(t, s)
+	if got := beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage; got.From == nil || *got.From != "2026-09-24" {
+		t.Fatalf("coverage after deleting a paid rollout = %+v, want still from 2026-09-24", got)
+	}
+}
+
+// Live reads record an AI minute only for a response the rollup charges: a
+// copy of a charged response — another file, another cwd, another time —
+// adds none, just as it adds no tokens.
+func TestACopiedResponseAddsNoAIMinute(t *testing.T) {
+	f := newFixture(t)
+	copied := filepath.Join(f.claude, "-work-tools", "s3.jsonl")
+	put(t, copied, lines(claudeLine("s3", f.tools, "2026-09-23T13:30:00Z", "msg_B", "claude-opus-5-5", 1, 2, 0, 0, 50)))
+	older := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC) // read after the original, newest-first
+	if err := os.Chtimes(copied, older, older); err != nil {
+		t.Fatal(err)
+	}
+	s := f.open(t)
+	f.index(t, s)
+	for _, p := range beatsOf(t, s, "2026-09-22", "2026-09-23").Projects {
+		for _, run := range p.AI {
+			if p.Root == f.tools && run[0] <= at("2026-09-23T13:30:00Z") && at("2026-09-23T13:30:00Z") < run[0]+run[1] {
+				t.Fatalf("tools AI = %v: the copy of msg_B added a minute", p.AI)
+			}
+		}
 	}
 }
