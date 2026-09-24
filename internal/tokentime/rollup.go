@@ -1,6 +1,7 @@
 package tokentime
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -198,7 +199,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	since := min(firstDay.Unix(), firstHour.Unix())
 	since -= since % 3600
 
-	rows, err := s.windowRows(since)
+	rows, err := s.windowRows(since, math.MaxInt64)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -415,9 +416,10 @@ func addTokens(t *Tokens, c Counts) {
 
 func sumTokens(t Tokens) int64 { return t.Input + t.Output + t.CacheWrite + t.CacheRead }
 
-func (s *Store) windowRows(since int64) ([]row, error) {
+// windowRows reads every bucket starting in [since, until).
+func (s *Store) windowRows(since, until int64) ([]row, error) {
 	rs, err := s.db.Query(`SELECT hour, project, model, lane, input, output, cache_write_5m, cache_write_1h, cache_read, responses
-		FROM buckets WHERE hour >= ?`, since)
+		FROM buckets WHERE hour >= ? AND hour < ?`, since, until)
 	if err != nil {
 		return nil, err
 	}
@@ -491,36 +493,14 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 	// Every active hour of each session that touched the window, in order: a run
 	// ending in the window may have started before it. session_hours holds one
 	// row per session, hour and project, so DISTINCT folds the projects.
-	longest, err := s.db.Query(`SELECT DISTINCT session, hour FROM session_hours
-		WHERE session IN (SELECT session FROM session_hours WHERE hour >= ?) ORDER BY session, hour`, since)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer longest.Close()
-	var current, runStart, runEnd int64 = -1, 0, 0
-	endRun := func() {
-		if current < 0 {
-			return
-		}
-		if dk := dayKey(runEnd); dk >= firstDayKey {
+	err = s.eachRun(`SELECT DISTINCT session, hour FROM session_hours
+		WHERE session IN (SELECT session FROM session_hours WHERE hour >= ?) ORDER BY session, hour`, []any{since}, func(start, end int64) {
+		if dk := dayKey(end); dk >= firstDayKey {
 			d := day(dk)
-			d.longestHours = max(d.longestHours, (runEnd-runStart)/3600+1)
+			d.longestHours = max(d.longestHours, (end-start)/3600+1)
 		}
-	}
-	for longest.Next() {
-		var session, hour int64
-		if err := longest.Scan(&session, &hour); err != nil {
-			return nil, nil, err
-		}
-		if session == current && hour == runEnd+3600 {
-			runEnd = hour
-			continue
-		}
-		endRun()
-		current, runStart, runEnd = session, hour, hour
-	}
-	endRun()
-	if err := longest.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, nil, err
 	}
 	counts := map[string]map[int64]int{}
@@ -531,6 +511,39 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 		}
 	}
 	return days, counts, nil
+}
+
+// eachRun calls fn with every run of consecutive active hours of one session
+// — an hour with a response extends the run, an idle hour ends it. The query
+// must yield DISTINCT (session, hour) pairs ordered by session, then hour.
+func (s *Store) eachRun(query string, args []any, fn func(start, end int64)) error {
+	rs, err := s.db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rs.Close()
+	var current, runStart, runEnd int64 = -1, 0, 0
+	for rs.Next() {
+		var session, hour int64
+		if err := rs.Scan(&session, &hour); err != nil {
+			return err
+		}
+		if session == current && hour == runEnd+3600 {
+			runEnd = hour
+			continue
+		}
+		if current >= 0 {
+			fn(runStart, runEnd)
+		}
+		current, runStart, runEnd = session, hour, hour
+	}
+	if err := rs.Err(); err != nil {
+		return err
+	}
+	if current >= 0 {
+		fn(runStart, runEnd)
+	}
+	return nil
 }
 
 func (s *Store) projectSessions(since int64, of func(int64) int64) (map[int64]int, error) {

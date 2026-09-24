@@ -27,6 +27,7 @@ const (
 	diagInterrupted   = "INDEX_INTERRUPTED"
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
+	diagUnknownProj   = "UNKNOWN_PROJECT"
 )
 
 func (rt *runtime) tokentimeApplet() *cobra.Command {
@@ -48,6 +49,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			"incrementally into permanent hour × project × model buckets, then rolls them up:\n" +
 			"  tokentime index            catch up on everything written since the last pass\n" +
 			"  tokentime rollup --json    days, hours, projects, models, lifetime — with API-equivalent usd\n" +
+			"  tokentime project --root R --from D --to D --json   one project across a range of local days\n" +
 			"  tokentime status           what is indexed, what is pending\n" +
 			"  tokentime prices           the per-model price table and its override file",
 	}
@@ -116,6 +118,14 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		return []runx.Diagnostic{{Code: diagPriceGap, Severity: "warning",
 			Detail: "override rows for models without a built-in price leave rates out, which price at $0: " + strings.Join(p.Incomplete, "; "),
 			Fix:    "complete them in " + p.OverridePath}}
+	}
+	unpricedDiags := func(models []string, p tokentime.Prices) []runx.Diagnostic {
+		if len(models) == 0 {
+			return nil
+		}
+		return []runx.Diagnostic{{Code: diagUnpricedModel, Severity: "warning",
+			Detail: "no price for " + strings.Join(models, ", ") + "; their tokens are left out of every usd figure",
+			Fix:    "add them to " + p.OverridePath}}
 	}
 	// A pass stopped by SIGTERM or SIGINT commits what it read and exits; the
 	// next pass continues from there.
@@ -228,11 +238,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 			prices, _ := tokentime.LoadPrices(state)
 			diags = append(diags, priceDiags(prices)...)
-			if len(out.Unpriced) > 0 {
-				diags = append(diags, runx.Diagnostic{Code: diagUnpricedModel, Severity: "warning",
-					Detail: "no price for " + strings.Join(out.Unpriced, ", ") + "; their tokens are left out of every usd figure",
-					Fix:    "add them to " + prices.OverridePath})
-			}
+			diags = append(diags, unpricedDiags(out.Unpriced, prices)...)
 			return finish(s, out, diags, next, nil)
 		},
 	}
@@ -240,6 +246,50 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	rollup.Flags().IntVar(&hours, "hours", 336, "local hours to roll up, this hour included")
 	rollup.Flags().StringVar(&indexBudget, "index-budget", "64MiB", "bound the index pass run first")
 	rollup.Flags().BoolVar(&noIndex, "no-index", false, "roll up what is already indexed")
+
+	var projRoot, projFrom, projTo, projBucket string
+	project := &cobra.Command{
+		Use: "project", Short: "One project across a range of local days: totals, models, sessions and a zero-filled series (read-only, no index pass)", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s := session(cmd)
+			badFlag := func(detail string) error {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error", Detail: detail,
+					Fix: "tokentime project --root <repo root> --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
+			}
+			root, err := expandHome(projRoot)
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			if !filepath.IsAbs(root) || projFrom == "" || projTo == "" {
+				return badFlag("--root (an absolute repository root), --from and --to are required")
+			}
+			state, _, err := paths()
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			store, err := tokentime.Open(state)
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			defer store.Close()
+			out, err := store.Project(tokentime.ProjectOptions{Root: root, From: projFrom, To: projTo, Bucket: tokentime.Bucket(projBucket)})
+			switch {
+			case errors.Is(err, tokentime.ErrBadRange):
+				return badFlag(err.Error())
+			case errors.Is(err, tokentime.ErrUnknownProject):
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagUnknownProj, Severity: "error",
+					Detail: err.Error() + " — roots are listed by the rollup", Fix: "tokentime rollup --json --no-index"}})
+			case err != nil:
+				return finish(s, nil, nil, nil, err)
+			}
+			prices, _ := tokentime.LoadPrices(state)
+			return finish(s, out, append(priceDiags(prices), unpricedDiags(out.Unpriced, prices)...), nil, nil)
+		},
+	}
+	project.Flags().StringVar(&projRoot, "root", "", "the project's repository root, as the rollup reports it")
+	project.Flags().StringVar(&projFrom, "from", "", "first local day, YYYY-MM-DD")
+	project.Flags().StringVar(&projTo, "to", "", "last local day, YYYY-MM-DD (included)")
+	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")
 
 	status := &cobra.Command{
 		Use: "status", Short: "What is indexed and what is still pending", Args: cobra.NoArgs,
@@ -300,7 +350,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		},
 	}
 
-	root.AddCommand(index, rollup, status, prices)
+	root.AddCommand(index, rollup, project, status, prices)
 	return root
 }
 

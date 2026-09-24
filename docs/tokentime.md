@@ -9,6 +9,7 @@ vybava install tokentime
 tokentime index                    # catch up (the first pass reads all history once)
 tokentime rollup --json            # 90 days, 336 hours, projects, models, lifetime
 tokentime rollup --json --days 14 --hours 48 --no-index
+tokentime project --root ~/Work/Projects/Org/FixIt --from 2026-09-01 --to 2026-09-24 --json
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
 ```
@@ -110,3 +111,32 @@ one rate keeps the others; a row for a model the table does not know that
 leaves a rate out is reported as `PRICE_INCOMPLETE` (those components price at
 $0). Model names are compared without `[1m]`, a date suffix or `-latest`;
 OpenAI's Daybreak aliases bill as the model behind them.
+
+## One project across a range
+
+`tokentime project --root <repo root> --from YYYY-MM-DD --to YYYY-MM-DD
+[--bucket hour|day|month] --json` is the detail behind one rollup project (the
+Arcade's expanded project row). It never runs an index pass and never takes
+the lock: it serves the store as committed, so it answers at once even while a
+pass is running — `rollup` or `index` is what brings the store up to date.
+
+- `--root` is a root as the rollup reports it. A dead root folding into it is
+  part of it, and a folded dead root given resolves to its live project. A
+  root never indexed exits 2 with `UNKNOWN_PROJECT`.
+- `from`/`to` are inclusive local days; an hour bucket belongs to the day it
+  starts in, as in the rollup.
+- `tokens`, `usd`, `responses` and `models` (most tokens first) cover the
+  range under the rollup's rules — disjoint components, an unpriced model left
+  out of every usd figure and reported as `UNPRICED_MODEL`. `sessions` counts
+  sessions with a response in this project inside the range; `activeDays`
+  counts days with tokens, like the rollup's. `longestRunMinutes` is the
+  longest-session rule restricted to this project's hours of each session and
+  to runs ending inside the range (counted whole, even when they began before
+  it). `peakHour` is the local hour of day with the most tokens, `null` for an
+  empty range. `firstDay`/`lastDay` are lifetime.
+- `series` is dense and oldest first: one entry per bucket, `start` as a local
+  RFC 3339 time with its offset, `models` as per-model tokens (`[]` when the
+  bucket is empty). The bucket defaults to hour for a single day, month past
+  62 days, day otherwise. Hours are absolute — a fall-back day has 25 entries,
+  its repeated 02:00 told apart by the offset; the first month entry starts at
+  `from`, every later one on the 1st.
