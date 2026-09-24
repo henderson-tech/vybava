@@ -258,6 +258,15 @@ func (rt *runtime) install(selectors []string, options installer.Options) error 
 	if err != nil {
 		return err
 	}
+	var tools []string
+	for _, item := range items {
+		if item.Kind == catalog.KindTool {
+			tools = append(tools, item.ID)
+		}
+	}
+	if len(tools) > 0 {
+		fmt.Fprintf(rt.stderr, "tools install through their own channels — run: vybava setup team --only %s\n", strings.Join(tools, ","))
+	}
 	operations, err := rt.installer.Plan(items, options)
 	if err != nil {
 		return err
@@ -386,7 +395,7 @@ func (rt *runtime) setupCommand() *cobra.Command {
 		},
 	}
 	mac.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
-	command.AddCommand(mac)
+	command.AddCommand(mac, rt.setupTeamCommand())
 	return command
 }
 

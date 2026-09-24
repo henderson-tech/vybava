@@ -14,6 +14,9 @@ type ItemKind string
 const (
 	KindApplet ItemKind = "applet"
 	KindSkill  ItemKind = "skill"
+	// KindTool is an external app or CLI Výbava installs through its own
+	// published channel and detects live; it is never recorded in state.
+	KindTool ItemKind = "tool"
 )
 
 type Status string
@@ -36,6 +39,7 @@ type Item struct {
 	Description string   `yaml:"description" json:"description"`
 	Applet      string   `yaml:"applet,omitempty" json:"applet,omitempty"`
 	Source      string   `yaml:"source,omitempty" json:"source,omitempty"`
+	Tool        *Tool    `yaml:"tool,omitempty" json:"tool,omitempty"`
 }
 
 type Group struct {
@@ -91,10 +95,24 @@ func (c Catalog) Validate(source fs.FS) error {
 			if _, err := fs.Stat(source, item.Source+"/SKILL.md"); err != nil {
 				return fmt.Errorf("skill item %q source: %w", item.ID, err)
 			}
+		case KindTool:
+			if err := item.Tool.validate(); err != nil {
+				return fmt.Errorf("tool item %q: %w", item.ID, err)
+			}
 		default:
 			return fmt.Errorf("item %q has invalid kind %q", item.ID, item.Kind)
 		}
 		items[item.ID] = item
+	}
+	for _, item := range c.Items {
+		if item.Tool == nil {
+			continue
+		}
+		for _, need := range item.Tool.Needs {
+			if items[need].Kind != KindTool {
+				return fmt.Errorf("tool item %q needs %q, which is not a tool item", item.ID, need)
+			}
+		}
 	}
 
 	groups := make(map[string]struct{}, len(c.Groups))

@@ -130,6 +130,11 @@ embedded TypeScript to Go keeps its verb and output and no skill changes. Edit
 `ts/bin/` → run the `ts/tests/` suite (`docs/gitkit.md`). The git-family skills
 are canonical HERE; a personal `~/.claude` copy is a symlink, never a fork.
 
+`internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
+state), install goes through the product's own channel, and credentials never
+pass through Výbava — guided steps run with a terminal or come back as `next`.
+A pultik artifact is placed only after its sha256 matches the shelf.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
