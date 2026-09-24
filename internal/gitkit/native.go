@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // Verb is a script ported to Go: it receives the arguments after the verb
@@ -29,6 +30,7 @@ var native = map[string]Verb{
 	"classify-paths": runClassifyPaths,
 	"worktree":       runWorktree,
 	"sync-context":   runSyncContext,
+	"before-review":  runBeforeReview,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
@@ -147,4 +149,17 @@ func positiveInt(s string) (int, bool) {
 		return 0, false
 	}
 	return int(n), true
+}
+
+var jsIntPrefix = regexp.MustCompile(`^[+-]?\d+`)
+
+// jsParseInt is Number.parseInt(s, 10): leading whitespace skipped, the
+// longest signed digit prefix parsed; ok is false where it returns NaN.
+func jsParseInt(s string) (int, bool) {
+	m := jsIntPrefix.FindString(strings.TrimLeftFunc(s, unicode.IsSpace))
+	if m == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m)
+	return n, err == nil
 }
