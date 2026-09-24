@@ -28,6 +28,7 @@ var native = map[string]Verb{
 	"tdd-classify":   runTDDClassify,
 	"classify-paths": runClassifyPaths,
 	"worktree":       runWorktree,
+	"sync-context":   runSyncContext,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
