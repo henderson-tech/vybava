@@ -18,7 +18,8 @@ type Verb func(args []string, stdout, stderr io.Writer) int
 // native is the registry of ported verbs. A verb listed here runs in-process;
 // every other script still execs node on its embedded .ts file.
 var native = map[string]Verb{
-	"tdd-classify": runTDDClassify,
+	"tdd-classify":   runTDDClassify,
+	"classify-paths": runClassifyPaths,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
