@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -183,6 +184,94 @@ func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 	var exit runx.ExitCoder
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil || !diag(env, diagUnknownProj) {
 		t.Fatalf("unknown root = %v, %v; want exit 2, no data and %s", env, err, diagUnknownProj)
+	}
+}
+
+// With neither --root nor --project, `project` reads the repository the cwd
+// is in — from a subdirectory, and from a linked worktree kept anywhere —
+// and a cwd outside every repository is BAD_FLAG before the store is opened.
+// --project takes the rollup's names; a name nothing carries is
+// UNKNOWN_PROJECT with the closest names, and both flags at once BAD_FLAG.
+func TestTokentimeProjectDefaultsToTheCwdsRepoOrTakesAName(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state, claude, repo := filepath.Join(base, "state"), filepath.Join(base, "claude"), filepath.Join(base, "app")
+	worktree, outside := filepath.Join(base, "elsewhere", "app-fix"), filepath.Join(base, "plain")
+	gitdir := filepath.Join(repo, ".git", "worktrees", "app-fix") // a linked worktree kept outside the repository
+	for _, dir := range []string{gitdir, filepath.Join(repo, "sub"), worktree, outside, filepath.Join(claude, "-app")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transcript := fmt.Sprintf(`{"type":"assistant","sessionId":"s","cwd":%q,"timestamp":"2026-09-23T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":9,"output_tokens":0}}}`+"\n", filepath.Join(repo, "sub")) +
+		`{"type":"assistant","sessionId":"s","timestamp":"2026-09-23T13:00:00Z","message":{"id":"m2","model":"claude-opus-5-5","usage":{"input_tokens":5,"output_tokens":0}}}` + "\n"
+	for path, body := range map[string]string{
+		filepath.Join(worktree, ".git"):          "gitdir: " + gitdir + "\n",
+		filepath.Join(gitdir, "commondir"):       "../..\n",
+		filepath.Join(claude, "-app", "s.jsonl"): transcript,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(stateDir string, args ...string) (map[string]any, error) {
+		t.Helper()
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json", "--state-dir", stateDir, "--claude-root", claude, "--codex-dir", filepath.Join(base, "codex")))
+		err = cmd.Execute()
+		var env map[string]any
+		if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil {
+			t.Fatalf("%v: not an envelope: %s", args, out.String())
+		}
+		return env, err
+	}
+	refused := func(env map[string]any, err error, code, detail string) bool {
+		var exit runx.ExitCoder
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil {
+			return false
+		}
+		for _, d := range env["diagnostics"].([]any) {
+			if d := d.(map[string]any); d["code"] == code && strings.Contains(fmt.Sprint(d["detail"]), detail) {
+				return true
+			}
+		}
+		return false
+	}
+	if env, _ := run(state, "index"); env["ok"] != true {
+		t.Fatalf("seeding index = %v", env)
+	}
+	day := []string{"--from", "2026-09-23", "--to", "2026-09-23"}
+
+	for _, cwd := range []string{filepath.Join(repo, "sub"), worktree} {
+		t.Chdir(cwd)
+		env, err := run(state, append([]string{"project"}, day...)...)
+		if data, _ := env["data"].(map[string]any); err != nil || data["root"] != repo || data["name"] != "app" {
+			t.Fatalf("project from %s = %v, %v; want %s", cwd, env, err, repo)
+		}
+	}
+	for name, root := range map[string]string{"app": repo, "unknown": ""} {
+		env, err := run(state, append([]string{"project", "--project", name}, day...)...)
+		if data, _ := env["data"].(map[string]any); err != nil || data["root"] != root {
+			t.Fatalf("--project %s = %v, %v; want root %q", name, env, err, root)
+		}
+	}
+	if env, err := run(state, append([]string{"project", "--project", "apq"}, day...)...); !refused(env, err, diagUnknownProj, `no project is named "apq"; closest: app`) {
+		t.Fatalf("--project apq = %v, %v; want %s naming app as the closest", env, err, diagUnknownProj)
+	}
+	if env, err := run(state, append([]string{"project", "--project", "app", "--root", repo}, day...)...); !refused(env, err, diagBadFlag, "pass one") {
+		t.Fatalf("--project with --root = %v, %v; want %s", env, err, diagBadFlag)
+	}
+
+	t.Chdir(outside)
+	never := filepath.Join(base, "never")
+	if env, err := run(never, append([]string{"project"}, day...)...); !refused(env, err, diagBadFlag, "is not inside a git repository") {
+		t.Fatalf("project outside a repository = %v, %v; want %s", env, err, diagBadFlag)
+	}
+	if _, err := os.Stat(never); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state dir after a cwd outside every repository: %v, want it never created", err)
 	}
 }
 

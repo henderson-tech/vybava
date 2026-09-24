@@ -349,6 +349,45 @@ func TestProjectNamesLiveNamesakesByLifetimeTokens(t *testing.T) {
 	}
 }
 
+// A name selects the project the rollup shows under it — bare, parent-
+// qualified or the cwd-less "unknown" — exactly, else ignoring case when that
+// picks one. A name no project carries suggests the closest; one several
+// carry lists them with their roots. Both are ErrUnknownProject.
+func TestProjectSelectsByTheRollupsName(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	big, small := filepath.Join(base, "b", "lib"), filepath.Join(base, "a", "lib")
+	upper, lower := filepath.Join(base, "Forge"), filepath.Join(base, "x", "forge")
+	for _, dir := range []string{big, small, upper, lower} {
+		mkdir(t, dir)
+	}
+	s := indexed(t, base,
+		rec{"b", big, "2026-09-22T10:00:00Z", "claude-opus-5-5", 1000},
+		rec{"a", small, "2026-09-22T10:00:00Z", "claude-opus-5-5", 50},
+		rec{"f", upper, "2026-09-22T10:00:00Z", "claude-opus-5-5", 1},
+		rec{"g", lower, "2026-09-22T10:00:00Z", "claude-opus-5-5", 1},
+		rec{"n", "", "2026-09-22T10:00:00Z", "claude-opus-5-5", 1},
+	)
+	r, err := ParseRange("2026-09-21", "2026-09-23", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"lib": big, "a/lib": small, "LIB": big, "forge": lower, "Forge": upper, "unknown": ""} {
+		p, err := s.Project(ProjectOptions{Name: name, Range: r, Location: prague})
+		if err != nil || p.Root != want {
+			t.Errorf("--project %s = %q, %v; want %q", name, p.Root, err, want)
+		}
+	}
+	for name, want := range map[string]string{
+		"lbi":   `no project is named "lbi"; closest: lib, a/lib, `,
+		"FORGE": fmt.Sprintf(`"FORGE" names 2 projects: Forge (%s), forge (%s)`, upper, lower),
+	} {
+		_, err := s.Project(ProjectOptions{Name: name, Range: r, Location: prague})
+		if !errors.Is(err, ErrUnknownProject) || !strings.Contains(fmt.Sprint(err), want) {
+			t.Errorf("--project %s = %v; want ErrUnknownProject saying %s", name, err, want)
+		}
+	}
+}
+
 // OpenReadOnly creates nothing and changes nothing: a missing store is
 // ErrNoStore with no directory made, an existing one is read without its
 // database moving, and one an older binary wrote is refused, never migrated.
@@ -481,7 +520,7 @@ func TestSchema3SeeksAProjectsBucketsWithoutChangingAnAnswer(t *testing.T) {
 	if err := tx.QueryRow("SELECT id FROM projects WHERE root = ?", f.repo).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	ps, err := namesakes(q, f.repo)
+	ps, err := namesakes(q, func(key string) bool { return key == nameKey(f.repo) })
 	if err != nil {
 		t.Fatal(err)
 	}

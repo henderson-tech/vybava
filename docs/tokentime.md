@@ -9,7 +9,8 @@ vybava install tokentime
 tokentime index                    # catch up (the first pass reads all history once)
 tokentime rollup --json            # 90 days, 336 hours, projects, models, lifetime
 tokentime rollup --json --days 14 --hours 48 --no-index
-tokentime project --root ~/Work/Projects/Org/FixIt --from 2026-09-01 --to 2026-09-24 --json
+cd <repo> && tokentime project --from 2026-09-01 --to 2026-09-24 --json   # this repository
+tokentime project --project FixIt --from 2026-09-01 --to 2026-09-24 --json  # any project, by its rollup name
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
 ```
@@ -122,8 +123,13 @@ OpenAI's Daybreak aliases bill as the model behind them.
 
 ## One project across a range
 
-`tokentime project --root <repo root> --from YYYY-MM-DD --to YYYY-MM-DD
-[--bucket hour|day|month] --json` is the detail behind one rollup project (the
+```sh
+cd <repo> && tokentime project --from YYYY-MM-DD --to YYYY-MM-DD [--bucket hour|day|month] --json
+tokentime project --project FixIt --from YYYY-MM-DD --to YYYY-MM-DD --json
+```
+
+A project is a git repository root: every worktree of it, and every moved
+checkout of it, folds in. `project` is the detail behind one rollup project (the
 Arcade's expanded project row). It never runs an index pass and never takes
 the lock: it serves the store as committed, so it answers at once even while a
 pass is running — `rollup` or `index` is what brings the store up to date.
@@ -137,10 +143,19 @@ pass is running — `rollup` or `index` is what brings the store up to date.
   `STALE_SCHEMA` — one `tokentime index` migrates it. Every figure comes
   from one read transaction, one snapshot of the store.
 
-- `--root` is a root as the rollup reports it. A dead root folding into it is
-  part of it, and a folded dead root given resolves to its live project.
-  `--root ""` is the rollup's `unknown` project (responses recorded without a
-  cwd). A root never indexed exits 2 with `UNKNOWN_PROJECT`.
+- **Which project.** With no flag it is the repository the current directory
+  is in, resolved by the indexer's own rule (a linked worktree anywhere on disk
+  is its repository); a directory outside every repository exits 2 with
+  `BAD_FLAG` before the store is opened. `--project <name>` takes a name as the
+  rollup shows it (`FixIt`, `ADF/forge`, `unknown`) — exactly, else ignoring
+  case when that picks one project; a name no project carries exits 2 with
+  `UNKNOWN_PROJECT` naming the closest ones, and one several carry lists them
+  with their roots. `--root` is a root as the rollup reports it (what the
+  Arcade passes); `--root ""` is the rollup's `unknown` project (responses
+  recorded without a cwd). A dead root folding into a project is part of it,
+  and a folded dead root given resolves to its live project. A root never
+  indexed exits 2 with `UNKNOWN_PROJECT`; `--root` with `--project` is
+  `BAD_FLAG`.
 - `from`/`to` are inclusive local days; an hour bucket belongs to the day it
   starts in, as in the rollup. A day whose midnight a DST jump skips
   (America/Santiago, America/Havana) starts at the jump. Both days lie in

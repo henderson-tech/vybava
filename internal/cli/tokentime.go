@@ -14,6 +14,7 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/tokentime"
+	"github.com/henderson-tech/vybava/internal/transcripts"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +52,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			"incrementally into permanent hour × project × model buckets, then rolls them up:\n" +
 			"  tokentime index            catch up on everything written since the last pass\n" +
 			"  tokentime rollup --json    days, hours, projects, models, lifetime — with API-equivalent usd\n" +
-			"  tokentime project --root R --from D --to D --json   one project across a range of local days\n" +
+			"  tokentime project --from D --to D --json   this repository (or --project NAME) across a range of local days\n" +
 			"  tokentime status           what is indexed, what is pending\n" +
 			"  tokentime prices           the per-model price table and its override file",
 	}
@@ -265,29 +266,55 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	rollup.Flags().StringVar(&indexBudget, "index-budget", "64MiB", "bound the index pass run first")
 	rollup.Flags().BoolVar(&noIndex, "no-index", false, "roll up what is already indexed")
 
-	var projRoot, projFrom, projTo, projBucket string
+	var projRoot, projName, projFrom, projTo, projBucket string
 	project := &cobra.Command{
 		Use: "project", Short: "One project across a range of local days: totals, models, sessions and a zero-filled series (read-only, no index pass)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s := session(cmd)
 			badFlag := func(detail string) error {
 				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error", Detail: detail,
-					Fix: "tokentime project --root <repo root> --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
+					Fix: "tokentime project --project <name> --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
 			}
-			root, err := expandHome(projRoot)
-			if err != nil {
-				return finish(s, nil, nil, nil, err)
+			// Every flag is validated before the store is opened: a bad one is
+			// BAD_FLAG and writes nothing.
+			byRoot, byName := cmd.Flags().Changed("root"), cmd.Flags().Changed("project")
+			if byRoot && byName {
+				return badFlag("--root and --project both select the project; pass one")
 			}
-			// An explicit empty --root is the rollup's "unknown" project:
-			// responses recorded without a cwd.
-			unknown := projRoot == "" && cmd.Flags().Changed("root")
-			if !unknown && !filepath.IsAbs(root) || projFrom == "" || projTo == "" {
-				return badFlag(`--root (an absolute repository root, or "" for the rollup's unknown project), --from and --to are required`)
+			if projFrom == "" || projTo == "" {
+				return badFlag("--from and --to are required")
 			}
-			// Validated before the store is opened: a bad flag is BAD_FLAG and writes nothing.
 			rng, err := tokentime.ParseRange(projFrom, projTo, tokentime.Bucket(projBucket))
 			if err != nil {
 				return badFlag(err.Error())
+			}
+			sel := tokentime.ProjectOptions{Name: projName, Range: rng}
+			switch {
+			case byName:
+				if projName == "" {
+					return badFlag(`--project is a name the rollup shows ("unknown" for responses recorded without a cwd)`)
+				}
+			case byRoot:
+				// An explicit empty --root is the rollup's "unknown" project:
+				// responses recorded without a cwd.
+				if sel.Root, err = expandHome(projRoot); err != nil {
+					return finish(s, nil, nil, nil, err)
+				}
+				if projRoot != "" && !filepath.IsAbs(sel.Root) {
+					return badFlag(`--root is an absolute repository root, or "" for the rollup's unknown project`)
+				}
+			default:
+				// Neither: the repository the cwd is in, by the rule the
+				// indexer files every response under — a worktree is its repo.
+				cwd, err := os.Getwd()
+				if err != nil {
+					return badFlag("no --project or --root, and the current directory is unreadable: " + err.Error())
+				}
+				root, inRepo := transcripts.GitRoot(cwd)
+				if !inRepo {
+					return badFlag(fmt.Sprintf("no --project or --root, and %s is not inside a git repository", cwd))
+				}
+				sel.Root = root
 			}
 			state, _, err := paths()
 			if err != nil {
@@ -299,11 +326,11 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, storeErr(err))
 			}
 			defer store.Close()
-			out, err := store.Project(tokentime.ProjectOptions{Root: root, Range: rng})
+			out, err := store.Project(sel)
 			switch {
 			case errors.Is(err, tokentime.ErrUnknownProject):
 				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagUnknownProj, Severity: "error",
-					Detail: err.Error() + " — roots are listed by the rollup", Fix: "tokentime rollup --json --no-index"}})
+					Detail: err.Error() + " — projects are listed by the rollup", Fix: "tokentime rollup --json --no-index"}})
 			case err != nil:
 				return finish(s, nil, nil, nil, err)
 			}
@@ -311,7 +338,8 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			return finish(s, out, append(priceDiags(prices), unpricedDiags(out.Unpriced, prices)...), nil, nil)
 		},
 	}
-	project.Flags().StringVar(&projRoot, "root", "", `the project's repository root, as the rollup reports it ("" for its unknown project)`)
+	project.Flags().StringVar(&projRoot, "root", "", `the project's repository root, as the rollup reports it ("" for its unknown project); default: the repository of the current directory`)
+	project.Flags().StringVar(&projName, "project", "", `the project's name as the rollup shows it (e.g. FixIt, ADF/forge, unknown)`)
 	project.Flags().StringVar(&projFrom, "from", "", "first local day, YYYY-MM-DD")
 	project.Flags().StringVar(&projTo, "to", "", "last local day, YYYY-MM-DD (included)")
 	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -19,7 +20,8 @@ const (
 )
 
 var (
-	// ErrUnknownProject: no stored bucket was ever recorded under that root.
+	// ErrUnknownProject: no stored bucket was ever recorded under that root,
+	// or no single project carries that name.
 	ErrUnknownProject = errors.New("no project was ever indexed under this root")
 	// ErrBadRange: a day does not parse or falls outside the calendar a range
 	// may name, from is after to, the bucket is unknown, or the range is
@@ -37,9 +39,11 @@ var (
 	rangeCaps   = map[Bucket]int{BucketHour: 31, BucketDay: 1100, BucketMonth: 1200}
 )
 
-// ProjectOptions select one project and an inclusive range of local days.
+// ProjectOptions select one project, by Root or by Name, and an inclusive
+// range of local days.
 type ProjectOptions struct {
 	Root     string // repository root as the rollup reports it; "" is its "unknown" project
+	Name     string // display name as the rollup shows it ("FixIt", "ADF/forge", "unknown"); set, it selects instead of Root
 	Range    Range  // from ParseRange
 	Location *time.Location
 }
@@ -132,12 +136,11 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	if loc == nil {
 		loc = time.Local
 	}
+	if opts.Name != "" && opts.Root != "" {
+		return ProjectDetail{}, errors.New("select a project by Root or by Name, not both")
+	}
 	from := dayStart(r.from.Year(), r.from.Month(), r.from.Day(), loc)
 	end := dayStart(r.to.Year(), r.to.Month(), r.to.Day()+1, loc)
-	root := opts.Root
-	if root != "" { // "" is stored as is: responses recorded without a cwd
-		root = filepath.Clean(root)
-	}
 
 	prices, err := LoadPrices(s.Dir)
 	if err != nil {
@@ -150,21 +153,18 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 		return ProjectDetail{}, err
 	}
 	defer tx.Rollback()
-	var stored int64
-	err = tx.QueryRow("SELECT id FROM projects WHERE root = ?", root).Scan(&stored)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ProjectDetail{}, fmt.Errorf("%w: %s", ErrUnknownProject, opts.Root)
+	var ps projectSet
+	var canon int64
+	if opts.Name != "" {
+		ps, canon, err = byName(tx, opts.Name)
+	} else {
+		ps, canon, err = byRoot(tx, opts.Root)
 	}
-	if err != nil {
-		return ProjectDetail{}, err
-	}
-	ps, err := namesakes(tx, root)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
 	// Every stored root that rolls up under this project: a dead checkout
 	// folded into a live one is part of it.
-	canon := ps.of(stored)
 	ids := ps.members(canon)
 	in, members := inList(ids)
 
@@ -305,19 +305,146 @@ func longestRun(q querier, since, until int64, ids []int64, inRange func(hour in
 	return longest, err
 }
 
-// namesakes is projects() cut down to the roots one project's fold and name
-// can depend on: those sharing its nameKey. The root list is read without
-// touching buckets, only the namesakes are stat'ed, and only their buckets
-// are summed for the name's token tie-break — foldProjects gets the same
-// inputs it gets in the rollup, so the fold and the lifetime-stable name are
-// the rollup's own.
-func namesakes(q querier, root string) (projectSet, error) {
+// byRoot selects the project a stored root rolls up under.
+func byRoot(q querier, root string) (projectSet, int64, error) {
+	if root != "" { // "" is stored as is: responses recorded without a cwd
+		root = filepath.Clean(root)
+	}
+	var stored int64
+	err := q.QueryRow("SELECT id FROM projects WHERE root = ?", root).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return projectSet{}, 0, fmt.Errorf("%w: %s", ErrUnknownProject, root)
+	}
+	if err != nil {
+		return projectSet{}, 0, err
+	}
+	key := nameKey(root)
+	ps, err := namesakes(q, func(k string) bool { return k == key })
+	return ps, ps.of(stored), err
+}
+
+// byName selects the project the rollup shows under name: the one named
+// exactly that, or else the one whose name matches ignoring case. Every
+// name ends in its root's last element, so only the roots whose last element
+// matches are read and named; a miss reads every name to suggest the closest.
+func byName(q querier, name string) (projectSet, int64, error) {
+	key := name[strings.LastIndex(name, "/")+1:]
+	ps, err := namesakes(q, func(k string) bool { return strings.EqualFold(k, key) })
+	if err != nil {
+		return projectSet{}, 0, err
+	}
+	var exact, folded []int64
+	for id, n := range ps.names {
+		switch {
+		case n == name:
+			exact = append(exact, id)
+		case strings.EqualFold(n, name):
+			folded = append(folded, id)
+		}
+	}
+	matches := exact
+	if len(matches) == 0 {
+		matches = folded
+	}
+	switch len(matches) {
+	case 1:
+		return ps, matches[0], nil
+	case 0:
+		all, err := projects(q)
+		if err != nil {
+			return projectSet{}, 0, err
+		}
+		msg := fmt.Sprintf("no project is named %q", name)
+		if near := closestNames(name, all.names, 3); len(near) > 0 {
+			msg += "; closest: " + strings.Join(near, ", ")
+		}
+		return projectSet{}, 0, nameError(msg)
+	}
+	// Several: names differing only in case, or the cwd-less "unknown"
+	// beside a repository named unknown. Their roots tell them apart.
+	sort.Slice(matches, func(i, j int) bool { return ps.roots[matches[i]] < ps.roots[matches[j]] })
+	var which []string
+	for _, id := range matches {
+		root := ps.roots[id]
+		if root == "" {
+			root = `--root ""`
+		}
+		which = append(which, fmt.Sprintf("%s (%s)", ps.names[id], root))
+	}
+	return projectSet{}, 0, nameError(fmt.Sprintf("%q names %d projects: %s; pick one by its exact name or --root",
+		name, len(matches), strings.Join(which, ", ")))
+}
+
+// nameError is ErrUnknownProject for a name no single project carries.
+type nameError string
+
+func (e nameError) Error() string        { return string(e) }
+func (e nameError) Is(target error) bool { return target == ErrUnknownProject }
+
+// closestNames ranks names by how close they read to name, ignoring case:
+// a name containing it first, then by the nearest edit distance between the
+// two whole names or their last elements, the shorter name first on a tie.
+// It keeps the first n, each once.
+func closestNames(name string, names map[int64]string, n int) []string {
+	last := func(s string) string { return s[strings.LastIndex(s, "/")+1:] }
+	want := strings.ToLower(name)
+	score := map[string]int{}
+	for _, cand := range names {
+		lower := strings.ToLower(cand)
+		d := min(editDistance(want, lower), editDistance(want, last(lower)), editDistance(last(want), last(lower)))
+		if strings.Contains(lower, want) {
+			d = 0
+		}
+		score[cand] = d
+	}
+	ranked := make([]string, 0, len(score))
+	for cand := range score {
+		ranked = append(ranked, cand)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		a, b := ranked[i], ranked[j]
+		if score[a] != score[b] {
+			return score[a] < score[b]
+		}
+		return len(a) < len(b) || len(a) == len(b) && a < b
+	})
+	return ranked[:min(n, len(ranked))]
+}
+
+// editDistance is the Levenshtein distance between a and b, in runes.
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev, cur := make([]int, len(rb)+1), make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			sub := prev[j-1]
+			if ra[i-1] != rb[j-1] {
+				sub++
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, sub)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
+}
+
+// namesakes is projects() cut down to the roots a project's fold and name
+// can depend on: those whose nameKey same accepts. The root list is read
+// without touching buckets, only the namesakes are stat'ed, and only their
+// buckets are summed for the name's token tie-break — foldProjects gets the
+// same inputs it gets in the rollup, so the fold and the lifetime-stable name
+// are the rollup's own. Roots with different keys never touch each other's
+// fold or name, so accepting several keys names each group as it would alone.
+func namesakes(q querier, same func(key string) bool) (projectSet, error) {
 	rs, err := q.Query("SELECT id, root FROM projects")
 	if err != nil {
 		return projectSet{}, err
 	}
 	defer rs.Close()
-	key := nameKey(root)
 	var group []nameCandidate
 	var ids []int64
 	at := map[int64]int{}
@@ -326,7 +453,7 @@ func namesakes(q querier, root string) (projectSet, error) {
 		if err := rs.Scan(&c.id, &c.root); err != nil {
 			return projectSet{}, err
 		}
-		if nameKey(c.root) == key {
+		if same(nameKey(c.root)) {
 			c.live = onDisk(c.root)
 			at[c.id] = len(group)
 			group, ids = append(group, c), append(ids, c.id)
