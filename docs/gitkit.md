@@ -50,7 +50,7 @@ go test ./internal/gitkit/...
 | Test | Covers |
 |---|---|
 | `resolvefetch` | PR selector forms, bot filtering, self/resolved thread rules, UTF-16 body cuts |
-| `mergeprecheck` | required bot reviewers (incl. eve advisory COMMENTED verdicts), login canonicalisation, enum config keys, gates |
+| `mergeprecheck` | required bot reviewers (incl. eve advisory COMMENTED verdicts), login canonicalisation, worktree-teardown guard, merge-method derivation from buttons + base-branch rules, enum config keys, gates |
 | `prevents` · `githubio` | event computation and snapshot shaping, argv construction, flag parsing |
 | `synccontext` | local-vs-remote DB url detection, globs, `--freeze`, the verb end to end |
 | `classifypaths` · `tddclassify` | commit bundling and TDD classification |
@@ -68,3 +68,24 @@ placeholders and RFC 5737 IPs, never a real repo or host.
 `MERGE_POLICY`, `REQUIRED_BOT_REVIEWERS`, `AFTER_MERGE_CMD`,
 `BEFORE_REVIEW_CMD`, `GENERATED_PATHS` and the rest; the `prm` skill's
 `references/merge.md` documents every key.
+
+### The merge method is read, never assumed
+
+`merge-precheck` answers `mergeMethod` for an open PR from what GitHub will
+actually accept into its base branch — the repository's merge buttons AND the
+base's effective rules (org + repo rulesets, classic protection), fetched in
+the same GraphQL round as the bot gate:
+
+- an explicit `MERGE_METHOD` the base permits wins → `mergeMethodSource: "config"`;
+- otherwise the first permitted of merge → squash → rebase → `"repository"`.
+  `required_linear_history` refuses merge commits and a `pull_request` rule's
+  `allowed_merge_methods` narrows the set, so a henderson-tech repository
+  lands as squash with no key even while its merge-commit button is still on;
+- a `MERGE_METHOD` the base refuses falls back and is echoed as
+  `mergeMethodInvalid`.
+
+`mergeMethodReason` names the rule behind the choice; `mergeMethodsAllowed`
+is the permitted set. Unreadable settings or rules, or a base that permits no
+method at all, exit 1 with the cause and fix — the precheck never guesses.
+The buttons-only reading chose `merge` on a linear-history repository and
+GitHub refused the merge (semafor#3, 2026-09-24).

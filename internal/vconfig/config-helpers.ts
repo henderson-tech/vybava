@@ -45,8 +45,33 @@ export interface LokConfig {
   catalogs: Record<string, CatalogConfig>;
 }
 
+export interface MergeGenerated {
+  /** Repository-relative globs (** spans directories) of files a command regenerates. */
+  paths: string[];
+  /** Shell command run once from the repo root after a merge touched any of them. */
+  regen: string;
+}
+
+export interface MergeMigrations {
+  /** Migration directory, relative to the repo root. */
+  dir: string;
+  /** `<ts>-<Name>.ts` files holding `class <Name><ts>` and `name = '<Name><ts>'`. */
+  style: 'typeorm';
+  /** Renumbered migrations start at the first multiple of step above the base's newest (default 1e8). */
+  step?: number;
+  /** The repo's own migration guard, run after a renumber. */
+  check?: string;
+}
+
+/** merge-assist: what a merge settles without a session (catalogs come from lok). */
+export interface MergeConfig {
+  generated?: MergeGenerated[];
+  migrations?: MergeMigrations[];
+}
+
 export interface VybavaConfig {
   lok?: LokConfig;
+  merge?: MergeConfig;
   guards?: {
     /** Repository-relative globs; ** spans directories. Query these files with rg. */
     noRead?: string[];

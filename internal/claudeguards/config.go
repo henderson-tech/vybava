@@ -98,26 +98,8 @@ func guardConfig(cwd string) Config {
 	return cfg
 }
 
-// MatchNoRead matches slash-separated repository paths; ** spans zero or more
-// complete path components. Ordinary components use Go's glob syntax.
-func MatchNoRead(pattern, name string) bool {
-	parts, names := strings.Split(pattern, "/"), strings.Split(name, "/")
-	var match func(int, int) bool
-	match = func(i, j int) bool {
-		if i == len(parts) {
-			return j == len(names)
-		}
-		if parts[i] == "**" {
-			return match(i+1, j) || (j < len(names) && match(i, j+1))
-		}
-		if j == len(names) {
-			return false
-		}
-		ok, _ := path.Match(parts[i], names[j])
-		return ok && match(i+1, j+1)
-	}
-	return match(0, 0)
-}
+// MatchNoRead matches slash-separated repository paths with vconfig.MatchPath.
+func MatchNoRead(pattern, name string) bool { return vconfig.MatchPath(pattern, name) }
 
 func (cfg Config) noRead(abs string) bool {
 	if cfg.root == "" {

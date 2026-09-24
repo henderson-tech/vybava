@@ -134,6 +134,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "lok" {
 		return rt.lokApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "merge-assist" {
+		return rt.mergeAssistApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "memo" {
 		return rt.memoApplet(), nil
 	}
@@ -191,6 +194,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.envbridgeCommand(),
 		rt.claudeGuardsCommand("claude-guards"),
 		rt.lokCommand("lok"),
+		rt.mergeAssistCommand("merge-assist"),
 		rt.memoCommand("memo"),
 		rt.postaCommand("posta"),
 		rt.repolicyCommand("repolicy"),
@@ -253,6 +257,15 @@ func (rt *runtime) install(selectors []string, options installer.Options) error 
 	items, err := rt.catalog.Resolve(selectors)
 	if err != nil {
 		return err
+	}
+	var tools []string
+	for _, item := range items {
+		if item.Kind == catalog.KindTool {
+			tools = append(tools, item.ID)
+		}
+	}
+	if len(tools) > 0 {
+		fmt.Fprintf(rt.stderr, "tools install through their own channels — run: vybava setup team --only %s\n", strings.Join(tools, ","))
 	}
 	operations, err := rt.installer.Plan(items, options)
 	if err != nil {
@@ -382,7 +395,7 @@ func (rt *runtime) setupCommand() *cobra.Command {
 		},
 	}
 	mac.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
-	command.AddCommand(mac)
+	command.AddCommand(mac, rt.setupTeamCommand())
 	return command
 }
 

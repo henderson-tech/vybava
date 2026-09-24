@@ -256,42 +256,217 @@ func parseStopServers(cfg gitConfig) policy {
 	return parseEnum(cfg, "AFTER_MERGE_STOP_SERVERS", []string{"worktree", "repo", "none"}, "worktree")
 }
 
-// allowedMergeMethods is what the repository permits; nil = unknown.
-type allowedMergeMethods struct{ merge, squash, rebase *bool }
+// MERGE_METHOD: which `gh pr merge` flag lands the PR — merge (a merge
+// commit), squash, rebase. The server refuses a method on two layers: the
+// repository's merge buttons, and the base branch's rules — a ruleset (or
+// classic protection) requiring linear history refuses merge commits, and a
+// ruleset's pull_request rule may narrow allowed_merge_methods. The
+// henderson-tech org ruleset requires linear history while a fresh repo still
+// offers the merge-commit button, so reading the buttons alone chose "merge"
+// and GitHub refused it (semafor#3, 2026-09). The permitted set is read from
+// BOTH layers, never assumed:
+//   - an explicit MERGE_METHOD the base permits wins (source "config");
+//   - otherwise the first permitted of merge → squash → rebase ("repository").
+//
+// An explicit method the base refuses is drift: it falls back and the raw
+// value is echoed as invalid. Unreadable rules, or a base permitting nothing,
+// fail: a guessed method is exactly the silent default that caused the refusal.
+var mergeMethods = []string{"merge", "squash", "rebase"}
 
-func (a *allowedMergeMethods) get(method string) *bool {
-	switch method {
-	case "merge":
-		return a.merge
-	case "squash":
-		return a.squash
-	}
-	return a.rebase
+// mergeRules is what the server lets a PR into base use (readMergeRules).
+type mergeRules struct {
+	base    string
+	buttons map[string]bool
+	// linearHistory names who requires linear history on base, e.g.
+	// `org ruleset "main"`; empty → nobody.
+	linearHistory []string
+	// rulesetMethods are pull_request rules narrowing allowed_merge_methods;
+	// they intersect.
+	rulesetMethods []rulesetMethods
 }
 
-// MERGE_METHOD: which `gh pr merge` flag lands the PR. When the repository's
-// allowed methods are known the default is derived from them (merge where
-// offered, else squash, else rebase), so a squash-only repo needs no config.
-// An explicit method the repository has disabled is drift: fall back, echo.
-func parseMergeMethod(cfg gitConfig, allowed *allowedMergeMethods) policy {
-	on := func(b *bool) bool { return b != nil && *b }
-	fallback := "merge"
-	if allowed != nil && !on(allowed.merge) {
-		switch {
-		case on(allowed.squash):
-			fallback = "squash"
-		case on(allowed.rebase):
-			fallback = "rebase"
+type rulesetMethods struct {
+	by      string
+	methods []string
+}
+
+// mergeMethodChoice is resolveMergeMethod's answer.
+type mergeMethodChoice struct {
+	method  string
+	invalid *string
+	source  string // config | repository
+	reason  string
+	allowed []string
+}
+
+func resolveMergeMethod(cfg gitConfig, rules mergeRules) (mergeMethodChoice, error) {
+	refusals := map[string]string{}
+	refuse := func(m, why string) {
+		if _, done := refusals[m]; !done {
+			refusals[m] = why
 		}
 	}
-	p := parseEnum(cfg, "MERGE_METHOD", []string{"merge", "squash", "rebase"}, fallback)
-	if p.invalid == nil && allowed != nil && strings.TrimSpace(cfg["MERGE_METHOD"]) != "" {
-		if b := allowed.get(p.value); b != nil && !*b {
-			raw := cfg["MERGE_METHOD"]
-			return policy{value: fallback, invalid: &raw}
+	for _, m := range mergeMethods {
+		if !rules.buttons[m] {
+			refuse(m, "disabled in the repository settings")
 		}
 	}
-	return p
+	if len(rules.linearHistory) > 0 {
+		refuse("merge", strings.Join(rules.linearHistory, " and ")+" requires linear history on "+rules.base)
+	}
+	for _, r := range rules.rulesetMethods {
+		for _, m := range mergeMethods {
+			if !slices.Contains(r.methods, m) {
+				refuse(m, r.by+" does not allow it on "+rules.base)
+			}
+		}
+	}
+	allowed, why := []string{}, []string{}
+	for _, m := range mergeMethods {
+		if reason, refused := refusals[m]; refused {
+			why = append(why, m+": "+reason)
+		} else {
+			allowed = append(allowed, m)
+		}
+	}
+	whyText := strings.Join(why, "; ")
+	if len(allowed) == 0 {
+		return mergeMethodChoice{}, fmt.Errorf("merge-precheck: no merge method is permitted into %s (%s). "+
+			"Enable squash or rebase in the repository settings (henderson-tech: `vybava repolicy apply`, see Výbava docs/repolicy.md).", rules.base, whyText)
+	}
+	raw, _ := cfg.get("MERGE_METHOD")
+	v := strings.ToLower(strings.TrimSpace(raw))
+	known := slices.Contains(mergeMethods, v)
+	if known && slices.Contains(allowed, v) {
+		return mergeMethodChoice{method: v, source: "config", allowed: allowed,
+			reason: fmt.Sprintf("MERGE_METHOD=%s in .claude.git.config, permitted on %s", v, rules.base)}, nil
+	}
+	method := allowed[0]
+	head := "no MERGE_METHOD"
+	switch {
+	case v != "" && known:
+		head = "MERGE_METHOD=" + v + " is refused"
+	case v != "":
+		head = "MERGE_METHOD=" + v + " is not a merge method"
+	}
+	if len(refusals) == 0 {
+		whyText = rules.base + " permits every method"
+	}
+	choice := mergeMethodChoice{method: method, source: "repository", allowed: allowed, reason: head + "; " + whyText + " → " + method}
+	if v != "" {
+		choice.invalid = &raw
+	}
+	return choice, nil
+}
+
+// gateRepository is the gate query's repository node.
+type gateRepository struct {
+	MergeCommitAllowed any `json:"mergeCommitAllowed"`
+	SquashMergeAllowed any `json:"squashMergeAllowed"`
+	RebaseMergeAllowed any `json:"rebaseMergeAllowed"`
+	PullRequest        *struct {
+		ReviewRequests *struct {
+			Nodes []struct {
+				RequestedReviewer *actor `json:"requestedReviewer"`
+			} `json:"nodes"`
+		} `json:"reviewRequests"`
+		LatestReviews *struct {
+			Nodes []struct {
+				Author *actor `json:"author"`
+				State  any    `json:"state"`
+				Body   any    `json:"body"`
+			} `json:"nodes"`
+		} `json:"latestReviews"`
+		BaseRefName *string `json:"baseRefName"`
+		BaseRef     *struct {
+			BranchProtectionRule *struct {
+				RequiresLinearHistory bool `json:"requiresLinearHistory"`
+			} `json:"branchProtectionRule"`
+			Rules *struct {
+				TotalCount *int `json:"totalCount"`
+				Nodes      []struct {
+					Type       string `json:"type"`
+					Parameters *struct {
+						AllowedMergeMethods []string `json:"allowedMergeMethods"`
+					} `json:"parameters"`
+					RepositoryRuleset *struct {
+						Name        string `json:"name"`
+						Enforcement string `json:"enforcement"`
+						Source      *struct {
+							Typename string `json:"__typename"`
+						} `json:"source"`
+					} `json:"repositoryRuleset"`
+				} `json:"nodes"`
+			} `json:"rules"`
+		} `json:"baseRef"`
+	} `json:"pullRequest"`
+}
+
+var rulesetOwner = map[string]string{"Organization": "org", "Repository": "repo", "Enterprise": "enterprise"}
+
+// readMergeRules reads the buttons and the base's effective rules. Anything
+// it cannot read fails with the cause and the fix: the caller must never
+// fall back to a guessed method.
+func readMergeRules(repo gateRepository, slug string) (mergeRules, error) {
+	base := "the base branch"
+	if repo.PullRequest != nil && repo.PullRequest.BaseRefName != nil {
+		base = *repo.PullRequest.BaseRefName
+	}
+	cannot := func(what string) error {
+		return fmt.Errorf("merge-precheck: cannot read %s for %s (into %s), so the merge method cannot be derived. "+
+			"Check `gh auth status` and that this account can read %s, then re-run.", what, slug, base, slug)
+	}
+	buttons := map[string]bool{}
+	for m, v := range map[string]any{"merge": repo.MergeCommitAllowed, "squash": repo.SquashMergeAllowed, "rebase": repo.RebaseMergeAllowed} {
+		b, ok := v.(bool)
+		if !ok {
+			return mergeRules{}, cannot("the repository's merge settings")
+		}
+		buttons[m] = b
+	}
+	if repo.PullRequest == nil || repo.PullRequest.BaseRef == nil || repo.PullRequest.BaseRef.Rules == nil || repo.PullRequest.BaseRef.Rules.Nodes == nil {
+		return mergeRules{}, cannot("the base branch's rules")
+	}
+	ref := repo.PullRequest.BaseRef
+	nodes := ref.Rules.Nodes
+	if total := ref.Rules.TotalCount; total != nil && *total > len(nodes) {
+		return mergeRules{}, cannot(fmt.Sprintf("all %d base-branch rules (only the first %d were returned)", *total, len(nodes)))
+	}
+	rules := mergeRules{base: base, buttons: buttons, linearHistory: []string{}, rulesetMethods: []rulesetMethods{}}
+	if ref.BranchProtectionRule != nil && ref.BranchProtectionRule.RequiresLinearHistory {
+		rules.linearHistory = append(rules.linearHistory, "branch protection")
+	}
+	for _, n := range nodes {
+		rs := n.RepositoryRuleset
+		if rs != nil && rs.Enforcement != "" && rs.Enforcement != "ACTIVE" {
+			continue // evaluate-mode rules never refuse
+		}
+		owner := "a"
+		name := ""
+		if rs != nil {
+			if rs.Source != nil && rulesetOwner[rs.Source.Typename] != "" {
+				owner = rulesetOwner[rs.Source.Typename]
+			}
+			name = rs.Name
+		}
+		by := owner + " ruleset"
+		if name != "" {
+			by = fmt.Sprintf("%s ruleset \"%s\"", owner, name)
+		}
+		if n.Type == "REQUIRED_LINEAR_HISTORY" && !slices.Contains(rules.linearHistory, by) {
+			rules.linearHistory = append(rules.linearHistory, by)
+		}
+		if n.Type == "PULL_REQUEST" && n.Parameters != nil && n.Parameters.AllowedMergeMethods != nil {
+			methods := []string{}
+			for _, m := range mergeMethods {
+				if slices.ContainsFunc(n.Parameters.AllowedMergeMethods, func(a string) bool { return strings.ToLower(a) == m }) {
+					methods = append(methods, m)
+				}
+			}
+			rules.rulesetMethods = append(rules.rulesetMethods, rulesetMethods{by: by, methods: methods})
+		}
+	}
+	return rules, nil
 }
 
 var botListSeparator = regexp.MustCompile(`[,\s]+`)
@@ -358,16 +533,31 @@ func summarizeBotApproval(configList, requested []string, reviews []latestReview
 	return BotApproval{OK: len(pending) == 0, Required: required, Pending: pending}
 }
 
-// One GraphQL round for everything the bot-approval gate needs: requested
-// reviewers and the latest review per author (first 50 each, no pagination).
+// One GraphQL round for everything an OPEN PR's gates need: requested
+// reviewers and the latest review per author (first 50 each, no pagination),
+// plus the merge buttons and the base branch's effective rules (org + repo
+// rulesets, classic protection) for resolveMergeMethod.
 const gateQuery = `
 query($owner:String!, $repo:String!, $pr:Int!) {
   repository(owner:$owner, name:$repo) {
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$pr) {
       reviewRequests(first:50) {
         nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
       }
       latestReviews(first:50) { nodes { author { login __typename } state body } }
+      baseRefName
+      baseRef {
+        branchProtectionRule { requiresLinearHistory }
+        rules(first:100) {
+          totalCount
+          nodes {
+            type
+            parameters { ... on PullRequestParameters { allowedMergeMethods } }
+            repositoryRuleset { name enforcement source { __typename } }
+          }
+        }
+      }
     }
   }
 }`
@@ -377,36 +567,21 @@ type actor struct {
 	Typename string `json:"__typename"`
 }
 
-func gatherBotData(run func(args ...string) (string, error), owner, repo string, pr int) ([]string, []latestReview, error) {
+func gatherOpenPR(run func(args ...string) (string, error), owner, repo string, pr int) ([]string, []latestReview, mergeRules, error) {
 	out, err := run("api", "graphql", "-f", "query="+gateQuery, "-f", "owner="+owner, "-f", "repo="+repo, "-F", "pr="+strconv.Itoa(pr))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, mergeRules{}, err
 	}
 	var resp struct {
 		Data *struct {
-			Repository *struct {
-				PullRequest *struct {
-					ReviewRequests *struct {
-						Nodes []struct {
-							RequestedReviewer *actor `json:"requestedReviewer"`
-						} `json:"nodes"`
-					} `json:"reviewRequests"`
-					LatestReviews *struct {
-						Nodes []struct {
-							Author *actor `json:"author"`
-							State  any    `json:"state"`
-							Body   any    `json:"body"`
-						} `json:"nodes"`
-					} `json:"latestReviews"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
+			Repository *gateRepository `json:"repository"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return nil, nil, err
+		return nil, nil, mergeRules{}, err
 	}
 	if resp.Data == nil || resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
-		return nil, nil, errors.New("graphql response carries no pullRequest")
+		return nil, nil, mergeRules{}, errors.New("graphql response carries no pullRequest")
 	}
 	node := resp.Data.Repository.PullRequest
 	requested := []string{}
@@ -433,7 +608,8 @@ func gatherBotData(run func(args ...string) (string, error), owner, repo string,
 			reviews = append(reviews, r)
 		}
 	}
-	return requested, reviews, nil
+	rules, err := readMergeRules(*resp.Data.Repository, owner+"/"+repo)
+	return requested, reviews, rules, err
 }
 
 type prPaths struct {
@@ -514,8 +690,11 @@ type Precheck struct {
 	RequiredBotReviewers    []string        `json:"requiredBotReviewers"`
 	MergePolicy             string          `json:"mergePolicy"`
 	MergePolicyInvalid      *string         `json:"mergePolicyInvalid"`
-	MergeMethod             string          `json:"mergeMethod"`
+	MergeMethod             *string         `json:"mergeMethod"`
 	MergeMethodInvalid      *string         `json:"mergeMethodInvalid"`
+	MergeMethodSource       *string         `json:"mergeMethodSource"`
+	MergeMethodReason       string          `json:"mergeMethodReason"`
+	MergeMethodsAllowed     []string        `json:"mergeMethodsAllowed"`
 	AfterMergeCmd           *string         `json:"afterMergeCmd"`
 	ResolvedAfterMergeCmd   *string         `json:"resolvedAfterMergeCmd"`
 	StopServers             string          `json:"stopServers"`
@@ -556,7 +735,7 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 	gh := func(a ...string) (string, error) { return execFile(opts, "gh", a...) }
 	git := func(a ...string) (string, error) { return execFile(opts, "git", a...) }
 
-	repoOut, err := gh("repo", "view", "--json", "nameWithOwner,defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed")
+	repoOut, err := gh("repo", "view", "--json", "nameWithOwner,defaultBranchRef")
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -565,9 +744,6 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		DefaultBranchRef *struct {
 			Name string `json:"name"`
 		} `json:"defaultBranchRef"`
-		MergeCommitAllowed *bool `json:"mergeCommitAllowed"`
-		SquashMergeAllowed *bool `json:"squashMergeAllowed"`
-		RebaseMergeAllowed *bool `json:"rebaseMergeAllowed"`
 	}
 	if err := json.Unmarshal([]byte(repoOut), &repo); err != nil {
 		return fail(stderr, err)
@@ -613,13 +789,22 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 	defaultBranch := resolveDefaultBranch(cfg, githubDefault)
 	requiredBots := parseBotList(cfg["REQUIRED_BOT_REVIEWERS"])
 	mergePolicy := parseMergePolicy(cfg)
-	mergeMethod := parseMergeMethod(cfg, &allowedMergeMethods{merge: repo.MergeCommitAllowed, squash: repo.SquashMergeAllowed, rebase: repo.RebaseMergeAllowed})
 	state := rawString(pr.State)
+	// Only an OPEN PR has a merge ahead of it, so only it pays for the GraphQL
+	// round; a closed one reports mergeMethod null (the caller STOPs on
+	// raw.state anyway).
 	requested, reviews := []string{}, []latestReview{}
+	var mergeMethod *mergeMethodChoice
 	if strings.ToUpper(state) == "OPEN" {
-		if requested, reviews, err = gatherBotData(gh, owner, name, pr.Number); err != nil {
+		var rules mergeRules
+		if requested, reviews, rules, err = gatherOpenPR(gh, owner, name, pr.Number); err != nil {
 			return fail(stderr, err)
 		}
+		choice, err := resolveMergeMethod(cfg, rules)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		mergeMethod = &choice
 	}
 	botApproval := summarizeBotApproval(requiredBots, requested, reviews)
 	hasWorkflows, err := repoHasWorkflows(paths.mainClone)
@@ -648,8 +833,12 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		Worktree: paths.worktree, MainClone: paths.mainClone, IsWorktree: paths.isWorktree, Slug: slug,
 		Checks: checks, Gates: gates, BotApproval: botApproval, RequiredBotReviewers: requiredBots,
 		MergePolicy: mergePolicy.value, MergePolicyInvalid: mergePolicy.invalid,
-		MergeMethod: mergeMethod.value, MergeMethodInvalid: mergeMethod.invalid,
+		MergeMethodReason: "PR is " + state + " — no merge ahead", MergeMethodsAllowed: []string{},
 		StopServers: "", Raw: pr.precheckRawView,
+	}
+	if m := mergeMethod; m != nil {
+		out.MergeMethod, out.MergeMethodInvalid, out.MergeMethodSource = &m.method, m.invalid, &m.source
+		out.MergeMethodReason, out.MergeMethodsAllowed = m.reason, m.allowed
 	}
 	out.AfterMergeCmd, out.ResolvedAfterMergeCmd = afterMergeHook(cfg, paths, hook)
 	stop := parseStopServers(cfg)

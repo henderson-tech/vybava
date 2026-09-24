@@ -181,22 +181,11 @@ func invalid(p policy) string {
 }
 
 func TestEnumConfigKeys(t *testing.T) {
-	yes, no := true, false
-	squashOnly := &allowedMergeMethods{merge: &no, squash: &yes, rebase: &no}
-	all := &allowedMergeMethods{merge: &yes, squash: &yes, rebase: &yes}
 	for _, tc := range []struct {
 		name       string
 		got        policy
 		value, bad string
 	}{
-		{"method absent", parseMergeMethod(gitConfig{}, nil), "merge", "<nil>"},
-		{"method squash", parseMergeMethod(gitConfig{"MERGE_METHOD": " Squash "}, nil), "squash", "<nil>"},
-		{"method rebase", parseMergeMethod(gitConfig{"MERGE_METHOD": "rebase"}, nil), "rebase", "<nil>"},
-		{"method typo", parseMergeMethod(gitConfig{"MERGE_METHOD": "fast-forward"}, nil), "merge", "fast-forward"},
-		// a squash-only repo needs no config; a disabled explicit method is drift
-		{"squash-only default", parseMergeMethod(gitConfig{}, squashOnly), "squash", "<nil>"},
-		{"squash-only refuses merge", parseMergeMethod(gitConfig{"MERGE_METHOD": "merge"}, squashOnly), "squash", "merge"},
-		{"all allowed default", parseMergeMethod(gitConfig{}, all), "merge", "<nil>"},
 		{"policy absent", parseMergePolicy(gitConfig{}), "review", "<nil>"},
 		{"policy self", parseMergePolicy(gitConfig{"MERGE_POLICY": " Self "}), "self", "<nil>"},
 		{"policy typo", parseMergePolicy(gitConfig{"MERGE_POLICY": "auto"}), "review", "auto"},
@@ -276,5 +265,89 @@ func TestTeardownHookTargetsOnlyTheHeadWorktree(t *testing.T) {
 	cmd, resolved := afterMergeHook(cfg, paths, hookContext{slug: filepath.Base(paths.worktree), worktree: paths.worktree})
 	if paths.isWorktree || paths.worktree != top || cmd == nil || resolved != nil {
 		t.Fatalf("fallback: paths %+v, cmd %v, resolved %v", paths, cmd, resolved)
+	}
+}
+
+// rulesOf is a base branch's merge rules as resolveMergeMethod sees them;
+// every method is on unless edited.
+func rulesOf(edit func(*mergeRules)) mergeRules {
+	r := mergeRules{base: "main", buttons: map[string]bool{"merge": true, "squash": true, "rebase": true}}
+	if edit != nil {
+		edit(&r)
+	}
+	return r
+}
+
+func TestResolveMergeMethod(t *testing.T) {
+	linear := rulesOf(func(r *mergeRules) { r.linearHistory = []string{`org ruleset "org main"`} })
+	for _, tc := range []struct {
+		name, raw     string
+		rules         mergeRules
+		method, bad   string
+		source        string
+		allowed       []string
+		reasonPattern string
+	}{
+		{"explicit permitted wins", " Squash ", rulesOf(nil), "squash", "<nil>", "config", []string{"merge", "squash", "rebase"}, ""},
+		{"unset keeps merge", "", rulesOf(nil), "merge", "<nil>", "repository", nil, "main permits every method → merge"},
+		{"typo echoed", "fast-forward", rulesOf(nil), "merge", "fast-forward", "repository", nil, "MERGE_METHOD=fast-forward is not a merge method"},
+		// semafor#3: linear history refused merge commits while the button was on
+		{"linear history", "", linear, "squash", "<nil>", "repository", []string{"squash", "rebase"}, `org ruleset "org main" requires linear history on main → squash`},
+		{"refused explicit is drift", "merge", linear, "squash", "merge", "repository", nil, "MERGE_METHOD=merge is refused"},
+		{"squash-only buttons", "", rulesOf(func(r *mergeRules) { r.buttons = map[string]bool{"squash": true} }), "squash", "<nil>", "repository", nil, ""},
+		{"ruleset narrows", "", rulesOf(func(r *mergeRules) { r.rulesetMethods = []rulesetMethods{{`repo ruleset "main"`, []string{"rebase"}}} }), "rebase", "<nil>", "repository", nil, ""},
+	} {
+		c, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": tc.raw}, tc.rules)
+		if tc.raw == "" {
+			c, err = resolveMergeMethod(gitConfig{}, tc.rules)
+		}
+		if err != nil || c.method != tc.method || invalid(policy{invalid: c.invalid}) != tc.bad || c.source != tc.source ||
+			(tc.allowed != nil && !slices.Equal(c.allowed, tc.allowed)) || !strings.Contains(c.reason, tc.reasonPattern) {
+			t.Errorf("%s: %+v %v", tc.name, c, err)
+		}
+	}
+	deadlock := rulesOf(func(r *mergeRules) {
+		r.buttons = map[string]bool{"merge": true}
+		r.linearHistory = []string{"branch protection"}
+	})
+	if _, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": "merge"}, deadlock); err == nil ||
+		!strings.Contains(err.Error(), "no merge method is permitted into main (merge: branch protection requires linear history") {
+		t.Errorf("deadlock: %v", err)
+	}
+}
+
+// repoNode is the gate query's repository node, shaped as GitHub returns it.
+func repoNode(t *testing.T, buttons, baseRef string) gateRepository {
+	t.Helper()
+	var r gateRepository
+	if err := json.Unmarshal([]byte(`{`+buttons+`"pullRequest":{"baseRefName":"main","baseRef":`+baseRef+`}}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+const onOnOff = `"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":false,`
+
+func TestReadMergeRules(t *testing.T) {
+	// org/repo rulesets and classic protection are read; evaluate-mode rules never refuse
+	got, err := readMergeRules(repoNode(t, onOnOff, `{"branchProtectionRule":{"requiresLinearHistory":true},"rules":{"totalCount":4,"nodes":[
+		{"type":"REQUIRED_LINEAR_HISTORY","parameters":{},"repositoryRuleset":{"name":"org main","enforcement":"ACTIVE","source":{"__typename":"Organization"}}},
+		{"type":"PULL_REQUEST","parameters":{"allowedMergeMethods":["MERGE","SQUASH"]},"repositoryRuleset":{"name":"repo main","enforcement":"ACTIVE","source":{"__typename":"Repository"}}},
+		{"type":"REQUIRED_LINEAR_HISTORY","parameters":{},"repositoryRuleset":{"name":"trial","enforcement":"EVALUATE","source":{"__typename":"Repository"}}},
+		{"type":"DELETION","parameters":{},"repositoryRuleset":{"name":"org main","enforcement":"ACTIVE","source":{"__typename":"Organization"}}}]}}`), "acme/app")
+	if err != nil || got.base != "main" || !got.buttons["merge"] || !got.buttons["squash"] || got.buttons["rebase"] ||
+		!slices.Equal(got.linearHistory, []string{"branch protection", `org ruleset "org main"`}) ||
+		len(got.rulesetMethods) != 1 || got.rulesetMethods[0].by != `repo ruleset "repo main"` || !slices.Equal(got.rulesetMethods[0].methods, []string{"merge", "squash"}) {
+		t.Fatalf("readMergeRules = %+v, %v", got, err)
+	}
+	// unreadable settings or rules fail with the fix instead of guessing
+	for _, tc := range []struct{ buttons, baseRef, want string }{
+		{onOnOff, `null`, "cannot read the base branch's rules for acme/app (into main)"},
+		{``, `{"rules":{"totalCount":0,"nodes":[]}}`, "cannot read the repository's merge settings"},
+		{onOnOff, `{"rules":{"totalCount":101,"nodes":[]}}`, "all 101 base-branch rules"},
+	} {
+		if _, err := readMergeRules(repoNode(t, tc.buttons, tc.baseRef), "acme/app"); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "gh auth status") {
+			t.Errorf("%s: %v", tc.want, err)
+		}
 	}
 }

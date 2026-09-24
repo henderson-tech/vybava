@@ -115,6 +115,15 @@ undecidable is held, and destruction only ever happens behind `--apply`.
 `internal/claudeguards/plugincache.go` is the other half: it blocks package
 installs into that tree at all, and is deliberately escape-hatch-free.
 
+`internal/mergeassist` settles mechanical merge conflicts; the catalog driver is
+lok's (`internal/lok/merge.go`). `mergeassist/gitmerge` is the dependency-free
+leaf both drivers share (journal, text-merge fallback) so lok never imports
+mergeassist. Load-bearing: drivers are registered in the clone's
+`info/attributes` + git config, never a tracked `.gitattributes` (git reads
+attributes from the checked-out branch); a catalog key clash is a conflict even
+when git's line merge is clean (it keeps duplicate keys); a migration the base
+has is never renamed. Docs: `docs/merge-assist.md`.
+
 `internal/gitkit` is the git family's deterministic layer: skills call
 `vybava gitkit <script>`, never a file path; a verb's argv, stdout (JSON key
 order), stderr and exit code are the contract, byte-identical to the Node
@@ -122,6 +131,11 @@ scripts it replaced. Shell out, emit JSON and parse numbers only through
 `native.go`'s Node-compatible helpers (`execFile`, `writeJSON`, `jsString`,
 `jsNumber`) — `docs/gitkit.md`. The git-family skills are canonical HERE; a
 personal `~/.claude` copy is a symlink, never a fork.
+
+`internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
+state), install goes through the product's own channel, and credentials never
+pass through Výbava — guided steps run with a terminal or come back as `next`.
+A pultik artifact is placed only after its sha256 matches the shelf.
 
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;

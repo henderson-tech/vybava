@@ -29,7 +29,8 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 		Long: "lok never shows a whole catalog. Configure catalogs in the `lok` section of\n" +
 			"vybava.config.ts (see `vybava config init`), then:\n" +
 			"  lok catalogs · lok get <key> · lok grep <pattern> · lok missing · lok check\n" +
-			"  lok add <key> --tr cs=… · lok set <key> --tr cs=… · lok rm <key> · lok scan [--write]",
+			"  lok add <key> --tr cs=… · lok set <key> --tr cs=… · lok rm <key> · lok scan [--write]\n" +
+			"  lok merge <path> [--prefer ours|theirs] — settle a catalog merge conflict by key",
 	}
 	var catalog string
 	root.PersistentFlags().StringVar(&catalog, "catalog", "", "catalog id (only when inference is ambiguous; use --catalog=<id>)")
@@ -252,11 +253,48 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 	scan.Flags().BoolVar(&write, "write", false, "add the missing keys (en = key); translations then show in `lok missing`")
 	scan.Flags().IntVar(&orphanLimit, "orphans", 20, "max probable orphans listed")
 	root.AddCommand(scan)
+
+	root.AddCommand(&cobra.Command{
+		Use: "merge-driver <base> <ours> <theirs> <path>", Short: "Git merge driver: 3-way merge of a declared catalog by key (registered by `merge-assist setup`)", Args: cobra.ExactArgs(4),
+		RunE: func(_ *cobra.Command, args []string) error {
+			conflict, err := lok.MergeDriver(workingDir(), args[0], args[1], args[2], args[3], rt.stderr)
+			if err != nil {
+				return err
+			}
+			if conflict {
+				return runx.ExitError{Code: 1}
+			}
+			return nil
+		},
+	})
+
+	var prefer string
+	merge := &cobra.Command{
+		Use: "merge <path>", Short: "Re-merge an unmerged catalog from the index by key, write and stage it (--prefer settles clashes)", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s := session(cmd)
+			if prefer != "" && prefer != string(lok.PreferOurs) && prefer != string(lok.PreferTheirs) {
+				return finish(s, nil, nil, &lok.Diag{Code: lok.DiagMergeClash, Detail: fmt.Sprintf("--prefer %q", prefer), Fix: "--prefer ours or --prefer theirs"})
+			}
+			t, err := open()
+			if err != nil {
+				return finish(s, nil, nil, err)
+			}
+			res, err := t.MergeIndexed(args[0], lok.Prefer(prefer))
+			var next []string
+			if err == nil && res.Regen != "" {
+				next = []string{"merge-assist regen"}
+			}
+			return finish(s, res, next, err)
+		},
+	}
+	merge.Flags().StringVar(&prefer, "prefer", "", "settle clashing keys toward ours or theirs")
+	root.AddCommand(merge)
 	return root
 }
 
 func quoteArg(s string) string {
-	if !strings.ContainsAny(s, " '\"$`\\{}") {
+	if !strings.ContainsAny(s, " '\"$`\\{};&|<>()!#*?[]~") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
