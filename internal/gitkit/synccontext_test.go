@@ -1,9 +1,14 @@
 package gitkit
 
 import (
+	"encoding/json"
+	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -143,10 +148,73 @@ func TestReadGitConfigOverlaysLocal(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(root, ".claude/.claude.git.config"), []byte("DEFAULT_BRANCH=main\nMERGE_METHOD=squash\n"), 0o644)
 	os.WriteFile(filepath.Join(root, ".claude/.claude.git.config.local"), []byte("DEFAULT_BRANCH=devlp\n"), 0o644)
-	if cfg, found := readGitConfig(root); !found || !maps.Equal(cfg, gitConfig{"DEFAULT_BRANCH": "devlp", "MERGE_METHOD": "squash"}) {
+	if cfg, found, err := readGitConfig(root); err != nil || !found || !maps.Equal(cfg, gitConfig{"DEFAULT_BRANCH": "devlp", "MERGE_METHOD": "squash"}) {
 		t.Fatalf("readGitConfig = %v %v", cfg, found)
 	}
-	if cfg, found := readGitConfig(filepath.Join(root, "nope")); found || len(cfg) != 0 {
+	if cfg, found, err := readGitConfig(filepath.Join(root, "nope")); err != nil || found || len(cfg) != 0 {
 		t.Fatalf("missing root = %v %v", cfg, found)
+	}
+}
+
+// The verb end to end: key order, nulls, script and DB detection, and a
+// --freeze that writes only the unset keys.
+func TestSyncContextVerb(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "develop"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "c1"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	write := func(name, body string) {
+		os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755)
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".claude/.claude.git.config", "DEFAULT_BRANCH=main\nMERGE_STRATEGY=Rebase\n")
+	write("package.json", `{"scripts":{"db:migrate":"x","typecheck":"tsc","generate":""}}`)
+	write("bun.lock", "")
+	write(".env", "DATABASE_URL=\"postgres://u:p@db:5432/app\"\r\n")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("GIT_SKILL_REPO", "")
+
+	var stdout, stderr strings.Builder
+	if code := runSyncContext([]string{"--repo", root, "--freeze"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	top, _ := execFile(execOpts{dir: root}, "git", "rev-parse", "--show-toplevel")
+	top = strings.TrimSpace(top)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"configFound": true, "mode": "branch", "currentBranch": "develop", "upstream": nil, "defaultBranch": "main",
+		"verifyCmd": "bun run typecheck", "regenCmd": nil, "migrateCmd": "bun run db:migrate", "installCmd": "bun install",
+		"mergeStrategy": "rebase", "packageManager": "bun", "dbHost": "db", "localDbOk": true, "configComplete": false,
+	} {
+		if !reflect.DeepEqual(got[key], want) {
+			t.Errorf("%s = %v, want %v", key, got[key], want)
+		}
+	}
+	keys := regexp.MustCompile(`(?m)^  "(\w+)":`).FindAllStringSubmatch(stdout.String(), -1)
+	if len(keys) != 26 || keys[0][1] != "configFound" || keys[25][1] != "runAfterSync" {
+		t.Errorf("wire keys = %v", keys)
+	}
+	frozen, _ := os.ReadFile(filepath.Join(root, ".claude/.claude.git.config"))
+	if !strings.HasPrefix(string(frozen), "DEFAULT_BRANCH=main\nMERGE_STRATEGY=Rebase\n\n# auto-detected by /sync ") ||
+		!strings.Contains(string(frozen), "INSTALL_CMD=bun install\nGENERATED_PATHS=") || strings.Contains(string(frozen), "REGEN_CMD") {
+		t.Errorf("frozen config = %q", frozen)
+	}
+	if want := "freeze: wrote INSTALL_CMD, GENERATED_PATHS, VERIFY_CMD, DB_MIGRATE_CMD to " + filepath.Join(top, ".claude/.claude.git.config") + "\n"; stderr.String() != want {
+		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+	}
+
+	// A config that exists but cannot be read fails; it is never an empty config.
+	os.Remove(filepath.Join(root, ".claude/.claude.git.config"))
+	os.Mkdir(filepath.Join(root, ".claude/.claude.git.config.local"), 0o755)
+	stderr.Reset()
+	if code := runSyncContext([]string{"--repo", root}, io.Discard, &stderr); code != 1 || stderr.String() != "error: EISDIR: illegal operation on a directory, read\n" {
+		t.Errorf("unreadable config: %d %q", code, stderr.String())
 	}
 }

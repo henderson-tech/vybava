@@ -2,6 +2,7 @@ package gitkit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,21 +41,34 @@ func (c gitConfig) or(key string, fallback *string) *string {
 
 // readGitConfig reads <root>/.claude/.claude.git.config (committed, shared)
 // overlaid by .claude.git.config.local (gitignored — one machine's own
-// defaults). A key in .local wins; either file may be absent.
-func readGitConfig(root string) (gitConfig, bool) {
+// defaults). A key in .local wins; either file may be absent — but one that
+// exists and cannot be read is an error, never a silently empty config.
+func readGitConfig(root string) (gitConfig, bool, error) {
 	merged := gitConfig{}
 	found := false
 	for _, name := range []string{".claude/.claude.git.config", ".claude/.claude.git.config.local"} {
-		data, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
+		path := filepath.Join(root, name)
+		if !exists(path) {
 			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, false, nodeReadError(err, path)
 		}
 		found = true
 		for k, v := range parseConfig(string(data)) {
 			merged[k] = v
 		}
 	}
-	return merged, found
+	return merged, found, nil
+}
+
+// nodeReadError renders a readFileSync failure as Node does.
+func nodeReadError(err error, path string) error {
+	if errors.Is(err, syscall.EISDIR) {
+		return errors.New("EISDIR: illegal operation on a directory, read")
+	}
+	return nodeFSError(err, "open", path)
 }
 
 func parseConfig(text string) gitConfig {
@@ -334,7 +349,10 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 	}
 	at := func(p string) string { return filepath.Join(root, p) }
 	configPath := at(".claude/.claude.git.config") // --freeze writes the committed file
-	cfg, configFound := readGitConfig(root)
+	cfg, configFound, err := readGitConfig(root)
+	if err != nil {
+		return fail(stderr, err)
+	}
 
 	lockfiles := []string{}
 	for _, f := range []string{"pnpm-lock.yaml", "bun.lock", "bun.lockb", "yarn.lock", "package-lock.json"} {

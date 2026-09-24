@@ -525,7 +525,10 @@ func (f fetcher) currentRepo() (repoInfo, error) {
 	if err != nil {
 		return repoInfo{}, err
 	}
-	cfg, _ := readGitConfig(filepath.Dir(strings.TrimSpace(commonDir)))
+	cfg, _, err := readGitConfig(filepath.Dir(strings.TrimSpace(commonDir)))
+	if err != nil {
+		return repoInfo{}, err
+	}
 	githubDefault := ""
 	if j.DefaultBranchRef != nil {
 		githubDefault = j.DefaultBranchRef.Name

@@ -602,7 +602,10 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 
 	// The required-bot list comes from the SAME config that holds
 	// AFTER_MERGE_CMD. Only OPEN PRs are worth a GraphQL round.
-	cfg, _ := readGitConfig(paths.mainClone)
+	cfg, _, err := readGitConfig(paths.mainClone)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	githubDefault := ""
 	if repo.DefaultBranchRef != nil {
 		githubDefault = repo.DefaultBranchRef.Name

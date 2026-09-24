@@ -68,7 +68,10 @@ func runBeforeReview(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	cfg, configFound := readGitConfig(mainClone)
+	cfg, configFound, err := readGitConfig(mainClone)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	slug := filepath.Base(worktree)
 	out := BeforeReview{
 		ConfigFound: configFound,
