@@ -239,6 +239,8 @@ func TestScanSkipsTestSources(t *testing.T) {
 		"src/a.ts":           "t('Real key');\n",
 		"src/a.test.ts":      "t('Save'); t('From a test');\n",
 		"src/b.spec.tsx":     "t('From a spec');\n",
+		"src/a.test.int.ts":  "t('From a multi-segment test');\n",
+		"src/b.spec.gen.ts":  "t('From a multi-segment spec');\n",
 		"src/__tests__/c.ts": "t('From __tests__');\n",
 		"src/i18n_test.go":   "l.T(\"Hello {{name}}\")\n",
 		"src/testdata/d.go":  "l.T(\"From testdata\")\n",
@@ -269,6 +271,44 @@ func TestScanIgnoresComments(t *testing.T) {
 	want := []string{"After JSX URL", "After regex", "Real // not a comment", "Visit https://example.com"}
 	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
 		t.Fatalf("calls inside // and /* */ comments are not keys; // inside a literal or a URL is code: %+v", res.Missing)
+	}
+}
+
+func TestScanTemplateInterpolations(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.ts": "const s = `${x /* t('Block in interpolation') */} // text ${t('After template text')}`;\n" +
+			"const n = `${\n  // t('Line in interpolation')\n  ok ? `${t('Nested')} /* text` : t('Else')\n} */ ${t('After nested')}`;\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After nested", "After template text", "Else", "Nested"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("comments inside ${…} are blanked, template text (nested too) is never a comment: %+v", res.Missing)
+	}
+}
+
+func TestScanRegexLiteralsNeverSwallowCode(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx": "const glob = /[/*]/; t('After class');\n" +
+			"const r = s.replace(/a[*/]b/g, '').match(/[//]x/) && t('Same line');\n" +
+			"if (/'/.test(s)) t('After quote regex // kept');\n" +
+			"function f(s) { return /[//]/.test(s) || t('After return'); }\n" +
+			"const d = a / b; // t('Division then comment')\n" +
+			"const e = x.length / 2 /* t('Block after division') */;\n" +
+			"<p>Files in src/* are listed {t('JSX glob')}</p>\n" +
+			"t('Last');\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After class", "After quote regex // kept", "After return", "JSX glob", "Last", "Same line"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("a regex literal or a mid-line unclosed /* never blanks real code: %+v", res.Missing)
 	}
 }
 

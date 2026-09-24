@@ -54,12 +54,15 @@ verbatim in source is only a hint — keys held in lookup tables, API
 messages passed through `t()`, template strings — so orphans are listed
 with a count and never deleted; `lok rm` is the explicit path.
 
-Test sources are never scanned — `*_test.go`, `*.test.*`, `*.spec.*`,
-`__tests__/` and `testdata/`: a test asserts copy, it never defines a key,
-so its synthetic `T("Hello {{name}}")` is neither added nor counted as
-usage. Calls inside `//` and `/* */` comments are not extracted either (a
-doc comment's example call is not a key); a `//` inside a string literal or
-a URL stays code.
+Test sources are never scanned — `*_test.go`, a `.test.`/`.spec.` segment
+anywhere in the name (`a.test.ts`, `a.spec.gen.ts`), `__tests__/` and
+`testdata/`: a test asserts copy, it never defines a key, so its synthetic
+`T("Hello {{name}}")` is neither added nor counted as usage. Calls inside
+`//` and `/* */` comments are not extracted either (a doc comment's example
+call is not a key), including comments inside a template's `${…}`; a `//`
+or `/*` inside a string, template text, a regex literal or a URL stays code.
+Where the lexer cannot tell, it scans too much rather than drop a key: a
+`/*` after code that does not close on its own line is read as code.
 
 `scan.call` names the call shapes, one string or a list (default `t`). A
 bare name matches `t('…')` with nothing dotted before it — `foo.t(` is not
