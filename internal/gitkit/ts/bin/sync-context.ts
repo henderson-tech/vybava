@@ -55,9 +55,22 @@ export function installCmdForLockfile(files: string[]): string | null {
   return pm ? `${pm} install` : null;
 }
 
+const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal", "db"]);
+
+// The host is what the URL parser says it is — a substring search would read
+// `postgres://u@localhost:5432@prod.example.com/app` as local (the real host is prod).
+function parsedHost(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
 export function isLocalDbUrl(url: string): boolean {
-  if (!url) return false;
-  return /@(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal|db)[:\/]/i.test(url);
+  const host = parsedHost(url);
+  return host !== null && LOCAL_DB_HOSTS.has(host.toLowerCase());
 }
 
 function scriptCmd(pm: string, name: string): string {
@@ -70,7 +83,7 @@ function pickScript(scripts: Record<string, string>, candidates: string[]): stri
 }
 
 export function dbHostOf(url: string): string | null {
-  return url.match(/@([^:\/?@]+)/)?.[1] ?? null;
+  return parsedHost(url);
 }
 
 /**

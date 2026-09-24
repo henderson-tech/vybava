@@ -43,6 +43,9 @@ test("isLocalDbUrl accepts local hosts, rejects remote/prod", () => {
   assert.equal(isLocalDbUrl("postgres://u:p@host.docker.internal:5432/app"), true);
   assert.equal(isLocalDbUrl("postgres://u:p@db.prod.example.com:5432/app"), false);
   assert.equal(isLocalDbUrl("postgres://u:p@203.0.113.10:5432/app"), false);
+  // A credential-shaped @localhost: before the real host must not read as local.
+  assert.equal(isLocalDbUrl("postgres://user@localhost:5432@prod.example.com/app"), false);
+  assert.equal(isLocalDbUrl("postgres://u:p@[::1]:5432/app"), true);
   assert.equal(isLocalDbUrl(""), false);
 });
 

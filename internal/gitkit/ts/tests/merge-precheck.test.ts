@@ -77,6 +77,12 @@ test("conflicts fail the mergeable gate (CONFLICTING or DIRTY status)", () => {
   assert.equal(summarizeGates({ ...clean, mergeStateStatus: "DIRTY" }).mergeableOk, false);
 });
 
+test("a still-computing UNKNOWN mergeability fails as mergeable-unknown, never passes", () => {
+  const g = summarizeGates({ ...clean, mergeable: "UNKNOWN" });
+  assert.equal(g.mergeableOk, false);
+  assert.deepEqual(g.failed, ["mergeable-unknown"]);
+});
+
 test("pending CI fails the ci gate", () => {
   assert.ok(summarizeGates({ ...clean, checks: "PENDING" }).failed.includes("ci"));
 });

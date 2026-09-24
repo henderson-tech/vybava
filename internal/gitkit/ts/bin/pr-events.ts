@@ -32,6 +32,23 @@ export type Snapshot = {
 };
 export type Events = { events: string[]; done: boolean };
 
+type ThreadNode = { isResolved: boolean; comments?: { nodes?: { databaseId?: number; author?: { login?: string } | null }[] } };
+
+// Every comment in an unresolved thread, not just its root: a reviewer replying
+// inside an open thread changes nothing else in the snapshot, so watching roots
+// only would stay silent on the reply. The watcher's own replies are skipped —
+// they are round output, not new work.
+export function openThreadCommentIds(threads: ThreadNode[], self: string): number[] {
+  const ids: number[] = [];
+  for (const t of threads) {
+    if (t.isResolved) continue;
+    for (const c of t.comments?.nodes ?? []) {
+      if (typeof c.databaseId === "number" && c.author?.login !== self) ids.push(c.databaseId);
+    }
+  }
+  return ids;
+}
+
 function terminalEvent(state: string): string {
   return state.toLowerCase(); // "merged" | "closed"
 }
@@ -98,12 +115,13 @@ function sh(cmd: string, args: string[]): string {
 
 const QUERY = `
 query($owner:String!, $repo:String!, $pr:Int!) {
+  viewer { login }
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$pr) {
       state
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       reviewThreads(first: 100) {
-        nodes { isResolved comments(first: 1) { nodes { databaseId } } }
+        nodes { isResolved comments(last: 50) { nodes { databaseId author { login } } } }
       }
       latestReviews(first: 50) { nodes { state author { login } } }
       headRefOid
@@ -116,14 +134,10 @@ query($owner:String!, $repo:String!, $pr:Int!) {
 
 function fetchSnapshot(owner: string, repo: string, pr: number): Snapshot {
   const out = sh("gh", ["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `pr=${pr}`]);
-  const d = JSON.parse(out).data.repository.pullRequest;
+  const data = JSON.parse(out).data;
+  const d = data.repository.pullRequest;
   const ci: string = d.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? "NONE";
-  const commentIds: number[] = [];
-  for (const t of d.reviewThreads?.nodes ?? []) {
-    if (t.isResolved) continue;
-    const id = t.comments?.nodes?.[0]?.databaseId;
-    if (typeof id === "number") commentIds.push(id);
-  }
+  const commentIds = openThreadCommentIds(d.reviewThreads?.nodes ?? [], data.viewer?.login ?? "");
   for (const c of d.comments?.nodes ?? []) {
     if (typeof c.databaseId === "number") commentIds.push(c.databaseId);
   }

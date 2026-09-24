@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseWorktreeList, mainCloneOf, findWorktreeForBranch, ensurePlan } from "../bin/worktree.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseWorktreeList, mainCloneOf, findWorktreeForBranch, ensurePlan, createWorktree } from "../bin/worktree.ts";
 
 const PORCELAIN = [
   "worktree /Users/me/repo",
@@ -52,4 +56,25 @@ test("ensurePlan creates .worktrees/pr-<N> under the main clone when none exists
 
 test("ensurePlan throws when the main clone can't be determined", () => {
   assert.throws(() => ensurePlan([], "feat-x", 1), /main clone/);
+});
+
+test("createWorktree fast-forwards a stale local branch to the fetched head", () => {
+  const root = mkdtempSync(join(tmpdir(), "gitkit-wt-"));
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).trim();
+  git(root, "init", "-q", "--bare", "-b", "main", "origin.git");
+  git(root, "clone", "-q", "origin.git", "author");
+  const author = join(root, "author");
+  git(author, "commit", "-q", "--allow-empty", "-m", "c1");
+  git(author, "push", "-q", "origin", "HEAD:feature");
+  git(root, "clone", "-q", "origin.git", "reviewer");
+  const reviewer = join(root, "reviewer");
+  git(reviewer, "branch", "-q", "feature", "origin/feature"); // local copy, about to go stale
+  git(author, "commit", "-q", "--allow-empty", "-m", "c2");
+  git(author, "push", "-q", "origin", "HEAD:feature");
+
+  const path = join(root, "wt");
+  const diverged = createWorktree((cmd, args) => git(reviewer, ...args), path, "feature", true);
+  assert.equal(diverged, false);
+  assert.equal(git(path, "rev-parse", "HEAD"), git(author, "rev-parse", "HEAD"));
 });

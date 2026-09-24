@@ -63,7 +63,10 @@ export function summarizeGates(g: GateInput): GateSummary {
   const openOk = g.state.toUpperCase() === "OPEN";
   const draftOk = !g.isDraft;
   const cleanOk = !g.worktreeDirty;
-  const mergeableOk = g.mergeable.toUpperCase() !== "CONFLICTING" && g.mergeStateStatus.toUpperCase() !== "DIRTY";
+  // UNKNOWN is GitHub still computing (normal for seconds after every push) —
+  // not a pass: an auto-merge must never race the conflict check.
+  const mergeableUnknown = g.mergeable.toUpperCase() === "UNKNOWN";
+  const mergeableOk = g.mergeable.toUpperCase() === "MERGEABLE" && g.mergeStateStatus.toUpperCase() !== "DIRTY";
   // "NONE" means GitHub reported no checks AT ALL for this head. That is
   // legitimate in a repo with no workflows — otherwise nothing there could ever
   // merge. It is a lie in a repo that HAS workflows: path-filtered jobs that
@@ -80,7 +83,7 @@ export function summarizeGates(g: GateInput): GateSummary {
   if (!openOk) failed.push("open");
   if (!draftOk) failed.push("draft");
   if (!cleanOk) failed.push("clean");
-  if (!mergeableOk) failed.push("conflict");
+  if (!mergeableOk) failed.push(mergeableUnknown ? "mergeable-unknown" : "conflict");
   // Distinguished on purpose: "ci" is a red check, "ci-absent" is no check at
   // all. A caller deciding whether to wait or to escalate needs to tell them
   // apart, and the fix differs — rerun vs. work out why nothing ran.

@@ -283,15 +283,28 @@ query($owner:String!, $repo:String!, $pr:Int!, $threadCursor:String) {
           }
         }
       }
-      reviews(first: 50) {
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}`;
+
+// Review summaries and conversation comments page separately from threads: a
+// busy PR passes 50 of either, and `first: N` alone keeps the OLDEST — the
+// newest ask, the one that matters, was the one dropped.
+const NON_THREAD_QUERY = `
+query($owner:String!, $repo:String!, $pr:Int!, $reviewCursor:String, $commentCursor:String) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$pr) {
+      reviews(first: 100, after: $reviewCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes { databaseId body url state author { login } }
       }
-      comments(first: 50) {
+      comments(first: 100, after: $commentCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes { databaseId body url author { login } }
       }
     }
   }
-  rateLimit { remaining cost resetAt }
 }`;
 
 // The git contract's per-machine overlay (.claude.git.config.local) is gitignored, so it
@@ -356,8 +369,6 @@ function fetchThreads(owner: string, repo: string, pr: number) {
   let cursor: string | null = null;
   let meta: any = null;
   let rateLimit: unknown = null;
-  let reviews: NonThreadComment[] = [];
-  let comments: NonThreadComment[] = [];
   const threads: ReviewThread[] = [];
   for (;;) {
     const vars = ["-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `pr=${pr}`];
@@ -372,14 +383,40 @@ function fetchThreads(owner: string, repo: string, pr: number) {
         headRef: data.headRefName, headSha: data.headRefOid, baseRef: data.baseRefName,
         author: data.author?.login ?? "",
       };
-      reviews = data.reviews?.nodes ?? [];
-      comments = data.comments?.nodes ?? [];
     }
     threads.push(...data.reviewThreads.nodes);
     if (data.reviewThreads.pageInfo.hasNextPage) cursor = data.reviewThreads.pageInfo.endCursor;
     else break;
   }
+  const { reviews, comments } = fetchNonThread(owner, repo, pr);
   return { meta, threads, rateLimit, reviews, comments };
+}
+
+function fetchNonThread(owner: string, repo: string, pr: number) {
+  const reviews: NonThreadComment[] = [];
+  const comments: NonThreadComment[] = [];
+  let reviewCursor: string | null = null;
+  let commentCursor: string | null = null;
+  let reviewsDone = false;
+  let commentsDone = false;
+  while (!reviewsDone || !commentsDone) {
+    const vars = ["-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `pr=${pr}`];
+    if (reviewCursor) vars.push("-f", `reviewCursor=${reviewCursor}`);
+    if (commentCursor) vars.push("-f", `commentCursor=${commentCursor}`);
+    const out = sh("gh", ["api", "graphql", "-f", `query=${NON_THREAD_QUERY}`, ...vars]);
+    const data = JSON.parse(out).data.repository.pullRequest;
+    if (!reviewsDone) {
+      reviews.push(...(data.reviews?.nodes ?? []));
+      reviewsDone = !data.reviews?.pageInfo?.hasNextPage;
+      reviewCursor = data.reviews?.pageInfo?.endCursor ?? null;
+    }
+    if (!commentsDone) {
+      comments.push(...(data.comments?.nodes ?? []));
+      commentsDone = !data.comments?.pageInfo?.hasNextPage;
+      commentCursor = data.comments?.pageInfo?.endCursor ?? null;
+    }
+  }
+  return { reviews, comments };
 }
 
 function mirrorPr(owner: string, repo: string, pr: number): string {

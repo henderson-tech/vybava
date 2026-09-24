@@ -39,6 +39,8 @@ export type EnsurePlan = {
   path: string;
   selfCreated: boolean;
   mainClone: string;
+  // The local branch holds commits origin lacks; the worktree was left on it, not reset.
+  diverged?: boolean;
 };
 
 export function ensurePlan(worktrees: Worktree[], headRef: string, pr: number): EnsurePlan {
@@ -55,6 +57,25 @@ import { repoRoot } from "./repo-root.ts";
 
 function sh(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 120_000, cwd: repoRoot() });
+}
+
+// createWorktree fetches the head FIRST in both cases: a leftover local branch of the
+// same name may be days behind, and a round seeded from it reviews and pushes stale
+// code. An existing branch is fast-forwarded; one holding commits origin lacks is
+// someone's work — left as is and reported (returns true), never reset.
+export function createWorktree(git: (cmd: string, args: string[]) => string, path: string, headRef: string, localExists: boolean): boolean {
+  git("git", ["fetch", "origin", headRef]);
+  if (!localExists) {
+    git("git", ["worktree", "add", "--track", "-b", headRef, path, `origin/${headRef}`]);
+    return false;
+  }
+  git("git", ["worktree", "add", path, headRef]);
+  try {
+    git("git", ["-C", path, "merge", "--ff-only", "--quiet", `origin/${headRef}`]);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function localBranchExists(headRef: string): boolean {
@@ -79,16 +100,7 @@ async function main(): Promise<void> {
   const worktrees = parseWorktreeList(sh("git", ["worktree", "list", "--porcelain"]));
   const plan = ensurePlan(worktrees, headRef, pr);
 
-  if (plan.action === "create") {
-    if (localBranchExists(headRef)) {
-      // Local branch exists but isn't checked out anywhere — attach a worktree to it.
-      sh("git", ["worktree", "add", plan.path, headRef]);
-    } else {
-      // No local branch — fetch the PR head and create a tracking worktree.
-      sh("git", ["fetch", "origin", headRef]);
-      sh("git", ["worktree", "add", "--track", "-b", headRef, plan.path, `origin/${headRef}`]);
-    }
-  }
+  if (plan.action === "create") plan.diverged = createWorktree(sh, plan.path, headRef, localBranchExists(headRef)) || undefined;
   process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
 }
 
