@@ -91,7 +91,7 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 		}
 		return v
 	}
-	schema("ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1")
+	schema("DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1")
 	env, took = run("rollup", "--days", "1", "--hours", "1")
 	stale := false
 	for _, d := range env["diagnostics"].([]any) {
@@ -109,8 +109,8 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 	if env, _ = run("rollup", "--days", "1", "--hours", "1"); env["ok"] != true {
 		t.Fatalf("rollup with the lock free = %v", env)
 	}
-	if v := schema(""); v != 3 {
-		t.Fatalf("schema after a rollup with the lock free = %d, want 3", v)
+	if v := schema(""); v != 4 {
+		t.Fatalf("schema after a rollup with the lock free = %d, want 4", v)
 	}
 }
 
@@ -312,5 +312,71 @@ func TestTokentimeProjectNeverCreatesAStore(t *testing.T) {
 		if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("state dir after %s..%s: %v, want it never created", c.from, c.to, statErr)
 		}
+	}
+}
+
+// `beats` reads like `project`: a missing day or a range past a quarter is
+// BAD_FLAG and a store never indexed NO_STORE — exit 2, no data, no state
+// directory made — and an indexed store answers while a pass holds the lock.
+func TestTokentimeBeatsReadsUnderTheLockAndRefusesBadRanges(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state, claude := filepath.Join(base, "state"), filepath.Join(base, "claude")
+	run := func(args ...string) (map[string]any, error) {
+		t.Helper()
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json", "--state-dir", state, "--claude-root", claude, "--codex-dir", filepath.Join(base, "codex")))
+		err = cmd.Execute()
+		var env map[string]any
+		if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil {
+			t.Fatalf("%v: not an envelope: %s", args, out.String())
+		}
+		return env, err
+	}
+	for _, c := range []struct{ from, to, code string }{
+		{"2026-09-24", "", diagBadFlag},
+		{"2026-01-01", "2026-04-03", diagBadFlag}, // 93 days
+		{"2026-01-01", "2026-04-02", diagNoStore}, // 92 days
+	} {
+		env, err := run("beats", "--from", c.from, "--to", c.to)
+		var exit runx.ExitCoder
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil || !strings.Contains(fmt.Sprint(env["diagnostics"]), c.code) {
+			t.Fatalf("beats %s..%s = %v, %v; want exit 2, no data and %s", c.from, c.to, env, err, c.code)
+		}
+		if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("state dir after beats %s..%s: %v, want it never created", c.from, c.to, statErr)
+		}
+	}
+
+	repo := filepath.Join(base, "app")
+	for _, dir := range []string{repo, filepath.Join(claude, "-app")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompt := fmt.Sprintf(`{"type":"user","sessionId":"s","cwd":%q,"timestamp":"2026-09-23T12:00:00Z","origin":{"kind":"human"},"message":{"role":"user","content":"go"}}`+"\n", repo)
+	answer := fmt.Sprintf(`{"type":"assistant","sessionId":"s","cwd":%q,"timestamp":"2026-09-23T12:01:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n", repo)
+	if err := os.WriteFile(filepath.Join(claude, "-app", "s.jsonl"), []byte(prompt+answer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if env, _ := run("index"); env["ok"] != true {
+		t.Fatalf("seeding index = %v", env)
+	}
+	lock, err := os.OpenFile(filepath.Join(state, "index.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	env, err := run("beats", "--from", "2026-09-23", "--to", "2026-09-23")
+	want := fmt.Sprintf(`[{"ai":[[29836081,1]],"human":[[29836080,1]],"name":"app","root":%q}]`, repo) // 12:01 and 12:00 UTC
+	data, _ := env["data"].(map[string]any)
+	if got, _ := json.Marshal(data["projects"]); err != nil || string(got) != want {
+		t.Fatalf("beats under a held lock = %v, %v; want %s", env, err, want)
 	}
 }

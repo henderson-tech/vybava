@@ -106,6 +106,9 @@ func (f fixture) index(t *testing.T, s *Store) IndexReport {
 
 var prague, _ = time.LoadLocation("Europe/Prague")
 
+// dropBeats leaves a store as the schema 3 binary did: no beats, no backlog column.
+const dropBeats = "DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; "
+
 func rollupOf(t *testing.T, s *Store, days, hours int) Rollup {
 	t.Helper()
 	r, err := s.Rollup(RollupOptions{Days: days, Hours: hours, Now: time.Date(2026, 9, 23, 15, 30, 0, 0, prague), Location: prague})
@@ -490,8 +493,9 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 		ddl      string
 		readable bool
 	}{
-		{2, "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
-		{1, "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},
+		{3, dropBeats + "PRAGMA user_version=3", true},
+		{2, dropBeats + "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
+		{1, dropBeats + "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},
 	} {
 		w, _, err := openDB(db, "")
 		if err != nil {

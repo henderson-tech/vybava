@@ -23,6 +23,24 @@ type ClaudeRecord struct {
 	AgentID     string        `json:"agentId"`
 	RequestID   string        `json:"requestId"`
 	Message     ClaudeMessage `json:"message"`
+	// Origin says who wrote a user record: "human" for a prompt typed into
+	// the session, "task-notification" and others for text the harness
+	// injected. Tool results carry none.
+	Origin *struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+}
+
+// HumanPrompt reports whether a record is a prompt a person typed into a main
+// session — never a subagent's brief, a tool result or injected harness text.
+func (r ClaudeRecord) HumanPrompt() bool {
+	return r.Type == "user" && !r.IsSidechain && r.Origin != nil && r.Origin.Kind == "human" && !r.Timestamp.IsZero()
+}
+
+// ClaudeHumanLine is the cheap prefilter for HumanPrompt: tool output, the
+// bulk of user records, carries no origin.
+func ClaudeHumanLine(line []byte) bool {
+	return bytes.Contains(line, []byte(`"origin"`)) && bytes.Contains(line, []byte(`"human"`))
 }
 
 // ClaudeMessage is the API message an assistant record carries.
