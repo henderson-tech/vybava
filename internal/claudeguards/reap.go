@@ -8,17 +8,27 @@ package claudeguards
 // xcodebuilds were 2 h and 19 h old and an Appium log held 18.5 MB of
 // create/delete session pairs. Nothing owned them any more. This sweep kills
 // the ones whose claude/codex ancestor is gone and that have lived past ten
-// minutes; a process with a live owning session is never touched.
+// minutes; a process with a live owning session is never touched. A
+// WebDriverAgent runner is judged by its driver instead (wdaDriven): on a
+// simulator it is a child of launchd_sim, so no session is ever its ancestor.
 
 import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const reapMinAge = 10 * 60
+
+// The kinds reapKind names.
+const (
+	reapWDA        = "WebDriverAgent"
+	reapXcodebuild = "xcodebuild"
+	reapAppium     = "appium"
+)
 
 // reapKind names a process the reaper knows, or "" for everything else. The
 // executable decides, never a substring of the whole argv: `tail -f
@@ -28,13 +38,96 @@ func reapKind(p machineProc) string {
 	b := p.base()
 	switch {
 	case b == "WebDriverAgentRunner-Runner" || strings.Contains(p.exe(), "WebDriverAgentRunner-Runner.app/"):
-		return "WebDriverAgent"
+		return reapWDA
 	case b == "xcodebuild" && wdaXcodebuild(p.args):
-		return "xcodebuild"
+		return reapXcodebuild
 	case b == "appium" || ((b == "node" || b == "bun") && appiumEntry(p.args)):
-		return "appium"
+		return reapAppium
 	}
 	return ""
+}
+
+const udidPattern = `[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}`
+
+var (
+	// simDevice finds the simulator a process runs in: everything inside one
+	// lives under CoreSimulator's `Devices/<UDID>/data/`.
+	simDevice = regexp.MustCompile(`/(` + udidPattern + `)/data/`)
+	// destinationValue is xcodebuild's `-destination` value up to the next
+	// flag; ps joins `platform=iOS Simulator,id=<UDID>` with its space.
+	destinationValue = regexp.MustCompile(`(?:^| )-destination ((?:[^ ]| [^-])+)`)
+	destinationID    = regexp.MustCompile(`(?:^|[ ,])id=(` + udidPattern + `)(?:$|[ ,])`)
+)
+
+// simulatorUDID is the simulator a process runs in, or "".
+func simulatorUDID(args string) string {
+	if m := simDevice.FindStringSubmatch(args); m != nil {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+// destinationUDID is the simulator an xcodebuild targets through
+// `-destination …id=<UDID>`, or "".
+func destinationUDID(args string) string {
+	v := destinationValue.FindStringSubmatch(args)
+	if v == nil {
+		return ""
+	}
+	if m := destinationID.FindStringSubmatch(v[1]); m != nil {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+// wdaDriven reports whether a WebDriverAgent runner still has a driver this
+// sweep keeps. On a simulator the runner is a child of the simulator's
+// launchd_sim, never of the xcodebuild or Appium server driving it, so the
+// session-ancestor rule alone reaped every live XCUITest session older than
+// ten minutes whenever any other session started or ended (2026-09-24, twice
+// in one Appium proof run). The first rule that finds a driver decides:
+//
+//  1. an xcodebuild or Appium ancestor, where the tree does tie the runner to
+//     its driver;
+//  2. the WebDriverAgent xcodebuilds whose -destination names the runner's
+//     simulator: any one kept holds it, all of them reaped take it along;
+//  3. otherwise any kept Appium server. A preinstalled runner is launched
+//     through simctl with no xcodebuild at all and the table cannot say
+//     which server holds it, so an undecidable runner is held.
+//
+// orphaned is the sweep's own verdict on a driver, so a runner follows it.
+func wdaDriven(runner machineProc, table []machineProc, byPID map[int]machineProc, orphaned func(machineProc) bool) bool {
+	for cur, hops := runner.ppid, 0; cur > 1 && hops < 12; hops++ {
+		p, ok := byPID[cur]
+		if !ok {
+			break
+		}
+		if k := reapKind(p); k == reapXcodebuild || k == reapAppium {
+			return !orphaned(p)
+		}
+		cur = p.ppid
+	}
+	if udid := simulatorUDID(runner.args); udid != "" {
+		named := false
+		for _, p := range table {
+			if reapKind(p) != reapXcodebuild || destinationUDID(p.args) != udid {
+				continue
+			}
+			if !orphaned(p) {
+				return true
+			}
+			named = true
+		}
+		if named {
+			return false
+		}
+	}
+	for _, p := range table {
+		if reapKind(p) == reapAppium && !orphaned(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // wdaXcodebuild reports an xcodebuild that runs WebDriverAgent's test bundle:
@@ -86,21 +179,24 @@ func appiumEntry(args string) bool {
 }
 
 // selectReapVictims picks the orphans: a known kind, older than reapMinAge,
-// with no live claude/codex ancestor in the table.
+// with no live claude/codex ancestor in the table, and for a WebDriverAgent
+// runner no driver the sweep keeps.
 func selectReapVictims(table []machineProc) []machineProc {
 	byPID := make(map[int]machineProc, len(table))
 	for _, p := range table {
 		byPID[p.pid] = p
 	}
+	orphaned := func(p machineProc) bool {
+		sec, ok := etimeSeconds(p.etime)
+		return ok && sec > reapMinAge && !ownedBySession(p.pid, byPID)
+	}
 	var out []machineProc
 	for _, p := range table {
-		if reapKind(p) == "" {
+		k := reapKind(p)
+		if k == "" || !orphaned(p) {
 			continue
 		}
-		if sec, ok := etimeSeconds(p.etime); !ok || sec <= reapMinAge {
-			continue
-		}
-		if ownedBySession(p.pid, byPID) {
+		if k == reapWDA && wdaDriven(p, table, byPID, orphaned) {
 			continue
 		}
 		out = append(out, p)
