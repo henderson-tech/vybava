@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseWorktreeList, mainCloneOf, findWorktreeForBranch, ensurePlan, createWorktree } from "../bin/worktree.ts";
+import { parseWorktreeList, mainCloneOf, findWorktreeForBranch, ensurePlan, createWorktree, refreshWorktree } from "../bin/worktree.ts";
 
 const PORCELAIN = [
   "worktree /Users/me/repo",
@@ -104,4 +104,23 @@ test("createWorktree opens a fork PR whose head branch is not on origin", () => 
   const f = prFixture({ fork: true });
   assert.equal(f.run(false), false);
   assert.equal(f.git(f.wt, "rev-parse", "HEAD"), f.git(f.author, "rev-parse", "HEAD"));
+});
+
+test("refreshWorktree brings a reused worktree to a head pushed after it was created", () => {
+  const f = prFixture();
+  assert.equal(f.run(false), false);
+  f.git(f.author, "commit", "-q", "--allow-empty", "-m", "teammate push");
+  f.publish();
+  assert.equal(refreshWorktree((_cmd, args) => f.git(f.reviewer, ...args), f.wt, 7), false);
+  assert.equal(f.git(f.wt, "rev-parse", "HEAD"), f.git(f.author, "rev-parse", "HEAD"));
+});
+
+test("a fork PR never tracks an unrelated origin branch that shares its name", () => {
+  const f = prFixture({ fork: true });
+  f.git(f.root, "clone", "-q", "origin.git", "other");
+  const other = join(f.root, "other");
+  f.git(other, "commit", "-q", "--allow-empty", "-m", "unrelated");
+  f.git(other, "push", "-q", "origin", "HEAD:feature");
+  assert.equal(f.run(false), false);
+  assert.throws(() => f.git(f.wt, "rev-parse", "--abbrev-ref", "@{upstream}"));
 });

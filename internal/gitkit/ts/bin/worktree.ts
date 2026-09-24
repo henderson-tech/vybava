@@ -34,6 +34,8 @@ export function findWorktreeForBranch(worktrees: Worktree[], headRef: string): s
   return null;
 }
 
+type Git = (cmd: string, args: string[]) => string;
+
 export type EnsurePlan = {
   action: "reuse" | "create";
   path: string;
@@ -59,30 +61,53 @@ function sh(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 120_000, cwd: repoRoot() });
 }
 
-// createWorktree anchors on GitHub's refs/pull/<N>/head — it exists for fork and
-// same-repo PRs alike, where origin/<headRef> is absent for a fork. A leftover local
-// branch of the same name may be days behind (a round seeded from it reviews and
-// pushes stale code), so it is fast-forwarded to the PR head; one carrying commits the
-// PR head lacks — behind, diverged or strictly ahead — is someone's work: left as is
-// and reported (returns true), never reset.
-export function createWorktree(git: (cmd: string, args: string[]) => string, path: string, headRef: string, pr: number, localExists: boolean): boolean {
+// Worktrees anchor on GitHub's refs/pull/<N>/head — it exists for fork and same-repo
+// PRs alike, where origin/<headRef> may be absent or, for a fork reusing a common name,
+// an unrelated branch. A local branch may be days behind (a round seeded from it
+// reviews and pushes stale code), so it is fast-forwarded to the PR head; one carrying
+// commits the PR head lacks — diverged or strictly ahead — or whose fast-forward is
+// blocked by uncommitted work is someone's work: left as is and reported (true).
+function fetchPrHead(git: Git, pr: number): string {
   const prHead = `refs/pr/${pr}`;
   git("git", ["fetch", "origin", `+refs/pull/${pr}/head:${prHead}`]);
-  if (!localExists) {
-    git("git", ["worktree", "add", "-b", headRef, path, prHead]);
-    try {
-      git("git", ["fetch", "origin", headRef]); // same-repo PR: track the head branch
-      git("git", ["-C", path, "branch", "--set-upstream-to", `origin/${headRef}`]);
-    } catch {
-      // Fork PR: the head branch is not on origin, so there is nothing to track.
-    }
-    return false;
-  }
-  git("git", ["worktree", "add", path, headRef]);
+  return prHead;
+}
+
+function alignToPrHead(git: Git, path: string, prHead: string): boolean {
   const localOnly = Number(git("git", ["-C", path, "rev-list", "--count", `${prHead}..HEAD`]).trim());
   if (localOnly > 0) return true;
-  git("git", ["-C", path, "merge", "--ff-only", "--quiet", prHead]);
+  try {
+    git("git", ["-C", path, "merge", "--ff-only", "--quiet", prHead]);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export function createWorktree(git: Git, path: string, headRef: string, pr: number, localExists: boolean): boolean {
+  const prHead = fetchPrHead(git, pr);
+  if (localExists) {
+    git("git", ["worktree", "add", path, headRef]);
+    return alignToPrHead(git, path, prHead);
+  }
+  git("git", ["worktree", "add", "-b", headRef, path, prHead]);
+  try {
+    // Track origin/<headRef> only when it IS the PR head — a name match alone could be
+    // an unrelated origin branch that a fork PR happens to share.
+    git("git", ["fetch", "origin", headRef]);
+    if (git("git", ["rev-parse", `origin/${headRef}`]).trim() === git("git", ["rev-parse", prHead]).trim()) {
+      git("git", ["-C", path, "branch", "--set-upstream-to", `origin/${headRef}`]);
+    }
+  } catch {
+    // No such branch on origin (fork PR): nothing to track.
+  }
   return false;
+}
+
+// refreshWorktree brings a REUSED worktree to the PR's current head — later rounds
+// must see a teammate's or bot's push, not the head the worktree was created at.
+export function refreshWorktree(git: Git, path: string, pr: number): boolean {
+  return alignToPrHead(git, path, fetchPrHead(git, pr));
 }
 
 function localBranchExists(headRef: string): boolean {
@@ -107,7 +132,9 @@ async function main(): Promise<void> {
   const worktrees = parseWorktreeList(sh("git", ["worktree", "list", "--porcelain"]));
   const plan = ensurePlan(worktrees, headRef, pr);
 
-  if (plan.action === "create") plan.diverged = createWorktree(sh, plan.path, headRef, pr, localBranchExists(headRef)) || undefined;
+  plan.diverged = (plan.action === "create"
+    ? createWorktree(sh, plan.path, headRef, pr, localBranchExists(headRef))
+    : refreshWorktree(sh, plan.path, pr)) || undefined;
   process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
 }
 
