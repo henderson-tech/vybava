@@ -1,6 +1,7 @@
 package lok
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -58,6 +59,84 @@ func unescape(s string) string {
 	return strings.NewReplacer(`\'`, `'`, `\"`, `"`, `\\`, `\`, `\n`, "\n").Replace(s)
 }
 
+// isTestSource reports test code by file name: Go `_test.go`, JS/TS
+// `*.test.*` / `*.spec.*` (`__tests__` and `testdata` dirs are skipped by the
+// walk). Test keys are synthetic by definition — a test asserts copy, it
+// never defines a catalog key — so a test file is neither extracted nor
+// counted as usage.
+func isTestSource(name string) bool {
+	if strings.HasSuffix(name, "_test.go") {
+		return true
+	}
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	return strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, ".spec")
+}
+
+// blankComments overwrites every `//` and `/* */` comment with spaces
+// (newlines kept), so an example call in a doc comment is never extracted.
+// It steps over '…', "…" and `…` literals so a `//` inside one — a URL —
+// stays code. '…' and "…" end at a newline, bounding a misread (a JS regex
+// literal holding a quote) to its own line; a backslash outside a literal
+// escapes the next byte, which only a regex literal (`/\/*/`) does; a `//`
+// right after `:` is a URL in JSX text, never a comment. Go raw strings
+// take no escapes.
+func blankComments(src []byte, goSource bool) []byte {
+	out := bytes.Clone(src)
+	for i := 0; i < len(src); i++ {
+		end := -1
+		switch c := src[i]; {
+		case c == '\\':
+			i++
+		case c == '\'' || c == '"' || c == '`':
+			i = literalEnd(src, i, goSource && c == '`')
+		case c == '/' && i+1 < len(src) && src[i+1] == '/' && (i == 0 || src[i-1] != ':'):
+			if end = bytes.IndexByte(src[i:], '\n'); end < 0 {
+				end = len(src)
+			} else {
+				end += i
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			if end = bytes.Index(src[i+2:], []byte("*/")); end < 0 {
+				end = len(src)
+			} else {
+				end += i + 4
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		for j := i; j < end; j++ {
+			if out[j] != '\n' {
+				out[j] = ' '
+			}
+		}
+		i = end - 1
+	}
+	return out
+}
+
+// literalEnd returns the index of the byte closing the literal opened at
+// src[i]: its quote, or — for '…' and "…" — the newline an unterminated one
+// stops at.
+func literalEnd(src []byte, i int, raw bool) int {
+	q := src[i]
+	for j := i + 1; j < len(src); j++ {
+		switch src[j] {
+		case '\\':
+			if !raw {
+				j++
+			}
+		case q:
+			return j
+		case '\n':
+			if q != '`' {
+				return j
+			}
+		}
+	}
+	return len(src)
+}
+
 // Scan runs the extractor for one english-as-key catalog. With write, the
 // missing keys are added to every locale that can be derived (en = key);
 // required locales without a derivable value stay absent and surface in
@@ -90,12 +169,12 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 			}
 			if d.IsDir() {
 				switch d.Name() {
-				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo":
+				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo", "__tests__", "testdata":
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !contains(exts, filepath.Ext(p)) {
+			if !contains(exts, filepath.Ext(p)) || isTestSource(d.Name()) {
 				return nil
 			}
 			data, err := os.ReadFile(p)
@@ -105,7 +184,7 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 			res.FilesScanned++
 			corpus.Write(data)
 			corpus.WriteByte('\n')
-			for _, m := range re.FindAllSubmatch(data, -1) {
+			for _, m := range re.FindAllSubmatch(blankComments(data, filepath.Ext(p) == ".go"), -1) {
 				lit := m[1]
 				if len(lit) == 0 {
 					lit = m[2]

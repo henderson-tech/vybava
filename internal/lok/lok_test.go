@@ -194,10 +194,14 @@ func TestScanCallDecodesStringAndList(t *testing.T) {
 	}
 }
 
-func TestScanMethodCalls(t *testing.T) {
+// scanFixture opens lok over a fresh root holding files plus a one-catalog
+// config ("m", en only, scanning src/ for t, *.T and *.N in .ts/.tsx/.go).
+func scanFixture(t *testing.T, files map[string]string) *Tool {
+	t.Helper()
 	root := t.TempDir()
-	write := func(rel, body string) {
-		t.Helper()
+	files["vybava.config.json"] = `{"lok":{"catalogs":{
+	  "m":{"style":"english-as-key","files":"locales/{locale}.json","locales":["en"],"scan":{"roots":["src"],"call":["t","*.T","*.N"],"extensions":[".ts",".tsx",".go"]}}}}}`
+	for rel, body := range files {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -206,15 +210,19 @@ func TestScanMethodCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("locales/en.json", "{\n  \"Save\": \"Save\"\n}\n")
-	write("src/a.tsx", "t('Save');\nconst m = foo.t('Not plain');\nT('Not method');\nformat.t(\"Still not plain\");\n")
-	write("src/b.go", "func f(l i18n.L) {\n\tl.T(\"Sites\")\n\ti18n.FromContext(ctx).N(\n\t\t\"{{count}} items\", n)\n\tls[i].T(`dynamic`)\n\tx.T(fmt.Sprintf(\"no literal\"))\n\tT(\"bare\")\n}\n")
-	write("vybava.config.json", `{"lok":{"catalogs":{
-	  "m":{"style":"english-as-key","files":"locales/{locale}.json","locales":["en"],"scan":{"roots":["src"],"call":["t","*.T","*.N"],"extensions":[".tsx",".go"]}}}}}`)
 	tool, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return tool
+}
+
+func TestScanMethodCalls(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{\n  \"Save\": \"Save\"\n}\n",
+		"src/a.tsx":       "t('Save');\nconst m = foo.t('Not plain');\nT('Not method');\nformat.t(\"Still not plain\");\n",
+		"src/b.go":        "func f(l i18n.L) {\n\tl.T(\"Sites\")\n\ti18n.FromContext(ctx).N(\n\t\t\"{{count}} items\", n)\n\tls[i].T(`dynamic`)\n\tx.T(fmt.Sprintf(\"no literal\"))\n\tT(\"bare\")\n}\n",
+	})
 	res, err := tool.Scan("m", false, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +230,45 @@ func TestScanMethodCalls(t *testing.T) {
 	want := []string{"Sites", "{{count}} items"}
 	if res.Calls != 3 || strings.Join(res.Missing, "|") != strings.Join(want, "|") {
 		t.Fatalf("plain t + method .T/.N on any receiver, never foo.t( or bare T(: %+v", res)
+	}
+}
+
+func TestScanSkipsTestSources(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json":    "{\n  \"Save\": \"Save\"\n}\n",
+		"src/a.ts":           "t('Real key');\n",
+		"src/a.test.ts":      "t('Save'); t('From a test');\n",
+		"src/b.spec.tsx":     "t('From a spec');\n",
+		"src/__tests__/c.ts": "t('From __tests__');\n",
+		"src/i18n_test.go":   "l.T(\"Hello {{name}}\")\n",
+		"src/testdata/d.go":  "l.T(\"From testdata\")\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FilesScanned != 1 || strings.Join(res.Missing, "|") != "Real key" || res.OrphanTotal != 1 {
+		t.Fatalf("test sources are neither extracted nor counted as usage (Save stays an orphan): %+v", res)
+	}
+}
+
+func TestScanIgnoresComments(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx": "// t('Line comment')\n/* t('Block\n   comment') */\n/**\n * t('Doc block')\n */\n" +
+			"const u = t('Visit https://example.com'); // t('Trailing')\n" +
+			"const r = /\\/*/; t('After regex');\n" +
+			"<p>See https://voke.cz {t('After JSX URL')}</p>\n",
+		"src/b.go": "// Package x\n//\n//\tl.T(\"Hello {{name}}\", i18n.Vars{\"name\": n})\n//\tl.N(\"{{count}} items selected\", n)\npackage x\n\n" +
+			"var p = `C:\\`\n// l.T(\"After raw string\")\nfunc f() { l.T(\"Real // not a comment\") }\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After JSX URL", "After regex", "Real // not a comment", "Visit https://example.com"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls inside // and /* */ comments are not keys; // inside a literal or a URL is code: %+v", res.Missing)
 	}
 }
 
