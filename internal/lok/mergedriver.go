@@ -66,7 +66,7 @@ func MergeDriver(dir, base, ours, theirs, rel string, stderr io.Writer) (conflic
 	}
 	data, clashes, err := MergeCatalog(sides[0], sides[1], sides[2], PreferNone)
 	if err != nil {
-		return textMerge(err.Error(), true, false)
+		return textMerge(err.Error(), true, errors.Is(err, ErrDuplicateKey))
 	}
 	if len(clashes) > 0 {
 		for i, c := range clashes {

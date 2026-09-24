@@ -86,6 +86,10 @@ func TestMergeCatalogRefusesNonCanonical(t *testing.T) {
 	if _, _, err := MergeCatalog([]byte(base), []byte(base), []byte("{\n    \"a\": \"2\"\n}\n"), PreferNone); !errors.Is(err, ErrNotCanonical) {
 		t.Fatalf("4-space theirs must be refused, got %v", err)
 	}
+	dup := "{\n  \"a\": \"1\",\n  \"a\": \"2\"\n}\n"
+	if _, _, err := MergeCatalog([]byte(base), []byte(dup), []byte(base), PreferNone); !errors.Is(err, ErrDuplicateKey) {
+		t.Fatalf("a side holding a key twice must be refused, got %v", err)
+	}
 }
 
 func TestMergeDriverJournalsAndFallsBack(t *testing.T) {

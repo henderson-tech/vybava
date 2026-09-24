@@ -43,6 +43,10 @@ type Clash struct {
 // to git's text merge.
 var ErrNotCanonical = errors.New("catalog is not in lok's canonical format (2-space JSON); a merged write would reformat it")
 
+// ErrDuplicateKey — a side already holds a key twice (typically left by an
+// earlier line merge); the driver forces a conflict rather than carry it on.
+var ErrDuplicateKey = errors.New("duplicate key")
+
 // MergeCatalog merges three versions of one catalog file. An empty base is
 // an empty catalog (git passes an empty file when both sides added it).
 // With PreferNone and clashes present, Data is nil: the file is a conflict.
@@ -54,6 +58,12 @@ func MergeCatalog(base, ours, theirs []byte, prefer Prefer) (data []byte, clashe
 		o, err := ParseObject(b)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", side, err)
+		}
+		// A key merge over duplicates would see only the first copy (Get)
+		// while writing both back; the earlier merge that made them is the
+		// conflict to settle first.
+		if dup := duplicateKey(o, ""); dup != "" {
+			return nil, fmt.Errorf("%s: %w %q", side, ErrDuplicateKey, dup)
 		}
 		return o, nil
 	}
@@ -187,4 +197,22 @@ func compact(v any, ok bool) string {
 		return b.String()
 	}
 	return out.String()
+}
+
+// duplicateKey returns the dotted path of the first key an object level
+// holds twice, "" when every level is unique.
+func duplicateKey(o *Object, path string) string {
+	seen := map[string]bool{}
+	for _, e := range o.Entries {
+		if seen[e.Key] {
+			return joinPath(path, e.Key)
+		}
+		seen[e.Key] = true
+		if child, ok := e.Value.(*Object); ok {
+			if dup := duplicateKey(child, joinPath(path, e.Key)); dup != "" {
+				return dup
+			}
+		}
+	}
+	return ""
 }

@@ -93,18 +93,21 @@ func (t *Tool) PlanMigrations(onto, head string) ([]MigrationPlan, error) {
 	return plans, nil
 }
 
-// migrationsAt lists a directory's migrations at a ref ("" = working tree),
-// oldest first.
+// migrationsAt lists a directory's migrations at a ref ("" = the index, so
+// an untracked draft is never taken for a branch migration), oldest first.
 func (t *Tool) migrationsAt(ref, dir string) ([]migration, error) {
 	var names []string
 	if ref == "" {
-		entries, err := os.ReadDir(filepath.Join(t.Root, filepath.FromSlash(dir)))
-		if err != nil && !os.IsNotExist(err) {
+		out, err := t.git("ls-files", "-z", "--", dir+"/")
+		if err != nil {
 			return nil, err
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				names = append(names, e.Name())
+		seen := map[string]bool{}
+		for _, p := range strings.Split(out, "\x00") {
+			name, ok := strings.CutPrefix(p, dir+"/")
+			if ok && name != "" && !strings.Contains(name, "/") && !seen[name] { // unmerged paths repeat per stage
+				seen[name] = true
+				names = append(names, name)
 			}
 		}
 	} else {

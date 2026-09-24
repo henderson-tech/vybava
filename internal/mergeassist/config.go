@@ -137,16 +137,19 @@ func Open(cwd string) (*Tool, error) {
 	return t, nil
 }
 
-// GeneratedFor returns the group owning a repository-relative path.
-func (t *Tool) GeneratedFor(rel string) (Generated, bool) {
+// GeneratedFor returns every group owning a repository-relative path —
+// overlapping globs are not an ambiguity to resolve: each owner's regen runs.
+func (t *Tool) GeneratedFor(rel string) []Generated {
+	var owners []Generated
 	for _, g := range t.Config.Generated {
 		for _, p := range g.Paths {
 			if vconfig.MatchPath(p, rel) {
-				return g, true
+				owners = append(owners, g)
+				break
 			}
 		}
 	}
-	return Generated{}, false
+	return owners
 }
 
 // git runs one git command at the repo root; stderr rides in the error.

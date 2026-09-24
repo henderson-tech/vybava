@@ -178,6 +178,10 @@ func TestFailedMigrationCheckBlocksCommit(t *testing.T) {
 	git("switch", "-q", "main")
 	add("m/300-AddMain.ts", "export class AddMain300 {}\n")
 	git("switch", "-q", "feature")
+	// An untracked draft is not a branch migration: renaming it would fail git mv.
+	if err := os.WriteFile(filepath.Join(root, "m/250-Draft.ts"), []byte("export class Draft250 {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tool, err := Open(root)
 	if err != nil {
@@ -215,5 +219,39 @@ func TestValidateRejectsDuplicateMigrationDirs(t *testing.T) {
 	c := Config{Migrations: []Migrations{{Dir: "m", Style: StyleTypeORM, Check: "a"}, {Dir: "m", Style: StyleTypeORM, Check: "b"}}}
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "listed twice") {
 		t.Fatalf("two entries for one directory would share its check row: %v", err)
+	}
+}
+
+// TestSetupQuotesPathsGitWouldSplit: a generated path with a space must reach
+// git as one pattern, and two groups naming one path must stay one rule.
+func TestSetupQuotesPathsGitWouldSplit(t *testing.T) {
+	root := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	run("init", "-q")
+	cfg := `{"merge": {"generated": [{"paths": ["gen/api schema.json"], "regen": "a"}, {"paths": ["gen/api schema.json"], "regen": "b"}]}}`
+	if err := os.WriteFile(filepath.Join(root, "vybava.config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Setup(false)
+	if err != nil || len(res.Attributes) != 1 {
+		t.Fatalf("setup: %v %q", err, res.Attributes)
+	}
+	if got := run("check-attr", "merge", "--", "gen/api schema.json"); !strings.Contains(got, "merge: vybava-generated") {
+		t.Fatalf("git does not see the quoted rule: %q (block %q)", got, res.Attributes)
+	}
+	if owners := tool.GeneratedFor("gen/api schema.json"); len(owners) != 2 {
+		t.Fatalf("both owners' regens must queue, got %d", len(owners))
 	}
 }

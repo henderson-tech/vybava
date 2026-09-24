@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/mergeassist/gitmerge"
@@ -57,16 +59,20 @@ func (t *Tool) Block() []string {
 		}
 	}
 	sort.Strings(lines)
-	return lines
+	return slices.Compact(lines) // one path in two groups is one rule
 }
 
-// attrPath anchors a repository path; gitattributes matches a slash-free
-// pattern at any depth, which a config path never means.
+// attrPath anchors a repository path (gitattributes matches a slash-free
+// pattern at any depth, which a config path never means) and C-quotes one
+// git would otherwise split at whitespace or misread.
 func attrPath(p string) string {
-	if strings.HasPrefix(p, "**/") || strings.HasPrefix(p, "/") {
-		return p
+	if !strings.HasPrefix(p, "**/") && !strings.HasPrefix(p, "/") {
+		p = "/" + p
 	}
-	return "/" + p
+	if strings.ContainsAny(p, " \t\"\\#") {
+		return strconv.Quote(p)
+	}
+	return p
 }
 
 // Setup writes the block and registers the drivers; check only reports.
@@ -140,16 +146,16 @@ func spliceBlock(content string, lines []string) string {
 }
 
 // Driver is `merge-assist driver %O %A %B %P` for generated paths: theirs
-// wins outright and the group's regen is journaled for after the merge.
+// wins outright and every owning group's regen is journaled for after the
+// merge.
 // A path no group owns gets git's text merge.
 func Driver(dir, base, ours, theirs, rel string, stderr io.Writer) (conflict bool, err error) {
 	t, err := Open(dir)
-	var g Generated
-	ok := false
+	var owners []Generated
 	if err == nil {
-		g, ok = t.GeneratedFor(rel)
+		owners = t.GeneratedFor(rel)
 	}
-	if !ok {
+	if len(owners) == 0 {
 		reason := "no merge.generated group owns it"
 		if err != nil {
 			reason = err.Error()
@@ -164,8 +170,10 @@ func Driver(dir, base, ours, theirs, rel string, stderr io.Writer) (conflict boo
 	if err := os.WriteFile(ours, data, 0o644); err != nil {
 		return false, err
 	}
-	if err := gitmerge.Record(dir, gitmerge.Event{Path: rel, Class: gitmerge.ClassGenerated, Outcome: gitmerge.OutcomeResolved, Regen: g.Regen}); err != nil {
-		fmt.Fprintf(stderr, "merge-assist driver: journal: %v; run `%s` after the merge\n", err, g.Regen)
+	for _, g := range owners {
+		if err := gitmerge.Record(dir, gitmerge.Event{Path: rel, Class: gitmerge.ClassGenerated, Outcome: gitmerge.OutcomeResolved, Regen: g.Regen}); err != nil {
+			fmt.Fprintf(stderr, "merge-assist driver: journal: %v; run `%s` after the merge\n", err, g.Regen)
+		}
 	}
 	return false, nil
 }
