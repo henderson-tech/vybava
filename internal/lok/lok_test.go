@@ -310,7 +310,25 @@ func TestScanRegexLiteralsNeverSwallowCode(t *testing.T) {
 	}
 	want := []string{"After class", "After paren regex", "After quote regex // kept", "After return", "JSX glob", "Last", "Same line"}
 	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
-		t.Fatalf("a regex literal, or a /* after [ or a value left open on its line, never blanks real code: %+v", res.Missing)
+		t.Fatalf("a regex literal, or a /* after a value left open on its line, never blanks real code: %+v", res.Missing)
+	}
+}
+
+func TestScanRegexAfterConditionParen(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.ts": "if (ok) /[//]/.test(s) && t('Live');\n" +
+			"foo(x) / 2 // t('Commented')\n" +
+			"while (a) /[//]x/.test(b) && t('W');\n" +
+			"if (f(x)) /[//]/.test(s) && t('Nested paren');\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Live", "Nested paren", "W"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("a / after the ) of if/while/for/with opens a regex, after any other ) it divides: %+v", res.Missing)
 	}
 }
 

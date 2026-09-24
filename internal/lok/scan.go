@@ -72,16 +72,21 @@ func isTestSource(name string) bool {
 // (newlines kept), so an example call in a doc comment is never extracted.
 // A small lexer: it steps over '…' and "…" literals, JS regex literals
 // (classes included) and template text, and descends into `${…}`, which is
-// code. Where it cannot tell, it fails toward scanning too much, never toward
-// blanking code: '…', "…" and a regex end at a newline, a suspect JS `/*`
-// left open on its line is not a comment (blockEnd), and a `//` right after
-// `:` is a URL in JSX text. A backslash in code escapes the
-// next byte (only an unrecognised regex holds one). Go has no regex or
-// template literals and its raw strings take no escapes.
+// code. A `/` opens a regex in operand position — after an operator, an
+// expression keyword, or the `)` of an if/while/for/with condition (a paren
+// stack tracks which `)` that is) — and divides anywhere else. Where it cannot
+// tell, it leans toward scanning too much: '…', "…" and a regex end at a
+// newline, a suspect JS `/*` left open on its line is not a comment
+// (blockEnd), and a `//` right after `:` is a URL in JSX text. A backslash in
+// code escapes the next byte (only an unrecognised regex holds one). Go has
+// no regex or template literals and its raw strings take no escapes.
 func blankComments(src []byte, goSource bool) []byte {
 	out := bytes.Clone(src)
-	var interp []int // brace depth inside each open `${`, innermost last
-	last := -1       // the last significant code byte: regex or division?
+	var interp []int  // brace depth inside each open `${`, innermost last
+	var parens []bool // per open `(`: does it hold an if/while/for/with condition?
+	last := -1        // the last significant code byte: regex or division?
+	condClose := -1   // the `)` that closed a condition: a `/` after it opens a regex
+	operand := func() bool { return last >= 0 && last == condClose || regexAllowed(src, last) }
 	template := func(j int) int {
 		end, open := templateEnd(src, j)
 		if open {
@@ -101,11 +106,18 @@ func blankComments(src []byte, goSource bool) []byte {
 				end += i
 			}
 		case c == '/' && i+1 < len(src) && src[i+1] == '*': // before the regex case: no regex starts with `*`
-			suspect := !goSource && last >= 0 && bytes.IndexByte(src[last:i], '\n') < 0 &&
-				(src[last] == '[' || !regexAllowed(src, last))
+			suspect := !goSource && last >= 0 && bytes.IndexByte(src[last:i], '\n') < 0 && !operand()
 			end = blockEnd(src, i, suspect)
-		case c == '/' && !goSource && regexAllowed(src, last):
+		case c == '/' && !goSource && operand():
 			i = regexEnd(src, i)
+		case c == '(' && !goSource:
+			w := wordAt(src, last)
+			parens = append(parens, w == "if" || w == "while" || w == "for" || w == "with")
+		case c == ')' && !goSource && len(parens) > 0:
+			if parens[len(parens)-1] {
+				condClose = i
+			}
+			parens = parens[:len(parens)-1]
 		case c == '`' && !goSource:
 			i = template(i + 1)
 		case c == '\'' || c == '"' || c == '`':
@@ -138,10 +150,10 @@ func blankComments(src []byte, goSource bool) []byte {
 
 // blockEnd returns the end of the block comment opened at src[i]. In code a
 // `/*` always opens one (Go has no regex; in JS no regex starts with `*`), so
-// the only doubt is a `/*` the lexer reached while not really in code: a
-// regex class it failed to recognise (`) /[/*]/`) or JSX text (`src/*`).
-// That is suspect — JS, with `[` or a value before it on its line — and a
-// suspect `/*` not closed on its own line returns -1 and stays code, since
+// the only doubt is a `/*` the lexer reached while not really in code: JSX
+// text (`src/*`) or a regex it failed to recognise. That is suspect — JS,
+// with a value rather than an operand position before it on its line — and
+// a suspect `/*` not closed on its own line returns -1 and stays code, since
 // misread as a comment it would blank real code up to the next `*/`.
 func blockEnd(src []byte, i int, suspect bool) int {
 	end := bytes.Index(src[i+2:], []byte("*/"))
@@ -161,15 +173,20 @@ func regexAllowed(src []byte, last int) bool {
 	if last < 0 || strings.IndexByte("(,=:[!&|?{};+-%^~>", src[last]) >= 0 {
 		return true
 	}
-	start := last + 1
-	for start > 0 && isIdentByte(src[start-1]) {
-		start--
-	}
-	switch string(src[start : last+1]) {
+	switch wordAt(src, last) {
 	case "return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "instanceof", "yield", "await":
 		return true
 	}
 	return false
+}
+
+// wordAt returns the identifier ending at src[last], or "".
+func wordAt(src []byte, last int) string {
+	start := last + 1
+	for start > 0 && isIdentByte(src[start-1]) {
+		start--
+	}
+	return string(src[start : last+1])
 }
 
 func isIdentByte(c byte) bool {
