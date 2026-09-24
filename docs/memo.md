@@ -148,6 +148,10 @@ A `ref` is `45`, `#45`, `^m45` (personal), `t12`, `#t12`, `^t12` (team),
 bare id is looked up in the session's personal home, a `t` id in its team
 home; `--home` or an alias overrides that.
 
+`memo add` refuses `LEGACY_HOME` in a v2 home, meaning a hand-written
+`MEMORY.md` and no `LEDGER.md`: a first render would replace that index, and
+nothing snapshots a personal home before its ledger exists. `memo migrate`
++ `memo import` convert the home first. Elsewhere,
 `memo add` creates the ledger on first use: the row's type decides the kind
 (`user`/`feedback` personal, else team), the alias is the repo basename
 lowercased (`-team` suffix for the team home), and a personal ledger records
@@ -289,6 +293,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `REF_UNKNOWN` | 2 | referenced row missing |
 | `REF_AMBIGUOUS` | 2 | bare id exists in more than one session home |
 | `RENDER_DRIFT` | 2 | `render --check`: MEMORY.md differs |
+| `LEGACY_HOME` | 2 | `add` into a v2 home (hand-written `MEMORY.md`, no `LEDGER.md`); the row is not written; fix `memo migrate <home>`, then `memo import` |
 | `SURFACE_TRACKED` | 0 | warning, a team `MEMORY.md` is tracked by git and was left as committed; fix untracks a render or migrates a hand-written index |
 | `IMPORT_INVALID` | 2 | import file line outside the id-less grammar |
 | `REGISTRY_INVALID` | 2 | homes.json malformed or with unknown fields |

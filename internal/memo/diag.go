@@ -62,6 +62,10 @@ const (
 	// so memo left it as committed instead of rendering over it. Fix: untrack
 	// it (a hand-written v2 index is migrated into rows first).
 	DiagSurfaceTracked = "SURFACE_TRACKED"
+	// DiagLegacyHome: `memo add` into a v2 home (a hand-written MEMORY.md, no
+	// LEDGER.md), where a first render would replace the index. Fix: convert
+	// it with `memo migrate` + `memo import`.
+	DiagLegacyHome = "LEGACY_HOME"
 	// DiagImportInvalid: an import file line is not in the id-less grammar.
 	DiagImportInvalid = "IMPORT_INVALID"
 	// DiagRegistryInvalid: homes.json does not parse or carries unknown

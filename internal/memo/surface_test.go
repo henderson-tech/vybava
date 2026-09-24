@@ -139,6 +139,37 @@ func TestTrackedIndexLeftAsCommitted(t *testing.T) {
 	}
 }
 
+// TestLegacyHomeRefusesTheFirstAdd: a hand-written v2 index without a ledger
+// refuses `memo add` (it would be rendered over); an empty index, a render or
+// an existing ledger never does.
+func TestLegacyHomeRefusesTheFirstAdd(t *testing.T) {
+	home := t.TempDir()
+	index := filepath.Join(home, IndexFile)
+	if d := LegacyHome(home); d != nil {
+		t.Fatalf("no index: %+v", d)
+	}
+	if err := os.WriteFile(index, []byte("# Onyx memory\n\n- [Vault](project-vault.md) - the vault unlocks per session.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := LegacyHome(home); d == nil || d.Code != DiagLegacyHome || d.Fix != "memo migrate "+home {
+		t.Fatalf("hand index: %+v", d)
+	}
+	l, err := Create(filepath.Join(home, LedgerFile), "onyx", KindPersonal, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := LegacyHome(home); d != nil {
+		t.Errorf("a ledger home is converted: %+v", d)
+	}
+	os.Remove(l.Path)
+	if err := os.WriteFile(index, []byte(Render(l, nil, time.Now())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := LegacyHome(home); d != nil {
+		t.Errorf("a render is memo's own: %+v", d)
+	}
+}
+
 // newTeamLedger appends rows to the team ledger at home (created on first
 // use) and returns it freshly loaded.
 func newTeamLedger(t *testing.T, home string, rows ...string) *Ledger {

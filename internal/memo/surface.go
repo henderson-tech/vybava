@@ -187,6 +187,22 @@ func TrackedIndex(home string, kind Kind) *Diag {
 	return &Diag{Code: DiagSurfaceTracked, Severity: "warning", Detail: path + " is tracked by git, so memo left it as committed: the team hot surface is a local render and rewriting a tracked copy dirties the checkout; untrack it in a worktree and commit the removal with " + GitignoreFile, Fix: untrack}
 }
 
+// LegacyHome returns the LEGACY_HOME refusal for a home holding a
+// hand-written v2 MEMORY.md and no LEDGER.md, else nil. A first `memo add`
+// there would render over the index (it happened to devulinka-infra and
+// ReservineBack, and nothing snapshots a personal home before its ledger
+// exists); `memo import` is the conversion and may replace it.
+func LegacyHome(home string) *Diag {
+	if hasLedger(home) {
+		return nil
+	}
+	have, err := os.ReadFile(filepath.Join(home, IndexFile))
+	if err != nil || strings.TrimSpace(string(have)) == "" || isRenderedIndex(string(have)) {
+		return nil
+	}
+	return errorDiag(DiagLegacyHome, home+" is a v2 home (a hand-written MEMORY.md, no LEDGER.md), so the row was not written: a first add would render over the index; convert it: `memo migrate "+home+"` prints the template, `memo import <file> --home "+home+"` creates the ledger and replaces the index, then re-run this add", "memo migrate "+home)
+}
+
 // isRenderedIndex tells a memo render from a hand-written v2 index.
 func isRenderedIndex(s string) bool {
 	return strings.HasPrefix(s, indexHeading+"\n") && strings.Contains(s, "\n"+citeLead)

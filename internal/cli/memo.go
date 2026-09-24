@@ -134,6 +134,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		if d := memo.LegacyHome(homes[0].Path); d != nil {
+			return finish(s, nil, nil, nil, d)
+		}
 		l, d, err := env.Open(homes[0], true)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
