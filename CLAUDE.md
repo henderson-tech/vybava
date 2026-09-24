@@ -130,6 +130,14 @@ embedded TypeScript to Go keeps its verb and output and no skill changes. Edit
 `ts/bin/` → run the `ts/tests/` suite (`docs/gitkit.md`). The git-family skills
 are canonical HERE; a personal `~/.claude` copy is a symlink, never a fork.
 
+`internal/readiness` is the `release-readiness` skill's deterministic layer. It renders
+`skills/release-readiness/templates/` from the embedded payload, so a rule change
+is a template edit and never a Go string. The run directory is seeded with COPIES
+of the skill's scripts: skills never reference their own install path, which
+differs between Claude and Codex. `init` never overwrites run.json, a ledger or
+a copied script. `slot` and `uniq-shots.sh` are workarounds with named retirement
+conditions (`docs/readiness.md`).
+
 `internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
 state), install goes through the product's own channel, and credentials never
 pass through Výbava — guided steps run with a terminal or come back as `next`.

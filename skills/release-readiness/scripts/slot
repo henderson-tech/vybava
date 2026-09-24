@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Box-wide admission for release-readiness lanes (skill release-readiness, from the Reservine
+# devlp run 2026-09-23). At most READINESS_SLOTS heavy jobs (browser batches, builds, suites) run
+# at once, and none starts while MemAvailable is under READINESS_MIN_AVAIL_GB or the 1-min load is
+# at or above READINESS_MAX_LOAD. When the container cgroup slice READINESS_SLICE exists, slots
+# scale with its headroom under memory.high: all of them at >= READINESS_MIN_SLICE_HEADROOM_GB,
+# one at >= READINESS_MIN_SLICE_HEADROOM_ONE_SLOT_GB, none below. Jobs that run outside the slice
+# (guest-native) may set READINESS_MIN_SLICE_HEADROOM_GB=-100.
+#
+# Linux only (flock, /proc, cgroup v2). It runs on the box that hosts the lane stacks:
+#   scp <run-dir>/slot <host>:~/readiness/slot
+#   ssh <host> 'bash ~/readiness/slot -- <command...>'      # exit code is the command's
+# Retire it once the dev environment's own admission gates on slice headroom, load and a slot
+# count: fixit/devbox#3260 (henderson-tech/devbox#88 covers the slice headroom only).
+set -u
+N=${READINESS_SLOTS:-3}
+MIN_GB=${READINESS_MIN_AVAIL_GB:-10}
+MAX_LOAD=${READINESS_MAX_LOAD:-48}
+D=${READINESS_SLOT_DIR:-$HOME/.cache/readiness-slots}
+SLICE=${READINESS_SLICE:-/sys/fs/cgroup/devbox.slice/devbox-docker.slice}
+MIN_SLICE_GB=${READINESS_MIN_SLICE_HEADROOM_GB:-6}
+MIN_SLICE_ONE_GB=${READINESS_MIN_SLICE_HEADROOM_ONE_SLOT_GB:-3}
+mkdir -p "$D"
+[ "${1:-}" = "--" ] && shift
+[ $# -gt 0 ] || { echo "usage: slot -- <command...>" >&2; exit 2; }
+if [ ! -r /proc/meminfo ] || [ ! -r /proc/loadavg ]; then
+  echo "slot: Linux only (reads /proc/meminfo and /proc/loadavg); run it on the box that hosts the stacks" >&2
+  exit 2
+fi
+
+avail_gb() { awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo; }
+load1() { awk '{print int($1)}' /proc/loadavg; }
+# Every container shares the slice; above memory.high the kernel throttles all of them, whatever
+# the host's MemAvailable says. No slice (or no limit) means no slice gate.
+slice_headroom_gb() {
+  if [ ! -r "$SLICE/memory.high" ] || [ ! -r "$SLICE/memory.current" ]; then echo 1000000; return; fi
+  high=$(cat "$SLICE/memory.high")
+  if [ "$high" = max ]; then echo 1000000; return; fi
+  awk -v h="$high" '{print int((h - $1) / 1073741824)}' "$SLICE/memory.current"
+}
+
+# All N slots when the slice is comfortable, a single slot when it is tight (the queue still
+# drains while every waiting lane keeps its stack up), none when the next job would push the
+# slice into memory.high throttling.
+slots_now() {
+  h=$(slice_headroom_gb)
+  if [ "$h" -ge "$MIN_SLICE_GB" ]; then echo "$N"
+  elif [ "$h" -ge "$MIN_SLICE_ONE_GB" ]; then echo 1
+  else echo 0; fi
+}
+
+while :; do
+  n_now=$(slots_now)
+  if [ "$(avail_gb)" -ge "$MIN_GB" ] && [ "$(load1)" -lt "$MAX_LOAD" ] && [ "$n_now" -gt 0 ]; then
+    # Admission is serialized and counts EVERY held slot of the N: when the
+    # headroom shrinks to one slot, jobs still running on slots 2..N count
+    # against it, so a free slot 1 never admits an extra job.
+    exec {adm}>"$D/admit.lock"
+    flock "$adm"
+    busy=0
+    free=""
+    for i in $(seq 1 "$N"); do
+      exec {probe}>"$D/$i.lock"
+      if flock -n "$probe"; then
+        [ -z "$free" ] && free=$i
+        flock -u "$probe"
+      else
+        busy=$((busy + 1))
+      fi
+      exec {probe}>&-
+    done
+    if [ "$busy" -lt "$n_now" ] && [ -n "$free" ]; then
+      exec {fd}>"$D/$free.lock"
+      if flock -n "$fd"; then
+        exec {adm}>&-
+        echo "[readiness-slot] slot $free ($((busy + 1)) of $n_now allowed, $N max), $(avail_gb) GB available, slice headroom $(slice_headroom_gb) GB, load $(load1)" >&2
+        # The job must not inherit the slot lock: a daemon it leaves behind
+        # would otherwise hold the slot after the job itself exits.
+        "$@" {fd}>&-
+        rc=$?
+        exec {fd}>&-
+        exit "$rc"
+      fi
+      exec {fd}>&-
+    fi
+    exec {adm}>&-
+  fi
+  if [ -z "${waited:-}" ]; then
+    echo "[readiness-slot] waiting: $(avail_gb) GB available (need $MIN_GB), load $(load1) (max $MAX_LOAD), slice headroom $(slice_headroom_gb) GB, $n_now of $N slots allowed now" >&2
+    waited=1
+  fi
+  sleep 15
+done

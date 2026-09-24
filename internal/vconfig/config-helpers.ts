@@ -69,9 +69,83 @@ export interface MergeConfig {
   migrations?: MergeMigrations[];
 }
 
+/** One repository that ships in the release. */
+export interface ReadinessRepo {
+  /** Ref prefix in inventories and lane bodies: `app#123`, `app@abc1234`. */
+  id: string;
+  /** Relative to the directory holding this config. */
+  path: string;
+  /** owner/name on GitHub. */
+  github: string;
+  /** Default origin. */
+  remote?: string;
+  /** What production runs: the newest tag matching `tag` reachable from `integration` (minus `exclude`), or a branch. */
+  production: { tag: string; exclude?: string } | { branch: string };
+  /** The branch lanes merge into. */
+  integration: string;
+  /** Creates a lane checkout of this repo; {slug} {path} (its resolved main clone). Required for every repo but the first. */
+  worktree?: string;
+}
+
+export interface ReadinessDevice {
+  id: string;
+  platform: 'ios' | 'android' | 'web';
+  framework: 'appium' | 'playwright';
+  host: 'mac' | 'devbox' | 'ci';
+  /** Human name on boards: 'iPhone 17 Pro', 'Pixel 7 · API 35', 'Desktop Chrome 1440×810'. */
+  name: string;
+  /** Screenshot width a board card must show for this device. */
+  width?: number;
+  /** Builds the app a release run installs; {commit} {apiUrl} {out} {worktree}. */
+  build?: string;
+  /** Runs specs; {specs} {apiUrl} {app} {runDir} {udid} {worktree} {grep} {port} {driverPort} (runner-assigned ports). */
+  run: string;
+}
+
+/** readiness: what a release-readiness run needs to know about this project. Command strings take {token} placeholders; `readiness check` rejects unknown ones. */
+export interface ReadinessConfig {
+  vitrinka: { workspace: string; project: string };
+  /** ~/Exports/<exports>/release-readiness-<date> is the default run directory. */
+  exports?: string;
+  repos: ReadinessRepo[];
+  lane: {
+    /** Creates the lane checkout; {slug}. */
+    worktree: string;
+    /** The lane stack's {ws} name; {slug}. */
+    workspace?: string;
+    /** Lane stack verbs; {ws} {slug}. url takes {ws} {app}; checks run once after up. */
+    devEnv: { up: string; hold: string; park: string; url?: string; checks?: string[] };
+    /** Wraps every heavy job (suite, build, browser batch); must contain {cmd}. */
+    heavy: string;
+  };
+  /** Suites lanes extend and run through lane.heavy; {pattern}. */
+  tests?: { name: string; framework?: string; cmd: string }[];
+  devices: {
+    /** 'device-runner' = one orchestrator-owned agent owns every simulator and emulator. */
+    runner: 'lane' | 'device-runner';
+    build: 'release' | 'dev-client';
+    /** Most devices driven at once (default 2); keep it ≤ guards.simCap. */
+    concurrent?: number;
+    /** Every run resets the lane's shared test data: never two runs on one lane at once. */
+    oneRunPerLane?: boolean;
+    matrix: ReadinessDevice[];
+    /** Multi-actor specs run with the roles on different platforms; run takes {spec} {apiUrl} {runDir} {worktree} {iosApp} {androidApp} {port}, and per role {<role>} (its platform) and {<role>Udid}. */
+    realtime?: { specs: string[]; roles: string[]; directions: 'both' | 'one'; run: string };
+  };
+  /** order lists repo ids, first to merge first. */
+  merge: { command: string; order?: string[] };
+  /** checks: read-only release gates on the merged integration branch; handoff: the ship command the run never runs. */
+  final?: { checks?: string[]; handoff?: string };
+  /** Project traps rendered verbatim into lane-rules.md. */
+  rules?: string[];
+  /** Shared prerequisites known to be missing; phase 3 builds them first. */
+  plumbing?: string[];
+}
+
 export interface VybavaConfig {
   lok?: LokConfig;
   merge?: MergeConfig;
+  readiness?: ReadinessConfig;
   guards?: {
     /** Repository-relative globs; ** spans directories. Query these files with rg. */
     noRead?: string[];
