@@ -138,6 +138,11 @@ differs between Claude and Codex. `init` never overwrites run.json, a ledger or
 a copied script. `slot` and `uniq-shots.sh` are workarounds with named retirement
 conditions (`docs/readiness.md`).
 
+`internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
+state), install goes through the product's own channel, and credentials never
+pass through Výbava — guided steps run with a terminal or come back as `next`.
+A pultik artifact is placed only after its sha256 matches the shelf.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See

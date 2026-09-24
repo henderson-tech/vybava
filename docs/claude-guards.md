@@ -191,7 +191,17 @@ and SessionStart through `weather --reap`, which hands over the process table
 it already read) kills orphaned WebDriverAgent runners, `xcodebuild
 test-without-building` and Appium servers older than ten minutes whose
 claude/codex ancestor is gone; a process with a live owning session is never
-touched. On 2026-09-19/20 four booted simulators, three Metro bundlers and
+touched. A simulator's WebDriverAgent runner is a child of that simulator's
+`launchd_sim`, so no session is ever its ancestor: it follows its driver
+instead, the WebDriverAgent xcodebuild whose `-destination` names its
+simulator (UDID from the runner's `Devices/<UDID>/data/` path), else any kept
+Appium server or any live in-process driver (a preinstalled runner has no
+xcodebuild). The in-process driver is appium-mcp, which Codex sessions use: it
+hosts XCUITestDriver in its own node process and launches its cached runner
+through `simctl`, so it holds runners but is never reaped itself. A runner is
+reaped only when that driver is reaped or none is alive; before 2026-09-24
+every live XCUITest session older than ten minutes died whenever another
+session started or ended. On 2026-09-19/20 four booted simulators, three Metro bundlers and
 four API servers held about 25 GB and a thousand processes at the memory
 ceiling, two orphaned xcodebuilds were 2 h and 19 h old, and the load average
 peaked at 680.

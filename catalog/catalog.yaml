@@ -247,6 +247,121 @@ items:
     description: Client and prospect emails as one Outlook-paste HTML per project — inline-styled house markup, project fact sheet, browser-verified links.
     source: skills/press-email
 
+  # Tools: external apps and CLIs installed through their product's own
+  # published channel and probed live (internal/toolsetup, docs/setup-team.md).
+  - id: node
+    kind: tool
+    status: stable
+    description: Node.js — runs the gitkit layer (22.18+ strips TypeScript natively).
+    tool:
+      probe: {command: node}
+      install: {brew: node}
+
+  - id: bun
+    kind: tool
+    status: stable
+    description: Bun — the runtime behind bunx-delivered installers (onyx-mcp).
+    tool:
+      probe: {command: bun}
+      install: {brew: oven-sh/bun/bun}
+
+  - id: helium
+    kind: tool
+    status: experimental
+    description: Helium browser — the Chromium the Onyx extension and the agents' browser sessions run in.
+    tool:
+      probe: {app: Helium.app}
+      install: {brew_cask: helium-browser}
+
+  - id: onyx
+    kind: tool
+    status: experimental
+    description: Onyx vault app — encrypted secrets the agents reference by handle, never by value.
+    tool:
+      probe: {app: Onyx.app}
+      install: {pultik: onyx}
+
+  - id: onyx-mcp
+    kind: tool
+    status: experimental
+    description: Onyx MCP server as a resident LaunchAgent, registered with Claude Code and Codex — guided onboarding.
+    tool:
+      probe: {path: ~/Library/LaunchAgents/com.lovinka.onyx-mcp.plist}
+      install: {run: [bunx, "@lovinka/onyx-mcp", setup]}
+      needs: [bun, onyx]
+      interactive: true
+
+  - id: onyx-extension
+    kind: tool
+    status: experimental
+    description: Onyx browser extension + native bridge in Helium — autofill, save-on-submit, TOTP.
+    tool:
+      probe: {path: "~/Library/Application Support/net.imput.helium/NativeMessagingHosts/com.lovinka.onyx.json"}
+      install: {run: [bash, -c, "curl -fsSL https://onyx.lovinka.com/downloads/install-extension.sh | bash"]}
+      needs: [helium, onyx]
+      interactive: true
+
+  - id: onyx-mcp-browsers
+    kind: tool
+    status: experimental
+    description: Lazy Playwright + chrome-devtools MCP through the Onyx bridge — no browser spawns until an agent uses one, and each session attaches to its own onyx browser.
+    tool:
+      probe: {path: ~/.local/share/onyx-bridge/bin/mcp-lazy}
+      install: {run: [bash, -c, "curl -fsSL https://onyx.lovinka.com/downloads/install-extension.sh | bash -s -- --mcp-browsers"]}
+      needs: [onyx-extension, node]
+
+  - id: vitrinka-cli
+    kind: tool
+    status: experimental
+    description: The vitrinka CLI — boards, tasks and artifact publishing; setup signs in and wires the Claude plugin and MCP.
+    tool:
+      probe: {command: vitrinka}
+      install: {pultik: "vitrinka-cli-darwin-{arch}"}
+      setup: [[vitrinka, setup]]
+
+  - id: vitrinka-app
+    kind: tool
+    status: experimental
+    description: Vitrinka desktop shell — instant summon and vitrinka:// deep links.
+    tool:
+      probe: {app: Vitrinka.app}
+      install: {pultik: vitrinka}
+
+  - id: switcheroo-bar
+    kind: tool
+    status: experimental
+    description: SwitcherooBar — Claude account switcher and usage cockpit in the menu bar.
+    tool:
+      probe: {app: SwitcherooBar.app}
+      install: {pultik: switcheroo}
+
+  - id: switcheroo-cli
+    kind: tool
+    status: experimental
+    description: switcheroo CLI — Claude/Codex account switching and the cc/cco/ccl/cch/cx shell functions; setup writes the zshrc block, then signs in.
+    tool:
+      probe: {command: switcheroo}
+      install: {pultik: "switcheroo-cli-darwin-{arch}"}
+      setup: [[switcheroo, shell, install], [switcheroo, setup]]
+
+  - id: pultik
+    kind: tool
+    status: experimental
+    description: Pultík — menu-bar command center for CI, PRs and widgets (⌥Space).
+    tool:
+      probe: {app: Pultik.app}
+      install: {pultik: pultik}
+
+  - id: devbox
+    kind: tool
+    status: experimental
+    description: Devbox CLI — remote dev workspaces on Devulinka. Owner-only for now; needs henderson-tech repo access.
+    tool:
+      probe: {command: devbox}
+      install: {run: [bash, -c, "d=\"$HOME/Work/Projects/FixIt-Technologies/devbox\"; [ -d \"$d\" ] || gh repo clone henderson-tech/devbox \"$d\"; \"$d/mac/setup.sh\""]}
+      optional: true
+      interactive: true
+
 groups:
   - id: recommended
     description: Stable baseline suitable for every workstation and project.
@@ -314,9 +429,44 @@ groups:
       - push-back
       - merge-assist
 
+  - id: henderson
+    description: One-click henderson-tech Mac (`vybava setup team`) — the Onyx vault stack in Helium, vitrinka, SwitcherooBar, Pultík and the git family; devbox stays opt-in.
+    items:
+      - node
+      - bun
+      - helium
+      - onyx
+      - onyx-mcp
+      - onyx-extension
+      - onyx-mcp-browsers
+      - vitrinka-cli
+      - vitrinka-app
+      - switcheroo-bar
+      - switcheroo-cli
+      - pultik
+      - devbox
+      - gitkit
+      - prm
+      - push-all
+      - sync
+      - push-back
+
   - id: everything
     description: Every package currently published by Výbava.
     items:
+      - node
+      - bun
+      - helium
+      - onyx
+      - onyx-mcp
+      - onyx-extension
+      - onyx-mcp-browsers
+      - vitrinka-cli
+      - vitrinka-app
+      - switcheroo-bar
+      - switcheroo-cli
+      - pultik
+      - devbox
       - worktime
       - lok
       - merge-assist
