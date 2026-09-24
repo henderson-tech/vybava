@@ -1,6 +1,8 @@
 package tokentime
 
 import (
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -294,6 +296,36 @@ func TestProjectLifetimeMatchesTheRollupFromItsNamesakesAlone(t *testing.T) {
 	}
 }
 
+// Two LIVE roots share a basename: lifetime tokens pick which one keeps the
+// short name, as in the rollup — never the range's tokens, never the path.
+func TestProjectNamesLiveNamesakesByLifetimeTokens(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	small, big := filepath.Join(base, "a", "lib"), filepath.Join(base, "b", "lib") // small sorts first by path
+	mkdir(t, small)
+	mkdir(t, big)
+	s := indexed(t, base,
+		rec{"b1", big, "2026-09-01T10:00:00Z", "claude-opus-5-5", 1000}, // before the range: lifetime only
+		rec{"b2", big, "2026-09-22T10:00:00Z", "claude-opus-5-5", 1},
+		rec{"a", small, "2026-09-22T10:00:00Z", "claude-opus-5-5", 50}, // more in the range, less in a lifetime
+	)
+	r, err := s.Rollup(RollupOptions{Days: 7, Hours: 1, Now: time.Date(2026, 9, 24, 12, 0, 0, 0, prague), Location: prague})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollup := map[string]string{}
+	for _, p := range r.Projects {
+		rollup[p.Root] = p.Name
+	}
+	if len(rollup) != 2 || rollup[big] != "lib" || rollup[small] != "a/lib" {
+		t.Fatalf("rollup names = %v, want lib for %s and a/lib for %s", rollup, big, small)
+	}
+	for root, want := range rollup {
+		if got := projectOf(t, s, root, "2026-09-21", "2026-09-23", "").Name; got != want {
+			t.Errorf("--root %s: name %q, want the rollup's %q", root, got, want)
+		}
+	}
+}
+
 // OpenReadOnly creates nothing and changes nothing: a missing store is
 // ErrNoStore with no directory made, an existing one is read without its
 // database moving, and one an older binary wrote is refused, never migrated.
@@ -377,6 +409,81 @@ func TestReadOnlyOpenNeverCreatesMigratesOrWrites(t *testing.T) {
 	}
 }
 
+// A schema 2 store — no buckets_by_project yet — is refused read-only and
+// migrated by a read-write open. The project verb's bucket reads (its
+// namesakes' lifetime sum, its range, its span) then seek that index instead
+// of scanning the permanent table, and the rollup and the verb answer byte
+// for byte what they answered without it.
+func TestSchema3SeeksAProjectsBucketsWithoutChangingAnAnswer(t *testing.T) {
+	f := newFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	answers := func(s *Store) string {
+		t.Helper()
+		out, err := json.Marshal([]any{rollupOf(t, s, 2, 3), projectOf(t, s, f.repo, "2026-09-22", "2026-09-23", "")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if _, err := s.db.Exec("DROP INDEX buckets_by_project; PRAGMA user_version=2"); err != nil { // as the schema 2 binary left it
+		t.Fatal(err)
+	}
+	before := answers(s)
+	s.Close()
+	if _, err := OpenReadOnly(f.state); !errors.Is(err, ErrStaleSchema) {
+		t.Fatalf("schema 2 store opened read-only = %v, want ErrStaleSchema", err)
+	}
+
+	s = f.open(t)
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema after a read-write open = %d, want %d", version, schemaVersion)
+	}
+	if after := answers(s); after != before {
+		t.Fatalf("answers changed with the index:\nbefore %s\n after %s", before, after)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	q := &planRecorder{q: tx}
+	var stored int64
+	if err := tx.QueryRow("SELECT id FROM projects WHERE root = ?", f.repo).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := namesakes(q, f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := ps.members(ps.of(stored))
+	since, until := time.Date(2026, 9, 21, 22, 0, 0, 0, time.UTC).Unix(), time.Date(2026, 9, 23, 22, 0, 0, 0, time.UTC).Unix()
+	if _, err := windowRows(q, since, until, ids); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectSpans(q, ps.of, ids); err != nil {
+		t.Fatal(err)
+	}
+	var reads int
+	for _, plan := range q.plans {
+		if !strings.Contains(plan, "buckets") { // the root list
+			continue
+		}
+		reads++
+		if !strings.Contains(plan, "SEARCH buckets USING") || !strings.Contains(plan, "INDEX buckets_by_project (project=?") {
+			t.Errorf("a project's bucket read plans as %q, want a SEARCH on buckets_by_project", plan)
+		}
+	}
+	if reads != 3 {
+		t.Fatalf("%d bucket reads planned, want the sum, the window and the span: %q", reads, q.plans)
+	}
+}
+
 // rec is one Claude response carrying only input tokens.
 type rec struct {
 	session, cwd, at, model string
@@ -421,6 +528,39 @@ func projectIn(t *testing.T, s *Store, loc *time.Location, root, from, to string
 		t.Fatal(err)
 	}
 	return p
+}
+
+// planRecorder runs every Query through its querier after recording the
+// query's EXPLAIN QUERY PLAN, its steps joined by "; ".
+type planRecorder struct {
+	q     querier
+	plans []string
+}
+
+func (p *planRecorder) Query(query string, args ...any) (*sql.Rows, error) {
+	rs, err := p.q.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var steps []string
+	for rs.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rs.Scan(&id, &parent, &unused, &detail); err != nil {
+			rs.Close()
+			return nil, err
+		}
+		steps = append(steps, detail)
+	}
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	p.plans = append(p.plans, strings.Join(steps, "; "))
+	return p.q.Query(query, args...)
+}
+
+func (p *planRecorder) QueryRow(query string, args ...any) *sql.Row {
+	return p.q.QueryRow(query, args...)
 }
 
 // seriesOf renders a series as "start=model:tokens" entries; an empty bucket is its start alone.

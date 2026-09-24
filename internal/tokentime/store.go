@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS buckets(
 	responses INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY(hour, project, model)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS buckets_by_project ON buckets(project, hour);
 CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS session_hours(
 	session INTEGER NOT NULL,
@@ -86,10 +87,21 @@ CREATE TABLE IF NOT EXISTS session_hours(
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS session_hours_by_hour ON session_hours(hour);
 CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, src INTEGER NOT NULL, day INTEGER NOT NULL);
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 `
 
-// migrations bring an older schema up to date, keyed by the version they start from.
+// schemaVersion is the user_version the schema above ends on.
+const schemaVersion = 3
+
+// migrations bring an older schema up to date, keyed by the version they
+// start from. The schema itself re-runs after them on every older store, so
+// additive DDL it declares IF NOT EXISTS needs no entry — v2 → v3 is only
+// buckets_by_project, which lets a project's reads (its lifetime sum and
+// span, its range) seek instead of scanning the permanent buckets table.
+// session_hours has no such index on purpose: the project verb's reads are
+// already bounded by session_hours_by_hour and its primary key, and a
+// project-leading one would win the rollup's DISTINCT project, session read
+// over its hour range and turn it into a whole-table scan.
 var migrations = map[int]string{
 	// v1 → v2: a file whose unread bytes are an unterminated tail.
 	1: "ALTER TABLE files ADD COLUMN tail INTEGER NOT NULL DEFAULT 0",
@@ -137,7 +149,7 @@ func Open(dir string) (*Store, error) {
 	}
 	// An up-to-date store is opened without a single write, so a rollup never
 	// waits on the busy timeout behind a concurrent or orphaned index pass.
-	if version < 2 {
+	if version < schemaVersion {
 		if m, ok := migrations[version]; ok {
 			if _, err := db.Exec(m); err != nil {
 				db.Close()
@@ -169,9 +181,9 @@ func OpenReadOnly(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version < 2 {
+	if version < schemaVersion {
 		db.Close()
-		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads 2", ErrStaleSchema, path, version)
+		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads %d", ErrStaleSchema, path, version, schemaVersion)
 	}
 	return &Store{Dir: dir, db: db}, nil
 }
@@ -194,7 +206,7 @@ func openDB(path, mode string) (*sql.DB, int, error) {
 		db.Close()
 		return nil, 0, err
 	}
-	if version > 2 {
+	if version > schemaVersion {
 		db.Close()
 		return nil, 0, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
 	}
