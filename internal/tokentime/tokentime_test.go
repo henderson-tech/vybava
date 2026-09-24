@@ -531,6 +531,25 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 	}
 }
 
+// A pass killed after a migration's ALTER but before the version bump leaves
+// the column in a store still at the old version; the next pass finishes the
+// migration instead of failing on the column it already added.
+func TestAMigrationCutShortAfterItsAlterFinishesOnTheNextPass(t *testing.T) {
+	f := newFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	if _, err := s.db.Exec("DROP TABLE beats; PRAGMA user_version=3"); err != nil { // files.beats stays: the ALTER ran
+		t.Fatal(err)
+	}
+	s.Close()
+	s = f.open(t)
+	f.index(t, s)
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("schema after the next pass = %d, %v; want %d", version, err, schemaVersion)
+	}
+}
+
 func TestRollupMatchesTheGolden(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)
