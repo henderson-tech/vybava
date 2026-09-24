@@ -136,6 +136,24 @@ func TestReapKeepsInProcessDriverRunner(t *testing.T) {
 	}
 }
 
+// A stale orphaned xcodebuild naming the simulator never outranks a live
+// in-process host: the orphan goes, the runner the host drives stays.
+func TestReapKeepsInProcessRunnerDespiteStaleXcodebuild(t *testing.T) {
+	table := []machineProc{
+		{pid: 220, ppid: 1, etime: "02:30:00", tty: "??", args: "node /Users/x/.npm/_npx/0a1b2c/node_modules/.bin/appium-mcp"},
+		wdaXcodebuildProc(400, 1, "02:10:00", "platform=iOS Simulator,id="+mcpSim),
+		launchdSim(340, mcpSim),
+		simRunner(341, 340, mcpSim),
+	}
+	got := map[int]string{}
+	for _, v := range selectReapVictims(table) {
+		got[v.pid] = reapKind(v)
+	}
+	if len(got) != 1 || got[400] != "xcodebuild" {
+		t.Fatalf("victims %v want only the orphaned xcodebuild 400", got)
+	}
+}
+
 // The host is recognised by the script node/bun runs, never by a mention.
 func TestXCUITestHostNeedsTheEntry(t *testing.T) {
 	for args, want := range map[string]bool{
@@ -143,6 +161,7 @@ func TestXCUITestHostNeedsTheEntry(t *testing.T) {
 		"node /Users/x/.npm/_npx/0a1b2c/node_modules/.bin/appium-mcp":           true,
 		"node /Users/x/.nvm/versions/node/v24.17.0/bin/appium-mcp":              true,
 		"bun /w/node_modules/appium-mcp/dist/index.js":                          true,
+		"bun --cwd /w /w/node_modules/appium-mcp/dist/index.js":                 true,
 		"tail -f /Users/x/.codex/appium-mcp/artifacts/appium-mcp.log":           false,
 		"node /w/scripts/report.js /w/node_modules/appium-mcp/dist/index.js":    false,
 		"node -r /w/node_modules/appium-mcp/dist/index.js build.js":             false,

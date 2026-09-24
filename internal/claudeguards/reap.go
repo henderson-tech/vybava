@@ -124,6 +124,15 @@ func wdaDriven(runner machineProc, table []machineProc, byPID map[int]machinePro
 			named = true
 		}
 		if named {
+			// Only orphaned xcodebuilds name this simulator. An in-process
+			// host (appium-mcp) launches its runner through simctl, never an
+			// xcodebuild, so a stale orphan naming the same simulator must not
+			// outrank a live host driving it now.
+			for _, p := range table {
+				if xcuitestHost(p) {
+					return true
+				}
+			}
 			return false
 		}
 	}
@@ -162,7 +171,7 @@ func wdaXcodebuild(args string) bool {
 var nodeValueFlags = map[string]bool{
 	"-r": true, "--require": true, "--import": true, "--loader": true, "--experimental-loader": true,
 	"-e": true, "--eval": true, "-p": true, "--print": true, "--input-type": true, "--env-file": true,
-	"--preload": true, "--conditions": true, "-C": true, "--define": true, "-d": true,
+	"--preload": true, "--conditions": true, "-C": true, "--cwd": true, "--define": true, "-d": true,
 }
 
 // nodeScript is the script a node/bun process runs: its first argument that
