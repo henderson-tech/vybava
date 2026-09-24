@@ -262,6 +262,27 @@ func TestHoursStayDistinctAcrossDaylightSavingChanges(t *testing.T) {
 	}
 }
 
+// At +05:30 no local whole hour starts a bucket: the hours are the buckets',
+// so they start at :30 and carry their tokens.
+func TestHoursFollowTheBucketsInAHalfHourZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	app := filepath.Join(base, "app")
+	mkdir(t, app)
+	s := indexed(t, base, rec{"s", app, "2026-09-24T06:10:00Z", "claude-opus-5-5", 7}) // 11:40 IST
+	r, err := s.Rollup(RollupOptions{Days: 1, Hours: 2, Now: time.Date(2026, 9, 24, 12, 0, 0, 0, kolkata), Location: kolkata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Hours) != 2 || r.Hours[0].Hour != "2026-09-24T10:30:00+05:30" || r.Hours[1].Hour != "2026-09-24T11:30:00+05:30" ||
+		len(r.Hours[1].Models) != 1 || r.Hours[1].Models[0].Tokens != 7 {
+		t.Fatalf("hours = %+v, want 10:30 and 11:30 with the 7 tokens in the latter", r.Hours)
+	}
+}
+
 func TestStaleTailsAndFailingFilesNeverHoldCoverageOpen(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
@@ -407,6 +428,7 @@ func TestBucketsOutliveTheirSources(t *testing.T) {
 func TestIndexRefusesToRunTwiceAtOnce(t *testing.T) {
 	f := newFixture(t)
 	s := f.open(t)
+	mkdir(t, s.Dir)
 	unlock, err := tryLock(filepath.Join(s.Dir, "index.lock"))
 	if err != nil {
 		t.Fatal(err)
@@ -414,6 +436,94 @@ func TestIndexRefusesToRunTwiceAtOnce(t *testing.T) {
 	defer unlock()
 	if _, err := s.Index(f.options()); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second concurrent pass = %v, want ErrBusy", err)
+	}
+}
+
+// Only an index pass holding the lock creates or migrates the store. While
+// another holds it, a missing store stays missing (a rollup is ErrNoStore,
+// status all zeros) and an older one stays at its schema: one its reads
+// still run on is served, an older one is ErrStaleSchema. The first pass the
+// lock lets through creates or migrates it.
+func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
+	f := newFixture(t)
+	db := filepath.Join(f.state, "tokentime.db")
+	hold := func() func() {
+		t.Helper()
+		mkdir(t, f.state)
+		unlock, err := tryLock(filepath.Join(f.state, "index.lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return unlock
+	}
+	version := func() int {
+		t.Helper()
+		ro, v, err := openDB(db, "ro")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ro.Close()
+		return v
+	}
+
+	unlock := hold()
+	s := f.open(t)
+	if _, err := s.Index(f.options()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("pass under a held lock = %v, want ErrBusy", err)
+	}
+	if _, err := s.Rollup(RollupOptions{}); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("rollup of a store never created = %v, want ErrNoStore", err)
+	}
+	if st, err := s.Status(); err != nil || st.Buckets != 0 || st.LastIndexAt != "" {
+		t.Fatalf("status of a store never created = %+v, %v; want zeros", st, err)
+	}
+	if _, err := os.Stat(db); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tokentime.db without the lock: %v, want it never created", err)
+	}
+	unlock()
+	f.index(t, s)
+	want, _ := json.Marshal(rollupOf(t, s, 2, 3))
+	s.Close()
+
+	for _, old := range []struct {
+		version  int
+		ddl      string
+		readable bool
+	}{
+		{2, "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
+		{1, "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},
+	} {
+		w, _, err := openDB(db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Exec(old.ddl); err != nil { // as that schema's binary left it
+			t.Fatal(err)
+		}
+		w.Close()
+		unlock := hold()
+		s := f.open(t)
+		if _, err := s.Index(f.options()); !errors.Is(err, ErrBusy) {
+			t.Fatalf("schema %d: pass under a held lock = %v, want ErrBusy", old.version, err)
+		}
+		r, err := s.Rollup(RollupOptions{Days: 2, Hours: 3, Now: time.Date(2026, 9, 23, 15, 30, 0, 0, prague), Location: prague})
+		got, _ := json.Marshal(r)
+		st, stErr := s.Status()
+		switch {
+		case old.readable && (err != nil || string(got) != string(want) || stErr != nil || st.Buckets == 0):
+			t.Fatalf("schema %d under a held lock: rollup %v, status %+v, %v; want both served as before", old.version, err, st, stErr)
+		case !old.readable && (!errors.Is(err, ErrStaleSchema) || !errors.Is(stErr, ErrStaleSchema)):
+			t.Fatalf("schema %d under a held lock: rollup %v, status %v; want ErrStaleSchema", old.version, err, stErr)
+		}
+		if v := version(); v != old.version {
+			t.Fatalf("schema %d under a held lock is now %d: migrated without the lock", old.version, v)
+		}
+		unlock()
+		f.index(t, s)
+		if v := version(); v != schemaVersion {
+			t.Fatalf("schema %d after the next pass = %d, want %d", old.version, v, schemaVersion)
+		}
+		s.Close()
 	}
 }
 

@@ -1,6 +1,7 @@
 package tokentime
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,14 +22,21 @@ type Status struct {
 	DBBytes      int64  `json:"dbBytes"`
 }
 
-// Status reads the index bookkeeping without touching any transcript.
+// Status reads the index bookkeeping without touching any transcript. A store
+// nothing was indexed into yet is all zeros, never created to say so.
 func (s *Store) Status() (Status, error) {
 	st := Status{StateDir: s.Dir}
-	var err error
-	if st.LastIndexAt, err = s.meta("last_index_at"); err != nil {
+	tx, err := s.begin()
+	if errors.Is(err, ErrNoStore) {
+		return st, nil
+	} else if err != nil {
 		return st, err
 	}
-	pending, err := s.meta("pending_bytes")
+	defer tx.Rollback()
+	if st.LastIndexAt, err = meta(tx, "last_index_at"); err != nil {
+		return st, err
+	}
+	pending, err := meta(tx, "pending_bytes")
 	if err != nil {
 		return st, err
 	}
@@ -43,7 +51,7 @@ func (s *Store) Status() (Status, error) {
 		{"SELECT COUNT(*) FROM buckets", &st.Buckets},
 		{"SELECT COALESCE(SUM(responses), 0) FROM buckets", &st.Responses},
 	} {
-		if err := s.db.QueryRow(q.sql).Scan(q.dst); err != nil {
+		if err := tx.QueryRow(q.sql).Scan(q.dst); err != nil {
 			return st, err
 		}
 	}

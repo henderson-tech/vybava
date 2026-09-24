@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS buckets(
 	responses INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY(hour, project, model)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS buckets_by_project ON buckets(project, hour);
 CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS session_hours(
 	session INTEGER NOT NULL,
@@ -85,10 +87,27 @@ CREATE TABLE IF NOT EXISTS session_hours(
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS session_hours_by_hour ON session_hours(hour);
 CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, src INTEGER NOT NULL, day INTEGER NOT NULL);
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 `
 
-// migrations bring an older schema up to date, keyed by the version they start from.
+// schemaVersion is the user_version the schema above ends on.
+const schemaVersion = 3
+
+// readableSchema is the oldest schema the rollup and status queries run on
+// unchanged — schema 3 only added an index — so a store an index pass has not
+// migrated yet is still served. A migration that changes a table they read
+// raises it.
+const readableSchema = 2
+
+// migrations bring an older schema up to date, keyed by the version they
+// start from. The schema itself re-runs after them on every older store, so
+// additive DDL it declares IF NOT EXISTS needs no entry — v2 → v3 is only
+// buckets_by_project, which lets a project's reads (its lifetime sum and
+// span, its range) seek instead of scanning the permanent buckets table.
+// session_hours has no such index on purpose: the project verb's reads are
+// already bounded by session_hours_by_hour and its primary key, and a
+// project-leading one would win the rollup's DISTINCT project, session read
+// over its hour range and turn it into a whole-table scan.
 var migrations = map[int]string{
 	// v1 → v2: a file whose unread bytes are an unterminated tail.
 	1: "ALTER TABLE files ADD COLUMN tail INTEGER NOT NULL DEFAULT 0",
@@ -105,7 +124,9 @@ const (
 // Store is the state directory: tokentime.db plus its lock and price override.
 type Store struct {
 	Dir string
-	db  *sql.DB
+	// db is nil until an index pass creates the database.
+	db      *sql.DB
+	version int
 }
 
 // DefaultStateDir is ~/.local/share/vybava/tokentime.
@@ -117,50 +138,153 @@ func DefaultStateDir() (string, error) {
 	return filepath.Join(home, ".local", "share", "vybava", "tokentime"), nil
 }
 
-// Open creates or opens the state directory's database.
+var (
+	// ErrNoStore: the state directory holds no tokentime.db — nothing was indexed yet.
+	ErrNoStore = errors.New("no tokentime store")
+	// ErrStaleSchema: the store predates this binary; only an index pass migrates it.
+	ErrStaleSchema = errors.New("the store's schema is older than this tokentime")
+)
+
+// Open opens the state directory's database for an index pass and reads, and
+// writes nothing: no directory or database is created and no DDL runs. Only
+// Index, holding the index lock, creates or migrates the store — so a rollup
+// or status beside a running pass never runs a migration of its own and
+// never waits on one. A missing database reads as ErrNoStore until a pass
+// creates it.
 func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	path := filepath.Join(dir, "tokentime.db")
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return &Store{Dir: dir}, nil
+	} else if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "tokentime.db")
-	dsn := url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=busy_timeout(10000)"}
-	db, err := sql.Open("sqlite", dsn.String())
+	db, version, err := openDB(path, "rw")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		db.Close()
-		return nil, err
+	return &Store{Dir: dir, db: db, version: version}, nil
+}
+
+// prepare creates or migrates the database. Only Index calls it, holding the
+// index lock, so no two processes ever run DDL at once. The version is read
+// again under the lock: another pass may have created or migrated the store
+// since Open.
+func (s *Store) prepare() error {
+	path := filepath.Join(s.Dir, "tokentime.db")
+	if s.db == nil {
+		db, _, err := openDB(path, "")
+		if err != nil {
+			return err
+		}
+		s.db = db
 	}
-	if version > 2 {
-		db.Close()
-		return nil, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
+	version, err := readVersion(s.db, path)
+	if err != nil {
+		return err
 	}
-	// An up-to-date store is opened without a single write, so a rollup never
-	// waits on the busy timeout behind a concurrent or orphaned index pass.
-	if version < 2 {
+	if version < schemaVersion {
 		if m, ok := migrations[version]; ok {
-			if _, err := db.Exec(m); err != nil {
-				db.Close()
-				return nil, fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
+			if _, err := s.db.Exec(m); err != nil {
+				return fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
 			}
 		}
-		if _, err := db.Exec(schema); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("init %s: %w", path, err)
+		if _, err := s.db.Exec(schema); err != nil {
+			return fmt.Errorf("init %s: %w", path, err)
 		}
 	}
-	return &Store{Dir: dir, db: db}, nil
+	s.version = schemaVersion
+	return nil
+}
+
+// begin opens one read snapshot for a verb's queries. A store nothing was
+// indexed into is ErrNoStore, one older than readableSchema ErrStaleSchema.
+func (s *Store) begin() (*sql.Tx, error) {
+	if s.db == nil || s.version == 0 {
+		return nil, fmt.Errorf("%w in %s", ErrNoStore, s.Dir)
+	}
+	if s.version < readableSchema {
+		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads %d or later", ErrStaleSchema,
+			filepath.Join(s.Dir, "tokentime.db"), s.version, readableSchema)
+	}
+	return s.db.Begin()
+}
+
+// OpenReadOnly opens an existing store for reading and never writes it: no
+// state directory or database is created, no DDL or migration runs, the
+// database file is opened mode=ro. It is not opened immutable — an index
+// pass may be committing — so SQLite keeps its WAL coordination files
+// (-wal, -shm) beside it, as for any WAL reader. A missing store is
+// ErrNoStore, one an older binary wrote is ErrStaleSchema.
+func OpenReadOnly(dir string) (*Store, error) {
+	path := filepath.Join(dir, "tokentime.db")
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w in %s", ErrNoStore, dir)
+	} else if err != nil {
+		return nil, err
+	}
+	db, version, err := openDB(path, "ro")
+	if err != nil {
+		return nil, err
+	}
+	if version < schemaVersion {
+		db.Close()
+		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads %d", ErrStaleSchema, path, version, schemaVersion)
+	}
+	return &Store{Dir: dir, db: db, version: version}, nil
+}
+
+// openDB opens path in the given SQLite mode ("" is read-write-create, "rw"
+// never creates) and reads its schema version.
+func openDB(path, mode string) (*sql.DB, int, error) {
+	query := "_pragma=busy_timeout(10000)"
+	if mode != "" {
+		query = "mode=" + mode + "&" + query
+	}
+	dsn := url.URL{Scheme: "file", Path: path, RawQuery: query}
+	db, err := sql.Open("sqlite", dsn.String())
+	if err != nil {
+		return nil, 0, err
+	}
+	db.SetMaxOpenConns(1)
+	version, err := readVersion(db, path)
+	if err != nil {
+		db.Close()
+		return nil, 0, err
+	}
+	return db, version, nil
+}
+
+// readVersion reads the schema version, refusing one a newer tokentime wrote.
+func readVersion(db *sql.DB, path string) (int, error) {
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return 0, err
+	}
+	if version > schemaVersion {
+		return 0, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
+	}
+	return version, nil
 }
 
 // Close releases the database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
 
-func (s *Store) meta(key string) (string, error) {
+// querier is the store's *sql.DB or one read transaction on it: a verb that
+// reads with several queries runs them all in one snapshot, so an index pass
+// committing between them cannot make one answer disagree with itself.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func meta(q querier, key string) (string, error) {
 	var v string
-	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&v)
+	err := q.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
