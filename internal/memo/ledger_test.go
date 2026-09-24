@@ -217,7 +217,7 @@ func TestRenderCapAndLayout(t *testing.T) {
 	if !strings.HasPrefix(lines[len(lines)-1], "- #") {
 		t.Errorf("last line must be a row, got %q", lines[len(lines)-1])
 	}
-	changed, err := WriteIndex(l, nil, now)
+	changed, _, err := WriteIndex(l, nil, now)
 	if err != nil || !changed {
 		t.Fatalf("WriteIndex: %v %v", changed, err)
 	}

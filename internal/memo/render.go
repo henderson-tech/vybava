@@ -13,9 +13,16 @@ import (
 // keeps the loaded surface small enough to earn every line.
 const MaxIndexLines = 100
 
+// indexHeading and citeLead open every render; isRenderedIndex keys on them
+// to tell a render from a hand-written v2 index.
+const (
+	indexHeading = "# Memory"
+	citeLead     = "Cite a row as #"
+)
+
 // Render produces the deterministic MEMORY.md for a ledger.
 func Render(l *Ledger, events []Event, now time.Time) string {
-	lines := []string{"# Memory", ""}
+	lines := []string{indexHeading, ""}
 	prefix := ""
 	if l.Kind == KindTeam {
 		prefix = "t"
@@ -24,7 +31,7 @@ func Render(l *Ledger, events []Event, now time.Time) string {
 		lines = append(lines, "Team memory: "+filepath.Join(l.Repo, ".claude", "memory", IndexFile), "")
 	}
 	lines = append(lines,
-		fmt.Sprintf("Cite a row as #%sNN when you act on it; `memo show %sNN` prints the row and its notes.", prefix, prefix),
+		fmt.Sprintf(citeLead+"%sNN when you act on it; `memo show %sNN` prints the row and its notes.", prefix, prefix),
 		"`memo find <words>` searches the whole ledger; `memo add` captures a new row.",
 		"",
 		"## Pinned",
@@ -58,17 +65,24 @@ func cap(rows []string, budget int) []string {
 
 // WriteIndex renders and writes MEMORY.md, reporting whether the file changed.
 // In a team home it first makes sure the hot surface is gitignored, so every
-// writer (add, import, render, touch, the Stop harvest) keeps it local.
-func WriteIndex(l *Ledger, events []Event, now time.Time) (bool, error) {
+// writer (add, import, render, touch, the Stop harvest) keeps it local. A
+// team MEMORY.md that git tracks is never written: rewriting it dirtied every
+// checkout that still commits it (deploys refuse a dirty tree) and clobbered
+// hand-written v2 indexes. It stays as committed and the returned
+// SURFACE_TRACKED warning names the fix.
+func WriteIndex(l *Ledger, events []Event, now time.Time) (bool, *Diag, error) {
 	if _, err := EnsureGitignore(l.Home(), l.Kind); err != nil {
-		return false, err
+		return false, nil, err
+	}
+	if d := TrackedIndex(l.Home(), l.Kind); d != nil {
+		return false, d, nil
 	}
 	want := Render(l, events, now)
 	path := filepath.Join(l.Home(), IndexFile)
 	if have, err := os.ReadFile(path); err == nil && string(have) == want {
-		return false, nil
+		return false, nil, nil
 	}
-	return true, os.WriteFile(path, []byte(want), 0o644)
+	return true, nil, os.WriteFile(path, []byte(want), 0o644)
 }
 
 // CheckIndex reports whether MEMORY.md on disk equals the render.

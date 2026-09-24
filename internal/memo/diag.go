@@ -58,6 +58,10 @@ const (
 	DiagRefAmbiguous = "REF_AMBIGUOUS"
 	// DiagRenderDrift: MEMORY.md on disk differs from `memo render` output.
 	DiagRenderDrift = "RENDER_DRIFT"
+	// DiagSurfaceTracked: warning, a team home's MEMORY.md is tracked by git,
+	// so memo left it as committed instead of rendering over it. Fix: untrack
+	// it (a hand-written v2 index is migrated into rows first).
+	DiagSurfaceTracked = "SURFACE_TRACKED"
 	// DiagImportInvalid: an import file line is not in the id-less grammar.
 	DiagImportInvalid = "IMPORT_INVALID"
 	// DiagRegistryInvalid: homes.json does not parse or carries unknown

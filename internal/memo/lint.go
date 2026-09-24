@@ -63,9 +63,10 @@ func Lint(home string, aliases map[string]Home, now time.Time) []Finding {
 	default:
 		// A team home's MEMORY.md is a local projection (gitignored, rendered
 		// at SessionStart), so a committed tree without one is clean; a
-		// personal home always carries its render.
+		// personal home always carries its render. A tracked one is never
+		// rendered over, so drift there is L008's to report, not L006's.
 		_, statErr := os.Stat(filepath.Join(home, IndexFile))
-		if l.Kind != KindTeam || !os.IsNotExist(statErr) {
+		if (l.Kind != KindTeam || !os.IsNotExist(statErr)) && TrackedIndex(home, l.Kind) == nil {
 			if same, err := CheckIndex(l, events, now); err != nil || !same {
 				out = append(out, Finding{Rule: RuleDrift, Severity: "error", Path: filepath.Join(home, IndexFile), Line: 1, Message: "MEMORY.md differs from `memo render` output; run `memo render --home " + home + "`"})
 			}
@@ -77,9 +78,18 @@ func Lint(home string, aliases map[string]Home, now time.Time) []Finding {
 			if _, err := os.Stat(path); err != nil {
 				continue
 			}
-			if ignored, known := GitIgnored(path); known && !ignored {
-				out = append(out, Finding{Rule: RuleSurfaceCommitted, Severity: "warning", Path: path, Line: 1, Message: "team hot surface is committed (" + f + " is not gitignored); add MEMORY.md and usage.jsonl to " + filepath.Join(home, GitignoreFile) + " (`memo render --home " + home + "` writes it)"})
+			ignored, known := GitIgnored(path)
+			if !known || ignored {
+				continue
 			}
+			msg := "team hot surface is committed (" + f + " is not gitignored); add MEMORY.md and usage.jsonl to " + filepath.Join(home, GitignoreFile) + " (`memo render --home " + home + "` writes it)"
+			if tracked, _ := GitTracked(path); tracked {
+				msg = "team hot surface is tracked by git (" + f + "), and no ignore line untracks it; untrack it: git -C " + home + " rm --cached -q -- " + f
+				if d := TrackedIndex(home, l.Kind); f == IndexFile && d != nil {
+					msg = d.Detail
+				}
+			}
+			out = append(out, Finding{Rule: RuleSurfaceCommitted, Severity: "warning", Path: path, Line: 1, Message: msg})
 		}
 	}
 	notes, _ := filepath.Glob(filepath.Join(home, NotesDir, "*.md"))

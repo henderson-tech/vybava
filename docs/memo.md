@@ -36,6 +36,17 @@ In a team home every writer (`memo add`, `memo import`, `memo render`,
 lines are added when absent, any other line is kept. Idempotent; a personal
 home never gets one, nor does a team home outside a git work tree.
 
+A team `MEMORY.md` that git still tracks (`git ls-files --error-unmatch`) is
+never written and never gets an ignore line: git ignores nothing it tracks,
+and rewriting it dirtied every such checkout until deploy scripts refused
+the tree. The file stays as committed, and `add`, `import`, `render` and
+`ensure` warn `SURFACE_TRACKED`. For a tracked render (a home committed
+before 2026-09-21) the fix is `git -C <home> rm --cached -q -- MEMORY.md &&
+memo render --home <home>`, run in a worktree, with the removal committed
+alongside `.gitignore`. For a tracked hand-written v2 index the fix is
+`memo migrate <home>`: fold the index into rows first, then untrack it, so
+nobody drops an index that was never migrated.
+
 Homes: personal `~/.claude/projects/<slug>/memory/` (types `user`, `feedback`)
 and team `<repo>/.claude/memory/` (types `project`, `reference`). From a
 linked worktree the personal home is the MAIN checkout's (Claude Code slugs
@@ -195,7 +206,8 @@ registered alias wins over the alias in a ledger's frontmatter.
   team) that exists, so a team home just cloned or pulled has its
   `MEMORY.md` before the harness loads it. Never blocks: a home that cannot
   be rendered is one `memo hook: not rendered: <home>: <why>` line on
-  stderr, the other homes still render, exit 0.
+  stderr (a tracked team `MEMORY.md` is one, carrying its `SURFACE_TRACKED`
+  fix), the other homes still render, exit 0.
 
 Claude Code `settings.json`:
 
@@ -243,7 +255,7 @@ exactly as before.
 | L005 | warning | a sentence is over 160 characters |
 | L006 | error | `MEMORY.md` differs from `memo render` output; in a TEAM home a missing `MEMORY.md` is clean (it is a local projection) |
 | L007 | warning | a `notes/` file is linked from no row |
-| L008 | warning | a team home's `MEMORY.md` or `usage.jsonl` exists and is not gitignored (`git check-ignore`; a tracked file counts as committed); fix: add both to `<home>/.gitignore`, which `memo render --home <home>` writes |
+| L008 | warning | a team home's `MEMORY.md` or `usage.jsonl` exists and is not gitignored (`git check-ignore`); fix: add both to `<home>/.gitignore`, which `memo render --home <home>` writes; a TRACKED file names its untracking instead (`SURFACE_TRACKED`'s fix), and a tracked `MEMORY.md` skips the L006 drift check |
 
 CI for a team home runs `memorylint check <repo>/.claude/memory` and nothing
 else (since 2026-09-21): `memo render --check` needs the machine-local
@@ -277,6 +289,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `REF_UNKNOWN` | 2 | referenced row missing |
 | `REF_AMBIGUOUS` | 2 | bare id exists in more than one session home |
 | `RENDER_DRIFT` | 2 | `render --check`: MEMORY.md differs |
+| `SURFACE_TRACKED` | 0 | warning, a team `MEMORY.md` is tracked by git and was left as committed; fix untracks a render or migrates a hand-written index |
 | `IMPORT_INVALID` | 2 | import file line outside the id-less grammar |
 | `REGISTRY_INVALID` | 2 | homes.json malformed or with unknown fields |
 | `HOOK_REFUSED` | 2 | PreToolUse would rewrite a ledger file by hand |
