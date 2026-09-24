@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
 // Bucket is the width of one entry of a project's series.
@@ -27,6 +29,8 @@ var (
 	// may name, from is after to, the bucket is unknown, or the range is
 	// longer than its bucket's cap.
 	ErrBadRange = errors.New("bad range")
+	// ErrNotInRepo: a directory inside no git repository names no project.
+	ErrNotInRepo = errors.New("not inside a git repository")
 )
 
 // A series is allocated whole, one entry per bucket, so ParseRange bounds a
@@ -46,6 +50,18 @@ type ProjectOptions struct {
 	Name     string // display name as the rollup shows it ("FixIt", "ADF/forge", "unknown"); set, it selects instead of Root
 	Range    Range  // from ParseRange
 	Location *time.Location
+}
+
+// RootForDir is the root a directory's responses are filed under, by the
+// indexer's own rule: a subdirectory or a linked worktree kept anywhere on
+// disk is its repository. A directory inside no repository — or one gone
+// from disk — is ErrNotInRepo, never a guessed root.
+func RootForDir(dir string) (string, error) {
+	root, exact := transcripts.GitRoot(dir)
+	if !exact {
+		return "", fmt.Errorf("%s is %w", dir, ErrNotInRepo)
+	}
+	return root, nil
 }
 
 // Range is an inclusive range of calendar days and the width of its series
@@ -326,7 +342,7 @@ func byRoot(q querier, root string) (projectSet, int64, error) {
 // byName selects the project the rollup shows under name: the one named
 // exactly that, or else the one whose name matches ignoring case. Every
 // name ends in its root's last element, so only the roots whose last element
-// matches are read and named; a miss reads every name to suggest the closest.
+// matches are read and named; a miss suggests from the root list alone.
 func byName(q querier, name string) (projectSet, int64, error) {
 	key := name[strings.LastIndex(name, "/")+1:]
 	ps, err := namesakes(q, func(k string) bool { return strings.EqualFold(k, key) })
@@ -350,12 +366,12 @@ func byName(q querier, name string) (projectSet, int64, error) {
 	case 1:
 		return ps, matches[0], nil
 	case 0:
-		all, err := projects(q)
+		near, err := suggestions(q, name, ps.names)
 		if err != nil {
 			return projectSet{}, 0, err
 		}
 		msg := fmt.Sprintf("no project is named %q", name)
-		if near := closestNames(name, all.names, 3); len(near) > 0 {
+		if len(near) > 0 {
 			msg += "; closest: " + strings.Join(near, ", ")
 		}
 		return projectSet{}, 0, nameError(msg)
@@ -381,15 +397,46 @@ type nameError string
 func (e nameError) Error() string        { return string(e) }
 func (e nameError) Is(target error) bool { return target == ErrUnknownProject }
 
+// suggestions are the closest names a miss can offer without summing a
+// bucket or stat'ing a root: every stored root's basename — the name of the
+// root its basename's namesakes rank first, so each one selects a project —
+// and the names already derived for the missed name's own basename, where a
+// wrong parent ("x/lib") finds its qualified siblings ("a/lib").
+func suggestions(q querier, name string, namesakes map[int64]string) ([]string, error) {
+	rs, err := q.Query("SELECT root FROM projects")
+	if err != nil {
+		return nil, err
+	}
+	defer rs.Close()
+	var names []string
+	for rs.Next() {
+		var root string
+		if err := rs.Scan(&root); err != nil {
+			return nil, err
+		}
+		names = append(names, nameKey(root))
+	}
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	for _, n := range namesakes {
+		names = append(names, n)
+	}
+	return closestNames(name, names, 3), nil
+}
+
 // closestNames ranks names by how close they read to name, ignoring case:
 // a name containing it first, then by the nearest edit distance between the
 // two whole names or their last elements, the shorter name first on a tie.
-// It keeps the first n, each once.
-func closestNames(name string, names map[int64]string, n int) []string {
+// It keeps the first n non-empty ones, each once.
+func closestNames(name string, names []string, n int) []string {
 	last := func(s string) string { return s[strings.LastIndex(s, "/")+1:] }
 	want := strings.ToLower(name)
 	score := map[string]int{}
 	for _, cand := range names {
+		if cand == "" { // the name of a root at "/", which no --project selects
+			continue
+		}
 		lower := strings.ToLower(cand)
 		d := min(editDistance(want, lower), editDistance(want, last(lower)), editDistance(last(want), last(lower)))
 		if strings.Contains(lower, want) {
@@ -461,6 +508,9 @@ func namesakes(q querier, same func(key string) bool) (projectSet, error) {
 	}
 	if err := rs.Err(); err != nil {
 		return projectSet{}, err
+	}
+	if len(group) == 0 { // no namesake: nothing to sum
+		return foldProjects(nil), nil
 	}
 	in, args := inList(ids)
 	sums, err := q.Query(`SELECT project, SUM(input + output + cache_write_5m + cache_write_1h + cache_read)

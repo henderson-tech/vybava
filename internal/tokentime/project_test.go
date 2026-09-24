@@ -351,8 +351,9 @@ func TestProjectNamesLiveNamesakesByLifetimeTokens(t *testing.T) {
 
 // A name selects the project the rollup shows under it — bare, parent-
 // qualified or the cwd-less "unknown" — exactly, else ignoring case when that
-// picks one. A name no project carries suggests the closest; one several
-// carry lists them with their roots. Both are ErrUnknownProject.
+// picks one. A name no project carries suggests the closest basenames, and
+// its own basename's qualified names when only the parent is wrong; one
+// several carry lists them with their roots. Both are ErrUnknownProject.
 func TestProjectSelectsByTheRollupsName(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	big, small := filepath.Join(base, "b", "lib"), filepath.Join(base, "a", "lib")
@@ -378,13 +379,67 @@ func TestProjectSelectsByTheRollupsName(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]string{
-		"lbi":   `no project is named "lbi"; closest: lib, a/lib, `,
+		"lbi":   `no project is named "lbi"; closest: lib, Forge, forge`,
+		"x/lib": `no project is named "x/lib"; closest: lib, a/lib, Forge`,
 		"FORGE": fmt.Sprintf(`"FORGE" names 2 projects: Forge (%s), forge (%s)`, upper, lower),
 	} {
 		_, err := s.Project(ProjectOptions{Name: name, Range: r, Location: prague})
 		if !errors.Is(err, ErrUnknownProject) || !strings.Contains(fmt.Sprint(err), want) {
 			t.Errorf("--project %s = %v; want ErrUnknownProject saying %s", name, err, want)
 		}
+	}
+}
+
+// A name whose basename no root carries is answered from the root list
+// alone: suggesting the closest never sums a bucket, even when lifetime
+// tokens are what name the namesakes it suggests.
+func TestAMissSuggestsWithoutSummingBuckets(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	big, small := filepath.Join(base, "b", "lib"), filepath.Join(base, "a", "lib")
+	mkdir(t, big)
+	mkdir(t, small)
+	s := indexed(t, base,
+		rec{"b", big, "2026-09-22T10:00:00Z", "claude-opus-5-5", 1000},
+		rec{"a", small, "2026-09-22T10:00:00Z", "claude-opus-5-5", 50},
+	)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	q := &planRecorder{q: tx}
+	if _, _, err := byName(q, "lbi"); !errors.Is(err, ErrUnknownProject) || !strings.HasSuffix(fmt.Sprint(err), "closest: lib") {
+		t.Fatalf("--project lbi = %v; want ErrUnknownProject suggesting lib", err)
+	}
+	for _, plan := range q.plans {
+		if strings.Contains(plan, "buckets") {
+			t.Errorf("a miss planned a bucket read: %q", plan)
+		}
+	}
+	if len(q.plans) == 0 {
+		t.Fatal("no query recorded; the plan check proves nothing")
+	}
+}
+
+// A directory names the root the indexer files its responses under: a
+// subdirectory and a linked worktree kept outside the repository are the
+// repository; a directory inside none is ErrNotInRepo.
+func TestRootForDirIsTheIndexersRepository(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	repo, worktree, plain := filepath.Join(base, "app"), filepath.Join(base, "elsewhere", "app-fix"), filepath.Join(base, "plain")
+	gitdir := filepath.Join(repo, ".git", "worktrees", "app-fix")
+	mkdir(t, filepath.Join(repo, "sub"))
+	mkdir(t, plain)
+	put(t, filepath.Join(gitdir, "commondir"), "../..\n")
+	put(t, filepath.Join(worktree, ".git"), "gitdir: "+gitdir+"\n")
+	for _, dir := range []string{filepath.Join(repo, "sub"), worktree} {
+		if root, err := RootForDir(dir); err != nil || root != repo {
+			t.Errorf("RootForDir(%s) = %q, %v; want %s", dir, root, err, repo)
+		}
+	}
+	root, err := RootForDir(plain)
+	if !errors.Is(err, ErrNotInRepo) || root != "" || err.Error() != plain+" is not inside a git repository" {
+		t.Errorf("RootForDir(%s) = %q, %v; want ErrNotInRepo naming it", plain, root, err)
 	}
 }
 

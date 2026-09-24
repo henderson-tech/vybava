@@ -14,7 +14,6 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/tokentime"
-	"github.com/henderson-tech/vybava/internal/transcripts"
 	"github.com/spf13/cobra"
 )
 
@@ -304,15 +303,17 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 					return badFlag(`--root is an absolute repository root, or "" for the rollup's unknown project`)
 				}
 			default:
-				// Neither: the repository the cwd is in, by the rule the
-				// indexer files every response under — a worktree is its repo.
+				// Neither: the repository the cwd is in.
 				cwd, err := os.Getwd()
 				if err != nil {
 					return badFlag("no --project or --root, and the current directory is unreadable: " + err.Error())
 				}
-				root, inRepo := transcripts.GitRoot(cwd)
-				if !inRepo {
-					return badFlag(fmt.Sprintf("no --project or --root, and %s is not inside a git repository", cwd))
+				root, err := tokentime.RootForDir(cwd)
+				switch {
+				case errors.Is(err, tokentime.ErrNotInRepo):
+					return badFlag("no --project or --root, and " + err.Error())
+				case err != nil:
+					return finish(s, nil, nil, nil, err)
 				}
 				sel.Root = root
 			}

@@ -149,8 +149,9 @@ pass is running — `rollup` or `index` is what brings the store up to date.
   `BAD_FLAG` before the store is opened. `--project <name>` takes a name as the
   rollup shows it (`FixIt`, `ADF/forge`, `unknown`) — exactly, else ignoring
   case when that picks one project; a name no project carries exits 2 with
-  `UNKNOWN_PROJECT` naming the closest ones, and one several carry lists them
-  with their roots. `--root` is a root as the rollup reports it (what the
+  `UNKNOWN_PROJECT` naming the closest ones (every basename, plus its own
+  basename's qualified names — read without summing a bucket), and one
+  several carry lists them with their roots. `--root` is a root as the rollup reports it (what the
   Arcade passes); `--root ""` is the rollup's `unknown` project (responses
   recorded without a cwd). A dead root folding into a project is part of it,
   and a folded dead root given resolves to its live project. A root never
