@@ -651,13 +651,7 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		MergeMethod: mergeMethod.value, MergeMethodInvalid: mergeMethod.invalid,
 		StopServers: "", Raw: pr.precheckRawView,
 	}
-	if cmd, ok := cfg.get("AFTER_MERGE_CMD"); ok {
-		out.AfterMergeCmd = &cmd
-		if cmd != "" && paths.isWorktree {
-			resolved := substituteHookTokens(cmd, hook)
-			out.ResolvedAfterMergeCmd = &resolved
-		}
-	}
+	out.AfterMergeCmd, out.ResolvedAfterMergeCmd = afterMergeHook(cfg, paths, hook)
 	stop := parseStopServers(cfg)
 	out.StopServers, out.StopServersInvalid = stop.value, stop.invalid
 	// BEFORE_REVIEW_CMD: the pre-review quiesce hook, run on loop entry and
@@ -673,4 +667,22 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	return 0
+}
+
+// afterMergeHook returns AFTER_MERGE_CMD and its resolution. The hook runs
+// INSTEAD of the generic teardown and so bypasses its isWorktree guard: it
+// is only ever resolved for a real linked worktree. When none holds the
+// head branch, paths fell back to the cwd checkout — usually the MAIN clone
+// — and a resolved `/wk:cleanup … --remove` would delete the primary
+// checkout. There is nothing to tear down then, so null is also correct.
+func afterMergeHook(cfg gitConfig, paths prPaths, hook hookContext) (cmd, resolved *string) {
+	raw, ok := cfg.get("AFTER_MERGE_CMD")
+	if !ok {
+		return nil, nil
+	}
+	if raw != "" && paths.isWorktree {
+		r := substituteHookTokens(raw, hook)
+		resolved = &r
+	}
+	return &raw, resolved
 }

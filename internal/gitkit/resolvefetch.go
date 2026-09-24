@@ -660,15 +660,16 @@ func runResolveFetch(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	reviews, comments, err := f.fetchNonThread(owner, repo, pr)
-	if err != nil {
-		return fail(stderr, err)
-	}
 	findings, inline := bucketFindings(threads, meta.Author, flags.IncludeResolved)
 	// Review summaries + conversation comments; resolvable findings first —
 	// a round that runs out of budget should have spent it on those.
+	// --no-conversation skips their paginated fetch entirely.
 	nonThread, other := []Finding{}, Skipped{}
 	if !flags.NoConversation {
+		reviews, comments, err := f.fetchNonThread(owner, repo, pr)
+		if err != nil {
+			return fail(stderr, err)
+		}
 		nonThread, other = bucketNonThread(reviews, comments, meta.Author)
 	}
 	findings = append(findings, nonThread...)

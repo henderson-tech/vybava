@@ -2,7 +2,11 @@ package gitkit
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -222,5 +226,55 @@ func TestResolveDefaultBranch(t *testing.T) {
 		if got := resolveDefaultBranch(tc.cfg, tc.github); got != tc.want {
 			t.Errorf("resolveDefaultBranch(%v, %q) = %q", tc.cfg, tc.github, got)
 		}
+	}
+}
+
+// The teardown hook is resolved only for the linked worktree that holds the
+// PR's head branch — never for the main clone the caller's --repo names,
+// which is what the cwd fallback lands on (FixIt PR #896).
+func TestTeardownHookTargetsOnlyTheHeadWorktree(t *testing.T) {
+	main := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	run(main, "init", "-q", "-b", "main")
+	run(main, "commit", "-q", "--allow-empty", "-m", "c1")
+	wt := filepath.Join(main, ".worktrees", "pr-7")
+	run(main, "worktree", "add", "-q", "-b", "feat/x", wt)
+	git := func(a ...string) (string, error) { return execFile(execOpts{dir: main}, "git", a...) }
+	cfg := gitConfig{"AFTER_MERGE_CMD": "/wk:cleanup {slug} --remove --yes"}
+
+	paths, err := gatherPaths(git, "feat/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, _ := git("rev-parse", "--show-toplevel")
+	top = strings.TrimSpace(top)
+	if paths.mainClone != top || paths.worktree != filepath.Join(top, ".worktrees", "pr-7") || paths.branch != "feat/x" || !paths.isWorktree || paths.dirty {
+		t.Fatalf("head worktree paths = %+v", paths)
+	}
+	hook := hookContext{slug: filepath.Base(paths.worktree), branch: paths.branch, worktree: paths.worktree, pr: 7}
+	if _, resolved := afterMergeHook(cfg, paths, hook); resolved == nil || *resolved != "/wk:cleanup pr-7 --remove --yes" {
+		t.Fatalf("resolved hook = %v", resolved)
+	}
+
+	// The cleanOk gate guards the directory about to be removed.
+	os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("x"), 0o644)
+	if paths, _ := gatherPaths(git, "feat/x"); !paths.dirty {
+		t.Error("an untracked file in the head worktree must read dirty")
+	}
+
+	// No worktree holds the branch: the main clone comes back, and the hook
+	// must resolve to nothing rather than tear it down.
+	paths, err = gatherPaths(git, "feat/gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, resolved := afterMergeHook(cfg, paths, hookContext{slug: filepath.Base(paths.worktree), worktree: paths.worktree})
+	if paths.isWorktree || paths.worktree != top || cmd == nil || resolved != nil {
+		t.Fatalf("fallback: paths %+v, cmd %v, resolved %v", paths, cmd, resolved)
 	}
 }

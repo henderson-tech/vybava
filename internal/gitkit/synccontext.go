@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -48,10 +49,12 @@ func readGitConfig(root string) (gitConfig, bool, error) {
 	found := false
 	for _, name := range []string{".claude/.claude.git.config", ".claude/.claude.git.config.local"} {
 		path := filepath.Join(root, name)
-		if !exists(path) {
+		data, err := os.ReadFile(path)
+		// Only a config that is not there is absent. A permission error on the
+		// way to it fails too: absence would silently apply safety defaults.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			continue
 		}
-		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, false, nodeReadError(err, path)
 		}
@@ -363,7 +366,9 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 	pm := packageManager(lockfiles)
 
 	scripts := map[string]any{}
-	if data, err := os.ReadFile(at("package.json")); err == nil {
+	if data, err := os.ReadFile(at("package.json")); err != nil && exists(at("package.json")) {
+		fmt.Fprintf(stderr, "warn: could not parse package.json (%s)\n", nodeReadError(err, at("package.json")))
+	} else if err == nil {
 		// Malformed package.json — recover to no scripts rather than crash the
 		// plan. A non-object top level or scripts field reads as no scripts,
 		// as property access does in JS; only null throws there.

@@ -218,3 +218,29 @@ func TestSyncContextVerb(t *testing.T) {
 		t.Errorf("unreadable config: %d %q", code, stderr.String())
 	}
 }
+
+// Unreadable is never absent: a package.json that cannot be read warns as a
+// malformed one does, and a config behind an untraversable directory fails.
+func TestUnreadableInputsAreReported(t *testing.T) {
+	root := t.TempDir()
+	exec.Command("git", "init", "-q", root).Run()
+	os.Mkdir(filepath.Join(root, "package.json"), 0o755)
+	t.Setenv("GIT_SKILL_REPO", "")
+	var stderr strings.Builder
+	if code := runSyncContext([]string{"--repo", root}, io.Discard, &stderr); code != 0 ||
+		stderr.String() != "warn: could not parse package.json (EISDIR: illegal operation on a directory, read)\n" {
+		t.Errorf("package.json dir: %d %q", code, stderr.String())
+	}
+
+	claude := filepath.Join(root, ".claude")
+	os.Mkdir(claude, 0o755)
+	os.WriteFile(filepath.Join(claude, ".claude.git.config"), []byte("AFTER_MERGE_CMD=x\n"), 0o644)
+	os.Chmod(claude, 0o000)
+	defer os.Chmod(claude, 0o755)
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses any directory")
+	}
+	if _, _, err := readGitConfig(root); err == nil || !strings.HasPrefix(err.Error(), "EACCES: ") {
+		t.Errorf("untraversable .claude: %v", err)
+	}
+}
