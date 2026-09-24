@@ -1,8 +1,13 @@
 package tokentime
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -169,6 +174,170 @@ func TestProjectSessionsCutAtLocalMidnightOffTheHour(t *testing.T) {
 	p := projectIn(t, s, kolkata, app, "2026-09-24", "2026-09-24", "")
 	if len(r.Projects) != 1 || r.Projects[0].Sessions != 1 || r.Projects[0].Tokens.Input != 2 || p.Sessions != 1 || p.Tokens.Input != 2 {
 		t.Fatalf("rollup %+v, project sessions=%d input=%d; want one session and 2 tokens in both", r.Projects, p.Sessions, p.Tokens.Input)
+	}
+}
+
+// At +05:30 a bucket starts on the half hour: the hour series sits on that
+// grid, so every entry is labelled with the start of the bucket it counts.
+func TestProjectHoursSitOnTheBucketsGridInAHalfHourZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	app := filepath.Join(base, "app")
+	mkdir(t, app)
+	s := indexed(t, base,
+		rec{"s", app, "2026-09-23T18:10:00Z", "claude-opus-5-5", 1}, // 23:40 on the 23rd, in the 18:00Z bucket
+		rec{"s", app, "2026-09-23T19:10:00Z", "claude-opus-5-5", 2}, // 00:40: the 24th's first bucket, 19:00Z
+		rec{"s", app, "2026-09-24T02:00:00Z", "claude-opus-5-5", 4}, // 07:30
+	)
+	p := projectIn(t, s, kolkata, app, "2026-09-24", "2026-09-24", "")
+	for _, point := range p.Series {
+		if at, err := time.Parse(time.RFC3339, point.Start); err != nil || at.Unix()%3600 != 0 {
+			t.Fatalf("entry %s is not a whole UTC hour (%v)", point.Start, err)
+		}
+	}
+	got := seriesOf(p)
+	if len(p.Series) != 24 || p.Tokens.Input != 6 || !strings.HasPrefix(got, "2026-09-24T00:30:00+05:30=claude-opus-5-5:2 ") ||
+		!strings.Contains(got, " 2026-09-24T07:30:00+05:30=claude-opus-5-5:4 ") || !strings.HasSuffix(got, " 2026-09-24T23:30:00+05:30") {
+		t.Fatalf("%d entries, input=%d: %s", len(p.Series), p.Tokens.Input, got)
+	}
+}
+
+// The project's rows are filtered in SQL by its fold set: exactly the rows
+// the rollup-wide read filtered by canonical project keeps.
+func TestProjectRowsFilteredInSQLMatchTheFoldedSet(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	app, moved, tools := filepath.Join(base, "work", "app"), filepath.Join(base, "old", "app"), filepath.Join(base, "work", "tools")
+	mkdir(t, app)
+	mkdir(t, tools)
+	s := indexed(t, base,
+		rec{"a", app, "2026-09-20T10:00:00Z", "claude-opus-5-5", 1}, // before the window
+		rec{"old", moved, "2026-09-21T10:00:00Z", "claude-opus-5-5", 2},
+		rec{"t", tools, "2026-09-21T10:00:00Z", "claude-opus-5-5", 3},
+		rec{"a", app, "2026-09-23T10:00:00Z", "claude-fable-5-1", 4},
+	)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	ps, err := projects(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := tx.QueryRow("SELECT id FROM projects WHERE root = ?", app).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	canon := ps.of(id)
+	since, until := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC).Unix(), time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC).Unix()
+	all, err := windowRows(tx, since, until, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []row
+	for _, r := range all {
+		if ps.of(r.project) == canon {
+			want = append(want, r)
+		}
+	}
+	got, err := windowRows(tx, since, until, ps.members(canon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rows := range [][]row{want, got} {
+		sort.Slice(rows, func(i, j int) bool {
+			a, b := rows[i], rows[j]
+			return a.hour < b.hour || a.hour == b.hour && (a.project < b.project || a.project == b.project && a.model < b.model)
+		})
+	}
+	if len(want) != 2 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("SQL-filtered rows = %v\nGo-filtered rows = %v (want the moved checkout's and the fable one)", got, want)
+	}
+}
+
+// OpenReadOnly creates nothing and changes nothing: a missing store is
+// ErrNoStore with no directory made, an existing one is read without its
+// database moving, and one an older binary wrote is refused, never migrated.
+func TestReadOnlyOpenNeverCreatesMigratesOrWrites(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	missing := filepath.Join(base, "missing")
+	if _, err := OpenReadOnly(missing); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("missing store = %v, want ErrNoStore", err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the missing store's directory after OpenReadOnly: %v, want it never created", err)
+	}
+
+	app, state := filepath.Join(base, "app"), filepath.Join(base, "state")
+	mkdir(t, app)
+	indexed(t, base, rec{"s", app, "2026-09-23T10:00:00Z", "claude-opus-5-5", 7}).Close()
+	db := filepath.Join(state, "tokentime.db")
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(db, past, past); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := func() map[string]bool {
+		entries, err := os.ReadDir(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := map[string]bool{}
+		for _, e := range entries {
+			names[e.Name()] = true
+		}
+		return names
+	}
+	was := listing()
+	ro, err := OpenReadOnly(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := projectOf(t, ro, app, "2026-09-23", "2026-09-23", ""); p.Tokens.Input != 7 {
+		t.Fatalf("read-only project input = %d, want 7", p.Tokens.Input)
+	}
+	if err := ro.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("tokentime.db went from %d bytes @ %v to %d @ %v", before.Size(), before.ModTime(), after.Size(), after.ModTime())
+	}
+	for name := range listing() { // a WAL reader's own coordination files may appear, nothing else
+		if !was[name] && name != "tokentime.db-wal" && name != "tokentime.db-shm" {
+			t.Fatalf("OpenReadOnly created %s", name)
+		}
+	}
+
+	old := filepath.Join(base, "old-state")
+	mkdir(t, old)
+	v1, _, err := openDB(filepath.Join(old, "tokentime.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v1.Exec("CREATE TABLE files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT ''); PRAGMA user_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	v1.Close()
+	if _, err := OpenReadOnly(old); !errors.Is(err, ErrStaleSchema) {
+		t.Fatalf("schema 1 store = %v, want ErrStaleSchema", err)
+	}
+	check, version, err := openDB(filepath.Join(old, "tokentime.db"), "ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	if version != 1 {
+		t.Fatalf("schema after a read-only open = %d, want 1: it was migrated", version)
 	}
 }
 

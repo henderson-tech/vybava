@@ -85,7 +85,9 @@ credential and no message content is read beyond what decoding a line needs.
 - **A held lock never blocks a rollup.** One pass at a time holds
   `index.lock`; `rollup` finding it held skips its own pass and serves the
   store as committed, with `INDEX_BUSY`. Opening an up-to-date store writes
-  nothing, so a concurrent writer cannot stall it either.
+  nothing, so a concurrent writer cannot stall it either, and the rollup
+  reads it in one transaction: a pass committing mid-read cannot make one
+  answer disagree with itself.
 
 ## The rollup
 
@@ -122,6 +124,15 @@ Arcade's expanded project row). It never runs an index pass and never takes
 the lock: it serves the store as committed, so it answers at once even while a
 pass is running — `rollup` or `index` is what brings the store up to date.
 
+- **Read-only.** `tokentime.db` is opened SQLite `mode=ro`: the state
+  directory and database are never created, no schema is written or
+  migrated, the database file never changes. It is not opened `immutable`,
+  because a pass may be committing, so SQLite may leave its `-wal`/`-shm`
+  coordination files beside it, as for any WAL reader. A store never indexed
+  exits 2 with `NO_STORE`; one an older binary wrote exits 2 with
+  `STALE_SCHEMA` — one `tokentime index` migrates it. Every figure comes
+  from one read transaction, one snapshot of the store.
+
 - `--root` is a root as the rollup reports it. A dead root folding into it is
   part of it, and a folded dead root given resolves to its live project.
   `--root ""` is the rollup's `unknown` project (responses recorded without a
@@ -142,6 +153,8 @@ pass is running — `rollup` or `index` is what brings the store up to date.
 - `series` is dense and oldest first: one entry per bucket, `start` as a local
   RFC 3339 time with its offset, `models` as per-model tokens (`[]` when the
   bucket is empty). The bucket defaults to hour for a single day, month past
-  62 days, day otherwise. Hours are absolute — a fall-back day has 25 entries,
-  its repeated 02:00 told apart by the offset; the first month entry starts at
-  `from`, every later one on the 1st.
+  62 days, day otherwise. Hours are the stored buckets, whole UTC hours, so at
+  +05:30 a day's entries start 00:30, 01:30, … 23:30, each labelled with the
+  start of the bucket it counts. They are absolute — a fall-back day has 25
+  entries, its repeated 02:00 told apart by the offset; the first month entry
+  starts at `from`, every later one on the 1st.

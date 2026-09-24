@@ -141,25 +141,28 @@ func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 	}
 }
 
-// A bad range is BAD_FLAG before any store is opened: the read-only verb
-// never creates a state directory just to refuse a flag.
-func TestTokentimeProjectRefusesABadRangeBeforeTouchingTheStore(t *testing.T) {
+// The read-only verb never creates a store: a bad range is BAD_FLAG before
+// any store is opened, and a store never indexed is NO_STORE — exit 2, no
+// data, no state directory made to say so.
+func TestTokentimeProjectNeverCreatesAStore(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	state := filepath.Join(base, "state")
-	var out bytes.Buffer
-	cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.SetArgs([]string{"project", "--root", base, "--from", "2026-13-01", "--to", "2026-09-24", "--json", "--state-dir", state})
-	err = cmd.Execute()
-	var exit runx.ExitCoder
-	var env map[string]any
-	if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil || !errors.As(err, &exit) || exit.ExitCode() != 2 ||
-		!bytes.Contains(out.Bytes(), []byte(diagBadFlag)) {
-		t.Fatalf("bad --from = %s, %v; want exit 2 and %s", out.String(), err, diagBadFlag)
-	}
-	if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("state dir after a bad flag: %v, want it never created", statErr)
+	for _, c := range []struct{ from, code string }{{"2026-13-01", diagBadFlag}, {"2026-09-24", diagNoStore}} {
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs([]string{"project", "--root", base, "--from", c.from, "--to", "2026-09-24", "--json", "--state-dir", state})
+		err = cmd.Execute()
+		var exit runx.ExitCoder
+		var env map[string]any
+		if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil || !errors.As(err, &exit) || exit.ExitCode() != 2 ||
+			env["data"] != nil || !bytes.Contains(out.Bytes(), []byte(c.code)) {
+			t.Fatalf("--from %s = %s, %v; want exit 2, no data and %s", c.from, out.String(), err, c.code)
+		}
+		if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("state dir after --from %s: %v, want it never created", c.from, statErr)
+		}
 	}
 }

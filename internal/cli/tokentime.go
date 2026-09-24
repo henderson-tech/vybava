@@ -28,6 +28,8 @@ const (
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
 	diagUnknownProj   = "UNKNOWN_PROJECT"
+	diagNoStore       = "NO_STORE"
+	diagStaleSchema   = "STALE_SCHEMA"
 )
 
 func (rt *runtime) tokentimeApplet() *cobra.Command {
@@ -275,8 +277,16 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			if err != nil {
 				return finish(s, nil, nil, nil, err)
 			}
-			store, err := tokentime.Open(state)
-			if err != nil {
+			// Read-only: never creates the directory or database, never migrates.
+			store, err := tokentime.OpenReadOnly(state)
+			switch {
+			case errors.Is(err, tokentime.ErrNoStore):
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagNoStore, Severity: "error",
+					Detail: err.Error() + " — nothing has been indexed yet", Fix: "tokentime index"}})
+			case errors.Is(err, tokentime.ErrStaleSchema):
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagStaleSchema, Severity: "error",
+					Detail: err.Error() + " — one index pass migrates it", Fix: "tokentime index"}})
+			case err != nil:
 				return finish(s, nil, nil, nil, err)
 			}
 			defer store.Close()

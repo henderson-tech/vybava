@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -117,26 +118,22 @@ func DefaultStateDir() (string, error) {
 	return filepath.Join(home, ".local", "share", "vybava", "tokentime"), nil
 }
 
+var (
+	// ErrNoStore: the state directory holds no tokentime.db — nothing was indexed yet.
+	ErrNoStore = errors.New("no tokentime store")
+	// ErrStaleSchema: the store predates this binary; only an index pass migrates it.
+	ErrStaleSchema = errors.New("the store's schema is older than this tokentime")
+)
+
 // Open creates or opens the state directory's database.
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, "tokentime.db")
-	dsn := url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=busy_timeout(10000)"}
-	db, err := sql.Open("sqlite", dsn.String())
+	db, version, err := openDB(path, "")
 	if err != nil {
 		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if version > 2 {
-		db.Close()
-		return nil, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
 	}
 	// An up-to-date store is opened without a single write, so a rollup never
 	// waits on the busy timeout behind a concurrent or orphaned index pass.
@@ -155,12 +152,69 @@ func Open(dir string) (*Store, error) {
 	return &Store{Dir: dir, db: db}, nil
 }
 
+// OpenReadOnly opens an existing store for reading and never writes it: no
+// state directory or database is created, no DDL or migration runs, the
+// database file is opened mode=ro. It is not opened immutable — an index
+// pass may be committing — so SQLite keeps its WAL coordination files
+// (-wal, -shm) beside it, as for any WAL reader. A missing store is
+// ErrNoStore, one an older binary wrote is ErrStaleSchema.
+func OpenReadOnly(dir string) (*Store, error) {
+	path := filepath.Join(dir, "tokentime.db")
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w in %s", ErrNoStore, dir)
+	} else if err != nil {
+		return nil, err
+	}
+	db, version, err := openDB(path, "ro")
+	if err != nil {
+		return nil, err
+	}
+	if version < 2 {
+		db.Close()
+		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads 2", ErrStaleSchema, path, version)
+	}
+	return &Store{Dir: dir, db: db}, nil
+}
+
+// openDB opens path in the given SQLite mode ("" is read-write-create) and
+// reads its schema version, refusing one a newer tokentime wrote.
+func openDB(path, mode string) (*sql.DB, int, error) {
+	query := "_pragma=busy_timeout(10000)"
+	if mode != "" {
+		query = "mode=" + mode + "&" + query
+	}
+	dsn := url.URL{Scheme: "file", Path: path, RawQuery: query}
+	db, err := sql.Open("sqlite", dsn.String())
+	if err != nil {
+		return nil, 0, err
+	}
+	db.SetMaxOpenConns(1)
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		db.Close()
+		return nil, 0, err
+	}
+	if version > 2 {
+		db.Close()
+		return nil, 0, fmt.Errorf("%s was written by a newer tokentime (schema %d)", path, version)
+	}
+	return db, version, nil
+}
+
 // Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) meta(key string) (string, error) {
+// querier is the store's *sql.DB or one read transaction on it: a verb that
+// reads with several queries runs them all in one snapshot, so an index pass
+// committing between them cannot make one answer disagree with itself.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func meta(q querier, key string) (string, error) {
 	var v string
-	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&v)
+	err := q.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

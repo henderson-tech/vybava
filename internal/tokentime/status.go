@@ -25,10 +25,10 @@ type Status struct {
 func (s *Store) Status() (Status, error) {
 	st := Status{StateDir: s.Dir}
 	var err error
-	if st.LastIndexAt, err = s.meta("last_index_at"); err != nil {
+	if st.LastIndexAt, err = meta(s.db, "last_index_at"); err != nil {
 		return st, err
 	}
-	pending, err := s.meta("pending_bytes")
+	pending, err := meta(s.db, "pending_bytes")
 	if err != nil {
 		return st, err
 	}

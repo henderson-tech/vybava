@@ -187,7 +187,14 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	if err != nil {
 		return Rollup{}, err
 	}
-	ps, err := s.projects()
+	// One snapshot: a pass committing mid-rollup cannot hand a bucket to a
+	// project this read has no name for.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Rollup{}, err
+	}
+	defer tx.Rollback()
+	ps, err := projects(tx)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -202,7 +209,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	since := min(firstDay.Unix(), firstHour.Unix())
 	since -= since % 3600
 
-	rows, err := s.windowRows(since, math.MaxInt64)
+	rows, err := windowRows(tx, since, math.MaxInt64, nil)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -313,7 +320,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		}
 	}
 
-	sessDays, sessProjects, err := s.sessionDays(firstDay.Unix()-firstDay.Unix()%3600, dayKey, firstDayKey, ps.of)
+	sessDays, sessProjects, err := sessionDays(tx, firstDay.Unix()-firstDay.Unix()%3600, dayKey, firstDayKey, ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -368,13 +375,13 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		out.Hours = append(out.Hours, hour)
 	}
 
-	spans, err := s.projectSpans(ps.of)
+	spans, err := projectSpans(tx, ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
 	// Unrounded: buckets start on whole UTC hours, so hour >= local midnight
 	// keeps exactly the hours of firstDay onwards, even at a +05:30 offset.
-	projSessions, err := s.projectSessions(firstDay.Unix(), ps.of)
+	projSessions, err := projectSessions(tx, firstDay.Unix(), ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -400,11 +407,11 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		return a > b || a == b && out.Projects[i].Name < out.Projects[j].Name
 	})
 
-	if err := s.lifetime(&out, cost, dayKey); err != nil {
+	if err := lifetime(tx, &out, cost, dayKey); err != nil {
 		return Rollup{}, err
 	}
-	pending, _ := s.meta("pending_bytes")
-	indexedAt, _ := s.meta("last_index_at")
+	pending, _ := meta(tx, "pending_bytes")
+	indexedAt, _ := meta(tx, "last_index_at")
 	out.Coverage.PendingBytes, _ = strconv.ParseInt(pending, 10, 64)
 	out.Coverage.Complete = indexedAt != "" && out.Coverage.PendingBytes == 0
 	for model := range unpriced {
@@ -423,10 +430,17 @@ func addTokens(t *Tokens, c Counts) {
 
 func sumTokens(t Tokens) int64 { return t.Input + t.Output + t.CacheWrite + t.CacheRead }
 
-// windowRows reads every bucket starting in [since, until).
-func (s *Store) windowRows(since, until int64) ([]row, error) {
-	rs, err := s.db.Query(`SELECT hour, project, model, lane, input, output, cache_write_5m, cache_write_1h, cache_read, responses
-		FROM buckets WHERE hour >= ? AND hour < ?`, since, until)
+// windowRows reads every bucket starting in [since, until) — of the stored
+// project ids in members only, or of every project when members is nil.
+func windowRows(q querier, since, until int64, members []int64) ([]row, error) {
+	query, args := `SELECT hour, project, model, lane, input, output, cache_write_5m, cache_write_1h, cache_read, responses
+		FROM buckets WHERE hour >= ? AND hour < ?`, []any{since, until}
+	if members != nil {
+		in, ids := inList(members)
+		query += " AND project IN (" + in + ")"
+		args = append(args, ids...)
+	}
+	rs, err := q.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -442,6 +456,15 @@ func (s *Store) windowRows(since, until int64) ([]row, error) {
 	return rows, rs.Err()
 }
 
+// inList is the "?,?,…" placeholder list and the arguments binding ids.
+func inList(ids []int64) (string, []any) {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", len(ids)), ","), args
+}
+
 type sessDay struct {
 	sessions     int
 	longestHours int64
@@ -453,8 +476,8 @@ type sessDay struct {
 // response in it; an idle hour breaks the run), attributed to the local day
 // the run ended. An overnight ten-hour run counts as ten hours, once, on its
 // last day; a session resumed the next day is two runs, never the gap.
-func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey string, of func(int64) int64) (map[string]*sessDay, map[string]map[int64]int, error) {
-	rs, err := s.db.Query("SELECT session, hour, project, first, last FROM session_hours WHERE hour >= ?", since)
+func sessionDays(q querier, since int64, dayKey func(int64) string, firstDayKey string, of func(int64) int64) (map[string]*sessDay, map[string]map[int64]int, error) {
+	rs, err := q.Query("SELECT session, hour, project, first, last FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -500,7 +523,7 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 	// Every active hour of each session that touched the window, in order: a run
 	// ending in the window may have started before it. session_hours holds one
 	// row per session, hour and project, so DISTINCT folds the projects.
-	err = s.eachRun(`SELECT DISTINCT session, hour FROM session_hours
+	err = eachRun(q, `SELECT DISTINCT session, hour FROM session_hours
 		WHERE session IN (SELECT session FROM session_hours WHERE hour >= ?) ORDER BY session, hour`, []any{since}, func(start, end int64) {
 		if dk := dayKey(end); dk >= firstDayKey {
 			d := day(dk)
@@ -523,8 +546,8 @@ func (s *Store) sessionDays(since int64, dayKey func(int64) string, firstDayKey 
 // eachRun calls fn with every run of consecutive active hours of one session
 // — an hour with a response extends the run, an idle hour ends it. The query
 // must yield DISTINCT (session, hour) pairs ordered by session, then hour.
-func (s *Store) eachRun(query string, args []any, fn func(start, end int64)) error {
-	rs, err := s.db.Query(query, args...)
+func eachRun(q querier, query string, args []any, fn func(start, end int64)) error {
+	rs, err := q.Query(query, args...)
 	if err != nil {
 		return err
 	}
@@ -553,8 +576,8 @@ func (s *Store) eachRun(query string, args []any, fn func(start, end int64)) err
 	return nil
 }
 
-func (s *Store) projectSessions(since int64, of func(int64) int64) (map[int64]int, error) {
-	rs, err := s.db.Query("SELECT DISTINCT project, session FROM session_hours WHERE hour >= ?", since)
+func projectSessions(q querier, since int64, of func(int64) int64) (map[int64]int, error) {
+	rs, err := q.Query("SELECT DISTINCT project, session FROM session_hours WHERE hour >= ?", since)
 	if err != nil {
 		return nil, err
 	}
@@ -579,8 +602,8 @@ func (s *Store) projectSessions(since int64, of func(int64) int64) (map[int64]in
 	return out, rs.Err()
 }
 
-func (s *Store) projectSpans(of func(int64) int64) (map[int64][2]int64, error) {
-	rs, err := s.db.Query("SELECT project, MIN(hour), MAX(hour) FROM buckets GROUP BY project")
+func projectSpans(q querier, of func(int64) int64) (map[int64][2]int64, error) {
+	rs, err := q.Query("SELECT project, MIN(hour), MAX(hour) FROM buckets GROUP BY project")
 	if err != nil {
 		return nil, err
 	}
@@ -600,8 +623,8 @@ func (s *Store) projectSpans(of func(int64) int64) (map[int64][2]int64, error) {
 	return out, rs.Err()
 }
 
-func (s *Store) lifetime(out *Rollup, cost func(string, Counts) (float64, bool), dayKey func(int64) string) error {
-	rs, err := s.db.Query(`SELECT model, MAX(lane), SUM(input), SUM(output), SUM(cache_write_5m), SUM(cache_write_1h), SUM(cache_read), SUM(responses), MIN(hour), MAX(hour)
+func lifetime(q querier, out *Rollup, cost func(string, Counts) (float64, bool), dayKey func(int64) string) error {
+	rs, err := q.Query(`SELECT model, MAX(lane), SUM(input), SUM(output), SUM(cache_write_5m), SUM(cache_write_1h), SUM(cache_read), SUM(responses), MIN(hour), MAX(hour)
 		FROM buckets GROUP BY model`)
 	if err != nil {
 		return err
@@ -635,7 +658,7 @@ func (s *Store) lifetime(out *Rollup, cost func(string, Counts) (float64, bool),
 		return a > b || a == b && out.Models[i].Model < out.Models[j].Model
 	})
 	out.Lifetime = Lifetime{Tokens: tokensOf(total), USD: all.ptr(), Responses: total.Responses}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&out.Lifetime.Sessions); err != nil {
+	if err := q.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&out.Lifetime.Sessions); err != nil {
 		return err
 	}
 	if oldest >= 0 {
@@ -660,11 +683,23 @@ func (p projectSet) of(id int64) int64 {
 	return id
 }
 
+// members lists, ascending, every stored id that rolls up under canon.
+func (p projectSet) members(canon int64) []int64 {
+	var ids []int64
+	for id, c := range p.canon {
+		if c == canon {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
 // projects reads every root ever indexed. Folding happens here, at rollup
 // time — stored buckets keep the root they were recorded under, so a wrong
 // fold is undone by the next rollup, never baked in.
-func (s *Store) projects() (projectSet, error) {
-	rs, err := s.db.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0)
+func projects(q querier) (projectSet, error) {
+	rs, err := q.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0)
 		FROM projects p LEFT JOIN buckets b ON b.project = p.id GROUP BY p.id`)
 	if err != nil {
 		return projectSet{}, err

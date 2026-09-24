@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -116,38 +115,34 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 		root = filepath.Clean(root)
 	}
 
+	prices, err := LoadPrices(s.Dir)
+	if err != nil {
+		return ProjectDetail{}, err
+	}
+	// Every query below reads one snapshot: a pass committing between them
+	// cannot make one answer disagree with itself.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ProjectDetail{}, err
+	}
+	defer tx.Rollback()
 	var stored int64
-	err := s.db.QueryRow("SELECT id FROM projects WHERE root = ?", root).Scan(&stored)
+	err = tx.QueryRow("SELECT id FROM projects WHERE root = ?", root).Scan(&stored)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ProjectDetail{}, fmt.Errorf("%w: %s", ErrUnknownProject, opts.Root)
 	}
 	if err != nil {
 		return ProjectDetail{}, err
 	}
-	prices, err := LoadPrices(s.Dir)
-	if err != nil {
-		return ProjectDetail{}, err
-	}
-	// Read after the lookup: project rows are never deleted, so the set holds it.
-	ps, err := s.projects()
+	ps, err := projects(tx)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
 	// Every stored root that rolls up under this project: a dead checkout
 	// folded into a live one is part of it.
 	canon := ps.of(stored)
-	var ids []int64
-	for id, c := range ps.canon {
-		if c == canon {
-			ids = append(ids, id)
-		}
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	members := make([]any, len(ids))
-	for i, id := range ids {
-		members[i] = id
-	}
-	in := strings.TrimSuffix(strings.Repeat("?,", len(members)), ",")
+	ids := ps.members(canon)
+	in, members := inList(ids)
 
 	out := ProjectDetail{Name: ps.names[canon], Root: ps.roots[canon], From: r.from.Format(time.DateOnly), To: r.to.Format(time.DateOnly),
 		Bucket: r.bucket, Models: []ModelSlice{}}
@@ -156,7 +151,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	inRange := func(hour int64) bool { dk := dayKey(hour); return dk >= out.From && dk <= out.To }
 	since, until := from.Unix()-from.Unix()%3600, end.Unix()
 
-	rows, err := s.windowRows(since, until)
+	rows, err := windowRows(tx, since, until, ids)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
@@ -168,7 +163,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	unpriced, days := map[string]bool{}, map[string]bool{}
 	var byHour [24]int64
 	for _, r := range rows {
-		if ps.of(r.project) != canon || !inRange(r.hour) {
+		if !inRange(r.hour) {
 			continue
 		}
 		cst, ok := prices.Cost(r.model, r.c)
@@ -228,7 +223,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 
 	// Sessions with a response in this project inside the range.
-	rs, err := s.db.Query("SELECT DISTINCT session, hour FROM session_hours WHERE hour >= ? AND hour < ? AND project IN ("+in+")",
+	rs, err := tx.Query("SELECT DISTINCT session, hour FROM session_hours WHERE hour >= ? AND hour < ? AND project IN ("+in+")",
 		append([]any{since, until}, members...)...)
 	if err != nil {
 		return ProjectDetail{}, err
@@ -253,7 +248,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	// runs that end inside the range — whole, even when they began before it.
 	var longest int64
 	args := append(append([]any{}, members...), since, until)
-	err = s.eachRun(`SELECT DISTINCT session, hour FROM session_hours WHERE project IN (`+in+`)
+	err = eachRun(tx, `SELECT DISTINCT session, hour FROM session_hours WHERE project IN (`+in+`)
 		AND session IN (SELECT session FROM session_hours WHERE hour >= ? AND hour < ? AND project IN (`+in+`))
 		ORDER BY session, hour`, append(args, members...), func(start, end int64) {
 		if inRange(end) {
@@ -265,7 +260,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 	out.LongestRunMinutes = longest * 60
 
-	spans, err := s.projectSpans(ps.of)
+	spans, err := projectSpans(tx, ps.of)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
@@ -289,16 +284,22 @@ func defaultBucket(from, to time.Time) Bucket {
 }
 
 // seriesStarts lists the local start of every bucket from the calendar day
-// first up to end. Hours are absolute — a fall-back day has 25, a
-// spring-forward day 23 — days and months are calendar ones, counted from
-// first rather than from the previous start (a skipped midnight resolves
-// into the day before, so stepping from it never advances), and the first
-// month starts at first, not on the 1st, so no entry ever starts before the
-// range.
+// first up to end. Hours are the buckets' own grid, whole UTC hours from the
+// first one starting inside the day — at +05:30 they read 00:30, 01:30, … —
+// and absolute: a fall-back day has 25, a spring-forward day 23. Days and
+// months are calendar ones, counted from first rather than from the previous
+// start (a skipped midnight resolves into the day before, so stepping from it
+// never advances), and the first month starts at first, not on the 1st, so no
+// entry ever starts before the range.
 func seriesStarts(first, end time.Time, bucket Bucket, loc *time.Location) []time.Time {
 	y, m, d := first.Date()
+	t := dayStart(y, m, d, loc)
+	if bucket == BucketHour {
+		u := t.Unix()
+		t = time.Unix(u+(3600-u%3600)%3600, 0).In(loc)
+	}
 	var starts []time.Time
-	for i, t := 1, dayStart(y, m, d, loc); t.Before(end); i++ {
+	for i := 1; t.Before(end); i++ {
 		starts = append(starts, t)
 		switch bucket {
 		case BucketHour:
