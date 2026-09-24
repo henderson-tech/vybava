@@ -211,6 +211,18 @@ items:
     description: Thin wrapper skill for the hotfix applet — the ordered verbs and the hard laws (never merge main into a hotfix branch, deploy only from the branch).
     source: skills/hotfix-lane
 
+  - id: readiness
+    kind: applet
+    status: experimental
+    description: Deterministic layer of the release-readiness skill — validates the vybava.config.ts readiness section, freezes each repo's production..integration range, seeds a run directory with scripts and ledgers, and renders lane rules, lane bodies and agent briefs from the run's manifests (drift-checked).
+    applet: readiness
+
+  - id: release-readiness
+    kind: skill
+    status: experimental
+    description: Multi-lane release prep of a whole integration branch — authority questions, inventory with a completeness critic, one lane agent per journey cluster with its own usertest board, capacity governance, merged-branch roll-up and a readiness board.
+    source: skills/release-readiness
+
   - id: press-pdf
     kind: skill
     status: experimental
@@ -258,6 +270,8 @@ groups:
       - repolicy
       - hotfix
       - hotfix-lane
+      - readiness
+      - release-readiness
       - reclaim
       - macwatch
       - plugin-gc
@@ -316,6 +330,8 @@ groups:
       - repolicy
       - hotfix
       - hotfix-lane
+      - readiness
+      - release-readiness
       - operator
       - memorylint
       - memo

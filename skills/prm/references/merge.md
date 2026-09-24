@@ -44,7 +44,7 @@ While `gates.allPass === false`, act per failed gate, then re-run merge-precheck
 | `botReview` (`botApproval.pending` names which) | bot has open threads → a round (resolve + push); the bot re-reviews on the push. Still pending → **STOP: "blocked on bot review (`<bot>` pending)"** — never self-approve, dismiss, or `--admin` past a required bot |
 | `conflict` | `gh pr update-branch <pr>`, re-check. Still conflicting → **STOP: "conflicts need manual resolution"** |
 | `mergeable-unknown` | GitHub is still computing after a push — wait ~15 s and re-run the precheck (up to 4 times); still unknown → report it, never merge past it |
-| `draft` | `gh pr ready <pr>`, re-check |
+| `draft` | **STOP: "draft — waiting on `gh pr ready`"**. Drafts are explicit-only (`--draft`), so whoever asked for one readies it, e.g. a release lane once its device evidence is published. prm never readies a draft itself. |
 
 A STOP prints the blocker + PR URL and stops. 6 iterations still red → STOP and report.
 

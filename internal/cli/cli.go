@@ -152,6 +152,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "gitkit" {
 		return rt.gitkitApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "readiness" {
+		return rt.readinessApplet(), nil
+	}
 
 	root := &cobra.Command{
 		Use:           "vybava",
@@ -178,6 +181,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.pressCommand("press"),
 		rt.ingressgenCommand("ingressgen"),
 		rt.hotfixCommand("hotfix"),
+		rt.readinessCommand("readiness"),
 		rt.codexsyncCommand("codexsync"),
 		rt.codexusageCommand("codexusage"),
 		rt.tokentimeCommand("tokentime"),

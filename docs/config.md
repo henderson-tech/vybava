@@ -122,3 +122,15 @@ merge: {
   migrations: [{ dir: 'apps/api/src/database/migrations', style: 'typeorm', check: 'bun scripts/ci/check-migration-timestamps.ts' }],
 },
 ```
+
+## Release-readiness settings
+
+The `readiness` section is the per-project adapter of the `release-readiness`
+skill, read by the `readiness` applet ([readiness.md](readiness.md)). It covers:
+- the repos, with what production runs and the integration branch;
+- the lane checkout and dev-stack verbs, and the heavy-job wrapper;
+- the test suites and the device matrix;
+- the merge order, and the release gates of the final phase.
+
+Command strings take `{token}` placeholders, and `readiness check` rejects a
+token its field does not define.

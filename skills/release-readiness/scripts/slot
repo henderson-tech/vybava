@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Box-wide admission for release-readiness lanes (skill release-readiness, from the Reservine
+# devlp run 2026-09-23). At most READINESS_SLOTS heavy jobs (browser batches, builds, suites) run
+# at once, and none starts while MemAvailable is under READINESS_MIN_AVAIL_GB or the 1-min load is
+# at or above READINESS_MAX_LOAD. When the container cgroup slice READINESS_SLICE exists, slots
+# scale with its headroom under memory.high: all of them at >= READINESS_MIN_SLICE_HEADROOM_GB,
+# one at >= READINESS_MIN_SLICE_HEADROOM_ONE_SLOT_GB, none below. Jobs that run outside the slice
+# (guest-native) may set READINESS_MIN_SLICE_HEADROOM_GB=-100.
+#
+# Linux only (flock, /proc, cgroup v2). It runs on the box that hosts the lane stacks:
+#   scp <run-dir>/slot <host>:~/readiness/slot
+#   ssh <host> 'bash ~/readiness/slot -- <command...>'      # exit code is the command's
+# Retire it once the dev environment's own admission gates on slice headroom, load and a slot
+# count: fixit/devbox#3260 (henderson-tech/devbox#88 covers the slice headroom only).
+set -u
+N=${READINESS_SLOTS:-3}
+MIN_GB=${READINESS_MIN_AVAIL_GB:-10}
+MAX_LOAD=${READINESS_MAX_LOAD:-48}
+D=${READINESS_SLOT_DIR:-$HOME/.cache/readiness-slots}
+SLICE=${READINESS_SLICE:-/sys/fs/cgroup/devbox.slice/devbox-docker.slice}
+MIN_SLICE_GB=${READINESS_MIN_SLICE_HEADROOM_GB:-6}
+MIN_SLICE_ONE_GB=${READINESS_MIN_SLICE_HEADROOM_ONE_SLOT_GB:-3}
+mkdir -p "$D"
+[ "${1:-}" = "--" ] && shift
+[ $# -gt 0 ] || { echo "usage: slot -- <command...>" >&2; exit 2; }
+
+avail_gb() { awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo; }
+load1() { awk '{print int($1)}' /proc/loadavg; }
+# Every container shares the slice; above memory.high the kernel throttles all of them, whatever
+# the host's MemAvailable says. No slice (or no limit) means no slice gate.
+slice_headroom_gb() {
+  if [ ! -r "$SLICE/memory.high" ] || [ ! -r "$SLICE/memory.current" ]; then echo 1000000; return; fi
+  high=$(cat "$SLICE/memory.high")
+  if [ "$high" = max ]; then echo 1000000; return; fi
+  awk -v h="$high" '{print int((h - $1) / 1073741824)}' "$SLICE/memory.current"
+}
+
+# All N slots when the slice is comfortable, a single slot when it is tight (the queue still
+# drains while every waiting lane keeps its stack up), none when the next job would push the
+# slice into memory.high throttling.
+slots_now() {
+  h=$(slice_headroom_gb)
+  if [ "$h" -ge "$MIN_SLICE_GB" ]; then echo "$N"
+  elif [ "$h" -ge "$MIN_SLICE_ONE_GB" ]; then echo 1
+  else echo 0; fi
+}
+
+while :; do
+  n_now=$(slots_now)
+  if [ "$(avail_gb)" -ge "$MIN_GB" ] && [ "$(load1)" -lt "$MAX_LOAD" ] && [ "$n_now" -gt 0 ]; then
+    for i in $(seq 1 "$n_now"); do
+      exec {fd}>"$D/$i.lock"
+      if flock -n "$fd"; then
+        echo "[readiness-slot] slot $i/$n_now (of $N), $(avail_gb) GB available, slice headroom $(slice_headroom_gb) GB, load $(load1)" >&2
+        "$@"
+        rc=$?
+        exec {fd}>&-
+        exit "$rc"
+      fi
+      exec {fd}>&-
+    done
+  fi
+  sleep 15
+done
