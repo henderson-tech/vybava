@@ -85,7 +85,7 @@ func ParseRange(from, to string, bucket Bucket) (Range, error) {
 		n, unit = (t.Year()-f.Year())*12+int(t.Month())-int(f.Month())+1, "months"
 	}
 	if limit := rangeCaps[bucket]; n > limit {
-		return Range{}, fmt.Errorf("%w: a %s series covers at most %d %s, %s..%s is %d", ErrBadRange, bucket, limit, unit, from, to, n)
+		return Range{}, fmt.Errorf("%w: by %s, a range covers at most %d %s; %s..%s is %d", ErrBadRange, bucket, limit, unit, from, to, n)
 	}
 	return Range{from: f, to: t, bucket: bucket}, nil
 }
