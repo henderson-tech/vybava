@@ -41,6 +41,8 @@ func TestReapKindNeedsTheExecutable(t *testing.T) {
 		"node -r appium ./build.js",
 		"node --experimental-loader appium/x main.js",
 		"node appium",
+		// An in-process driver host holds runners but is never reaped.
+		"node /Users/x/.codex/appium-mcp/node_modules/appium-mcp/dist/index.js",
 	} {
 		if k := reapKind(machineProc{pid: 1, args: args}); k != "" {
 			t.Errorf("%q classified as %q", args, k)
@@ -68,6 +70,7 @@ const (
 	orphanSim   = "5F1B2C3D-0000-4000-8000-00000000A002"
 	preinstSim  = "5F1B2C3D-0000-4000-8000-00000000A003"
 	strandedSim = "5F1B2C3D-0000-4000-8000-00000000A004"
+	mcpSim      = "5F1B2C3D-0000-4000-8000-00000000A005"
 )
 
 func launchdSim(pid int, udid string) machineProc {
@@ -102,6 +105,52 @@ var liveLane = []machineProc{
 func TestReapKeepsLiveWebDriverAgent(t *testing.T) {
 	if v := selectReapVictims(liveLane); len(v) != 0 {
 		t.Fatalf("live lane reaped: %v", v)
+	}
+}
+
+// codexMCPLane is appium-mcp under a codex session, as it ran on 2026-09-24:
+// the MCP server hosts XCUITestDriver in its own node process and launches
+// its cached runner through simctl, so the table holds no xcodebuild and no
+// standalone Appium server at all.
+var codexMCPLane = []machineProc{
+	{pid: 200, ppid: 1, etime: "02:40:00", tty: "??", args: "node /w/codex-plugin-cc/plugins/codex/scripts/app-server-broker.mjs serve"},
+	{pid: 210, ppid: 200, etime: "02:30:00", tty: "??", args: "codex app-server"},
+	{pid: 220, ppid: 210, etime: "02:30:00", tty: "??", args: "node /Users/x/.codex/appium-mcp/node_modules/appium-mcp/dist/index.js"},
+	launchdSim(340, mcpSim),
+	simRunner(341, 340, mcpSim),
+}
+
+// An in-process driver holds its runner. The sweep never takes the host, so
+// it holds with no session above it too (an editor's MCP client, npx).
+func TestReapKeepsInProcessDriverRunner(t *testing.T) {
+	if v := selectReapVictims(codexMCPLane); len(v) != 0 {
+		t.Fatalf("appium-mcp lane reaped: %v", v)
+	}
+	unowned := []machineProc{
+		{pid: 220, ppid: 1, etime: "02:30:00", tty: "??", args: "node /Users/x/.npm/_npx/0a1b2c/node_modules/.bin/appium-mcp"},
+		launchdSim(340, mcpSim),
+		simRunner(341, 340, mcpSim),
+	}
+	if v := selectReapVictims(unowned); len(v) != 0 {
+		t.Fatalf("runner of an unowned appium-mcp reaped: %v", v)
+	}
+}
+
+// The host is recognised by the script node/bun runs, never by a mention.
+func TestXCUITestHostNeedsTheEntry(t *testing.T) {
+	for args, want := range map[string]bool{
+		"node /Users/x/.codex/appium-mcp/node_modules/appium-mcp/dist/index.js": true,
+		"node /Users/x/.npm/_npx/0a1b2c/node_modules/.bin/appium-mcp":           true,
+		"node /Users/x/.nvm/versions/node/v24.17.0/bin/appium-mcp":              true,
+		"bun /w/node_modules/appium-mcp/dist/index.js":                          true,
+		"tail -f /Users/x/.codex/appium-mcp/artifacts/appium-mcp.log":           false,
+		"node /w/scripts/report.js /w/node_modules/appium-mcp/dist/index.js":    false,
+		"node -r /w/node_modules/appium-mcp/dist/index.js build.js":             false,
+		"npm exec appium-mcp": false,
+	} {
+		if got := xcuitestHost(machineProc{pid: 1, args: args}); got != want {
+			t.Errorf("%q: %v want %v", args, got, want)
+		}
 	}
 }
 

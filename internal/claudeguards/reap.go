@@ -87,15 +87,17 @@ func destinationUDID(args string) string {
 // ten minutes whenever any other session started or ended (2026-09-24, twice
 // in one Appium proof run). The first rule that finds a driver decides:
 //
-//  1. an xcodebuild or Appium ancestor, where the tree does tie the runner to
-//     its driver;
+//  1. an xcodebuild, Appium or in-process driver (xcuitestHost) ancestor,
+//     where the tree does tie the runner to its driver;
 //  2. the WebDriverAgent xcodebuilds whose -destination names the runner's
 //     simulator: any one kept holds it, all of them reaped take it along;
-//  3. otherwise any kept Appium server. A preinstalled runner is launched
-//     through simctl with no xcodebuild at all and the table cannot say
-//     which server holds it, so an undecidable runner is held.
+//  3. otherwise any kept Appium server or any in-process driver. A
+//     preinstalled runner is launched through simctl with no xcodebuild at
+//     all (appium-mcp always does this) and the table cannot say which
+//     driver holds it, so an undecidable runner is held.
 //
-// orphaned is the sweep's own verdict on a driver, so a runner follows it.
+// orphaned is the sweep's own verdict on a driver, so a runner follows it; an
+// in-process driver is never a victim, so it holds for as long as it lives.
 func wdaDriven(runner machineProc, table []machineProc, byPID map[int]machineProc, orphaned func(machineProc) bool) bool {
 	for cur, hops := runner.ppid, 0; cur > 1 && hops < 12; hops++ {
 		p, ok := byPID[cur]
@@ -104,6 +106,9 @@ func wdaDriven(runner machineProc, table []machineProc, byPID map[int]machinePro
 		}
 		if k := reapKind(p); k == reapXcodebuild || k == reapAppium {
 			return !orphaned(p)
+		}
+		if xcuitestHost(p) {
+			return true
 		}
 		cur = p.ppid
 	}
@@ -123,7 +128,7 @@ func wdaDriven(runner machineProc, table []machineProc, byPID map[int]machinePro
 		}
 	}
 	for _, p := range table {
-		if reapKind(p) == reapAppium && !orphaned(p) {
+		if xcuitestHost(p) || (reapKind(p) == reapAppium && !orphaned(p)) {
 			return true
 		}
 	}
@@ -160,10 +165,9 @@ var nodeValueFlags = map[string]bool{
 	"--preload": true, "--conditions": true, "-C": true, "--define": true, "-d": true,
 }
 
-// appiumEntry reports whether the script a node/bun process runs — its first
-// argument that is neither a flag nor a flag's value — is the appium server
-// entry point, by path: `<...>/.bin/appium` or the package's `main.js`.
-func appiumEntry(args string) bool {
+// nodeScript is the script a node/bun process runs: its first argument that
+// is neither a flag nor a flag's value, or "".
+func nodeScript(args string) string {
 	fields := strings.Fields(args)
 	for i := 1; i < len(fields); i++ {
 		a := fields[i]
@@ -173,9 +177,31 @@ func appiumEntry(args string) bool {
 			}
 			continue
 		}
-		return strings.HasSuffix(a, "/.bin/appium") || strings.HasSuffix(a, "/appium/build/lib/main.js")
+		return a
 	}
-	return false
+	return ""
+}
+
+// appiumEntry reports whether a node/bun process runs the appium server
+// entry point, by path: `<...>/.bin/appium` or the package's `main.js`.
+func appiumEntry(args string) bool {
+	s := nodeScript(args)
+	return strings.HasSuffix(s, "/.bin/appium") || strings.HasSuffix(s, "/appium/build/lib/main.js")
+}
+
+// xcuitestHost reports a process that hosts XCUITestDriver in-process rather
+// than behind an Appium server: appium-mcp (the Codex sessions' driver, run
+// as `node <...>/appium-mcp/dist/index.js` or through its `appium-mcp` bin)
+// launches its cached runner through simctl and drives it by
+// webDriverAgentUrl. It is a WebDriverAgent driver, never a reap kind: an MCP
+// server lives and dies with its client, which need not be a claude/codex
+// session.
+func xcuitestHost(p machineProc) bool {
+	if b := p.base(); b != "node" && b != "bun" {
+		return b == "appium-mcp"
+	}
+	s := nodeScript(p.args)
+	return path.Base(s) == "appium-mcp" || strings.HasSuffix(s, "/appium-mcp/dist/index.js")
 }
 
 // selectReapVictims picks the orphans: a known kind, older than reapMinAge,
