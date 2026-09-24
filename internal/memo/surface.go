@@ -96,6 +96,9 @@ func EnsureIndex(l *Ledger, events []Event, now time.Time) (EnsureResult, error)
 		}
 	}
 	if res.Reason == "current" {
+		// A fresh clone's tracked index is "current" too; one ls-files keeps
+		// SessionStart naming the untracking fix.
+		res.Tracked = TrackedIndex(home, l.Kind)
 		return res, nil
 	}
 	changed, tracked, err := WriteIndex(l, events, now)

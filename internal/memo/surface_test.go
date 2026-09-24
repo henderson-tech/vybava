@@ -111,6 +111,14 @@ func TestTrackedIndexLeftAsCommitted(t *testing.T) {
 		t.Fatalf("hand index: changed=%v diag=%+v err=%v", changed, d, err)
 	}
 	assertUntouched(hand)
+	// Fresher than the ledger (a fresh clone): current, and still warned.
+	fresh := time.Now().Add(time.Hour)
+	if err := os.Chtimes(index, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := EnsureIndex(l, nil, now); err != nil || res.Reason != "current" || res.Tracked == nil {
+		t.Fatalf("current tracked index: %+v %v", res, err)
+	}
 
 	// A committed render gone stale (the ledger grew): SessionStart leaves it too.
 	render := Render(l, nil, now)
