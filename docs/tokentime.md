@@ -55,8 +55,8 @@ credential and no message content is read beyond what decoding a line needs.
   outside any repository is its own project.
 - **A moved checkout is one project.** At rollup time — stored buckets keep the
   root they were recorded under — a root that no longer exists on disk folds into
-  the ONE live root sharing its basename (`~/Documents/Work/FixIt` into
-  `~/Work/Projects/Org/FixIt`). With no live namesake, or with two or more, the
+  the ONE live root sharing its basename (a checkout moved from
+  `<old parent>/FixIt` to `<new parent>/FixIt` stays one FixIt). With no live namesake, or with two or more, the
   dead root stays its own project: a basename never picks between candidates. Display names are unique across
   every root ever indexed: among roots sharing a basename, the one still on disk
   (then the busiest) keeps it (`FixIt`); the others gain parent directories
