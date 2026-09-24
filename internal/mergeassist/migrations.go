@@ -195,8 +195,18 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 			return plans, err
 		}
 	}
+	events, err := gitmerge.Events(t.Root)
+	if err != nil {
+		return plans, err
+	}
+	failed := map[string]bool{}
+	for _, e := range gitmerge.Latest(events) {
+		failed[e.Path] = e.Class == gitmerge.ClassMigration && e.Outcome == gitmerge.OutcomeFailed
+	}
 	for i, p := range plans {
-		if len(p.Renames) == 0 || p.Check == "" {
+		// A check that failed earlier reruns even with nothing left to rename:
+		// `merge-assist migrations --apply` after the fix is how its row clears.
+		if p.Check == "" || (len(p.Renames) == 0 && !failed[p.Check]) {
 			continue
 		}
 		cmd := exec.Command("sh", "-c", p.Check)

@@ -60,7 +60,8 @@ free multiple of `step` (default 1e8) above that newest, then +1, +2, …
 Filename, class name and `name` move together, and so does every other
 tracked file naming the migration. A still-conflicted file gets the new name
 inside its markers but stays unmerged. Then the repo's own `check` runs, and a
-failing check is a `failed` row: the merge is not committed over it. A
+failing check is a `failed` row: the merge is not committed over it, and
+`merge-assist migrations --apply` reruns it once fixed. A
 migration the base already has is never renamed: its name is recorded in
 every database that ran it. A file without the matching `class` is refused
 before anything is written.

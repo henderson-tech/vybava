@@ -215,6 +215,12 @@ func reportNext(rep mergeassist.Report) []string {
 			break
 		}
 	}
+	for _, row := range rep.Rows {
+		if row.Class == "migration" && row.State == mergeassist.StateFailed {
+			next = append(next, "merge-assist migrations --apply  # reruns the failed check once fixed")
+			break
+		}
+	}
 	switch {
 	case rep.DryRun && !rep.UpToDate:
 		next = append(next, "merge-assist merge "+rep.Onto)
