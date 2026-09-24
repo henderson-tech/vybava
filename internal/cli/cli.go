@@ -134,6 +134,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "lok" {
 		return rt.lokApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "merge-assist" {
+		return rt.mergeAssistApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "memo" {
 		return rt.memoApplet(), nil
 	}
@@ -186,6 +189,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.envbridgeCommand(),
 		rt.claudeGuardsCommand("claude-guards"),
 		rt.lokCommand("lok"),
+		rt.mergeAssistCommand("merge-assist"),
 		rt.memoCommand("memo"),
 		rt.postaCommand("posta"),
 		rt.repolicyCommand("repolicy"),

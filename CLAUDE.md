@@ -115,6 +115,15 @@ undecidable is held, and destruction only ever happens behind `--apply`.
 `internal/claudeguards/plugincache.go` is the other half: it blocks package
 installs into that tree at all, and is deliberately escape-hatch-free.
 
+`internal/mergeassist` settles mechanical merge conflicts; the catalog driver is
+lok's (`internal/lok/merge.go`). `mergeassist/gitmerge` is the dependency-free
+leaf both drivers share (journal, text-merge fallback) so lok never imports
+mergeassist. Load-bearing: drivers are registered in the clone's
+`info/attributes` + git config, never a tracked `.gitattributes` (git reads
+attributes from the checked-out branch); a catalog key clash is a conflict even
+when git's line merge is clean (it keeps duplicate keys); a migration the base
+has is never renamed. Docs: `docs/merge-assist.md`.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See

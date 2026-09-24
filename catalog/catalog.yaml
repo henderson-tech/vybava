@@ -25,6 +25,12 @@ items:
     description: Locale catalogs for AI sessions — never read whole. Configured in vybava.config.ts (lok.catalogs), queried by key (get, grep, missing), written by verb with every locale kept in sync (add, set, rm), extracted from source (scan), gated in CI (check).
     applet: lok
 
+  - id: merge-assist
+    kind: applet
+    status: experimental
+    description: Merge main without the mechanical conflicts — locale catalogs merge by key (lok driver), generated files take theirs and regenerate, unmerged migrations renumber past the base; one verb prints what is left as a compact table. Configured in vybava.config.ts (merge + lok).
+    applet: merge-assist
+
   - id: posta
     kind: applet
     status: experimental
@@ -249,6 +255,7 @@ groups:
       - prm
       - prc
       - merge
+      - merge-assist
       - fontfreeze
       - perfrig
       - shrt
@@ -281,6 +288,7 @@ groups:
     items:
       - worktime
       - lok
+      - merge-assist
       - menubar-doctor
       - claude-guards
       - envbridge
