@@ -375,7 +375,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		out.Hours = append(out.Hours, hour)
 	}
 
-	spans, err := projectSpans(tx, ps.of)
+	spans, err := projectSpans(tx, ps.of, nil)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -602,8 +602,17 @@ func projectSessions(q querier, since int64, of func(int64) int64) (map[int64]in
 	return out, rs.Err()
 }
 
-func projectSpans(q querier, of func(int64) int64) (map[int64][2]int64, error) {
-	rs, err := q.Query("SELECT project, MIN(hour), MAX(hour) FROM buckets GROUP BY project")
+// projectSpans is each canonical project's first and last bucket hour — of
+// the stored project ids in members only, or of every project when members
+// is nil.
+func projectSpans(q querier, of func(int64) int64, members []int64) (map[int64][2]int64, error) {
+	query, args := "SELECT project, MIN(hour), MAX(hour) FROM buckets", []any(nil)
+	if members != nil {
+		var in string
+		in, args = inList(members)
+		query += " WHERE project IN (" + in + ")"
+	}
+	rs, err := q.Query(query+" GROUP BY project", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -711,14 +720,19 @@ func projects(q querier) (projectSet, error) {
 		if err := rs.Scan(&c.id, &c.root, &c.tokens); err != nil {
 			return projectSet{}, err
 		}
-		_, statErr := os.Stat(c.root)
-		c.live = c.root != "" && statErr == nil
+		c.live = onDisk(c.root)
 		candidates = append(candidates, c)
 	}
 	if err := rs.Err(); err != nil {
 		return projectSet{}, err
 	}
 	return foldProjects(candidates), nil
+}
+
+// onDisk is a root's liveness: it still exists. "" (no cwd) never does.
+func onDisk(root string) bool {
+	_, err := os.Stat(root)
+	return root != "" && err == nil
 }
 
 // foldProjects folds a DEAD root (gone from disk) into the one LIVE root that
@@ -798,6 +812,17 @@ func uniqueNames(candidates []nameCandidate) map[int64]string {
 		names[c.id] = name
 	}
 	return names
+}
+
+// nameKey is root's last element: what every name uniqueNames can give it
+// ends in ("unknown" for ""), and equal keys are equal basenames, all a fold
+// matches on. Roots with different keys never touch each other's fold or name.
+func nameKey(root string) string {
+	if root == "" {
+		return "unknown"
+	}
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(root)), "/")
+	return parts[len(parts)-1]
 }
 
 // dayStart is the first instant of the local calendar day y-m-d; an

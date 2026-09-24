@@ -258,6 +258,42 @@ func TestProjectRowsFilteredInSQLMatchTheFoldedSet(t *testing.T) {
 	}
 }
 
+// The verb reads only its namesakes' buckets, yet its name, root and lifetime
+// span are the rollup's own: the folded dead checkout's older hours count,
+// another project's wider span does not.
+func TestProjectLifetimeMatchesTheRollupFromItsNamesakesAlone(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	app, moved, tools := filepath.Join(base, "work", "app"), filepath.Join(base, "old", "app"), filepath.Join(base, "work", "tools")
+	mkdir(t, app)
+	mkdir(t, tools)
+	s := indexed(t, base,
+		rec{"t1", tools, "2026-08-01T10:00:00Z", "claude-opus-5-5", 1},  // another project, older still
+		rec{"old", moved, "2026-09-02T10:00:00Z", "claude-opus-5-5", 2}, // the dead checkout: app's first day
+		rec{"a", app, "2026-09-20T10:00:00Z", "claude-opus-5-5", 3},
+		rec{"a", app, "2026-09-22T10:00:00Z", "claude-fable-5-1", 4},
+		rec{"t2", tools, "2026-09-23T10:00:00Z", "claude-opus-5-5", 5}, // another project, newer
+	)
+	r, err := s.Rollup(RollupOptions{Days: 7, Hours: 1, Now: time.Date(2026, 9, 24, 12, 0, 0, 0, prague), Location: prague})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want string
+	for _, p := range r.Projects {
+		if p.Root == app {
+			want = fmt.Sprintf("%s %s %s..%s", p.Name, p.Root, p.FirstDay, p.LastDay)
+		}
+	}
+	if want != fmt.Sprintf("app %s 2026-09-02..2026-09-22", app) {
+		t.Fatalf("rollup reads app as %q", want)
+	}
+	for _, root := range []string{app, moved} {
+		p := projectOf(t, s, root, "2026-09-21", "2026-09-23", "")
+		if got := fmt.Sprintf("%s %s %s..%s", p.Name, p.Root, p.FirstDay, p.LastDay); got != want {
+			t.Errorf("--root %s: got %s, want the rollup's %s", root, got, want)
+		}
+	}
+}
+
 // OpenReadOnly creates nothing and changes nothing: a missing store is
 // ErrNoStore with no directory made, an existing one is read without its
 // database moving, and one an older binary wrote is refused, never migrated.

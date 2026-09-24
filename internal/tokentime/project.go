@@ -134,7 +134,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	if err != nil {
 		return ProjectDetail{}, err
 	}
-	ps, err := projects(tx)
+	ps, err := namesakes(tx, root)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
@@ -260,7 +260,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 	out.LongestRunMinutes = longest * 60
 
-	spans, err := projectSpans(tx, ps.of)
+	spans, err := projectSpans(tx, ps.of, ids)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
@@ -268,6 +268,56 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 		out.FirstDay, out.LastDay = dayKey(sp[0]), dayKey(sp[1])
 	}
 	return out, nil
+}
+
+// namesakes is projects() cut down to the roots one project's fold and name
+// can depend on: those sharing its nameKey. The root list is read without
+// touching buckets, only the namesakes are stat'ed, and only their buckets
+// are summed for the name's token tie-break — foldProjects gets the same
+// inputs it gets in the rollup, so the fold and the lifetime-stable name are
+// the rollup's own.
+func namesakes(q querier, root string) (projectSet, error) {
+	rs, err := q.Query("SELECT id, root FROM projects")
+	if err != nil {
+		return projectSet{}, err
+	}
+	defer rs.Close()
+	key := nameKey(root)
+	var group []nameCandidate
+	var ids []int64
+	at := map[int64]int{}
+	for rs.Next() {
+		var c nameCandidate
+		if err := rs.Scan(&c.id, &c.root); err != nil {
+			return projectSet{}, err
+		}
+		if nameKey(c.root) == key {
+			c.live = onDisk(c.root)
+			at[c.id] = len(group)
+			group, ids = append(group, c), append(ids, c.id)
+		}
+	}
+	if err := rs.Err(); err != nil {
+		return projectSet{}, err
+	}
+	in, args := inList(ids)
+	sums, err := q.Query(`SELECT project, SUM(input + output + cache_write_5m + cache_write_1h + cache_read)
+		FROM buckets WHERE project IN (`+in+`) GROUP BY project`, args...)
+	if err != nil {
+		return projectSet{}, err
+	}
+	defer sums.Close()
+	for sums.Next() {
+		var id, tokens int64
+		if err := sums.Scan(&id, &tokens); err != nil {
+			return projectSet{}, err
+		}
+		group[at[id]].tokens = tokens
+	}
+	if err := sums.Err(); err != nil {
+		return projectSet{}, err
+	}
+	return foldProjects(group), nil
 }
 
 // defaultBucket: hours for a single day, months once the range outgrows
