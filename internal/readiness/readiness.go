@@ -316,8 +316,10 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	}
 	if hadArgs {
 		data.Kept = append(data.Kept, ArgsFile)
-		if !freshRun && !reflect.DeepEqual(args.Repos, oldArgs.Repos) {
-			res.Diagnostics = append(res.Diagnostics, info(DiagArgsRefreshed, ArgsFile+" repos differed from run.json's ranges and were refreshed; clusters kept", ""))
+		if !freshRun && !reflect.DeepEqual(args, oldArgs) {
+			res.Diagnostics = append(res.Diagnostics, info(DiagArgsRefreshed,
+				ArgsFile+" differed from what run.json and the adapter derive; every field but clusters was re-derived",
+				"only clusters in "+ArgsFile+" are yours to edit"))
 		}
 	} else {
 		data.Created = append(data.Created, ArgsFile)
@@ -369,7 +371,7 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	}
 	res.Next = []string{
 		"record the phase-0 authority answers in " + filepath.Join(dir, RunFile) + " (authority.merge, devices, deviceWalk, concurrency, finish)",
-		"fill clusters in " + filepath.Join(dir, ArgsFile) + ", then Workflow({scriptPath: \"" + filepath.Join(dir, "inventory.workflow.js") + "\", args: <that file's JSON>})",
+		"fill clusters in " + filepath.Join(dir, ArgsFile) + " (the only field init keeps; it re-derives the rest), then Workflow({scriptPath: \"" + filepath.Join(dir, "inventory.workflow.js") + "\", args: <that file's JSON>})",
 		"jq '.result' <workflow output file> > " + filepath.Join(dir, InventoryFile) + "   # never read the result into context",
 	}
 	return res, nil
