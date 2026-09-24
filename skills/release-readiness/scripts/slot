@@ -23,6 +23,10 @@ MIN_SLICE_ONE_GB=${READINESS_MIN_SLICE_HEADROOM_ONE_SLOT_GB:-3}
 mkdir -p "$D"
 [ "${1:-}" = "--" ] && shift
 [ $# -gt 0 ] || { echo "usage: slot -- <command...>" >&2; exit 2; }
+if [ ! -r /proc/meminfo ] || [ ! -r /proc/loadavg ]; then
+  echo "slot: Linux only (reads /proc/meminfo and /proc/loadavg); run it on the box that hosts the stacks" >&2
+  exit 2
+fi
 
 avail_gb() { awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo; }
 load1() { awk '{print int($1)}' /proc/loadavg; }
@@ -70,7 +74,9 @@ while :; do
       if flock -n "$fd"; then
         exec {adm}>&-
         echo "[readiness-slot] slot $free ($((busy + 1)) of $n_now allowed, $N max), $(avail_gb) GB available, slice headroom $(slice_headroom_gb) GB, load $(load1)" >&2
-        "$@"
+        # The job must not inherit the slot lock: a daemon it leaves behind
+        # would otherwise hold the slot after the job itself exits.
+        "$@" {fd}>&-
         rc=$?
         exec {fd}>&-
         exit "$rc"
@@ -78,6 +84,10 @@ while :; do
       exec {fd}>&-
     fi
     exec {adm}>&-
+  fi
+  if [ -z "${waited:-}" ]; then
+    echo "[readiness-slot] waiting: $(avail_gb) GB available (need $MIN_GB), load $(load1) (max $MAX_LOAD), slice headroom $(slice_headroom_gb) GB, $n_now of $N slots open" >&2
+    waited=1
   fi
   sleep 15
 done

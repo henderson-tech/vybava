@@ -71,7 +71,7 @@ The applet fills `{slug}` and `{path}` in rendered briefs. Every other token is 
 
 ## Production and integration
 
-`production.tag` is a glob. The production ref is `git describe --tags --abbrev=0 --match <tag> [--exclude <exclude>] <remote>/<integration>`: the newest matching tag reachable from the integration branch. That is correct for trunk-based repos whose deploys tag main, and whose hotfix tags are merged back. `production.branch` names a production branch instead. `init` freezes the ranges into `run.json` as `<production sha>..<integration sha>`, because every later fetch moves `origin/<integration>`. The symbolic names stay beside the shas. `range` shows the live ones.
+`production.tag` is a glob. The production ref is `git describe --tags --abbrev=0 --match <tag> [--exclude <exclude>] <remote>/<integration>`: the newest matching tag reachable from the integration branch. That is correct for trunk-based repos whose deploys tag main, and whose hotfix tags are merged back. `production.branch` names a production branch instead. A tag cut on a hotfix branch that main has not merged yet is not reachable from main; the range then starts at the previous tag and includes commits production already runs, which widens the inventory but never hides anything. `init` freezes the ranges into `run.json` as `<production sha>..<integration sha>`, because every later fetch moves `origin/<integration>`. The symbolic names stay beside the shas. `range` shows the live ones.
 
 ## The run directory
 

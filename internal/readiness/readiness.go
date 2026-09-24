@@ -298,7 +298,16 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	case err == nil && !freshRun:
 		data.Kept = append(data.Kept, ArgsFile)
 	case err == nil || errors.Is(err, os.ErrNotExist):
-		if err := writeJSON(argsPath, t.inventoryArgs(run)); err != nil {
+		args := t.inventoryArgs(run)
+		// A re-freeze keeps the clusters the orchestrator already chose.
+		var old InventoryArgs
+		if _, err := readOptional(dir, ArgsFile, &old); err != nil {
+			return res, err
+		}
+		if len(old.Clusters) > 0 {
+			args.Clusters = old.Clusters
+		}
+		if err := writeJSON(argsPath, args); err != nil {
 			return res, err
 		}
 		data.Created = append(data.Created, ArgsFile)

@@ -61,7 +61,7 @@ Authority (phase 0): merges via `{{.Run.Authority.Merge}}` · finish line: {{.Ru
 
 ## PRs
 - `{{.Run.Authority.Merge}}`{{if .C.Merge.Order}}, merge order {{join .C.Merge.Order " → "}}. A later PR declares its dependency on the earlier one in its body{{end}}.
-- The evidence-gated PR (the last one to merge) opens as a draft (`/prm --draft`, no `--auto`). Ready it (`gh pr ready`) only after the device evidence is published; the merge authority applies from then on.
+- The evidence-gated PR (the last one to merge) opens as a draft (`/prm --draft`, no `--auto`). Ready it (`gh pr ready`) only after the device evidence is published, then run `/prm <pr>` again with the merge authority's flags: prm stops at a draft and does not resume by itself.
 - PR bodies link the lane task, the epic, the lane board and the evidence commit sha.
 - Red CI unrelated to your diff: report it to the orchestrator and never bypass it. A queued run is not a hung run.
 - On conflict, merge the integration branch in and keep both intents.

@@ -194,6 +194,10 @@ func (t *Tool) Render(dir string, check bool) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// An empty lanes.json would read as "every lane is gone" and remove their files.
+	if hasLanes && len(lanes) == 0 {
+		return Result{}, diag(DiagRunInvalid, LanesFile+" is empty or null", "write the lanes into "+filepath.Join(dir, LanesFile)+", or delete it until phase 2")
+	}
 	var inv Inventory
 	hasInv, err := readOptional(dir, InventoryFile, &inv)
 	if err != nil {

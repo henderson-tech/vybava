@@ -262,6 +262,21 @@ func TestInitSeedsTheRunDirectoryOnce(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "results.md")); string(b) != "- lane result\n" {
 		t.Fatalf("ledger overwritten: %q", b)
 	}
+
+	// Re-freezing (run.json deleted) rewrites the args but keeps the chosen clusters.
+	if err := writeJSON(filepath.Join(dir, ArgsFile), InventoryArgs{Clusters: []ClusterSpec{{Name: "Checkout", Focus: "paying"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, RunFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Init(dir, "", false); err != nil {
+		t.Fatal(err)
+	}
+	var args InventoryArgs
+	if _, err := readOptional(dir, ArgsFile, &args); err != nil || len(args.Clusters) != 1 || len(args.Repos) != 1 {
+		t.Fatalf("re-frozen args %+v %v", args, err)
+	}
 }
 
 func TestRenderWritesLaneFilesAndDetectsDrift(t *testing.T) {
@@ -389,6 +404,10 @@ func TestRenderFollowsTheRunsScopeAndLanes(t *testing.T) {
 		t.Fatalf("feature naming an unknown repo accepted: %v", err)
 	}
 	write(InventoryFile, inv)
+	write(LanesFile, "[]")
+	if _, err := tool.Render(dir, false); code(err) != DiagRunInvalid {
+		t.Fatalf("empty lanes.json accepted (it would remove every lane file): %v", err)
+	}
 	write(RunFile, runJSON)
 	write(LanesFile, strings.Replace(lanes, `"refunds"`, `"../escape"`, 1))
 	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
