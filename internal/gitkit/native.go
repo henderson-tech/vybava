@@ -33,6 +33,7 @@ var native = map[string]Verb{
 	"before-review":  runBeforeReview,
 	"list-prs":       runListPRs,
 	"merge-precheck": runMergePrecheck,
+	"github-io":      runGitHubIO,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
@@ -78,7 +79,10 @@ type execOpts struct {
 	dir string
 	// echo, when set, receives the child's stderr — Node's default stdio
 	// does this; scripts passing an explicit stdio leave it nil.
-	echo    io.Writer
+	echo io.Writer
+	// inherit, when set, IS the child's stderr (stdio "inherit"): streamed
+	// live and never captured into the failure message.
+	inherit io.Writer
 	timeout time.Duration
 	// maxBuffer caps stdout and stderr each; 0 is Node's 1 MiB default.
 	maxBuffer int
@@ -132,6 +136,9 @@ func execFile(o execOpts, name string, args ...string) (string, error) {
 	stderr := &cappedBuffer{limit: limit, kill: cancel}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if o.inherit != nil {
+		cmd.Stderr = o.inherit
+	}
 	err := cmd.Run()
 	if o.echo != nil {
 		_, _ = o.echo.Write(stderr.buf.Bytes())
