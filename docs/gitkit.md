@@ -6,8 +6,8 @@ triage, merge preconditions, worktree resolution, path classification and
 DB-url safety.
 
 ```sh
-vybava gitkit --json                 # list scripts
-vybava gitkit doctor --json          # node runtime + materialized payload
+vybava gitkit --json                 # list verbs
+vybava gitkit doctor --json          # same list; nothing else to check
 vybava gitkit resolve-fetch 42 --repo "$PWD"
 vybava gitkit pr-events 42 --every-seconds 60 --repo "$PWD"   # under Monitor
 ```
@@ -15,42 +15,51 @@ vybava gitkit pr-events 42 --every-seconds 60 --repo "$PWD"   # under Monitor
 ## Contract
 
 - **The verb is the interface, never a path.** A skill names `gitkit <script>`;
-  porting a script to Go keeps the verb and its output, so no skill changes.
-- The scripts are zero-dependency, erasable TypeScript in
-  `internal/gitkit/ts/bin/`, embedded in the binary and materialized once per
-  content digest under `<user cache>/vybava/gitkit/<digest>/bin` (they import
-  each other by relative path).
-- Script verbs never parse flags — every argument belongs to the script — and
-  `exec` node in place of the `vybava` process, so a Monitor's signals and the
-  script's exit code pass through untouched.
-- Node must strip types natively: 22.18+, 23.6+ or 24+. Missing or older node
-  answers `GITKIT_NODE_MISSING` / `GITKIT_NODE_TOO_OLD` with the fix.
+  a verb keeps its argv grammar, stdout, stderr notes and exit codes, so no
+  skill changes when its implementation does.
+- The verbs are Go in `internal/gitkit/`, one file per verb, registered in
+  `native.go`. They began as Node TypeScript and were ported byte-for-byte
+  (PR #91): JSON key order is struct field order, and `native.go` carries the
+  Node-compatibility helpers the port depends on — never bypass them:
+  - `execFile` fails as `execFileSync` did (`Command failed: <argv>\n<stderr>`,
+    `spawnSync <cmd> ENOENT|ETIMEDOUT|ENOBUFS`), echoes child stderr only
+    where the script used Node's default stdio, and caps output at
+    `maxBuffer` (Node's 1 MiB unless the verb set more).
+  - `writeJSON` is `JSON.stringify(v, null, 2)`; `jsString`/`jsSlice` carry
+    free text (comment bodies) cut at UTF-16 units and escaped as JS does.
+  - `jsNumber` / `positiveInt` / `jsParseInt` read argv as `Number()` /
+    `Number.parseInt()` did, so `0x7` and ` 7 ` still select PR 7.
+  - `repoRoot` resolves the `--repo` / `GIT_SKILL_REPO` anchor once per
+    invocation; a bad anchor fails loudly, never falls back to cwd.
+- Script verbs never parse flags — every argument belongs to the verb — and
+  run in-process; the verb's return value is the exit code.
 
 ## Tests
 
-`internal/gitkit/ts/tests/` is the scripts' spec — the behaviours not obvious
-from the code (which findings get filtered, which threads count as self, when
-the teardown hook must emit nothing). CI runs it on Node 24.
+Each verb has a `<verb>_test.go` ported from the TypeScript spec — the
+behaviours not obvious from the code (which findings get filtered, which
+threads count as self, when the teardown hook must emit nothing). These
+verbs run unattended inside `/prm --auto`, where a regression silently
+mis-triages review comments or hands the teardown hook the wrong directory.
+Every guard exists because something went wrong live — add the case first.
 
 ```sh
-node --disable-warning=ExperimentalWarning --test internal/gitkit/ts/tests/*.test.ts
+go test ./internal/gitkit/...
 ```
-
-Run it after editing anything in `ts/bin/`: these scripts run unattended inside
-`/prm --auto`, where a regression silently mis-triages review comments or hands
-the teardown hook the wrong directory. Every guard exists because something went
-wrong live — add the case first.
 
 | Test | Covers |
 |---|---|
-| `resolve-fetch` | PR selector forms, bot filtering, self/resolved thread rules |
-| `merge-precheck` | required bot reviewers (incl. eve advisory COMMENTED verdicts), login canonicalisation, worktree-teardown guard |
-| `pr-events` · `github-io` | timeline shaping, flag parsing, API I/O edges |
-| `sync-context` | local-vs-remote DB url detection |
-| `classify-paths` · `tdd-classify` | commit bundling and TDD classification |
-| `worktree` · `repo-root` · `list-prs` | path and listing helpers |
+| `resolvefetch` | PR selector forms, bot filtering, self/resolved thread rules, UTF-16 body cuts |
+| `mergeprecheck` | required bot reviewers (incl. eve advisory COMMENTED verdicts), login canonicalisation, enum config keys, gates |
+| `prevents` · `githubio` | event computation and snapshot shaping, argv construction, flag parsing |
+| `synccontext` | local-vs-remote DB url detection, globs, `--freeze`, the verb end to end |
+| `classifypaths` · `tddclassify` | commit bundling and TDD classification |
+| `worktree` · `reporoot` · `listprs` · `beforereview` | path, listing and hook helpers |
+| `native` | `execFile`'s Node failure modes, `Number()` parsing |
 
-Fixtures use `acme/app`-style placeholders, never a real repo.
+Mutating `github-io` subcommands are tested on argv construction only; never
+run them against GitHub from a test. Fixtures use `acme/app`-style
+placeholders and RFC 5737 IPs, never a real repo or host.
 
 ## Per-repo configuration
 

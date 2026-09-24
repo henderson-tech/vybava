@@ -116,10 +116,12 @@ undecidable is held, and destruction only ever happens behind `--apply`.
 installs into that tree at all, and is deliberately escape-hatch-free.
 
 `internal/gitkit` is the git family's deterministic layer: skills call
-`vybava gitkit <script>`, never a file path, so a script ported from the
-embedded TypeScript to Go keeps its verb and output and no skill changes. Edit
-`ts/bin/` → run the `ts/tests/` suite (`docs/gitkit.md`). The git-family skills
-are canonical HERE; a personal `~/.claude` copy is a symlink, never a fork.
+`vybava gitkit <script>`, never a file path; a verb's argv, stdout (JSON key
+order), stderr and exit code are the contract, byte-identical to the Node
+scripts it replaced. Shell out, emit JSON and parse numbers only through
+`native.go`'s Node-compatible helpers (`execFile`, `writeJSON`, `jsString`,
+`jsNumber`) — `docs/gitkit.md`. The git-family skills are canonical HERE; a
+personal `~/.claude` copy is a symlink, never a fork.
 
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
