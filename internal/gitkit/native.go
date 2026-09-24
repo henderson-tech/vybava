@@ -2,11 +2,18 @@ package gitkit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Verb is a script ported to Go: it receives the arguments after the verb
@@ -20,6 +27,7 @@ type Verb func(args []string, stdout, stderr io.Writer) int
 var native = map[string]Verb{
 	"tdd-classify":   runTDDClassify,
 	"classify-paths": runClassifyPaths,
+	"worktree":       runWorktree,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
@@ -60,16 +68,82 @@ func (e *commandError) Error() string {
 
 func (e *commandError) Unwrap() error { return e.err }
 
-// runIn runs name with args in dir and returns stdout. On failure the
-// child's stderr is carried in the error (Node's execFileSync shape).
-func runIn(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
+// execOpts mirrors the execFileSync options the scripts pass.
+type execOpts struct {
+	dir string
+	// echo, when set, receives the child's stderr as it is produced — Node's
+	// default stdio does this; scripts passing an explicit stdio leave it nil.
+	echo    io.Writer
+	timeout time.Duration
+}
+
+// execFile runs name with args and returns stdout, failing the way Node's
+// execFileSync does: "Command failed: <argv>\n<stderr>", "spawnSync <name>
+// ENOENT", "spawnSync <name> ETIMEDOUT".
+func execFile(o execOpts, name string, args ...string) (string, error) {
+	ctx := context.Background()
+	if o.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.Dir = o.dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.String(), &commandError{argv: append([]string{name}, args...), stderr: stderr.String(), err: err}
+	if o.echo != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, o.echo)
 	}
-	return stdout.String(), nil
+	err := cmd.Run()
+	switch {
+	case err == nil:
+		return stdout.String(), nil
+	case errors.Is(err, exec.ErrNotFound):
+		return "", fmt.Errorf("spawnSync %s ENOENT", name)
+	case ctx.Err() != nil:
+		return "", fmt.Errorf("spawnSync %s ETIMEDOUT", name)
+	}
+	return stdout.String(), &commandError{argv: append([]string{name}, args...), stderr: stderr.String(), err: err}
+}
+
+var jsDecimal = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
+
+// jsNumber is JavaScript's Number(s) for the forms a CLI argument takes:
+// surrounding whitespace ignored, "" is 0, 0x/0o/0b prefixes, decimal and
+// exponent notation, ±Infinity. ok is false where Number would be NaN.
+func jsNumber(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, true
+	}
+	if len(s) > 2 && s[0] == '0' {
+		base := map[byte]int{'x': 16, 'X': 16, 'o': 8, 'O': 8, 'b': 2, 'B': 2}[s[1]]
+		if base != 0 {
+			n, err := strconv.ParseUint(s[2:], base, 64)
+			return float64(n), err == nil
+		}
+	}
+	switch s {
+	case "Infinity", "+Infinity":
+		return math.Inf(1), true
+	case "-Infinity":
+		return math.Inf(-1), true
+	}
+	if !jsDecimal.MatchString(s) {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	return n, err == nil || errors.Is(err, strconv.ErrRange)
+}
+
+// positiveInt is `Number.isInteger(n) && n > 0` over jsNumber, bounded to the
+// exactly representable integers (2^53) so the result formats as JS would.
+func positiveInt(s string) (int, bool) {
+	n, ok := jsNumber(s)
+	if !ok || n <= 0 || n != math.Trunc(n) || n > 1<<53 {
+		return 0, false
+	}
+	return int(n), true
 }

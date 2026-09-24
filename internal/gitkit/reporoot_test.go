@@ -42,7 +42,7 @@ func TestRepoRootResolvesAnchorToplevel(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v %s", err, out)
 	}
-	expected, err := runIn(dir, "git", "rev-parse", "--show-toplevel")
+	expected, err := execFile(execOpts{dir: dir}, "git", "rev-parse", "--show-toplevel")
 	if err != nil {
 		t.Fatal(err)
 	}

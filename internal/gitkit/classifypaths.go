@@ -105,7 +105,7 @@ func runClassifyPaths(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	out, err := runIn(root, "git", "status", "--porcelain")
+	out, err := execFile(execOpts{dir: root, echo: stderr}, "git", "status", "--porcelain")
 	if err != nil {
 		return fail(stderr, err)
 	}
