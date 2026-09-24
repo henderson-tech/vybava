@@ -44,6 +44,9 @@ const (
 	// DiagPayloadDiffers: a copied script in the run directory differs from
 	// the one this binary ships — kept, because runs adapt them (info).
 	DiagPayloadDiffers = "PAYLOAD_DIFFERS"
+	// DiagArgsRefreshed: inventory-args.json carried repos that run.json no
+	// longer has; init re-derived them and kept the clusters (info).
+	DiagArgsRefreshed = "ARGS_REFRESHED"
 	// DiagRenderDrift: a rendered file differs from what its inputs produce;
 	// the fix is `readiness render`.
 	DiagRenderDrift = "RENDER_DRIFT"

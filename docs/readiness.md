@@ -77,7 +77,7 @@ The applet fills `{slug}` and `{path}` in rendered briefs. Every other token is 
 
 `init` writes these, and never overwrites any of them:
 - `run.json`: `{v, date, dir, epic, rollup, authority: {merge, devices, deviceWalk, concurrency, finish}, ranges}`. Task ids are numbers, as vitrinka returns them (quoted ids are accepted).
-- `inventory-args.json`: the inventory Workflow's args. The orchestrator fills in `clusters`.
+- `inventory-args.json`: the inventory Workflow's args. The orchestrator fills in `clusters`. Every init re-derives the rest from run.json and the adapter and keeps the clusters (`ARGS_REFRESHED` when the repos had drifted).
 - The payload copies `slot`, `uniq-shots.sh` and `inventory.workflow.js`. `PAYLOAD_DIFFERS` reports a run that adapted one.
 - The ledgers `results.md`, `decisions.md` and `rotation.md`.
 

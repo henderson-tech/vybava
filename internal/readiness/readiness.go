@@ -317,7 +317,7 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	if hadArgs {
 		data.Kept = append(data.Kept, ArgsFile)
 		if !freshRun && !reflect.DeepEqual(args.Repos, oldArgs.Repos) {
-			res.Diagnostics = append(res.Diagnostics, info(DiagPayloadDiffers, ArgsFile+" repos differed from run.json's ranges and were refreshed", ""))
+			res.Diagnostics = append(res.Diagnostics, info(DiagArgsRefreshed, ArgsFile+" repos differed from run.json's ranges and were refreshed; clusters kept", ""))
 		}
 	} else {
 		data.Created = append(data.Created, ArgsFile)
