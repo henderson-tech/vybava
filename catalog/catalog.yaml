@@ -160,20 +160,32 @@ items:
   - id: prm
     kind: skill
     status: experimental
-    description: Monitor an existing pull request and resolve review feedback until it is ready to merge.
+    description: The one PR verb — create or adopt the branch PR, work review rounds inline, gate and merge, then tear down.
     source: skills/prm
 
-  - id: prc
+  - id: push-all
     kind: skill
     status: experimental
-    description: Create or find the current branch pull request, then hand it to the PR monitor workflow.
-    source: skills/prc
+    description: Commit doctrine — full-tree sweep by default, surgical single change set on request, never fires unasked.
+    source: skills/push-all
 
-  - id: merge
+  - id: sync
     kind: skill
     status: experimental
-    description: Merge a pull request only after its safety, review, and CI gates pass.
-    source: skills/merge
+    description: Bring a checkout up to date — default branch pulls ff-only; feature branch merges the default branch, then deps, backup+migrate, regen, verify.
+    source: skills/sync
+
+  - id: push-back
+    kind: skill
+    status: experimental
+    description: Verify a claim against code, docs and project rules before acting on it; prm composes it for every review verdict.
+    source: skills/push-back
+
+  - id: gitkit
+    kind: applet
+    status: experimental
+    description: Deterministic git/PR layer the prm, push-all and sync skills execute — PR selectors, review triage, merge gates, worktrees, path classification.
+    applet: gitkit
 
   - id: cli-craft
     kind: skill
@@ -246,9 +258,11 @@ groups:
       - handoffs
       - plaud-cli
       - plaud
+      - gitkit
       - prm
-      - prc
-      - merge
+      - push-all
+      - sync
+      - push-back
       - fontfreeze
       - perfrig
       - shrt
@@ -270,11 +284,13 @@ groups:
       - press-email
 
   - id: ai-git
-    description: Reusable pull-request creation, review, and merge workflows.
+    description: The git family — commit, sync, PR create → review → merge, and the gitkit layer they run on.
     items:
+      - gitkit
       - prm
-      - prc
-      - merge
+      - push-all
+      - sync
+      - push-back
 
   - id: everything
     description: Every package currently published by Výbava.
@@ -306,9 +322,11 @@ groups:
       - handoffs
       - plaud-cli
       - plaud
+      - gitkit
       - prm
-      - prc
-      - merge
+      - push-all
+      - sync
+      - push-back
       - press
       - press-pdf
       - press-logo

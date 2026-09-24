@@ -24,6 +24,11 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Test gitkit scripts
+        run: node --disable-warning=ExperimentalWarning --test internal/gitkit/ts/tests/*.test.ts
       - name: Build
         run: go build -trimpath ./cmd/vybava
       - name: Package release snapshot

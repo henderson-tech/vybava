@@ -289,8 +289,8 @@ func TestUnknownVisibilityIsCached(t *testing.T) {
 }
 
 func TestPrivateIP(t *testing.T) {
-	private := []string{"10.0.0.1", "127.0.0.1", "172.16.0.1", "172.31.9.9", "192.168.1.1", "169.254.0.1", "0.0.0.0"}
-	public := []string{"95.216.27.220", "8.8.8.8", "172.32.0.1"}
+	private := []string{"10.0.0.1", "127.0.0.1", "172.16.0.1", "172.31.9.9", "192.168.1.1", "169.254.0.1", "0.0.0.0", "192.0.2.7", "198.51.100.7", "203.0.113.10"}
+	public := []string{"95.216.27.220", "8.8.8.8", "172.32.0.1", "203.0.114.1"}
 	for _, ip := range private {
 		if !rePrivateIP.MatchString(ip) {
 			t.Errorf("%s should be private", ip)
