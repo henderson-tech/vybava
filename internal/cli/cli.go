@@ -146,6 +146,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "menubar-doctor" {
 		return rt.menubarApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "gitkit" {
+		return rt.gitkitApplet(), nil
+	}
 
 	root := &cobra.Command{
 		Use:           "vybava",
@@ -162,6 +165,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.installCommand(),
 		rt.uninstallCommand(),
 		rt.updateCommand(),
+		rt.upgradeCommand(),
 		rt.doctorCommand(),
 		rt.setupCommand(),
 		rt.memoryCommand(),
@@ -177,6 +181,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.worktimeCommand("worktime"),
 		rt.reconcileCommand("reconcile"),
 		rt.menubarCommand("menubar-doctor"),
+		rt.gitkitCommand("gitkit"),
 		rt.reclaimCommand("reclaim"),
 		rt.macwatchCommand("macwatch"),
 		rt.pluginGCCommand("plugin-gc"),

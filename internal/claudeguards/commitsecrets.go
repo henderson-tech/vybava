@@ -70,7 +70,8 @@ var (
 		`(?:"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+"|'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+')`)
 
 	reIPv4      = regexp.MustCompile(`\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b`)
-	rePrivateIP = regexp.MustCompile(`^(0\.|10\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|255\.|169\.254\.)`)
+	// Also never routable: the RFC 5737 documentation nets fixtures are meant to use.
+	rePrivateIP = regexp.MustCompile(`^(0\.|10\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|255\.|169\.254\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)`)
 )
 
 // credentialAssignment reports whether one added diff line hardcodes a
