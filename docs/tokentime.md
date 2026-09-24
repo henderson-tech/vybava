@@ -121,10 +121,13 @@ the lock: it serves the store as committed, so it answers at once even while a
 pass is running — `rollup` or `index` is what brings the store up to date.
 
 - `--root` is a root as the rollup reports it. A dead root folding into it is
-  part of it, and a folded dead root given resolves to its live project. A
-  root never indexed exits 2 with `UNKNOWN_PROJECT`.
+  part of it, and a folded dead root given resolves to its live project.
+  `--root ""` is the rollup's `unknown` project (responses recorded without a
+  cwd). A root never indexed exits 2 with `UNKNOWN_PROJECT`.
 - `from`/`to` are inclusive local days; an hour bucket belongs to the day it
-  starts in, as in the rollup.
+  starts in, as in the rollup. A day whose midnight a DST jump skips
+  (America/Santiago, America/Havana) starts at the jump. A bad day, range or
+  bucket exits 2 with `BAD_FLAG` before the store is opened.
 - `tokens`, `usd`, `responses` and `models` (most tokens first) cover the
   range under the rollup's rules — disjoint components, an unpriced model left
   out of every usd figure and reported as `UNPRICED_MODEL`. `sessions` counts

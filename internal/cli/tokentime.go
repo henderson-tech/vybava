@@ -260,8 +260,16 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			if err != nil {
 				return finish(s, nil, nil, nil, err)
 			}
-			if !filepath.IsAbs(root) || projFrom == "" || projTo == "" {
-				return badFlag("--root (an absolute repository root), --from and --to are required")
+			// An explicit empty --root is the rollup's "unknown" project:
+			// responses recorded without a cwd.
+			unknown := projRoot == "" && cmd.Flags().Changed("root")
+			if !unknown && !filepath.IsAbs(root) || projFrom == "" || projTo == "" {
+				return badFlag(`--root (an absolute repository root, or "" for the rollup's unknown project), --from and --to are required`)
+			}
+			// Validated before the store is opened: a bad flag is BAD_FLAG and writes nothing.
+			rng, err := tokentime.ParseRange(projFrom, projTo, tokentime.Bucket(projBucket))
+			if err != nil {
+				return badFlag(err.Error())
 			}
 			state, _, err := paths()
 			if err != nil {
@@ -272,10 +280,8 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, err)
 			}
 			defer store.Close()
-			out, err := store.Project(tokentime.ProjectOptions{Root: root, From: projFrom, To: projTo, Bucket: tokentime.Bucket(projBucket)})
+			out, err := store.Project(tokentime.ProjectOptions{Root: root, Range: rng})
 			switch {
-			case errors.Is(err, tokentime.ErrBadRange):
-				return badFlag(err.Error())
 			case errors.Is(err, tokentime.ErrUnknownProject):
 				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagUnknownProj, Severity: "error",
 					Detail: err.Error() + " — roots are listed by the rollup", Fix: "tokentime rollup --json --no-index"}})
@@ -286,7 +292,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			return finish(s, out, append(priceDiags(prices), unpricedDiags(out.Unpriced, prices)...), nil, nil)
 		},
 	}
-	project.Flags().StringVar(&projRoot, "root", "", "the project's repository root, as the rollup reports it")
+	project.Flags().StringVar(&projRoot, "root", "", `the project's repository root, as the rollup reports it ("" for its unknown project)`)
 	project.Flags().StringVar(&projFrom, "from", "", "first local day, YYYY-MM-DD")
 	project.Flags().StringVar(&projTo, "to", "", "last local day, YYYY-MM-DD (included)")
 	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")

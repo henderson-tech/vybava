@@ -28,10 +28,43 @@ var (
 
 // ProjectOptions select one project and an inclusive range of local days.
 type ProjectOptions struct {
-	Root     string // repository root as the rollup reports it
-	From, To string // YYYY-MM-DD, both included
-	Bucket   Bucket // "" picks hour for one day, month past 62 days, day otherwise
+	Root     string // repository root as the rollup reports it; "" is its "unknown" project
+	Range    Range  // from ParseRange
 	Location *time.Location
+}
+
+// Range is an inclusive range of calendar days and the width of its series
+// entries. Only ParseRange builds one, so a caller validates its flags
+// before it opens — let alone creates — a store.
+type Range struct {
+	from, to time.Time // calendar days at UTC midnight; Location turns them into instants
+	bucket   Bucket
+}
+
+// ParseRange reads from and to as YYYY-MM-DD calendar days, both included,
+// and resolves bucket: "" picks hour for one day, month past 62 days, day
+// otherwise. The days are parsed in UTC, never in the local zone, where a
+// midnight a DST jump skips would land them on the day before.
+func ParseRange(from, to string, bucket Bucket) (Range, error) {
+	f, err := time.Parse(time.DateOnly, from)
+	if err != nil {
+		return Range{}, fmt.Errorf("%w: from %q is not a YYYY-MM-DD day", ErrBadRange, from)
+	}
+	t, err := time.Parse(time.DateOnly, to)
+	if err != nil {
+		return Range{}, fmt.Errorf("%w: to %q is not a YYYY-MM-DD day", ErrBadRange, to)
+	}
+	if t.Before(f) {
+		return Range{}, fmt.Errorf("%w: from %s is after to %s", ErrBadRange, from, to)
+	}
+	switch bucket {
+	case "":
+		bucket = defaultBucket(f, t)
+	case BucketHour, BucketDay, BucketMonth:
+	default:
+		return Range{}, fmt.Errorf("%w: bucket %q is not hour, day or month", ErrBadRange, bucket)
+	}
+	return Range{from: f, to: t, bucket: bucket}, nil
 }
 
 // SeriesPoint is one bucket of a project's series; an empty bucket has no models.
@@ -68,33 +101,23 @@ type ProjectDetail struct {
 // Project reads one project across a range without indexing: it never takes
 // the index lock, so a running pass cannot hold it up.
 func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
+	r := opts.Range
+	if r.bucket == "" {
+		return ProjectDetail{}, fmt.Errorf("%w: build the range with ParseRange", ErrBadRange)
+	}
 	loc := opts.Location
 	if loc == nil {
 		loc = time.Local
 	}
-	from, err := time.ParseInLocation(time.DateOnly, opts.From, loc)
-	if err != nil {
-		return ProjectDetail{}, fmt.Errorf("%w: from %q is not a YYYY-MM-DD day", ErrBadRange, opts.From)
+	from := dayStart(r.from.Year(), r.from.Month(), r.from.Day(), loc)
+	end := dayStart(r.to.Year(), r.to.Month(), r.to.Day()+1, loc)
+	root := opts.Root
+	if root != "" { // "" is stored as is: responses recorded without a cwd
+		root = filepath.Clean(root)
 	}
-	to, err := time.ParseInLocation(time.DateOnly, opts.To, loc)
-	if err != nil {
-		return ProjectDetail{}, fmt.Errorf("%w: to %q is not a YYYY-MM-DD day", ErrBadRange, opts.To)
-	}
-	if to.Before(from) {
-		return ProjectDetail{}, fmt.Errorf("%w: from %s is after to %s", ErrBadRange, opts.From, opts.To)
-	}
-	bucket := opts.Bucket
-	switch bucket {
-	case "":
-		bucket = defaultBucket(from, to)
-	case BucketHour, BucketDay, BucketMonth:
-	default:
-		return ProjectDetail{}, fmt.Errorf("%w: bucket %q is not hour, day or month", ErrBadRange, bucket)
-	}
-	end := time.Date(to.Year(), to.Month(), to.Day()+1, 0, 0, 0, 0, loc)
 
 	var stored int64
-	err = s.db.QueryRow("SELECT id FROM projects WHERE root = ?", filepath.Clean(opts.Root)).Scan(&stored)
+	err := s.db.QueryRow("SELECT id FROM projects WHERE root = ?", root).Scan(&stored)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ProjectDetail{}, fmt.Errorf("%w: %s", ErrUnknownProject, opts.Root)
 	}
@@ -126,8 +149,8 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 	in := strings.TrimSuffix(strings.Repeat("?,", len(members)), ",")
 
-	out := ProjectDetail{Name: ps.names[canon], Root: ps.roots[canon], From: from.Format(time.DateOnly), To: to.Format(time.DateOnly),
-		Bucket: bucket, Models: []ModelSlice{}}
+	out := ProjectDetail{Name: ps.names[canon], Root: ps.roots[canon], From: r.from.Format(time.DateOnly), To: r.to.Format(time.DateOnly),
+		Bucket: r.bucket, Models: []ModelSlice{}}
 	dayKey := func(unix int64) string { return time.Unix(unix, 0).In(loc).Format(time.DateOnly) }
 	// A bucket belongs to the local day its hour starts in — the rollup's rule.
 	inRange := func(hour int64) bool { dk := dayKey(hour); return dk >= out.From && dk <= out.To }
@@ -137,7 +160,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	if err != nil {
 		return ProjectDetail{}, err
 	}
-	starts := seriesStarts(from, end, bucket, loc)
+	starts := seriesStarts(r.from, end, r.bucket, loc)
 	series := make([]map[string]int64, len(starts))
 	var total Counts
 	var usd money
@@ -253,11 +276,10 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 }
 
 // defaultBucket: hours for a single day, months once the range outgrows
-// 62 days (two months of daily bars), days in between.
+// 62 days (two months of daily bars), days in between. from and to are
+// calendar days at UTC midnight, so every day between them is 24 hours.
 func defaultBucket(from, to time.Time) Bucket {
-	a := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
-	b := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC)
-	switch days := int(b.Sub(a)/(24*time.Hour)) + 1; {
+	switch days := int(to.Sub(from)/(24*time.Hour)) + 1; {
 	case days == 1:
 		return BucketHour
 	case days > 62:
@@ -266,21 +288,25 @@ func defaultBucket(from, to time.Time) Bucket {
 	return BucketDay
 }
 
-// seriesStarts lists the local start of every bucket in [from, end). Hours
-// are absolute — a fall-back day has 25, a spring-forward day 23 — days and
-// months are calendar ones, and the first month starts at from, not on the
-// 1st, so no entry ever starts before the range.
-func seriesStarts(from, end time.Time, bucket Bucket, loc *time.Location) []time.Time {
+// seriesStarts lists the local start of every bucket from the calendar day
+// first up to end. Hours are absolute — a fall-back day has 25, a
+// spring-forward day 23 — days and months are calendar ones, counted from
+// first rather than from the previous start (a skipped midnight resolves
+// into the day before, so stepping from it never advances), and the first
+// month starts at first, not on the 1st, so no entry ever starts before the
+// range.
+func seriesStarts(first, end time.Time, bucket Bucket, loc *time.Location) []time.Time {
+	y, m, d := first.Date()
 	var starts []time.Time
-	for t := from; t.Before(end); {
+	for i, t := 1, dayStart(y, m, d, loc); t.Before(end); i++ {
 		starts = append(starts, t)
 		switch bucket {
 		case BucketHour:
 			t = t.Add(time.Hour)
 		case BucketDay:
-			t = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, loc)
+			t = dayStart(y, m, d+i, loc)
 		default:
-			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, loc)
+			t = dayStart(y, m+time.Month(i), 1, loc)
 		}
 	}
 	return starts

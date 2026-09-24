@@ -69,8 +69,9 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 }
 
 // `project` reads the committed store without an index pass — a held lock
-// never stops it — prices what it can, names what it cannot, and refuses a
-// root it never indexed with exit 2.
+// never stops it — prices what it can, names what it cannot, addresses the
+// cwd-less "unknown" project as --root "", and refuses a root it never
+// indexed with exit 2.
 func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	state, claude, repo := filepath.Join(base, "state"), filepath.Join(base, "claude"), filepath.Join(base, "app")
@@ -83,7 +84,8 @@ func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(claude, "-app", "s.jsonl"), []byte(line("m1", "claude-opus-5-5", 1_000_000)+line("m2", "house-model", 7)), 0o644); err != nil {
+	noCwd := `{"type":"assistant","sessionId":"s","timestamp":"2026-09-23T13:00:00Z","message":{"id":"m3","model":"claude-opus-5-5","usage":{"input_tokens":5,"output_tokens":0}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(claude, "-app", "s.jsonl"), []byte(line("m1", "claude-opus-5-5", 1_000_000)+line("m2", "house-model", 7)+noCwd), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run := func(args ...string) (map[string]any, error) {
@@ -126,9 +128,38 @@ func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 	if err != nil || data["usd"] != 4.0 || data["bucket"] != "day" || len(data["series"].([]any)) != 3 || !diag(env, diagUnpricedModel) {
 		t.Fatalf("project = %v, %v; want $4 from the priced model alone, 3 daily entries and %s", env, err, diagUnpricedModel)
 	}
+	// The rollup's "unknown" row — responses without a cwd — expands like any other.
+	env, err = run("project", "--root", "", "--from", "2026-09-23", "--to", "2026-09-23")
+	data, _ = env["data"].(map[string]any)
+	if err != nil || data["name"] != "unknown" || data["root"] != "" || data["responses"] != 1.0 {
+		t.Fatalf(`--root "" = %v, %v; want the unknown project and its one response`, env, err)
+	}
 	env, err = run("project", "--root", filepath.Join(base, "nowhere"), "--from", "2026-09-23", "--to", "2026-09-23")
 	var exit runx.ExitCoder
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil || !diag(env, diagUnknownProj) {
 		t.Fatalf("unknown root = %v, %v; want exit 2, no data and %s", env, err, diagUnknownProj)
+	}
+}
+
+// A bad range is BAD_FLAG before any store is opened: the read-only verb
+// never creates a state directory just to refuse a flag.
+func TestTokentimeProjectRefusesABadRangeBeforeTouchingTheStore(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state := filepath.Join(base, "state")
+	var out bytes.Buffer
+	cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetArgs([]string{"project", "--root", base, "--from", "2026-13-01", "--to", "2026-09-24", "--json", "--state-dir", state})
+	err = cmd.Execute()
+	var exit runx.ExitCoder
+	var env map[string]any
+	if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil || !errors.As(err, &exit) || exit.ExitCode() != 2 ||
+		!bytes.Contains(out.Bytes(), []byte(diagBadFlag)) {
+		t.Fatalf("bad --from = %s, %v; want exit 2 and %s", out.String(), err, diagBadFlag)
+	}
+	if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("state dir after a bad flag: %v, want it never created", statErr)
 	}
 }

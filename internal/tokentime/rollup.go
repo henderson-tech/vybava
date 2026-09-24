@@ -193,7 +193,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	}
 	names, roots := ps.names, ps.roots
 
-	firstDay := time.Date(now.Year(), now.Month(), now.Day()-(days-1), 0, 0, 0, 0, loc)
+	firstDay := dayStart(now.Year(), now.Month(), now.Day()-(days-1), loc)
 	thisHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
 	firstHour := thisHour.Add(-time.Duration(hours-1) * time.Hour)
 	since := min(firstDay.Unix(), firstHour.Unix())
@@ -315,8 +315,10 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 		return Rollup{}, err
 	}
 
-	for d := firstDay; !d.After(now); d = time.Date(d.Year(), d.Month(), d.Day()+1, 0, 0, 0, 0, loc) {
-		dk := d.Format(time.DateOnly)
+	// Counted from today, never stepped from the previous day: a skipped
+	// midnight resolves into the day before, so that step would never advance.
+	for i := range days {
+		dk := dayStart(now.Year(), now.Month(), now.Day()-(days-1)+i, loc).Format(time.DateOnly)
 		day := Day{Day: dk, Models: []ModelSlice{}, Projects: []DayProject{}}
 		if sd := sessDays[dk]; sd != nil {
 			day.Sessions, day.LongestSessionMinutes = sd.sessions, sd.longestHours*60
@@ -367,7 +369,9 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	if err != nil {
 		return Rollup{}, err
 	}
-	projSessions, err := s.projectSessions(firstDay.Unix()-firstDay.Unix()%3600, ps.of)
+	// Unrounded: buckets start on whole UTC hours, so hour >= local midnight
+	// keeps exactly the hours of firstDay onwards, even at a +05:30 offset.
+	projSessions, err := s.projectSessions(firstDay.Unix(), ps.of)
 	if err != nil {
 		return Rollup{}, err
 	}
@@ -756,6 +760,19 @@ func uniqueNames(candidates []nameCandidate) map[int64]string {
 		names[c.id] = name
 	}
 	return names
+}
+
+// dayStart is the first instant of the local calendar day y-m-d; an
+// overflowing m or d rolls over as in time.Date. Where a DST jump skips
+// midnight (America/Santiago, America/Havana) time.Date resolves the missing
+// 00:00 to 23:00 of the day before — that day then starts at the jump.
+func dayStart(y int, m time.Month, d int, loc *time.Location) time.Time {
+	day := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	t := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+	if t.Day() != day.Day() {
+		_, t = t.ZoneBounds()
+	}
+	return t
 }
 
 // ZoneName is the IANA name of loc. time.Local reports "Local", so the
