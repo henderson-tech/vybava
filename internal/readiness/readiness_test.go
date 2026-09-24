@@ -395,24 +395,26 @@ func TestRenderFollowsTheRunsScopeAndLanes(t *testing.T) {
 		t.Errorf("lane-rules still names the out-of-scope web-desktop:\n%s", rules)
 	}
 
+	// Each input is broken alone, and the message proves which guard fired.
+	invalid := func(what, want string) {
+		t.Helper()
+		if _, err := tool.Render(dir, false); code(err) != DiagRunInvalid || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s accepted or refused for the wrong reason: %v", what, err)
+		}
+	}
 	write(RunFile, strings.Replace(runJSON, `"android-phone"`, `"pixel-9"`, 1))
-	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
-		t.Fatalf("unknown authority device accepted: %v", err)
-	}
+	invalid("unknown authority device", "pixel-9")
+	write(RunFile, runJSON)
 	write(InventoryFile, strings.Replace(inv, `"repos": ["app"]`, `"repos": ["api"]`, 1))
-	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
-		t.Fatalf("feature naming an unknown repo accepted: %v", err)
-	}
+	invalid("feature naming an unknown repo", `names repo "api"`)
 	write(InventoryFile, inv)
 	write(LanesFile, "[]")
-	if _, err := tool.Render(dir, false); code(err) != DiagRunInvalid {
-		t.Fatalf("empty lanes.json accepted (it would remove every lane file): %v", err)
+	invalid("empty lanes.json", "is empty or null")
+	if _, err := os.Stat(filepath.Join(dir, "body-refunds.md")); err != nil {
+		t.Fatalf("an empty lanes.json removed the lane body: %v", err)
 	}
-	write(RunFile, runJSON)
 	write(LanesFile, strings.Replace(lanes, `"refunds"`, `"../escape"`, 1))
-	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
-		t.Fatalf("path-escaping slug accepted: %v", err)
-	}
+	invalid("path-escaping slug", "lowercase kebab-case")
 }
 
 func TestDeviceRunnerBelowOneSetKeepsRealtimePairsTogether(t *testing.T) {
