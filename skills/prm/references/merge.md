@@ -1,7 +1,7 @@
 # merge — gates, the merge itself, teardown
 
 prm's merge terminus engine. Fully autonomous — the pre-check gates ARE the safety.
-Drive the gates green, merge (merge commit), tear down the worktree + branch, pull the
+Drive the gates green, merge (by `mergeMethod`), tear down the worktree + branch, pull the
 main clone (never switch it).
 
 ## Pre-check
@@ -17,7 +17,9 @@ in a worktree → the anchor is wrong; re-run, never act on that envelope.
 
 → JSON: `{owner, repo, pr, url, title, branch, defaultBranch, onDefaultBranch,
 worktree, mainClone, isWorktree, slug, checks, gates, botApproval,
-requiredBotReviewers, afterMergeCmd, resolvedAfterMergeCmd, stopServers, raw}`.
+requiredBotReviewers, mergePolicy, mergeMethod, mergeMethodSource, mergeMethodReason,
+mergeMethodsAllowed, afterMergeCmd, resolvedAfterMergeCmd, stopServers, raw}`
+(`mergeMethod*` are null/empty on a PR that is not OPEN — see Merge).
 `botApproval = {ok, required[], pending[]}`; `gates.botApprovalOk` mirrors it as the
 `botReview` gate. `mergePolicy` is `review` (default) or `self` — see the keys below;
 a non-null `mergePolicyInvalid` is a typo in the config: say so, run as `review`.
@@ -60,10 +62,16 @@ A STOP prints the blocker + PR URL and stops. 6 iterations still red → STOP an
 
 ## Merge
 
-`gh pr merge <pr> --<mergeMethod> --delete-branch` — `mergeMethod` is `merge-precheck`'s
-`MERGE_METHOD` reading (default `merge`; `squash` on squash-only repos). Append `--admin`
-only when the user passed it or the carve-out applies. Remote branch deleted. A non-null
-`mergeMethodInvalid` is a typo in the config: say so, run as `merge`.
+`gh pr merge <pr> --<mergeMethod> --delete-branch` — `mergeMethod` is what
+`merge-precheck` read from the config and GitHub: an explicit `MERGE_METHOD` the base
+branch permits (`mergeMethodSource: "config"`), else the first of merge → squash → rebase
+that the repository's buttons AND the base's rulesets/protection permit (`"repository"`
+— linear history refuses merge commits, so henderson-tech repos land as squash with no
+key). Never substitute a method of your own; `mergeMethodReason` says why. Append
+`--admin` only when the user passed it or the carve-out applies. Remote branch deleted.
+A non-null `mergeMethodInvalid` is a config typo or a method the base refuses: say so,
+run as `mergeMethod`. A precheck that exits 1 with `cannot read …` or `no merge method is
+permitted …` is a STOP with that line — never fall back to `--merge`.
 
 ## Solo-owner carve-out — unsatisfiable review gate
 
@@ -236,8 +244,11 @@ Same `KEY=value` file `/sync` reads, in `<repo>/.claude/`:
 # pending required bot, or a PR authored by someone else. Worktree rules unchanged.
 MERGE_POLICY=self
 
-# Which `gh pr merge` flag lands a green PR: merge (default, merge commit) | squash (one
-# commit titled after the PR — set this on squash-only repos) | rebase.
+# Which `gh pr merge` flag lands a green PR: merge (merge commit) | squash (one commit
+# titled after the PR) | rebase. Unset → derived from what the base branch permits (merge
+# buttons + linear-history / allowed-methods rules): merge where truly allowed, else
+# squash, else rebase — squash-only and linear-history repos need no key. A value the
+# base refuses falls back and is echoed as `mergeMethodInvalid`.
 MERGE_METHOD=squash
 
 # Runs INSTEAD of the generic worktree-remove + branch -d after a successful merge.

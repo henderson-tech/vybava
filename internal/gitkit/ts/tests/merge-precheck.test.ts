@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { summarizeChecks, summarizeGates, substituteHookTokens, summarizeBotApproval, isBotApprovalReview, parseBotList, canonicalizeBotLogin, parseMergePolicy, parseMergeMethod, parseStopServers, resolveDefaultBranch } from "../bin/merge-precheck.ts";
+import { summarizeChecks, summarizeGates, substituteHookTokens, summarizeBotApproval, isBotApprovalReview, parseBotList, canonicalizeBotLogin, parseMergePolicy, resolveMergeMethod, readMergeRules, parseStopServers, resolveDefaultBranch } from "../bin/merge-precheck.ts";
 import { parseConfig } from "../bin/sync-context.ts";
 
 test("no checks configured → NONE", () => {
@@ -182,7 +182,7 @@ test("canonicalizeBotLogin restores [bot] for Bot actors, lowercases, leaves Use
 
 test("a GitHub App bot (eve-bot-lovinka) auto-gates with NO config after canonicalization", () => {
   // Mirrors the real eve-ai-layer flow: GraphQL returns `eve-bot-lovinka` typename Bot →
-  // gatherBotData canonicalizes to `eve-bot-lovinka[bot]` → auto-detected, default config only.
+  // gatherOpenPr canonicalizes to `eve-bot-lovinka[bot]` → auto-detected, default config only.
   const login = canonicalizeBotLogin("eve-bot-lovinka", "Bot"); // eve-bot-lovinka[bot]
   const pending = summarizeBotApproval({ ...botBase, requested: [login] });
   assert.equal(pending.ok, false);
@@ -270,21 +270,66 @@ test("NONE is a pass only where no workflow exists", () => {
     "a red check is 'ci', not 'ci-absent'");
 });
 
-test("MERGE_METHOD: absent → merge; squash → squash; a typo falls back to merge and is echoed", () => {
-  assert.deepEqual(parseMergeMethod(undefined), { method: "merge", invalid: null });
-  assert.deepEqual(parseMergeMethod(" Squash "), { method: "squash", invalid: null });
-  assert.deepEqual(parseMergeMethod("rebase"), { method: "rebase", invalid: null });
-  assert.deepEqual(parseMergeMethod("fast-forward"), { method: "merge", invalid: "fast-forward" });
+// The base branch's merge rules as resolveMergeMethod sees them; every method on by default.
+const rulesOf = (over: object = {}) => ({
+  base: "main", buttons: { merge: true, squash: true, rebase: true }, linearHistory: [], rulesetMethods: [], ...over,
+});
+const pick = ({ method, invalid, source }: { method: string; invalid: string | null; source: string }) => ({ method, invalid, source });
+
+test("MERGE_METHOD: an explicit permitted method wins; unset keeps merge where the base permits it; a typo is echoed", () => {
+  assert.deepEqual(pick(resolveMergeMethod(" Squash ", rulesOf())), { method: "squash", invalid: null, source: "config" });
+  assert.deepEqual(pick(resolveMergeMethod(undefined, rulesOf())), { method: "merge", invalid: null, source: "repository" });
+  assert.deepEqual(pick(resolveMergeMethod("fast-forward", rulesOf())), { method: "merge", invalid: "fast-forward", source: "repository" });
 });
 
-test("MERGE_METHOD: what the repository allows overrides an unset or refused method", () => {
-  const squashOnly = { merge: false, squash: true, rebase: false };
-  // A squash-only repository needs no config — the old "merge" default was a server refusal.
-  assert.deepEqual(parseMergeMethod(undefined, squashOnly), { method: "squash", invalid: null });
-  // An explicit method the repository has disabled is drift: fall back, echo it.
-  assert.deepEqual(parseMergeMethod("merge", squashOnly), { method: "squash", invalid: "merge" });
-  // Where merge is still offered, the historical default stands.
-  assert.deepEqual(parseMergeMethod(undefined, { merge: true, squash: true, rebase: true }), { method: "merge", invalid: null });
+// semafor#3: the org ruleset required linear history while the repository still offered the
+// merge-commit button; reading the buttons alone chose "merge" and GitHub refused the merge.
+test("MERGE_METHOD: linear history or a disabled merge button refuses merge commits → squash, with the reason", () => {
+  const linear = rulesOf({ linearHistory: ['org ruleset "org main"'] });
+  const unset = resolveMergeMethod(undefined, linear);
+  assert.deepEqual(pick(unset), { method: "squash", invalid: null, source: "repository" });
+  assert.deepEqual(unset.allowed, ["squash", "rebase"]);
+  assert.match(unset.reason, /org ruleset "org main" requires linear history on main → squash/);
+  // Naming the refused method explicitly is drift: fall back and echo it.
+  assert.deepEqual(pick(resolveMergeMethod("merge", linear)), { method: "squash", invalid: "merge", source: "repository" });
+  const squashOnly = rulesOf({ buttons: { merge: false, squash: true, rebase: false } });
+  assert.deepEqual(pick(resolveMergeMethod(undefined, squashOnly)), { method: "squash", invalid: null, source: "repository" });
+});
+
+test("MERGE_METHOD: a ruleset's allowed_merge_methods narrows the set; a base permitting nothing throws", () => {
+  const rebaseOnly = rulesOf({ rulesetMethods: [{ by: 'repo ruleset "main"', methods: ["rebase"] }] });
+  assert.deepEqual(pick(resolveMergeMethod(undefined, rebaseOnly)), { method: "rebase", invalid: null, source: "repository" });
+  const deadlock = rulesOf({ buttons: { merge: true, squash: false, rebase: false }, linearHistory: ["branch protection"] });
+  assert.throws(() => resolveMergeMethod("merge", deadlock), /no merge method is permitted into main \(merge: branch protection requires linear history/);
+});
+
+// GATE_QUERY's repository node, shaped as GitHub returns it.
+const repoNode = (baseRef: object | null, buttons: object = { mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: false }) =>
+  ({ ...buttons, pullRequest: { baseRefName: "main", baseRef } });
+const rule = (type: string, name: string, source: string, extra: object = {}) =>
+  ({ type, parameters: {}, repositoryRuleset: { name, enforcement: "ACTIVE", source: { __typename: source } }, ...extra });
+
+test("readMergeRules: org/repo rulesets and classic protection are read; evaluate-mode rules never refuse", () => {
+  const nodes = [
+    rule("REQUIRED_LINEAR_HISTORY", "org main", "Organization"),
+    rule("PULL_REQUEST", "repo main", "Repository", { parameters: { allowedMergeMethods: ["MERGE", "SQUASH"] } }),
+    rule("REQUIRED_LINEAR_HISTORY", "trial", "Repository", { repositoryRuleset: { name: "trial", enforcement: "EVALUATE", source: { __typename: "Repository" } } }),
+    rule("DELETION", "org main", "Organization"),
+  ];
+  const got = readMergeRules(repoNode({ branchProtectionRule: { requiresLinearHistory: true }, rules: { totalCount: 4, nodes } }), "acme/app");
+  assert.deepEqual(got, {
+    base: "main",
+    buttons: { merge: true, squash: true, rebase: false },
+    linearHistory: ["branch protection", 'org ruleset "org main"'],
+    rulesetMethods: [{ by: 'repo ruleset "repo main"', methods: ["merge", "squash"] }],
+  });
+});
+
+test("readMergeRules: unreadable settings or rules throw with the fix instead of guessing a method", () => {
+  const rules = { totalCount: 0, nodes: [] };
+  assert.throws(() => readMergeRules(repoNode(null), "acme/app"), /cannot read the base branch's rules for acme\/app .*gh auth status/);
+  assert.throws(() => readMergeRules(repoNode({ rules }, {}), "acme/app"), /cannot read the repository's merge settings/);
+  assert.throws(() => readMergeRules(repoNode({ rules: { totalCount: 101, nodes: [] } }), "acme/app"), /all 101 base-branch rules/);
 });
 
 test("MERGE_POLICY: absent → review; self → self; a typo falls back to review and is echoed", () => {
