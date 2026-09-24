@@ -73,9 +73,9 @@ func isTestSource(name string) bool {
 // A small lexer: it steps over '…' and "…" literals, JS regex literals
 // (classes included) and template text, and descends into `${…}`, which is
 // code. Where it cannot tell, it fails toward scanning too much, never toward
-// blanking code: '…', "…" and a regex end at a newline, a `/*` after code
-// that does not close on its own line is not a comment (blockEnd), and a
-// `//` right after `:` is a URL in JSX text. A backslash in code escapes the
+// blanking code: '…', "…" and a regex end at a newline, a suspect JS `/*`
+// left open on its line is not a comment (blockEnd), and a `//` right after
+// `:` is a URL in JSX text. A backslash in code escapes the
 // next byte (only an unrecognised regex holds one). Go has no regex or
 // template literals and its raw strings take no escapes.
 func blankComments(src []byte, goSource bool) []byte {
@@ -100,8 +100,10 @@ func blankComments(src []byte, goSource bool) []byte {
 			} else {
 				end += i
 			}
-		case c == '/' && i+1 < len(src) && src[i+1] == '*':
-			end = blockEnd(src, i)
+		case c == '/' && i+1 < len(src) && src[i+1] == '*': // before the regex case: no regex starts with `*`
+			suspect := !goSource && last >= 0 && bytes.IndexByte(src[last:i], '\n') < 0 &&
+				(src[last] == '[' || !regexAllowed(src, last))
+			end = blockEnd(src, i, suspect)
 		case c == '/' && !goSource && regexAllowed(src, last):
 			i = regexEnd(src, i)
 		case c == '`' && !goSource:
@@ -134,18 +136,19 @@ func blankComments(src []byte, goSource bool) []byte {
 	return out
 }
 
-// blockEnd returns the end of the block comment opened at src[i], or -1 when
-// the `/*` follows code on its line and does not close on that line: a regex
-// class (`/[/*]/`) or JSX text (`src/*`) misread as a comment would blank
-// real code up to the next `*/`, so that `/*` stays code.
-func blockEnd(src []byte, i int) int {
+// blockEnd returns the end of the block comment opened at src[i]. In code a
+// `/*` always opens one (Go has no regex; in JS no regex starts with `*`), so
+// the only doubt is a `/*` the lexer reached while not really in code: a
+// regex class it failed to recognise (`) /[/*]/`) or JSX text (`src/*`).
+// That is suspect — JS, with `[` or a value before it on its line — and a
+// suspect `/*` not closed on its own line returns -1 and stays code, since
+// misread as a comment it would blank real code up to the next `*/`.
+func blockEnd(src []byte, i int, suspect bool) int {
 	end := bytes.Index(src[i+2:], []byte("*/"))
-	nl := bytes.IndexByte(src[i:], '\n')
-	afterCode := len(bytes.TrimSpace(src[bytes.LastIndexByte(src[:i], '\n')+1:i])) > 0
-	switch {
-	case afterCode && (end < 0 || nl >= 0 && end+2 > nl):
+	if nl := bytes.IndexByte(src[i:], '\n'); suspect && (end < 0 || nl >= 0 && end+2 > nl) {
 		return -1
-	case end < 0:
+	}
+	if end < 0 {
 		return len(src)
 	}
 	return i + 2 + end + 2

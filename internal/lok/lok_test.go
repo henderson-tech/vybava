@@ -260,7 +260,8 @@ func TestScanIgnoresComments(t *testing.T) {
 		"src/a.tsx": "// t('Line comment')\n/* t('Block\n   comment') */\n/**\n * t('Doc block')\n */\n" +
 			"const u = t('Visit https://example.com'); // t('Trailing')\n" +
 			"const r = /\\/*/; t('After regex');\n" +
-			"<p>See https://voke.cz {t('After JSX URL')}</p>\n",
+			"<p>See https://voke.cz {t('After JSX URL')}</p>\n" +
+			"const v = f()\n/* t('Semicolon-less\n   block') */\n",
 		"src/b.go": "// Package x\n//\n//\tl.T(\"Hello {{name}}\", i18n.Vars{\"name\": n})\n//\tl.N(\"{{count}} items selected\", n)\npackage x\n\n" +
 			"var p = `C:\\`\n// l.T(\"After raw string\")\nfunc f() { l.T(\"Real // not a comment\") }\n",
 	})
@@ -294,6 +295,7 @@ func TestScanRegexLiteralsNeverSwallowCode(t *testing.T) {
 	tool := scanFixture(t, map[string]string{
 		"locales/en.json": "{}\n",
 		"src/a.tsx": "const glob = /[/*]/; t('After class');\n" +
+			"if (ok) /[/*]/.test(s) && t('After paren regex');\n" +
 			"const r = s.replace(/a[*/]b/g, '').match(/[//]x/) && t('Same line');\n" +
 			"if (/'/.test(s)) t('After quote regex // kept');\n" +
 			"function f(s) { return /[//]/.test(s) || t('After return'); }\n" +
@@ -306,9 +308,38 @@ func TestScanRegexLiteralsNeverSwallowCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"After class", "After quote regex // kept", "After return", "JSX glob", "Last", "Same line"}
+	want := []string{"After class", "After paren regex", "After quote regex // kept", "After return", "JSX glob", "Last", "Same line"}
 	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
-		t.Fatalf("a regex literal or a mid-line unclosed /* never blanks real code: %+v", res.Missing)
+		t.Fatalf("a regex literal, or a /* after [ or a value left open on its line, never blanks real code: %+v", res.Missing)
+	}
+}
+
+func TestScanGoBlockCommentAfterCode(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.go": "package x\n\nfunc f() { /* example\n\tl.T(\"Not a key\")\n*/ l.T(\"Live\") }\n\n" +
+			"var n = 1 /* after a value\n\tl.T(\"Not a key either\")\n*/\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Missing, "|") != "Live" {
+		t.Fatalf("a Go /* is always a comment, even after code and across lines: %+v", res.Missing)
+	}
+}
+
+func TestScanJSXBlockComment(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx":       "return (\n  <div>\n    {/*\n      <Button>{t('Old label')}</Button>\n    */}\n    <Button>{t('Live label')}</Button>\n  </div>\n);\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Missing, "|") != "Live label" {
+		t.Fatalf("a multi-line JSX {/* … */} is a comment: %+v", res.Missing)
 	}
 }
 

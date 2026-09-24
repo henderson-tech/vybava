@@ -61,8 +61,10 @@ anywhere in the name (`a.test.ts`, `a.spec.gen.ts`), `__tests__/` and
 `//` and `/* */` comments are not extracted either (a doc comment's example
 call is not a key), including comments inside a template's `${…}`; a `//`
 or `/*` inside a string, template text, a regex literal or a URL stays code.
-Where the lexer cannot tell, it scans too much rather than drop a key: a
-`/*` after code that does not close on its own line is read as code.
+Where the lexer cannot tell, it scans too much rather than drop a key: in
+JS/TS, a `/*` that follows `[` or a value on its line and does not close on
+that line (an unrecognised regex class, JSX text like `src/*`) is read as
+code. Everywhere else — all of Go, JSX's `{/* … */}` — a `/*` is a comment.
 
 `scan.call` names the call shapes, one string or a list (default `t`). A
 bare name matches `t('…')` with nothing dotted before it — `foo.t(` is not
