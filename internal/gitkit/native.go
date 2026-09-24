@@ -31,6 +31,7 @@ var native = map[string]Verb{
 	"worktree":       runWorktree,
 	"sync-context":   runSyncContext,
 	"before-review":  runBeforeReview,
+	"list-prs":       runListPRs,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
