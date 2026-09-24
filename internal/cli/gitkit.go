@@ -22,9 +22,10 @@ func (rt *runtime) gitkitApplet() *cobra.Command {
 }
 
 // gitkitCommand exposes each embedded script as `gitkit <script> [args]`.
-// Script verbs never parse flags — every argument belongs to the script —
-// and replace this process with node, so a Monitor's signals and the
-// script's exit code reach the caller unchanged.
+// Script verbs never parse flags — every argument belongs to the script.
+// A verb ported to Go runs in-process; the rest replace this process with
+// node, so a Monitor's signals and the script's exit code reach the caller
+// unchanged.
 func (rt *runtime) gitkitCommand(use string) *cobra.Command {
 	command := &cobra.Command{
 		Use:   use,
@@ -83,6 +84,12 @@ func (rt *runtime) gitkitCommand(use string) *cobra.Command {
 			Short:              "Run " + script + ".ts",
 			DisableFlagParsing: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				if verb, ok := gitkit.Native(script); ok {
+					if code := verb(args, rt.stdout, rt.stderr); code != 0 {
+						return runx.ExitError{Code: code}
+					}
+					return nil
+				}
 				node, err := gitkit.ResolveNode(exec.LookPath, gitkit.NodeVersion)
 				if err != nil {
 					return finish(session(cmd), err)
