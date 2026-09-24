@@ -32,6 +32,7 @@ var native = map[string]Verb{
 	"sync-context":   runSyncContext,
 	"before-review":  runBeforeReview,
 	"list-prs":       runListPRs,
+	"merge-precheck": runMergePrecheck,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
