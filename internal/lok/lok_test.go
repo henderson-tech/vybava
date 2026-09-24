@@ -194,10 +194,14 @@ func TestScanCallDecodesStringAndList(t *testing.T) {
 	}
 }
 
-func TestScanMethodCalls(t *testing.T) {
+// scanFixture opens lok over a fresh root holding files plus a one-catalog
+// config ("m", en only, scanning src/ for t, *.T and *.N in .ts/.tsx/.go).
+func scanFixture(t *testing.T, files map[string]string) *Tool {
+	t.Helper()
 	root := t.TempDir()
-	write := func(rel, body string) {
-		t.Helper()
+	files["vybava.config.json"] = `{"lok":{"catalogs":{
+	  "m":{"style":"english-as-key","files":"locales/{locale}.json","locales":["en"],"scan":{"roots":["src"],"call":["t","*.T","*.N"],"extensions":[".ts",".tsx",".go"]}}}}}`
+	for rel, body := range files {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -206,15 +210,19 @@ func TestScanMethodCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("locales/en.json", "{\n  \"Save\": \"Save\"\n}\n")
-	write("src/a.tsx", "t('Save');\nconst m = foo.t('Not plain');\nT('Not method');\nformat.t(\"Still not plain\");\n")
-	write("src/b.go", "func f(l i18n.L) {\n\tl.T(\"Sites\")\n\ti18n.FromContext(ctx).N(\n\t\t\"{{count}} items\", n)\n\tls[i].T(`dynamic`)\n\tx.T(fmt.Sprintf(\"no literal\"))\n\tT(\"bare\")\n}\n")
-	write("vybava.config.json", `{"lok":{"catalogs":{
-	  "m":{"style":"english-as-key","files":"locales/{locale}.json","locales":["en"],"scan":{"roots":["src"],"call":["t","*.T","*.N"],"extensions":[".tsx",".go"]}}}}}`)
 	tool, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return tool
+}
+
+func TestScanMethodCalls(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{\n  \"Save\": \"Save\"\n}\n",
+		"src/a.tsx":       "t('Save');\nconst m = foo.t('Not plain');\nT('Not method');\nformat.t(\"Still not plain\");\n",
+		"src/b.go":        "func f(l i18n.L) {\n\tl.T(\"Sites\")\n\ti18n.FromContext(ctx).N(\n\t\t\"{{count}} items\", n)\n\tls[i].T(`dynamic`)\n\tx.T(fmt.Sprintf(\"no literal\"))\n\tT(\"bare\")\n}\n",
+	})
 	res, err := tool.Scan("m", false, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +230,134 @@ func TestScanMethodCalls(t *testing.T) {
 	want := []string{"Sites", "{{count}} items"}
 	if res.Calls != 3 || strings.Join(res.Missing, "|") != strings.Join(want, "|") {
 		t.Fatalf("plain t + method .T/.N on any receiver, never foo.t( or bare T(: %+v", res)
+	}
+}
+
+func TestScanSkipsTestSources(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json":    "{\n  \"Save\": \"Save\"\n}\n",
+		"src/a.ts":           "t('Real key');\n",
+		"src/a.test.ts":      "t('Save'); t('From a test');\n",
+		"src/b.spec.tsx":     "t('From a spec');\n",
+		"src/a.test.int.ts":  "t('From a multi-segment test');\n",
+		"src/b.spec.gen.ts":  "t('From a multi-segment spec');\n",
+		"src/__tests__/c.ts": "t('From __tests__');\n",
+		"src/i18n_test.go":   "l.T(\"Hello {{name}}\")\n",
+		"src/testdata/d.go":  "l.T(\"From testdata\")\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FilesScanned != 1 || strings.Join(res.Missing, "|") != "Real key" || res.OrphanTotal != 1 {
+		t.Fatalf("test sources are neither extracted nor counted as usage (Save stays an orphan): %+v", res)
+	}
+}
+
+func TestScanIgnoresComments(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx": "// t('Line comment')\n/* t('Block\n   comment') */\n/**\n * t('Doc block')\n */\n" +
+			"const u = t('Visit https://example.com'); // t('Trailing')\n" +
+			"const r = /\\/*/; t('After regex');\n" +
+			"<p>See https://voke.cz {t('After JSX URL')}</p>\n" +
+			"const v = f()\n/* t('Semicolon-less\n   block') */\n",
+		"src/b.go": "// Package x\n//\n//\tl.T(\"Hello {{name}}\", i18n.Vars{\"name\": n})\n//\tl.N(\"{{count}} items selected\", n)\npackage x\n\n" +
+			"var p = `C:\\`\n// l.T(\"After raw string\")\nfunc f() { l.T(\"Real // not a comment\") }\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After JSX URL", "After regex", "Real // not a comment", "Visit https://example.com"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls inside // and /* */ comments are not keys; // inside a literal or a URL is code: %+v", res.Missing)
+	}
+}
+
+func TestScanTemplateInterpolations(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.ts": "const s = `${x /* t('Block in interpolation') */} // text ${t('After template text')}`;\n" +
+			"const n = `${\n  // t('Line in interpolation')\n  ok ? `${t('Nested')} /* text` : t('Else')\n} */ ${t('After nested')}`;\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After nested", "After template text", "Else", "Nested"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("comments inside ${…} are blanked, template text (nested too) is never a comment: %+v", res.Missing)
+	}
+}
+
+func TestScanRegexLiteralsNeverSwallowCode(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx": "const glob = /[/*]/; t('After class');\n" +
+			"if (ok) /[/*]/.test(s) && t('After paren regex');\n" +
+			"const r = s.replace(/a[*/]b/g, '').match(/[//]x/) && t('Same line');\n" +
+			"if (/'/.test(s)) t('After quote regex // kept');\n" +
+			"function f(s) { return /[//]/.test(s) || t('After return'); }\n" +
+			"const d = a / b; // t('Division then comment')\n" +
+			"const e = x.length / 2 /* t('Block after division') */;\n" +
+			"<p>Files in src/* are listed {t('JSX glob')}</p>\n" +
+			"t('Last');\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"After class", "After paren regex", "After quote regex // kept", "After return", "JSX glob", "Last", "Same line"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("a regex literal, or a /* after a value left open on its line, never blanks real code: %+v", res.Missing)
+	}
+}
+
+func TestScanRegexAfterConditionParen(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.ts": "if (ok) /[//]/.test(s) && t('Live');\n" +
+			"foo(x) / 2 // t('Commented')\n" +
+			"while (a) /[//]x/.test(b) && t('W');\n" +
+			"if (f(x)) /[//]/.test(s) && t('Nested paren');\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Live", "Nested paren", "W"}
+	if strings.Join(res.Missing, "|") != strings.Join(want, "|") {
+		t.Fatalf("a / after the ) of if/while/for/with opens a regex, after any other ) it divides: %+v", res.Missing)
+	}
+}
+
+func TestScanGoBlockCommentAfterCode(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.go": "package x\n\nfunc f() { /* example\n\tl.T(\"Not a key\")\n*/ l.T(\"Live\") }\n\n" +
+			"var n = 1 /* after a value\n\tl.T(\"Not a key either\")\n*/\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Missing, "|") != "Live" {
+		t.Fatalf("a Go /* is always a comment, even after code and across lines: %+v", res.Missing)
+	}
+}
+
+func TestScanJSXBlockComment(t *testing.T) {
+	tool := scanFixture(t, map[string]string{
+		"locales/en.json": "{}\n",
+		"src/a.tsx":       "return (\n  <div>\n    {/*\n      <Button>{t('Old label')}</Button>\n    */}\n    <Button>{t('Live label')}</Button>\n  </div>\n);\n",
+	})
+	res, err := tool.Scan("m", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Missing, "|") != "Live label" {
+		t.Fatalf("a multi-line JSX {/* … */} is a comment: %+v", res.Missing)
 	}
 }
 

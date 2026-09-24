@@ -1,6 +1,7 @@
 package lok
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -58,6 +59,206 @@ func unescape(s string) string {
 	return strings.NewReplacer(`\'`, `'`, `\"`, `"`, `\\`, `\`, `\n`, "\n").Replace(s)
 }
 
+// isTestSource reports test code by file name: Go `_test.go`, JS/TS with a
+// `.test.` / `.spec.` segment anywhere (`a.test.ts`, `a.spec.gen.ts`);
+// `__tests__` and `testdata` dirs are skipped by the walk. Test keys are
+// synthetic by definition — a test asserts copy, it never defines a catalog
+// key — so a test file is neither extracted nor counted as usage.
+func isTestSource(name string) bool {
+	return strings.HasSuffix(name, "_test.go") || strings.Contains(name, ".test.") || strings.Contains(name, ".spec.")
+}
+
+// blankComments overwrites every `//` and `/* */` comment with spaces
+// (newlines kept), so an example call in a doc comment is never extracted.
+// A small lexer: it steps over '…' and "…" literals, JS regex literals
+// (classes included) and template text, and descends into `${…}`, which is
+// code. A `/` opens a regex in operand position — after an operator, an
+// expression keyword, or the `)` of an if/while/for/with condition (a paren
+// stack tracks which `)` that is) — and divides anywhere else. Where it cannot
+// tell, it leans toward scanning too much: '…', "…" and a regex end at a
+// newline, a suspect JS `/*` left open on its line is not a comment
+// (blockEnd), and a `//` right after `:` is a URL in JSX text. A backslash in
+// code escapes the next byte (only an unrecognised regex holds one). Go has
+// no regex or template literals and its raw strings take no escapes.
+func blankComments(src []byte, goSource bool) []byte {
+	out := bytes.Clone(src)
+	var interp []int  // brace depth inside each open `${`, innermost last
+	var parens []bool // per open `(`: does it hold an if/while/for/with condition?
+	last := -1        // the last significant code byte: regex or division?
+	condClose := -1   // the `)` that closed a condition: a `/` after it opens a regex
+	operand := func() bool { return last >= 0 && last == condClose || regexAllowed(src, last) }
+	template := func(j int) int {
+		end, open := templateEnd(src, j)
+		if open {
+			interp = append(interp, 0)
+		}
+		return end
+	}
+	for i := 0; i < len(src); i++ {
+		end := -1
+		switch c := src[i]; {
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			continue
+		case c == '/' && i+1 < len(src) && src[i+1] == '/' && (i == 0 || src[i-1] != ':'):
+			if end = bytes.IndexByte(src[i:], '\n'); end < 0 {
+				end = len(src)
+			} else {
+				end += i
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '*': // before the regex case: no regex starts with `*`
+			suspect := !goSource && last >= 0 && bytes.IndexByte(src[last:i], '\n') < 0 && !operand()
+			end = blockEnd(src, i, suspect)
+		case c == '/' && !goSource && operand():
+			i = regexEnd(src, i)
+		case c == '(' && !goSource:
+			w := wordAt(src, last)
+			parens = append(parens, w == "if" || w == "while" || w == "for" || w == "with")
+		case c == ')' && !goSource && len(parens) > 0:
+			if parens[len(parens)-1] {
+				condClose = i
+			}
+			parens = parens[:len(parens)-1]
+		case c == '`' && !goSource:
+			i = template(i + 1)
+		case c == '\'' || c == '"' || c == '`':
+			i = literalEnd(src, i, c == '`')
+		case c == '{' && len(interp) > 0:
+			interp[len(interp)-1]++
+		case c == '}' && len(interp) > 0:
+			if top := len(interp) - 1; interp[top] > 0 {
+				interp[top]--
+			} else {
+				interp = interp[:top]
+				i = template(i + 1)
+			}
+		case c == '\\':
+			i++
+		}
+		if end < 0 {
+			last = i
+			continue
+		}
+		for j := i; j < end; j++ {
+			if out[j] != '\n' {
+				out[j] = ' '
+			}
+		}
+		i = end - 1
+	}
+	return out
+}
+
+// blockEnd returns the end of the block comment opened at src[i]. In code a
+// `/*` always opens one (Go has no regex; in JS no regex starts with `*`), so
+// the only doubt is a `/*` the lexer reached while not really in code: JSX
+// text (`src/*`) or a regex it failed to recognise. That is suspect — JS,
+// with a value rather than an operand position before it on its line — and
+// a suspect `/*` not closed on its own line returns -1 and stays code, since
+// misread as a comment it would blank real code up to the next `*/`.
+func blockEnd(src []byte, i int, suspect bool) int {
+	end := bytes.Index(src[i+2:], []byte("*/"))
+	if nl := bytes.IndexByte(src[i:], '\n'); suspect && (end < 0 || nl >= 0 && end+2 > nl) {
+		return -1
+	}
+	if end < 0 {
+		return len(src)
+	}
+	return i + 2 + end + 2
+}
+
+// regexAllowed reports whether a `/` after the code byte src[last] opens a
+// regex literal rather than dividing: after an operator or opening
+// punctuation, an expression keyword, or at the start of the file.
+func regexAllowed(src []byte, last int) bool {
+	if last < 0 || strings.IndexByte("(,=:[!&|?{};+-%^~>", src[last]) >= 0 {
+		return true
+	}
+	switch wordAt(src, last) {
+	case "return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "instanceof", "yield", "await":
+		return true
+	}
+	return false
+}
+
+// wordAt returns the identifier ending at src[last], or "".
+func wordAt(src []byte, last int) string {
+	start := last + 1
+	for start > 0 && isIdentByte(src[start-1]) {
+		start--
+	}
+	return string(src[start : last+1])
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c == '$' || c >= 0x80 || c >= '0' && c <= '9' || c|0x20 >= 'a' && c|0x20 <= 'z'
+}
+
+// regexEnd returns the index of the `/` closing the regex literal opened at
+// src[i] — one inside a [class] does not — or of the byte before the newline
+// a misread stops at.
+func regexEnd(src []byte, i int) int {
+	class := false
+	for j := i + 1; j < len(src); j++ {
+		switch src[j] {
+		case '\\':
+			if j+1 < len(src) && src[j+1] != '\n' {
+				j++
+			}
+		case '[':
+			class = true
+		case ']':
+			class = false
+		case '/':
+			if !class {
+				return j
+			}
+		case '\n':
+			return j - 1
+		}
+	}
+	return len(src)
+}
+
+// templateEnd scans template text from src[j] to its closing backtick, or to
+// the `{` of a `${` interpolation (open), whose code the caller lexes.
+func templateEnd(src []byte, j int) (int, bool) {
+	for ; j < len(src); j++ {
+		switch src[j] {
+		case '\\':
+			j++
+		case '`':
+			return j, false
+		case '$':
+			if j+1 < len(src) && src[j+1] == '{' {
+				return j + 1, true
+			}
+		}
+	}
+	return len(src), false
+}
+
+// literalEnd returns the index of the byte closing the literal opened at
+// src[i]: its quote, or — for '…' and "…" — the newline an unterminated one
+// stops at.
+func literalEnd(src []byte, i int, raw bool) int {
+	q := src[i]
+	for j := i + 1; j < len(src); j++ {
+		switch src[j] {
+		case '\\':
+			if !raw {
+				j++
+			}
+		case q:
+			return j
+		case '\n':
+			if q != '`' {
+				return j
+			}
+		}
+	}
+	return len(src)
+}
+
 // Scan runs the extractor for one english-as-key catalog. With write, the
 // missing keys are added to every locale that can be derived (en = key);
 // required locales without a derivable value stay absent and surface in
@@ -90,12 +291,12 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 			}
 			if d.IsDir() {
 				switch d.Name() {
-				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo":
+				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo", "__tests__", "testdata":
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !contains(exts, filepath.Ext(p)) {
+			if !contains(exts, filepath.Ext(p)) || isTestSource(d.Name()) {
 				return nil
 			}
 			data, err := os.ReadFile(p)
@@ -105,7 +306,7 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 			res.FilesScanned++
 			corpus.Write(data)
 			corpus.WriteByte('\n')
-			for _, m := range re.FindAllSubmatch(data, -1) {
+			for _, m := range re.FindAllSubmatch(blankComments(data, filepath.Ext(p) == ".go"), -1) {
 				lit := m[1]
 				if len(lit) == 0 {
 					lit = m[2]
