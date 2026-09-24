@@ -21,8 +21,20 @@ const (
 var (
 	// ErrUnknownProject: no stored bucket was ever recorded under that root.
 	ErrUnknownProject = errors.New("no project was ever indexed under this root")
-	// ErrBadRange: a day does not parse, from is after to, or the bucket is unknown.
+	// ErrBadRange: a day does not parse or falls outside the calendar a range
+	// may name, from is after to, the bucket is unknown, or the range is
+	// longer than its bucket's cap.
 	ErrBadRange = errors.New("bad range")
+)
+
+// A series is allocated whole, one entry per bucket, so ParseRange bounds a
+// range before any store is read: its days to 2000-01-01..2100-12-31, and its
+// length per bucket — a month of hours (745 entries on a fall-back month),
+// three years of days, a century of months.
+var (
+	earliestDay = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	latestDay   = time.Date(2100, 12, 31, 0, 0, 0, 0, time.UTC)
+	rangeCaps   = map[Bucket]int{BucketHour: 31, BucketDay: 1100, BucketMonth: 1200}
 )
 
 // ProjectOptions select one project and an inclusive range of local days.
@@ -43,7 +55,8 @@ type Range struct {
 // ParseRange reads from and to as YYYY-MM-DD calendar days, both included,
 // and resolves bucket: "" picks hour for one day, month past 62 days, day
 // otherwise. The days are parsed in UTC, never in the local zone, where a
-// midnight a DST jump skips would land them on the day before.
+// midnight a DST jump skips would land them on the day before. A range
+// outside the calendar window or longer than its bucket's cap is refused.
 func ParseRange(from, to string, bucket Bucket) (Range, error) {
 	f, err := time.Parse(time.DateOnly, from)
 	if err != nil {
@@ -52,6 +65,10 @@ func ParseRange(from, to string, bucket Bucket) (Range, error) {
 	t, err := time.Parse(time.DateOnly, to)
 	if err != nil {
 		return Range{}, fmt.Errorf("%w: to %q is not a YYYY-MM-DD day", ErrBadRange, to)
+	}
+	if f.Before(earliestDay) || t.After(latestDay) {
+		return Range{}, fmt.Errorf("%w: %s..%s is not within %s..%s", ErrBadRange, from, to,
+			earliestDay.Format(time.DateOnly), latestDay.Format(time.DateOnly))
 	}
 	if t.Before(f) {
 		return Range{}, fmt.Errorf("%w: from %s is after to %s", ErrBadRange, from, to)
@@ -62,6 +79,13 @@ func ParseRange(from, to string, bucket Bucket) (Range, error) {
 	case BucketHour, BucketDay, BucketMonth:
 	default:
 		return Range{}, fmt.Errorf("%w: bucket %q is not hour, day or month", ErrBadRange, bucket)
+	}
+	n, unit := int(t.Sub(f)/(24*time.Hour))+1, "days"
+	if bucket == BucketMonth {
+		n, unit = (t.Year()-f.Year())*12+int(t.Month())-int(f.Month())+1, "months"
+	}
+	if limit := rangeCaps[bucket]; n > limit {
+		return Range{}, fmt.Errorf("%w: a %s series covers at most %d %s, %s..%s is %d", ErrBadRange, bucket, limit, unit, from, to, n)
 	}
 	return Range{from: f, to: t, bucket: bucket}, nil
 }
@@ -244,17 +268,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 	out.Sessions = len(sessions)
 
-	// The longest run counts only this project's hours of a session, and only
-	// runs that end inside the range — whole, even when they began before it.
-	var longest int64
-	args := append(append([]any{}, members...), since, until)
-	err = eachRun(tx, `SELECT DISTINCT session, hour FROM session_hours WHERE project IN (`+in+`)
-		AND session IN (SELECT session FROM session_hours WHERE hour >= ? AND hour < ? AND project IN (`+in+`))
-		ORDER BY session, hour`, append(args, members...), func(start, end int64) {
-		if inRange(end) {
-			longest = max(longest, (end-start)/3600+1)
-		}
-	})
+	longest, err := longestRun(tx, since, until, ids, inRange)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
@@ -268,6 +282,27 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 		out.FirstDay, out.LastDay = dayKey(sp[0]), dayKey(sp[1])
 	}
 	return out, nil
+}
+
+// longestRun is the longest run, in hours, of the members' hours of one
+// session among the sessions with a member hour in since..until — counted
+// only when it ends inside the range, and then whole, even when it began
+// before it. Hours are read with no lower bound, since a run may begin long
+// before since, but only up to the first whole hour from until on: the
+// hour a run ending past the range continues into, which is all it takes
+// to leave that run out — never a session's later lifetime.
+func longestRun(q querier, since, until int64, ids []int64, inRange func(hour int64) bool) (int64, error) {
+	in, members := inList(ids)
+	var longest int64
+	args := append(append([]any{}, members...), until+3600, since, until)
+	err := eachRun(q, `SELECT DISTINCT session, hour FROM session_hours WHERE project IN (`+in+`) AND hour < ?
+		AND session IN (SELECT session FROM session_hours WHERE hour >= ? AND hour < ? AND project IN (`+in+`))
+		ORDER BY session, hour`, append(args, members...), func(start, end int64) {
+		if inRange(end) {
+			longest = max(longest, (end-start)/3600+1)
+		}
+	})
+	return longest, err
 }
 
 // namesakes is projects() cut down to the roots one project's fold and name

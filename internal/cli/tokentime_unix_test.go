@@ -188,26 +188,40 @@ func TestTokentimeProjectReadsUnderTheLockAndRefusesUnknownRoots(t *testing.T) {
 
 // The read-only verb never creates a store: a bad range is BAD_FLAG before
 // any store is opened, and a store never indexed is NO_STORE — exit 2, no
-// data, no state directory made to say so.
+// data, no state directory made to say so. A range is bad outside
+// 2000-01-01..2100-12-31 and one day or month past its bucket's cap; at the
+// cap it reaches the store.
 func TestTokentimeProjectNeverCreatesAStore(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	state := filepath.Join(base, "state")
-	for _, c := range []struct{ from, code string }{{"2026-13-01", diagBadFlag}, {"2026-09-24", diagNoStore}} {
+	for _, c := range []struct{ from, to, bucket, code string }{
+		{"2026-13-01", "2026-09-24", "", diagBadFlag},
+		{"2026-09-24", "2026-09-24", "", diagNoStore},
+		{"0001-01-01", "9999-12-31", "hour", diagBadFlag},
+		{"1999-12-31", "2000-01-01", "", diagBadFlag},
+		{"2100-12-31", "2101-01-01", "", diagBadFlag},
+		{"2026-01-01", "2026-01-31", "hour", diagNoStore}, // 31 days
+		{"2026-01-01", "2026-02-01", "hour", diagBadFlag},
+		{"2024-01-01", "2027-01-04", "day", diagNoStore}, // 1100 days
+		{"2024-01-01", "2027-01-05", "day", diagBadFlag},
+		{"2001-01-01", "2100-12-31", "month", diagNoStore}, // 1200 months
+		{"2000-12-01", "2100-12-31", "month", diagBadFlag},
+	} {
 		var out bytes.Buffer
 		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd.SetArgs([]string{"project", "--root", base, "--from", c.from, "--to", "2026-09-24", "--json", "--state-dir", state})
+		cmd.SetArgs([]string{"project", "--root", base, "--from", c.from, "--to", c.to, "--bucket", c.bucket, "--json", "--state-dir", state})
 		err = cmd.Execute()
 		var exit runx.ExitCoder
 		var env map[string]any
 		if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil || !errors.As(err, &exit) || exit.ExitCode() != 2 ||
 			env["data"] != nil || !bytes.Contains(out.Bytes(), []byte(c.code)) {
-			t.Fatalf("--from %s = %s, %v; want exit 2, no data and %s", c.from, out.String(), err, c.code)
+			t.Fatalf("%s..%s by %q = %s, %v; want exit 2, no data and %s", c.from, c.to, c.bucket, out.String(), err, c.code)
 		}
 		if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("state dir after --from %s: %v, want it never created", c.from, statErr)
+			t.Fatalf("state dir after %s..%s: %v, want it never created", c.from, c.to, statErr)
 		}
 	}
 }

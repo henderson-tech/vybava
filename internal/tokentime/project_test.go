@@ -82,32 +82,55 @@ func TestProjectSeriesAreZeroFilledPerBucket(t *testing.T) {
 	}
 }
 
+// The runs are read up to the first hour past the range and no further:
+// that hour alone tells a run ending inside the range from one running past
+// it, in a zone off the hour too, where the range ends mid-hour.
 func TestProjectLongestRunStaysInsideTheProjectAndTheRange(t *testing.T) {
-	base, _ := filepath.EvalSymlinks(t.TempDir())
-	app, tools := filepath.Join(base, "app"), filepath.Join(base, "tools")
-	mkdir(t, app)
-	mkdir(t, tools)
-	at := func(day, hour int) string {
-		return time.Date(2026, 9, day, hour, 30, 0, 0, prague).UTC().Format(time.RFC3339)
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
 	}
-	var recs []rec
-	for h := 22; h < 26; h++ { // 22:30 on the 20th to 01:30 on the 21st: begins before the range, ends inside it
-		recs = append(recs, rec{"early", app, at(20, h), "claude-opus-5-5", 1})
-	}
-	for h := 10; h < 15; h++ { // five hours on the 22nd, the fourth spent in tools
-		cwd := app
-		if h == 13 {
-			cwd = tools
+	for _, loc := range []*time.Location{prague, kolkata} {
+		base, _ := filepath.EvalSymlinks(t.TempDir())
+		app, tools := filepath.Join(base, "app"), filepath.Join(base, "tools")
+		mkdir(t, app)
+		mkdir(t, tools)
+		at := func(day, hour int) string {
+			return time.Date(2026, 9, day, hour, 30, 0, 0, loc).UTC().Format(time.RFC3339)
 		}
-		recs = append(recs, rec{"hop", cwd, at(22, h), "claude-opus-5-5", 1})
-	}
-	for h := 22; h < 28; h++ { // 22:30 on the 23rd into the 24th: ends after the range
-		recs = append(recs, rec{"late", app, at(23, h), "claude-opus-5-5", 1})
-	}
-	s := indexed(t, base, recs...)
-	// The early run counts whole: 240. Joining the tools hour would read 300, the late run 360.
-	if p := projectOf(t, s, app, "2026-09-21", "2026-09-23", ""); p.LongestRunMinutes != 240 || p.Sessions != 3 {
-		t.Fatalf("longest run = %d minutes over %d sessions, want 240 over 3", p.LongestRunMinutes, p.Sessions)
+		var recs []rec
+		for h := 22; h < 26; h++ { // 22:30 on the 20th to 01:30 on the 21st: begins before the range, ends inside it
+			recs = append(recs, rec{"early", app, at(20, h), "claude-opus-5-5", 1})
+		}
+		for h := 10; h < 15; h++ { // five hours on the 22nd, the fourth spent in tools
+			cwd := app
+			if h == 13 {
+				cwd = tools
+			}
+			recs = append(recs, rec{"hop", cwd, at(22, h), "claude-opus-5-5", 1})
+		}
+		for h := 19; h < 28; h++ { // 19:30 on the 23rd into the 24th: five hours inside, ends after the range
+			recs = append(recs, rec{"late", app, at(23, h), "claude-opus-5-5", 1})
+		}
+		s := indexed(t, base, recs...)
+		// The early run counts whole: 240. Joining the tools hour would read 300,
+		// the late run 540 — or 300, cut off at the range's end.
+		if p := projectIn(t, s, loc, app, "2026-09-21", "2026-09-23", ""); p.LongestRunMinutes != 240 || p.Sessions != 3 {
+			t.Fatalf("%s: longest run = %d minutes over %d sessions, want 240 over 3", loc, p.LongestRunMinutes, p.Sessions)
+		}
+
+		var id int64
+		if err := s.db.QueryRow("SELECT id FROM projects WHERE root = ?", app).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		q := &planRecorder{q: s.db}
+		since, until := time.Date(2026, 9, 21, 0, 0, 0, 0, loc).Unix(), time.Date(2026, 9, 24, 0, 0, 0, 0, loc).Unix()
+		if _, err := longestRun(q, since-since%3600, until, []int64{id}, func(int64) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+		if len(q.plans) != 1 || !strings.Contains(q.plans[0], "(session=? AND hour<?)") {
+			t.Fatalf("%s: the runs' read plans as %q, want each session's hours bounded above", loc, q.plans)
+		}
 	}
 }
 

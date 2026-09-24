@@ -143,8 +143,12 @@ pass is running — `rollup` or `index` is what brings the store up to date.
   cwd). A root never indexed exits 2 with `UNKNOWN_PROJECT`.
 - `from`/`to` are inclusive local days; an hour bucket belongs to the day it
   starts in, as in the rollup. A day whose midnight a DST jump skips
-  (America/Santiago, America/Havana) starts at the jump. A bad day, range or
-  bucket exits 2 with `BAD_FLAG` before the store is opened.
+  (America/Santiago, America/Havana) starts at the jump. Both days lie in
+  2000-01-01..2100-12-31, and a range is capped per bucket, because its
+  series is allocated whole: at most 31 days by `hour`, 1100 days by `day`,
+  1200 months by `month` (a month the range touches counts). A bad day,
+  range or bucket, or a range past its cap, exits 2 with `BAD_FLAG` before
+  the store is opened.
 - `tokens`, `usd`, `responses` and `models` (most tokens first) cover the
   range under the rollup's rules — disjoint components, an unpriced model left
   out of every usd figure and reported as `UNPRICED_MODEL`. `sessions` counts
