@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -264,6 +265,14 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	data := &InitData{Dir: dir, Created: []string{}, Kept: []string{}}
 	res := Result{Data: data}
 
+	// Read the existing args BEFORE writing anything: a malformed file must fail
+	// init while run.json is still untouched.
+	var oldArgs InventoryArgs
+	hadArgs, err := readOptional(dir, ArgsFile, &oldArgs)
+	if err != nil {
+		return res, err
+	}
+
 	run, err := ReadRun(dir)
 	var de runx.DiagError
 	freshRun := false
@@ -292,27 +301,26 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	}
 	data.Run = run
 
-	// The args carry run.json's ranges, so a re-frozen run re-writes them.
-	argsPath := filepath.Join(dir, ArgsFile)
-	switch _, err := os.Stat(argsPath); {
-	case err == nil && !freshRun:
+	// The args are derived from run.json except the clusters the orchestrator
+	// chose: every init re-derives the rest, so they can never keep ranges that
+	// run.json no longer has.
+	args := t.inventoryArgs(run)
+	args.Clusters = oldArgs.Clusters
+	if args.Clusters == nil {
+		args.Clusters = []ClusterSpec{}
+	}
+	if !hadArgs || !reflect.DeepEqual(args, oldArgs) {
+		if err := writeJSON(filepath.Join(dir, ArgsFile), args); err != nil {
+			return res, err
+		}
+	}
+	if hadArgs {
 		data.Kept = append(data.Kept, ArgsFile)
-	case err == nil || errors.Is(err, os.ErrNotExist):
-		args := t.inventoryArgs(run)
-		// A re-freeze keeps the clusters the orchestrator already chose.
-		var old InventoryArgs
-		if _, err := readOptional(dir, ArgsFile, &old); err != nil {
-			return res, err
+		if !freshRun && !reflect.DeepEqual(args.Repos, oldArgs.Repos) {
+			res.Diagnostics = append(res.Diagnostics, info(DiagPayloadDiffers, ArgsFile+" repos differed from run.json's ranges and were refreshed", ""))
 		}
-		if len(old.Clusters) > 0 {
-			args.Clusters = old.Clusters
-		}
-		if err := writeJSON(argsPath, args); err != nil {
-			return res, err
-		}
+	} else {
 		data.Created = append(data.Created, ArgsFile)
-	default:
-		return res, err
 	}
 
 	for _, pc := range payloadCopies {
@@ -361,7 +369,7 @@ func (t *Tool) Init(dir, date string, fetch bool) (Result, error) {
 	}
 	res.Next = []string{
 		"record the phase-0 authority answers in " + filepath.Join(dir, RunFile) + " (authority.merge, devices, deviceWalk, concurrency, finish)",
-		"fill clusters in " + argsPath + ", then Workflow({scriptPath: \"" + filepath.Join(dir, "inventory.workflow.js") + "\", args: <that file's JSON>})",
+		"fill clusters in " + filepath.Join(dir, ArgsFile) + ", then Workflow({scriptPath: \"" + filepath.Join(dir, "inventory.workflow.js") + "\", args: <that file's JSON>})",
 		"jq '.result' <workflow output file> > " + filepath.Join(dir, InventoryFile) + "   # never read the result into context",
 	}
 	return res, nil

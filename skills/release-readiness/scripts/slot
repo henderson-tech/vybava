@@ -86,7 +86,7 @@ while :; do
     exec {adm}>&-
   fi
   if [ -z "${waited:-}" ]; then
-    echo "[readiness-slot] waiting: $(avail_gb) GB available (need $MIN_GB), load $(load1) (max $MAX_LOAD), slice headroom $(slice_headroom_gb) GB, $n_now of $N slots open" >&2
+    echo "[readiness-slot] waiting: $(avail_gb) GB available (need $MIN_GB), load $(load1) (max $MAX_LOAD), slice headroom $(slice_headroom_gb) GB, $n_now of $N slots allowed now" >&2
     waited=1
   fi
   sleep 15

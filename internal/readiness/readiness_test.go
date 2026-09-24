@@ -277,6 +277,20 @@ func TestInitSeedsTheRunDirectoryOnce(t *testing.T) {
 	if _, err := readOptional(dir, ArgsFile, &args); err != nil || len(args.Clusters) != 1 || len(args.Repos) != 1 {
 		t.Fatalf("re-frozen args %+v %v", args, err)
 	}
+	// A malformed args file fails init before run.json is written, so a repaired
+	// re-run can never keep args whose ranges run.json no longer has.
+	if err := os.WriteFile(filepath.Join(dir, ArgsFile), []byte("{\"clusters\": [\"x\"]}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, RunFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Init(dir, "", false); code(err) != DiagRunInvalid {
+		t.Fatalf("malformed args accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, RunFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run.json written before the args failed: %v", err)
+	}
 }
 
 func TestRenderWritesLaneFilesAndDetectsDrift(t *testing.T) {
