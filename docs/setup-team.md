@@ -9,7 +9,9 @@ vybava setup team --only vitrinka-cli,onyx
 vybava upgrade && vybava setup team --update   # later: new Výbava, then newer tools
 ```
 
-The `henderson` catalog group is the preset: the Onyx vault stack in Helium,
+The `henderson` catalog group is the preset: the Onyx vault stack in Helium
+(app, MCP, extension, and the lazy Playwright/chrome-devtools MCPs that spawn
+no browser until an agent uses one),
 the vitrinka CLI and app, SwitcherooBar, Pultík, and the git family (`prm`,
 `push-all`, `sync`, `push-back` on `gitkit`). `devbox` is optional and starts
 unticked.

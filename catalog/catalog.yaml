@@ -289,6 +289,15 @@ items:
       needs: [helium, onyx]
       interactive: true
 
+  - id: onyx-mcp-browsers
+    kind: tool
+    status: experimental
+    description: Lazy Playwright + chrome-devtools MCP through the Onyx bridge — no browser spawns until an agent uses one, and each session attaches to its own onyx browser.
+    tool:
+      probe: {path: ~/.local/share/onyx-bridge/bin/mcp-lazy}
+      install: {run: [bash, -c, "curl -fsSL https://onyx.lovinka.com/downloads/install-extension.sh | bash -s -- --mcp-browsers"]}
+      needs: [onyx-extension, node]
+
   - id: vitrinka-cli
     kind: tool
     status: experimental
@@ -415,6 +424,7 @@ groups:
       - onyx
       - onyx-mcp
       - onyx-extension
+      - onyx-mcp-browsers
       - vitrinka-cli
       - vitrinka-app
       - switcheroo-bar
@@ -436,6 +446,7 @@ groups:
       - onyx
       - onyx-mcp
       - onyx-extension
+      - onyx-mcp-browsers
       - vitrinka-cli
       - vitrinka-app
       - switcheroo-bar
