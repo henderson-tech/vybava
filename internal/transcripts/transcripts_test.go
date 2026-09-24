@@ -1,6 +1,7 @@
 package transcripts
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -177,5 +178,32 @@ func TestClaudeCacheWritesSplitByTTL(t *testing.T) {
 	legacy := ClaudeUsage{CacheCreationInputTokens: 30}
 	if w5, w1 := legacy.CacheWrites(); w5 != 30 || w1 != 0 {
 		t.Fatalf("unsplit = %d/%d, want 30/0", w5, w1)
+	}
+}
+
+// A person drives a thread only when its header says so: a string source
+// other than exec, not from codex_exec. A header naming no source is unknown,
+// and unknown is never a person.
+func TestOnlyAHeaderNamingAPersonsSourceIsInteractive(t *testing.T) {
+	for _, c := range []struct {
+		header string
+		want   bool
+	}{
+		{`{"id":"t","originator":"codex-tui","source":"cli"}`, true},
+		{`{"id":"t","originator":"Codex Desktop","source":"vscode"}`, true},
+		{`{"id":"t","originator":"codex_exec","source":"exec"}`, false},
+		{`{"id":"t","originator":"codex_exec","source":"cli"}`, false},
+		{`{"id":"t","originator":"codex-tui","source":{"subagent":{"other":"guardian"}}}`, false},
+		{`{"id":"t","originator":"codex-tui"}`, false},
+		{`{"id":"t"}`, false},
+		{`{"id":"t","source":null}`, false},
+	} {
+		var meta SessionMeta
+		if err := json.Unmarshal([]byte(c.header), &meta); err != nil {
+			t.Fatal(err)
+		}
+		if got := meta.Interactive(); got != c.want {
+			t.Fatalf("%s: interactive = %v, want %v", c.header, got, c.want)
+		}
 	}
 }

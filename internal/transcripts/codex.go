@@ -40,17 +40,16 @@ type SessionMeta struct {
 	} `json:"git"`
 }
 
-// Interactive reports whether a person drives the thread: a CLI or editor
-// session, not a headless `codex exec` nor a thread another thread spawned.
+// Interactive reports whether a person drives the thread: its header names a
+// CLI or editor source — not a headless `codex exec`, not a thread another
+// thread spawned (an object source). A header naming no source is unknown,
+// and unknown is never a person.
 func (m SessionMeta) Interactive() bool {
-	if m.Originator == "codex_exec" {
+	var source string
+	if m.Originator == "codex_exec" || json.Unmarshal(m.Source, &source) != nil {
 		return false
 	}
-	var source string
-	if len(m.Source) > 0 && json.Unmarshal(m.Source, &source) != nil {
-		return false // an object: a spawned subagent or guardian
-	}
-	return source != "exec"
+	return source != "" && source != "exec"
 }
 
 // EventHeader is the part of an event_msg payload that names what happened.
