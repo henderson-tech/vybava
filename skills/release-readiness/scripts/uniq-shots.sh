@@ -27,4 +27,4 @@ for f in $(grep -o 'ATTACHMENT|shots/[^]]*' "$J" | sed 's/^ATTACHMENT|//' | sort
 done
 [ "$missing" -eq 0 ] || { echo "$missing rewritten attachment(s) have no copied file" >&2; exit 1; }
 
-echo "shots: $(ls "$R/shots" | wc -l | tr -d ' ') unique files; attachments in junit: $(grep -c 'ATTACHMENT|shots/' "$J")"
+echo "shots: $(ls "$R/shots" | wc -l | tr -d ' ') unique files; attachments in junit: $(grep -o 'ATTACHMENT|shots/' "$J" | wc -l | tr -d ' ')"

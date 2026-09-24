@@ -186,7 +186,7 @@ func TestRepoPathsResolveFromTheMainCheckout(t *testing.T) {
 	// A sibling path is meant relative to the main checkout, never to whichever
 	// worktree the orchestrator stands in.
 	section := strings.Replace(adapter, `"integration": "main"}]`,
-		`"integration": "main"}, {"id": "sib", "path": "../app", "github": "acme/sib", "production": {"branch": "main"}, "integration": "main"}]`, 1)
+		`"integration": "main"}, {"id": "sib", "path": "../app", "github": "acme/sib", "production": {"branch": "main"}, "integration": "main", "worktree": "git -C {path} worktree add {path}/.worktrees/{slug}"}]`, 1)
 	if err := os.WriteFile(filepath.Join(wt, "vybava.config.json"), []byte(`{"readiness": `+section+`}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
