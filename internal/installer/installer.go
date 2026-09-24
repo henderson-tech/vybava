@@ -91,6 +91,10 @@ func (i Installer) Plan(items []catalog.Item, options Options) ([]Operation, err
 	var operations []Operation
 	for _, item := range items {
 		switch item.Kind {
+		case catalog.KindTool:
+			// Tools install through their own channels (internal/toolsetup)
+			// and are probed live, never recorded here.
+			continue
 		case catalog.KindApplet:
 			operations = append(operations, Operation{
 				ItemID: item.ID, Kind: string(item.Kind), Scope: string(options.Scope),
