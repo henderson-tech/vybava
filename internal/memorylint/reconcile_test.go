@@ -574,6 +574,32 @@ func TestHookTreatsAnUnknownEventAsPreWrite(t *testing.T) {
 	}
 }
 
+func TestHookPreWriteReadsTheAllowlistFromTheHomeRoot(t *testing.T) {
+	// A ledger home keeps its notes in notes/; the pre-write judged them against
+	// notes/.memory-lint-allow, which never exists, so an allowlisted value blocked.
+	home := filepath.Join(t.TempDir(), ".claude", "memory")
+	if err := os.MkdirAll(filepath.Join(home, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".memory-lint-allow"), []byte("10.8.0.10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(content string) HookDecision {
+		payload, err := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Write",
+			"tool_input": map[string]any{"file_path": filepath.Join(home, "notes", "wireguard.md"), "content": content}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return RunHook(strings.NewReader(string(payload)))
+	}
+	if got := write("The box answers on 10.8.0.10 over WireGuard."); got.Block {
+		t.Fatalf("an address the home allowlists must pass under notes/: %s", got.Message)
+	}
+	if got := write("The box answers on 10.8.0.11 over WireGuard."); !got.Block {
+		t.Fatal("an address the home does not allowlist must still block")
+	}
+}
+
 func TestReindexSurvivesAnEmptyConfiguredType(t *testing.T) {
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, ".memorylint.yaml"),

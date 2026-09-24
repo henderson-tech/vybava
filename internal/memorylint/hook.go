@@ -196,7 +196,14 @@ func RunHook(stdin io.Reader) HookDecision {
 	// OPEN on an unknown input.
 	if p.HookEventName != "PostToolUse" {
 		content := p.ToolInput.Content + "\n" + p.ToolInput.NewString + "\n" + addedPatchText(p.ToolInput.Command)
-		config, err := loadConfig(filepath.Dir(targets[0]))
+		// The home's config and .memory-lint-allow live at its ROOT, like the
+		// post-write lint below reads them: the note's own directory (a ledger
+		// home's notes/) holds neither, so an allowlisted value blocked the write.
+		root := memoryHomeRoot(targets[0])
+		if IsHandoffHome(targets[0]) {
+			root = handoffHomeRoot(targets[0])
+		}
+		config, err := loadConfig(root)
 		if err != nil {
 			config = DefaultConfig()
 		}
