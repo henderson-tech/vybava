@@ -24,7 +24,10 @@ type Selector struct {
 	Author string
 }
 
-// FetchFlags are resolve-fetch's own flags.
+// FetchFlags are resolve-fetch's own flags. Once and Every are accepted and
+// inert, exactly as in the TypeScript: they exist so a prm command line
+// carrying them never leaks `--every 5m` into the PR selector. The watch
+// cadence lives in pr-events --every-seconds.
 type FetchFlags struct {
 	Once            bool
 	IncludeResolved bool
