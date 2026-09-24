@@ -172,7 +172,7 @@ func TestFailedMigrationCheckBlocksCommit(t *testing.T) {
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "t@example.com")
 	git("config", "user.name", "t")
-	add("vybava.config.json", `{"merge": {"migrations": [{"dir": "m", "style": "typeorm", "check": "test -f fixed || { echo guard says no; false; }"}]}}`)
+	add("vybava.config.json", `{"merge": {"migrations": [{"dir": "m", "style": "typeorm", "check": "echo guard says no; false"}]}}`)
 	git("switch", "-q", "-c", "feature")
 	add("m/200-AddFeature.ts", "export class AddFeature200 {}\n")
 	git("switch", "-q", "main")
@@ -191,9 +191,12 @@ func TestFailedMigrationCheckBlocksCommit(t *testing.T) {
 		t.Fatalf("failed check must block the commit: %s open=%d committed=%q", classes(rep), rep.Open, rep.Committed)
 	}
 
-	// Fixed by hand: rerunning the migrations reruns the check though nothing
-	// is left to rename, and the failed row clears.
-	if err := os.WriteFile(filepath.Join(root, "fixed"), nil, 0o644); err != nil {
+	// Fixed by editing the check command itself: rerunning the migrations
+	// reruns it though nothing is left to rename, and the failed row clears.
+	if err := os.WriteFile(filepath.Join(root, "vybava.config.json"), []byte(`{"merge": {"migrations": [{"dir": "m", "style": "typeorm", "check": "true"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if tool, err = Open(root); err != nil {
 		t.Fatal(err)
 	}
 	plans, err := tool.PlanMigrations("main", "")

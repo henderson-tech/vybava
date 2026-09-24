@@ -206,7 +206,7 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 	for i, p := range plans {
 		// A check that failed earlier reruns even with nothing left to rename:
 		// `merge-assist migrations --apply` after the fix is how its row clears.
-		if p.Check == "" || (len(p.Renames) == 0 && !failed[p.Check]) {
+		if p.Check == "" || (len(p.Renames) == 0 && !failed[checkKey(p.Dir)]) {
 			continue
 		}
 		cmd := exec.Command("sh", "-c", p.Check)
@@ -216,10 +216,10 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 		plans[i].CheckOK = &ok
 		// Journaled either way: a failed check is an open row, so the merge is
 		// never committed over it, and a passing rerun clears it.
-		check := gitmerge.Event{Path: p.Check, Class: gitmerge.ClassMigration, Outcome: gitmerge.OutcomeResolved, Detail: "migration check"}
+		check := gitmerge.Event{Path: checkKey(p.Dir), Class: gitmerge.ClassMigration, Outcome: gitmerge.OutcomeResolved, Detail: p.Check}
 		if !ok {
 			plans[i].Output = tail(string(out), 8)
-			check.Outcome, check.Detail = gitmerge.OutcomeFailed, lastLine(plans[i].Output)
+			check.Outcome, check.Detail = gitmerge.OutcomeFailed, p.Check+": "+lastLine(plans[i].Output)
 		}
 		if err := gitmerge.Record(t.Root, check); err != nil {
 			return plans, err
@@ -245,3 +245,7 @@ func (t *Tool) rewrite(rel string, from, to migration, stage bool) error {
 	_, err = t.git("add", "--", rel)
 	return err
 }
+
+// checkKey names a directory's check row by the directory, never the command:
+// fixing the failure may mean editing the command itself.
+func checkKey(dir string) string { return dir + " (check)" }

@@ -217,7 +217,11 @@ func reportNext(rep mergeassist.Report) []string {
 	}
 	for _, row := range rep.Rows {
 		if row.Class == "migration" && row.State == mergeassist.StateFailed {
-			next = append(next, "merge-assist migrations --apply  # reruns the failed check once fixed")
+			cmd := "merge-assist migrations --apply"
+			if rep.Onto != "" { // the merge's own base, not the default ref
+				cmd += " --onto " + rep.Onto
+			}
+			next = append(next, cmd+"  # reruns the failed check once fixed")
 			break
 		}
 	}
