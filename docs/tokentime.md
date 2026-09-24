@@ -92,6 +92,8 @@ credential and no message content is read beyond what decoding a line needs.
 The JSON is a contract with claude-switcheroo's Arcade
 (`src/arcade/contract.ts`, `TokentimeRollup`). Days and hours are local
 (`timezone` names the IANA zone) and dense — an empty day is still listed.
+An hour is a stored bucket, a whole UTC hour, so in a zone off the hour
+(+05:30, +05:45) it starts at the half or three-quarter hour.
 `projects` covers the requested days (tokens, usd, sessions, activeDays),
 with lifetime `firstDay`/`lastDay`; `models` and `lifetime` cover everything.
 A day's `sessions` counts the sessions active that day. `longestSessionMinutes`

@@ -194,7 +194,10 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	names, roots := ps.names, ps.roots
 
 	firstDay := dayStart(now.Year(), now.Month(), now.Day()-(days-1), loc)
-	thisHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
+	// The hour grid is the buckets' own, whole UTC hours: at +05:30 no local
+	// whole hour starts a bucket, and time.Date picks one of a fall-back's
+	// two 02:00s regardless of which one now is in.
+	thisHour := time.Unix(now.Unix()-now.Unix()%3600, 0).In(loc)
 	firstHour := thisHour.Add(-time.Duration(hours-1) * time.Hour)
 	since := min(firstDay.Unix(), firstHour.Unix())
 	since -= since % 3600

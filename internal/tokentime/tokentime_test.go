@@ -262,6 +262,27 @@ func TestHoursStayDistinctAcrossDaylightSavingChanges(t *testing.T) {
 	}
 }
 
+// At +05:30 no local whole hour starts a bucket: the hours are the buckets',
+// so they start at :30 and carry their tokens.
+func TestHoursFollowTheBucketsInAHalfHourZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	app := filepath.Join(base, "app")
+	mkdir(t, app)
+	s := indexed(t, base, rec{"s", app, "2026-09-24T06:10:00Z", "claude-opus-5-5", 7}) // 11:40 IST
+	r, err := s.Rollup(RollupOptions{Days: 1, Hours: 2, Now: time.Date(2026, 9, 24, 12, 0, 0, 0, kolkata), Location: kolkata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Hours) != 2 || r.Hours[0].Hour != "2026-09-24T10:30:00+05:30" || r.Hours[1].Hour != "2026-09-24T11:30:00+05:30" ||
+		len(r.Hours[1].Models) != 1 || r.Hours[1].Models[0].Tokens != 7 {
+		t.Fatalf("hours = %+v, want 10:30 and 11:30 with the 7 tokens in the latter", r.Hours)
+	}
+}
+
 func TestStaleTailsAndFailingFilesNeverHoldCoverageOpen(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	root, cwd := filepath.Join(base, "claude"), filepath.Join(base, "work")
