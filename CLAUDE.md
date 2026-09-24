@@ -124,6 +124,12 @@ attributes from the checked-out branch); a catalog key clash is a conflict even
 when git's line merge is clean (it keeps duplicate keys); a migration the base
 has is never renamed. Docs: `docs/merge-assist.md`.
 
+`internal/gitkit` is the git family's deterministic layer: skills call
+`vybava gitkit <script>`, never a file path, so a script ported from the
+embedded TypeScript to Go keeps its verb and output and no skill changes. Edit
+`ts/bin/` → run the `ts/tests/` suite (`docs/gitkit.md`). The git-family skills
+are canonical HERE; a personal `~/.claude` copy is a symlink, never a fork.
+
 `internal/envbridge` provides bounded, memory-only environment transfer over a
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
