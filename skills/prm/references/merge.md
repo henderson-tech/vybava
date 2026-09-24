@@ -41,6 +41,7 @@ While `gates.allPass === false`, act per failed gate, then re-run merge-precheck
 | `review` + `REVIEW_REQUIRED` | `mergePolicy === "self"` → the review gate is not a gate: `--admin` merge now (no round, no watcher). Else the solo-owner carve-out applies (below) → `--admin` merge, not a STOP. Otherwise **STOP: "blocked on human approval"** — never self-approve (`--admin` does NOT fake an approval) |
 | `botReview` (`botApproval.pending` names which) | bot has open threads → a round (resolve + push); the bot re-reviews on the push. Still pending → **STOP: "blocked on bot review (`<bot>` pending)"** — never self-approve, dismiss, or `--admin` past a required bot |
 | `conflict` | `gh pr update-branch <pr>`, re-check. Still conflicting → **STOP: "conflicts need manual resolution"** |
+| `mergeable-unknown` | GitHub is still computing after a push — wait ~15 s and re-run the precheck (up to 4 times); still unknown → report it, never merge past it |
 | `draft` | `gh pr ready <pr>`, re-check |
 
 A STOP prints the blocker + PR URL and stops. 6 iterations still red → STOP and report.

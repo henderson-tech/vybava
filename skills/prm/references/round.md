@@ -44,9 +44,10 @@ Because the state lives here, ANY session or agent can pick up the next round.
 ### 0. Isolate (once) + load state
 
 `vybava gitkit worktree ensure <headRef> <pr>`
-→ `{action, path, selfCreated, mainClone}`. Run EVERY git/test/lint command for this
+→ `{action, path, selfCreated, mainClone, diverged?}`. Run EVERY git/test/lint command for this
 PR inside `path`. NEVER `git checkout`/`switch` and NEVER commit in `mainClone`, even
-if it currently has this branch checked out.
+if it currently has this branch checked out. `diverged: true` = a local branch of that
+name holds commits the PR head lacks — STOP the round and report it; never reset it.
 
 State file exists → read it; the `brief` grounds every verdict, `seen` dedups.
 Missing (first round) → build the **intent brief**: read the PR body, linked

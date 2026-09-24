@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeEvents, parseRepoFlag } from "../bin/pr-events.ts";
+import { computeEvents, openThreadCommentIds, parseRepoFlag } from "../bin/pr-events.ts";
 
 test("first poll (no prev) on an OPEN PR is a silent baseline — no events", () => {
   assert.deepEqual(
@@ -168,4 +168,12 @@ test("parseRepoFlag: owner/name form pins the target and must be stripped from a
 test("parseRepoFlag: anything else throws loudly at startup", () => {
   assert.throws(() => parseRepoFlag("a/b/c"), /owner\/name or an absolute repo path/);
   assert.throws(() => parseRepoFlag("just-a-name"), /owner\/name or an absolute repo path/);
+});
+
+test("openThreadCommentIds watches replies inside open threads, never own replies or resolved threads", () => {
+  const threads = [
+    { isResolved: false, comments: { nodes: [{ databaseId: 1, author: { login: "reviewer" } }, { databaseId: 2, author: { login: "me" } }, { databaseId: 3, author: { login: "reviewer" } }] } },
+    { isResolved: true, comments: { nodes: [{ databaseId: 4, author: { login: "reviewer" } }] } },
+  ];
+  assert.deepEqual(openThreadCommentIds(threads, "me"), [1, 3]);
 });
