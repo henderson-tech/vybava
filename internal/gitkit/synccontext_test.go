@@ -220,7 +220,8 @@ func TestSyncContextVerb(t *testing.T) {
 }
 
 // Unreadable is never absent: a package.json that cannot be read warns as a
-// malformed one does, and a config behind an untraversable directory fails.
+// malformed one does; a config behind an untraversable directory, or an
+// .env that cannot be read, fails.
 func TestUnreadableInputsAreReported(t *testing.T) {
 	root := t.TempDir()
 	exec.Command("git", "init", "-q", root).Run()
@@ -242,5 +243,12 @@ func TestUnreadableInputsAreReported(t *testing.T) {
 	}
 	if _, _, err := readGitConfig(root); err == nil || !strings.HasPrefix(err.Error(), "EACCES: ") {
 		t.Errorf("untraversable .claude: %v", err)
+	}
+	os.Chmod(claude, 0o755)
+	os.Remove(filepath.Join(root, "package.json"))
+	os.Mkdir(filepath.Join(root, ".env.local"), 0o755)
+	stderr.Reset()
+	if code := runSyncContext([]string{"--repo", root}, io.Discard, &stderr); code != 1 || stderr.String() != "error: EISDIR: illegal operation on a directory, read\n" {
+		t.Errorf("unreadable .env.local: %d %q", code, stderr.String())
 	}
 }

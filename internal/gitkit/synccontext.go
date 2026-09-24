@@ -440,9 +440,14 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 	if dbURL == "" {
 		line := regexp.MustCompile("(?m)^" + regexp.QuoteMeta(localDBURLVar) + "=(.*)$")
 		for _, f := range []string{".env.local", ".env"} {
+			if !exists(at(f)) {
+				continue
+			}
+			// Present but unreadable fails the plan: reading it as absent
+			// would report the DB state unknown for the wrong reason.
 			data, err := os.ReadFile(at(f))
 			if err != nil {
-				continue
+				return fail(stderr, nodeReadError(err, at(f)))
 			}
 			if m := line.FindStringSubmatch(string(data)); m != nil {
 				dbURL = strings.TrimSpace(m[1])
