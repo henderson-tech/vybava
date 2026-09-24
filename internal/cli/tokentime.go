@@ -27,6 +27,9 @@ const (
 	diagInterrupted   = "INDEX_INTERRUPTED"
 	diagUnpricedModel = "UNPRICED_MODEL"
 	diagBadFlag       = "BAD_FLAG"
+	diagUnknownProj   = "UNKNOWN_PROJECT"
+	diagNoStore       = "NO_STORE"
+	diagStaleSchema   = "STALE_SCHEMA"
 )
 
 func (rt *runtime) tokentimeApplet() *cobra.Command {
@@ -48,6 +51,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			"incrementally into permanent hour × project × model buckets, then rolls them up:\n" +
 			"  tokentime index            catch up on everything written since the last pass\n" +
 			"  tokentime rollup --json    days, hours, projects, models, lifetime — with API-equivalent usd\n" +
+			"  tokentime project --from D --to D --json   this repository (or --project NAME) across a range of local days\n" +
 			"  tokentime status           what is indexed, what is pending\n" +
 			"  tokentime prices           the per-model price table and its override file",
 	}
@@ -109,6 +113,19 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		}
 		return state, opts, nil
 	}
+	// storeErr names a store no read can serve: never indexed, or older than
+	// its queries. Only an index pass creates or migrates one.
+	storeErr := func(err error) error {
+		switch {
+		case errors.Is(err, tokentime.ErrNoStore):
+			return runx.DiagError{Diag: runx.Diagnostic{Code: diagNoStore, Severity: "error",
+				Detail: err.Error() + " — nothing has been indexed yet", Fix: "tokentime index"}}
+		case errors.Is(err, tokentime.ErrStaleSchema):
+			return runx.DiagError{Diag: runx.Diagnostic{Code: diagStaleSchema, Severity: "error",
+				Detail: err.Error() + " — one index pass migrates it", Fix: "tokentime index"}}
+		}
+		return err
+	}
 	priceDiags := func(p tokentime.Prices) []runx.Diagnostic {
 		if len(p.Incomplete) == 0 {
 			return nil
@@ -116,6 +133,14 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		return []runx.Diagnostic{{Code: diagPriceGap, Severity: "warning",
 			Detail: "override rows for models without a built-in price leave rates out, which price at $0: " + strings.Join(p.Incomplete, "; "),
 			Fix:    "complete them in " + p.OverridePath}}
+	}
+	unpricedDiags := func(models []string, p tokentime.Prices) []runx.Diagnostic {
+		if len(models) == 0 {
+			return nil
+		}
+		return []runx.Diagnostic{{Code: diagUnpricedModel, Severity: "warning",
+			Detail: "no price for " + strings.Join(models, ", ") + "; their tokens are left out of every usd figure",
+			Fix:    "add them to " + p.OverridePath}}
 	}
 	// A pass stopped by SIGTERM or SIGINT commits what it read and exits; the
 	// next pass continues from there.
@@ -222,17 +247,16 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 					diags, next = indexDiags(report)
 				}
 			}
+			// With the lock busy (or --no-index) the store is served as the
+			// last pass left it — an older schema too, when its queries still
+			// run — and never migrated here.
 			out, err := store.Rollup(tokentime.RollupOptions{Days: days, Hours: hours})
 			if err != nil {
-				return finish(s, nil, diags, next, err)
+				return finish(s, nil, diags, next, storeErr(err))
 			}
 			prices, _ := tokentime.LoadPrices(state)
 			diags = append(diags, priceDiags(prices)...)
-			if len(out.Unpriced) > 0 {
-				diags = append(diags, runx.Diagnostic{Code: diagUnpricedModel, Severity: "warning",
-					Detail: "no price for " + strings.Join(out.Unpriced, ", ") + "; their tokens are left out of every usd figure",
-					Fix:    "add them to " + prices.OverridePath})
-			}
+			diags = append(diags, unpricedDiags(out.Unpriced, prices)...)
 			return finish(s, out, diags, next, nil)
 		},
 	}
@@ -240,6 +264,86 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	rollup.Flags().IntVar(&hours, "hours", 336, "local hours to roll up, this hour included")
 	rollup.Flags().StringVar(&indexBudget, "index-budget", "64MiB", "bound the index pass run first")
 	rollup.Flags().BoolVar(&noIndex, "no-index", false, "roll up what is already indexed")
+
+	var projRoot, projName, projFrom, projTo, projBucket string
+	project := &cobra.Command{
+		Use: "project", Short: "One project across a range of local days: totals, models, sessions and a zero-filled series (read-only, no index pass)", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s := session(cmd)
+			badFlag := func(detail string) error {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error", Detail: detail,
+					Fix: "tokentime project --project <name> --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
+			}
+			// Every flag is validated before the store is opened: a bad one is
+			// BAD_FLAG and writes nothing.
+			byRoot, byName := cmd.Flags().Changed("root"), cmd.Flags().Changed("project")
+			if byRoot && byName {
+				return badFlag("--root and --project both select the project; pass one")
+			}
+			if projFrom == "" || projTo == "" {
+				return badFlag("--from and --to are required")
+			}
+			rng, err := tokentime.ParseRange(projFrom, projTo, tokentime.Bucket(projBucket))
+			if err != nil {
+				return badFlag(err.Error())
+			}
+			sel := tokentime.ProjectOptions{Name: projName, Range: rng}
+			switch {
+			case byName:
+				if projName == "" {
+					return badFlag(`--project is a name the rollup shows ("unknown" for responses recorded without a cwd)`)
+				}
+			case byRoot:
+				// An explicit empty --root is the rollup's "unknown" project:
+				// responses recorded without a cwd.
+				if sel.Root, err = expandHome(projRoot); err != nil {
+					return finish(s, nil, nil, nil, err)
+				}
+				if projRoot != "" && !filepath.IsAbs(sel.Root) {
+					return badFlag(`--root is an absolute repository root, or "" for the rollup's unknown project`)
+				}
+			default:
+				// Neither: the repository the cwd is in.
+				cwd, err := os.Getwd()
+				if err != nil {
+					return badFlag("no --project or --root, and the current directory is unreadable: " + err.Error())
+				}
+				root, err := tokentime.RootForDir(cwd)
+				switch {
+				case errors.Is(err, tokentime.ErrNotInRepo):
+					return badFlag("no --project or --root, and " + err.Error())
+				case err != nil:
+					return finish(s, nil, nil, nil, err)
+				}
+				sel.Root = root
+			}
+			state, _, err := paths()
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			// Read-only: never creates the directory or database, never migrates.
+			store, err := tokentime.OpenReadOnly(state)
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
+			}
+			defer store.Close()
+			out, err := store.Project(sel)
+			switch {
+			case errors.Is(err, tokentime.ErrUnknownProject):
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagUnknownProj, Severity: "error",
+					Detail: err.Error() + " — projects are listed by the rollup", Fix: "tokentime rollup --json --no-index"}})
+			case err != nil:
+				return finish(s, nil, nil, nil, err)
+			}
+			prices, _ := tokentime.LoadPrices(state)
+			return finish(s, out, append(priceDiags(prices), unpricedDiags(out.Unpriced, prices)...), nil, nil)
+		},
+	}
+	project.Flags().StringVar(&projRoot, "root", "", `the project's repository root, as the rollup reports it ("" for its unknown project); default: the repository of the current directory`)
+	project.Flags().StringVar(&projName, "project", "", `the project's name as the rollup shows it (e.g. FixIt, ADF/forge, unknown)`)
+	project.Flags().StringVar(&projFrom, "from", "", "first local day, YYYY-MM-DD")
+	project.Flags().StringVar(&projTo, "to", "", "last local day, YYYY-MM-DD (included)")
+	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")
 
 	status := &cobra.Command{
 		Use: "status", Short: "What is indexed and what is still pending", Args: cobra.NoArgs,
@@ -256,7 +360,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			defer store.Close()
 			st, err := store.Status()
 			if err != nil {
-				return finish(s, nil, nil, nil, err)
+				return finish(s, nil, nil, nil, storeErr(err))
 			}
 			st.ClaudeRoot, st.CodexDir = opts.ClaudeRoot, opts.CodexDir
 			var next []string
@@ -300,7 +404,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		},
 	}
 
-	root.AddCommand(index, rollup, status, prices)
+	root.AddCommand(index, rollup, project, status, prices)
 	return root
 }
 

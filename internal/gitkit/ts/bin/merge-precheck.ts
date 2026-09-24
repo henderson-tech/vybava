@@ -141,30 +141,118 @@ export function parseMergePolicy(raw: string | undefined): { policy: MergePolicy
 }
 
 // MERGE_METHOD: which `gh pr merge` flag lands the PR — merge (a merge commit), squash
-// (one commit titled after the PR), rebase. A repository that has disabled a method
-// refuses it at merge time, so when `allowed` is known the choice is derived from it
-// rather than assumed: keep merge where it is still offered, else squash, else rebase.
-// That makes a squash-only repository work with no config at all — the old hardcoded
-// "merge" default tripped the server refusal on every one of them.
-// An explicit MERGE_METHOD wins, EXCEPT when the repository has disabled it: naming a
-// method the server will refuse is drift, so it falls back and the raw value is echoed
-// as `invalid` — the same channel a typo uses — for the caller to flag.
+// (one commit titled after the PR), rebase. The server refuses a method on two layers:
+// the repository's merge buttons, and the rules on the base branch — a ruleset (or
+// classic protection) requiring linear history refuses merge commits, and a ruleset's
+// pull_request rule may narrow `allowed_merge_methods`. henderson-tech's org ruleset
+// requires linear history while a fresh repository still offers the merge-commit
+// button, so reading the buttons alone chose "merge" and `gh pr merge --merge` was
+// refused ("Merge commits are not allowed on this repository", semafor#3 and devbox,
+// 2026-09). The permitted set is therefore read from BOTH layers, never assumed:
+//   - an explicit MERGE_METHOD the base permits wins (source "config");
+//   - otherwise the first permitted of merge → squash → rebase (source "repository"),
+//     so merge stays where it is truly allowed and squash takes over where it is not.
+// An explicit method the base refuses is drift: it falls back and the raw value is
+// echoed as `invalid` — the same channel a typo uses — for the caller to flag.
+// Rules that cannot be read, or a base that permits nothing, throw: a guessed method is
+// exactly the silent default that caused the refusal.
 export const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
-export type AllowedMergeMethods = Partial<Record<MergeMethod, boolean>>;
-export function parseMergeMethod(
-  raw: string | undefined,
-  allowed?: AllowedMergeMethods,
-): { method: MergeMethod; invalid: string | null } {
-  // No signal from the repository → the historical default, unchanged.
-  const fallback = (): MergeMethod =>
-    !allowed ? "merge" : allowed.merge ? "merge" : allowed.squash ? "squash" : allowed.rebase ? "rebase" : "merge";
+
+/** What the server lets a PR into `base` use, as read from GitHub (see readMergeRules). */
+export type MergeRules = {
+  base: string;
+  buttons: Record<MergeMethod, boolean>;
+  /** Who requires linear history on the base, e.g. `org ruleset "main"`; empty → nobody. */
+  linearHistory: string[];
+  /** pull_request rules that narrow allowed_merge_methods; they intersect. */
+  rulesetMethods: { by: string; methods: MergeMethod[] }[];
+};
+
+export type MergeMethodChoice = {
+  method: MergeMethod;
+  invalid: string | null;
+  source: "config" | "repository";
+  reason: string;
+  allowed: MergeMethod[];
+};
+
+export function resolveMergeMethod(raw: string | undefined, rules: MergeRules): MergeMethodChoice {
+  const refusals = new Map<MergeMethod, string>();
+  for (const m of MERGE_METHODS) if (!rules.buttons[m]) refusals.set(m, "disabled in the repository settings");
+  if (rules.linearHistory.length && !refusals.has("merge")) {
+    refusals.set("merge", `${rules.linearHistory.join(" and ")} requires linear history on ${rules.base}`);
+  }
+  for (const r of rules.rulesetMethods) {
+    for (const m of MERGE_METHODS) {
+      if (!r.methods.includes(m) && !refusals.has(m)) refusals.set(m, `${r.by} does not allow it on ${rules.base}`);
+    }
+  }
+  const allowed = MERGE_METHODS.filter((m) => !refusals.has(m));
+  const why = MERGE_METHODS.filter((m) => refusals.has(m)).map((m) => `${m}: ${refusals.get(m)}`).join("; ");
+  if (!allowed.length) {
+    throw new Error(`merge-precheck: no merge method is permitted into ${rules.base} (${why}). ` +
+      `Enable squash or rebase in the repository settings (henderson-tech: \`vybava repolicy apply\`, see Výbava docs/repolicy.md).`);
+  }
+
   const v = (raw ?? "").trim().toLowerCase();
-  if (!v) return { method: fallback(), invalid: null };
-  if (!(MERGE_METHODS as readonly string[]).includes(v)) return { method: fallback(), invalid: raw ?? null };
-  const method = v as MergeMethod;
-  if (allowed && allowed[method] === false) return { method: fallback(), invalid: raw ?? null };
-  return { method, invalid: null };
+  const known = (MERGE_METHODS as readonly string[]).includes(v) ? (v as MergeMethod) : null;
+  if (known && allowed.includes(known)) {
+    return { method: known, invalid: null, source: "config", reason: `MERGE_METHOD=${known} in .claude.git.config, permitted on ${rules.base}`, allowed };
+  }
+  const method = allowed[0];
+  const head = !v ? "no MERGE_METHOD" : known ? `MERGE_METHOD=${known} is refused` : `MERGE_METHOD=${v} is not a merge method`;
+  const reason = `${head}; ${refusals.size ? why : `${rules.base} permits every method`} → ${method}`;
+  return { method, invalid: v ? raw ?? null : null, source: "repository", reason, allowed };
+}
+
+type RulesetNode = {
+  type?: string;
+  parameters?: { allowedMergeMethods?: string[] } | null;
+  repositoryRuleset?: { name?: string; enforcement?: string; source?: { __typename?: string } } | null;
+};
+type RepositoryNode = {
+  mergeCommitAllowed?: unknown; squashMergeAllowed?: unknown; rebaseMergeAllowed?: unknown;
+  pullRequest?: {
+    baseRefName?: string;
+    baseRef?: {
+      branchProtectionRule?: { requiresLinearHistory?: boolean } | null;
+      rules?: { totalCount?: number; nodes?: RulesetNode[] } | null;
+    } | null;
+  } | null;
+};
+
+const RULESET_OWNER: Record<string, string> = { Organization: "org", Repository: "repo", Enterprise: "enterprise" };
+
+// GATE_QUERY's repository node → MergeRules. Anything it cannot read throws with the
+// cause and the fix: the caller must never fall back to a guessed method.
+export function readMergeRules(repo: RepositoryNode, slug: string): MergeRules {
+  const pr = repo.pullRequest;
+  const base = pr?.baseRefName ?? "the base branch";
+  const cannot = (what: string) =>
+    new Error(`merge-precheck: cannot read ${what} for ${slug} (into ${base}), so the merge method cannot be derived. ` +
+      `Check \`gh auth status\` and that this account can read ${slug}, then re-run.`);
+  const buttons = { merge: repo.mergeCommitAllowed, squash: repo.squashMergeAllowed, rebase: repo.rebaseMergeAllowed };
+  if (!Object.values(buttons).every((b) => typeof b === "boolean")) throw cannot("the repository's merge settings");
+  const ref = pr?.baseRef;
+  const nodes = ref?.rules?.nodes;
+  if (!ref || !nodes) throw cannot("the base branch's rules");
+  const total = ref.rules?.totalCount ?? nodes.length;
+  if (total > nodes.length) throw cannot(`all ${total} base-branch rules (only the first ${nodes.length} were returned)`);
+
+  const linearHistory: string[] = [];
+  const rulesetMethods: MergeRules["rulesetMethods"] = [];
+  if (ref.branchProtectionRule?.requiresLinearHistory) linearHistory.push("branch protection");
+  for (const n of nodes) {
+    const rs = n.repositoryRuleset;
+    if (rs?.enforcement && rs.enforcement !== "ACTIVE") continue; // evaluate-mode rules never refuse
+    const owner = RULESET_OWNER[rs?.source?.__typename ?? ""] ?? "a";
+    const by = rs?.name ? `${owner} ruleset "${rs.name}"` : `${owner} ruleset`;
+    if (n.type === "REQUIRED_LINEAR_HISTORY" && !linearHistory.includes(by)) linearHistory.push(by);
+    const allowed = n.type === "PULL_REQUEST" ? n.parameters?.allowedMergeMethods : undefined;
+    if (allowed) rulesetMethods.push({ by, methods: MERGE_METHODS.filter((m) => allowed.some((a) => a.toLowerCase() === m)) });
+  }
+  return { base, buttons: buttons as Record<MergeMethod, boolean>, linearHistory, rulesetMethods };
 }
 
 // AFTER_MERGE_STOP_SERVERS: which dev servers teardown stops, on top of whichever
@@ -259,26 +347,42 @@ function sh(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 60_000, cwd: repoRoot() });
 }
 
-// One GraphQL round for everything the bot-approval gate needs: requested reviewers and the
+// One GraphQL round for everything an OPEN PR's gates need: requested reviewers and the
 // latest review per author (first page, 50 each — no pagination; a PR with >50 of either
-// would be pathological). Review threads are prm's business, not this gate's.
+// would be pathological), plus the merge buttons and the base branch's effective rules
+// (org + repo rulesets, classic protection) for resolveMergeMethod. Review threads are
+// prm's business, not this gate's.
 const GATE_QUERY = `
 query($owner:String!, $repo:String!, $pr:Int!) {
   repository(owner:$owner, name:$repo) {
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$pr) {
       reviewRequests(first:50) {
         nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
       }
       latestReviews(first:50) { nodes { author { login __typename } state body } }
+      baseRefName
+      baseRef {
+        branchProtectionRule { requiresLinearHistory }
+        rules(first:100) {
+          totalCount
+          nodes {
+            type
+            parameters { ... on PullRequestParameters { allowedMergeMethods } }
+            repositoryRuleset { name enforcement source { __typename } }
+          }
+        }
+      }
     }
   }
 }`;
 
-function gatherBotData(owner: string, repo: string, pr: number): Omit<BotApprovalInput, "configList"> {
+function gatherOpenPr(owner: string, repo: string, pr: number): Omit<BotApprovalInput, "configList"> & { mergeRules: MergeRules } {
   const requested: string[] = [];
   const latestReviews: LatestReview[] = [];
   const vars = ["-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `pr=${pr}`];
-  const node = JSON.parse(sh("gh", ["api", "graphql", "-f", `query=${GATE_QUERY}`, ...vars])).data.repository.pullRequest;
+  const repository = JSON.parse(sh("gh", ["api", "graphql", "-f", `query=${GATE_QUERY}`, ...vars])).data.repository;
+  const node = repository.pullRequest;
   for (const n of node.reviewRequests?.nodes ?? []) {
     const rr = n.requestedReviewer;
     if (rr?.login) requested.push(canonicalizeBotLogin(String(rr.login), rr.__typename));
@@ -287,7 +391,7 @@ function gatherBotData(owner: string, repo: string, pr: number): Omit<BotApprova
     const a = n.author;
     if (a?.login) latestReviews.push({ login: canonicalizeBotLogin(String(a.login), a.__typename), state: String(n.state ?? "").toUpperCase(), body: typeof n.body === "string" ? n.body : undefined });
   }
-  return { requested, latestReviews };
+  return { requested, latestReviews, mergeRules: readMergeRules(repository, `${owner}/${repo}`) };
 }
 
 // `headRef` (the PR's head branch) is what makes this safe. Resolving the worktree from
@@ -325,10 +429,7 @@ function gatherPaths(headRef?: string) {
 
 async function main(): Promise<void> {
   const prArg = process.argv.slice(2).filter((a) => !a.startsWith("--"))[0];
-  const repo = JSON.parse(sh("gh", [
-    "repo", "view", "--json",
-    "nameWithOwner,defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed",
-  ]));
+  const repo = JSON.parse(sh("gh", ["repo", "view", "--json", "nameWithOwner,defaultBranchRef"]));
   const [owner, name] = repo.nameWithOwner.split("/");
   const fields = "number,state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefName,baseRefName,url,title,isDraft";
   const pr = JSON.parse(sh("gh", ["pr", "view", ...(prArg ? [prArg] : []), "--json", fields]));
@@ -341,13 +442,13 @@ async function main(): Promise<void> {
   const defaultBranch = resolveDefaultBranch(cfg, repo.defaultBranchRef?.name);
   const requiredBotReviewers = parseBotList(cfg.REQUIRED_BOT_REVIEWERS);
   const mergePolicy = parseMergePolicy(cfg.MERGE_POLICY);
-  const mergeMethod = parseMergeMethod(cfg.MERGE_METHOD, {
-    merge: repo.mergeCommitAllowed, squash: repo.squashMergeAllowed, rebase: repo.rebaseMergeAllowed,
+  // Only an OPEN PR has a merge ahead of it, so only it pays for the GraphQL round; a
+  // closed one reports mergeMethod null (the caller STOPs on raw.state anyway).
+  const open = pr.state?.toUpperCase() === "OPEN" ? gatherOpenPr(owner, name, pr.number) : null;
+  const mergeMethod = open ? resolveMergeMethod(cfg.MERGE_METHOD, open.mergeRules) : null;
+  const botApproval = summarizeBotApproval({
+    configList: requiredBotReviewers, requested: open?.requested ?? [], latestReviews: open?.latestReviews ?? [],
   });
-  const botData = pr.state?.toUpperCase() === "OPEN"
-    ? gatherBotData(owner, name, pr.number)
-    : { requested: [], latestReviews: [] };
-  const botApproval = summarizeBotApproval({ configList: requiredBotReviewers, ...botData });
 
   const gates = summarizeGates({
     state: pr.state, mergeable: pr.mergeable, mergeStateStatus: pr.mergeStateStatus,
@@ -392,7 +493,10 @@ async function main(): Promise<void> {
     worktree: paths.worktree, mainClone: paths.mainClone, isWorktree: paths.isWorktree, slug,
     checks, gates, botApproval, requiredBotReviewers,
     mergePolicy: mergePolicy.policy, mergePolicyInvalid: mergePolicy.invalid,
-    mergeMethod: mergeMethod.method, mergeMethodInvalid: mergeMethod.invalid,
+    mergeMethod: mergeMethod?.method ?? null, mergeMethodInvalid: mergeMethod?.invalid ?? null,
+    mergeMethodSource: mergeMethod?.source ?? null,
+    mergeMethodReason: mergeMethod?.reason ?? `PR is ${pr.state} — no merge ahead`,
+    mergeMethodsAllowed: mergeMethod?.allowed ?? [],
     afterMergeCmd, resolvedAfterMergeCmd,
     stopServers: stopServers.scope, stopServersInvalid: stopServers.invalid,
     beforeReviewCmd, resolvedBeforeReviewCmd,

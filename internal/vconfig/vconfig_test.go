@@ -76,6 +76,27 @@ func TestFindAndLoadJSON(t *testing.T) {
 	}
 }
 
+// A worktree nested inside its main checkout (`.worktrees/<name>`) on a
+// branch that predates the config must not borrow the main checkout's: its
+// Root would aim merge-assist and lok at the wrong tree.
+func TestFindStopsAtTheWorktreeRoot(t *testing.T) {
+	main := t.TempDir()
+	if err := os.WriteFile(filepath.Join(main, FileJSON), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(main, ".worktrees", "old-branch")
+	sub := filepath.Join(wt, "apps", "web")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+filepath.Join(main, ".git", "worktrees", "old-branch")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Find(sub); err != ErrNotFound {
+		t.Fatalf("Find from inside a config-less worktree: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestLoadTSViaBun(t *testing.T) {
 	if _, err := exec.LookPath("bun"); err != nil {
 		t.Skip("bun not installed")

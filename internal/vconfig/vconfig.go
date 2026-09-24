@@ -57,7 +57,10 @@ func (c *Config) Section(name string, v any) error {
 // ErrNoSection means the config has no entry for the requested applet.
 var ErrNoSection = errors.New("config has no section")
 
-// Find walks up from dir to the first directory holding a config file.
+// Find walks up from dir to the first directory holding a config file. The
+// walk stops at the git work tree root (the directory holding `.git`): a
+// worktree nested in its main checkout must never resolve to the main
+// checkout's config and Root.
 func Find(dir string) (root, path string, err error) {
 	dir, err = filepath.Abs(dir)
 	if err != nil {
@@ -69,6 +72,9 @@ func Find(dir string) (root, path string, err error) {
 			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
 				return dir, p, nil
 			}
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return "", "", ErrNotFound
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

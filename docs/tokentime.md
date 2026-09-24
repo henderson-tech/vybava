@@ -9,6 +9,8 @@ vybava install tokentime
 tokentime index                    # catch up (the first pass reads all history once)
 tokentime rollup --json            # 90 days, 336 hours, projects, models, lifetime
 tokentime rollup --json --days 14 --hours 48 --no-index
+cd <repo> && tokentime project --from 2026-09-01 --to 2026-09-24 --json   # this repository
+tokentime project --project FixIt --from 2026-09-01 --to 2026-09-24 --json  # any project, by its rollup name
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
 ```
@@ -53,8 +55,8 @@ credential and no message content is read beyond what decoding a line needs.
   outside any repository is its own project.
 - **A moved checkout is one project.** At rollup time — stored buckets keep the
   root they were recorded under — a root that no longer exists on disk folds into
-  the ONE live root sharing its basename (`~/Documents/Work/FixIt` into
-  `~/Work/Projects/Org/FixIt`). With no live namesake, or with two or more, the
+  the ONE live root sharing its basename (a checkout moved from
+  `<old parent>/FixIt` to `<new parent>/FixIt` stays one FixIt). With no live namesake, or with two or more, the
   dead root stays its own project: a basename never picks between candidates. Display names are unique across
   every root ever indexed: among roots sharing a basename, the one still on disk
   (then the busiest) keeps it (`FixIt`); the others gain parent directories
@@ -83,14 +85,22 @@ credential and no message content is read beyond what decoding a line needs.
   cleanly: it commits what it read and exits with `INDEX_INTERRUPTED`.
 - **A held lock never blocks a rollup.** One pass at a time holds
   `index.lock`; `rollup` finding it held skips its own pass and serves the
-  store as committed, with `INDEX_BUSY`. Opening an up-to-date store writes
-  nothing, so a concurrent writer cannot stall it either.
+  store as committed, with `INDEX_BUSY`. Only a pass holding the lock
+  creates or migrates the store: `rollup` and `status` open it without a
+  single write, so a concurrent writer cannot stall them and they never run
+  DDL beside it. A store an older binary wrote is served as long as its
+  schema still carries what they read; an older one is `STALE_SCHEMA`
+  (exit 2, next `tokentime index`), and the first pass the lock lets through
+  migrates it. The rollup reads in one transaction: a pass committing
+  mid-read cannot make one answer disagree with itself.
 
 ## The rollup
 
 The JSON is a contract with claude-switcheroo's Arcade
 (`src/arcade/contract.ts`, `TokentimeRollup`). Days and hours are local
 (`timezone` names the IANA zone) and dense — an empty day is still listed.
+An hour is a stored bucket, a whole UTC hour, so in a zone off the hour
+(+05:30, +05:45) it starts at the half or three-quarter hour.
 `projects` covers the requested days (tokens, usd, sessions, activeDays),
 with lifetime `firstDay`/`lastDay`; `models` and `lifetime` cover everything.
 A day's `sessions` counts the sessions active that day. `longestSessionMinutes`
@@ -110,3 +120,65 @@ one rate keeps the others; a row for a model the table does not know that
 leaves a rate out is reported as `PRICE_INCOMPLETE` (those components price at
 $0). Model names are compared without `[1m]`, a date suffix or `-latest`;
 OpenAI's Daybreak aliases bill as the model behind them.
+
+## One project across a range
+
+```sh
+cd <repo> && tokentime project --from YYYY-MM-DD --to YYYY-MM-DD [--bucket hour|day|month] --json
+tokentime project --project FixIt --from YYYY-MM-DD --to YYYY-MM-DD --json
+```
+
+A project is a git repository root: every worktree of it, and every moved
+checkout of it, folds in. `project` is the detail behind one rollup project (the
+Arcade's expanded project row). It never runs an index pass and never takes
+the lock: it serves the store as committed, so it answers at once even while a
+pass is running — `rollup` or `index` is what brings the store up to date.
+
+- **Read-only.** `tokentime.db` is opened SQLite `mode=ro`: the state
+  directory and database are never created, no schema is written or
+  migrated, the database file never changes. It is not opened `immutable`,
+  because a pass may be committing, so SQLite may leave its `-wal`/`-shm`
+  coordination files beside it, as for any WAL reader. A store never indexed
+  exits 2 with `NO_STORE`; one an older binary wrote exits 2 with
+  `STALE_SCHEMA` — one `tokentime index` migrates it. Every figure comes
+  from one read transaction, one snapshot of the store.
+
+- **Which project.** With no flag it is the repository the current directory
+  is in, resolved by the indexer's own rule (a linked worktree anywhere on disk
+  is its repository); a directory outside every repository exits 2 with
+  `BAD_FLAG` before the store is opened. `--project <name>` takes a name as the
+  rollup shows it (`FixIt`, `ADF/forge`, `unknown`) — exactly, else ignoring
+  case when that picks one project; a name no project carries exits 2 with
+  `UNKNOWN_PROJECT` naming the closest ones (every basename, plus its own
+  basename's qualified names — read without summing a bucket), and one
+  several carry lists them with their roots. `--root` is a root as the rollup reports it (what the
+  Arcade passes); `--root ""` is the rollup's `unknown` project (responses
+  recorded without a cwd). A dead root folding into a project is part of it,
+  and a folded dead root given resolves to its live project. A root never
+  indexed exits 2 with `UNKNOWN_PROJECT`; `--root` with `--project` is
+  `BAD_FLAG`.
+- `from`/`to` are inclusive local days; an hour bucket belongs to the day it
+  starts in, as in the rollup. A day whose midnight a DST jump skips
+  (America/Santiago, America/Havana) starts at the jump. Both days lie in
+  2000-01-01..2100-12-31, and a range is capped per bucket, because its
+  series is allocated whole: at most 31 days by `hour`, 1100 days by `day`,
+  1200 months by `month` (a month the range touches counts). A bad day,
+  range or bucket, or a range past its cap, exits 2 with `BAD_FLAG` before
+  the store is opened.
+- `tokens`, `usd`, `responses` and `models` (most tokens first) cover the
+  range under the rollup's rules — disjoint components, an unpriced model left
+  out of every usd figure and reported as `UNPRICED_MODEL`. `sessions` counts
+  sessions with a response in this project inside the range; `activeDays`
+  counts days with tokens, like the rollup's. `longestRunMinutes` is the
+  longest-session rule restricted to this project's hours of each session and
+  to runs ending inside the range (counted whole, even when they began before
+  it). `peakHour` is the local hour of day with the most tokens, `null` for an
+  empty range. `firstDay`/`lastDay` are lifetime.
+- `series` is dense and oldest first: one entry per bucket, `start` as a local
+  RFC 3339 time with its offset, `models` as per-model tokens (`[]` when the
+  bucket is empty). The bucket defaults to hour for a single day, month past
+  62 days, day otherwise. Hours are the stored buckets, whole UTC hours, so at
+  +05:30 a day's entries start 00:30, 01:30, … 23:30, each labelled with the
+  start of the bucket it counts. They are absolute — a fall-back day has 25
+  entries, its repeated 02:00 told apart by the offset; the first month entry
+  starts at `from`, every later one on the 1st.

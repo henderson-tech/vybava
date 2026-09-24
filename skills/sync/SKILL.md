@@ -93,7 +93,12 @@ the report, grouped by commit**; the bundling is always visible, never silent.
    can complicate it.
 4. **Merge the default branch:** record `BEFORE=$(git -C <ABS> rev-parse HEAD)`, then
    `git -C <ABS> merge origin/<defaultBranch>` (rebase only when
-   `mergeStrategy == "rebase"` is explicit in config).
+   `mergeStrategy == "rebase"` is explicit in config). A repo whose `vybava.config.ts`
+   has a `merge` or `lok` section merges with `(cd <ABS> && vybava merge-assist merge
+   origin/<defaultBranch>)` instead: catalogs, generated files and migration
+   timestamps settle themselves and its table lists only the `open` rows for §4.1
+   (clashing catalog keys: `lok merge <path> --prefer ours|theirs`). After resolving:
+   `vybava merge-assist regen`, then commit. Docs: `docs/merge-assist.md`.
 5. **Push again** once merged and verified. → §5.
 
 ### 4.1 Conflict triage — every conflicted file into exactly one bucket

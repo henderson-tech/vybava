@@ -108,3 +108,17 @@ only missing properties. It requires an initialized configuration.
 
 Discovery lives in `internal/configdiscover`, composing Lok's ordered parser
 with `vconfig`; putting it in the loader itself would create an import cycle.
+
+## Merge settings
+
+The `merge` section drives `merge-assist` ([merge-assist.md](merge-assist.md)):
+generated paths with the command that rebuilds them, and migration
+directories whose unmerged files get renumbered past the base. Catalogs are
+not repeated here; the lok driver takes them from `lok.catalogs`.
+
+```ts
+merge: {
+  generated: [{ paths: ['apps/api/openapi.json'], regen: 'bun run api:generate' }],
+  migrations: [{ dir: 'apps/api/src/database/migrations', style: 'typeorm', check: 'bun scripts/ci/check-migration-timestamps.ts' }],
+},
+```

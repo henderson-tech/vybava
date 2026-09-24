@@ -115,6 +115,15 @@ undecidable is held, and destruction only ever happens behind `--apply`.
 `internal/claudeguards/plugincache.go` is the other half: it blocks package
 installs into that tree at all, and is deliberately escape-hatch-free.
 
+`internal/mergeassist` settles mechanical merge conflicts; the catalog driver is
+lok's (`internal/lok/merge.go`). `mergeassist/gitmerge` is the dependency-free
+leaf both drivers share (journal, text-merge fallback) so lok never imports
+mergeassist. Load-bearing: drivers are registered in the clone's
+`info/attributes` + git config, never a tracked `.gitattributes` (git reads
+attributes from the checked-out branch); a catalog key clash is a conflict even
+when git's line merge is clean (it keeps duplicate keys); a migration the base
+has is never renamed. Docs: `docs/merge-assist.md`.
+
 `internal/gitkit` is the git family's deterministic layer: skills call
 `vybava gitkit <script>`, never a file path, so a script ported from the
 embedded TypeScript to Go keeps its verb and output and no skill changes. Edit
