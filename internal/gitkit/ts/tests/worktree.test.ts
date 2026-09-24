@@ -58,23 +58,50 @@ test("ensurePlan throws when the main clone can't be determined", () => {
   assert.throws(() => ensurePlan([], "feat-x", 1), /main clone/);
 });
 
-test("createWorktree fast-forwards a stale local branch to the fetched head", () => {
+// A bare "GitHub" whose PR 7 head is published at refs/pull/7/head, like the real one.
+function prFixture(opts: { fork?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "gitkit-wt-"));
   const git = (cwd: string, ...args: string[]) =>
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).trim();
   git(root, "init", "-q", "--bare", "-b", "main", "origin.git");
   git(root, "clone", "-q", "origin.git", "author");
   const author = join(root, "author");
+  const publish = () => {
+    if (!opts.fork) git(author, "push", "-q", "origin", "HEAD:feature");
+    git(author, "push", "-q", "-f", "origin", "HEAD:refs/pull/7/head");
+  };
   git(author, "commit", "-q", "--allow-empty", "-m", "c1");
-  git(author, "push", "-q", "origin", "HEAD:feature");
+  git(author, "push", "-q", "origin", "HEAD:main");
+  publish();
   git(root, "clone", "-q", "origin.git", "reviewer");
   const reviewer = join(root, "reviewer");
-  git(reviewer, "branch", "-q", "feature", "origin/feature"); // local copy, about to go stale
-  git(author, "commit", "-q", "--allow-empty", "-m", "c2");
-  git(author, "push", "-q", "origin", "HEAD:feature");
+  const run = (localExists: boolean) =>
+    createWorktree((_cmd, args) => git(reviewer, ...args), join(root, "wt"), "feature", 7, localExists);
+  return { root, git, author, reviewer, publish, run, wt: join(root, "wt") };
+}
 
-  const path = join(root, "wt");
-  const diverged = createWorktree((cmd, args) => git(reviewer, ...args), path, "feature", true);
-  assert.equal(diverged, false);
-  assert.equal(git(path, "rev-parse", "HEAD"), git(author, "rev-parse", "HEAD"));
+test("createWorktree fast-forwards a stale local branch to the PR head", () => {
+  const f = prFixture();
+  f.git(f.reviewer, "branch", "-q", "feature", "origin/feature"); // local copy, about to go stale
+  f.git(f.author, "commit", "-q", "--allow-empty", "-m", "c2");
+  f.publish();
+  assert.equal(f.run(true), false);
+  assert.equal(f.git(f.wt, "rev-parse", "HEAD"), f.git(f.author, "rev-parse", "HEAD"));
+});
+
+test("createWorktree reports a local branch AHEAD of the PR head as diverged, untouched", () => {
+  const f = prFixture();
+  f.git(f.reviewer, "branch", "-q", "feature", "origin/feature");
+  f.git(f.reviewer, "worktree", "add", "-q", join(f.root, "scratch"), "feature");
+  f.git(join(f.root, "scratch"), "commit", "-q", "--allow-empty", "-m", "unpushed");
+  const local = f.git(join(f.root, "scratch"), "rev-parse", "HEAD");
+  f.git(f.reviewer, "worktree", "remove", join(f.root, "scratch"));
+  assert.equal(f.run(true), true);
+  assert.equal(f.git(f.wt, "rev-parse", "HEAD"), local);
+});
+
+test("createWorktree opens a fork PR whose head branch is not on origin", () => {
+  const f = prFixture({ fork: true });
+  assert.equal(f.run(false), false);
+  assert.equal(f.git(f.wt, "rev-parse", "HEAD"), f.git(f.author, "rev-parse", "HEAD"));
 });

@@ -59,23 +59,30 @@ function sh(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 120_000, cwd: repoRoot() });
 }
 
-// createWorktree fetches the head FIRST in both cases: a leftover local branch of the
-// same name may be days behind, and a round seeded from it reviews and pushes stale
-// code. An existing branch is fast-forwarded; one holding commits origin lacks is
-// someone's work — left as is and reported (returns true), never reset.
-export function createWorktree(git: (cmd: string, args: string[]) => string, path: string, headRef: string, localExists: boolean): boolean {
-  git("git", ["fetch", "origin", headRef]);
+// createWorktree anchors on GitHub's refs/pull/<N>/head — it exists for fork and
+// same-repo PRs alike, where origin/<headRef> is absent for a fork. A leftover local
+// branch of the same name may be days behind (a round seeded from it reviews and
+// pushes stale code), so it is fast-forwarded to the PR head; one carrying commits the
+// PR head lacks — behind, diverged or strictly ahead — is someone's work: left as is
+// and reported (returns true), never reset.
+export function createWorktree(git: (cmd: string, args: string[]) => string, path: string, headRef: string, pr: number, localExists: boolean): boolean {
+  const prHead = `refs/pr/${pr}`;
+  git("git", ["fetch", "origin", `+refs/pull/${pr}/head:${prHead}`]);
   if (!localExists) {
-    git("git", ["worktree", "add", "--track", "-b", headRef, path, `origin/${headRef}`]);
+    git("git", ["worktree", "add", "-b", headRef, path, prHead]);
+    try {
+      git("git", ["fetch", "origin", headRef]); // same-repo PR: track the head branch
+      git("git", ["-C", path, "branch", "--set-upstream-to", `origin/${headRef}`]);
+    } catch {
+      // Fork PR: the head branch is not on origin, so there is nothing to track.
+    }
     return false;
   }
   git("git", ["worktree", "add", path, headRef]);
-  try {
-    git("git", ["-C", path, "merge", "--ff-only", "--quiet", `origin/${headRef}`]);
-    return false;
-  } catch {
-    return true;
-  }
+  const localOnly = Number(git("git", ["-C", path, "rev-list", "--count", `${prHead}..HEAD`]).trim());
+  if (localOnly > 0) return true;
+  git("git", ["-C", path, "merge", "--ff-only", "--quiet", prHead]);
+  return false;
 }
 
 function localBranchExists(headRef: string): boolean {
@@ -100,7 +107,7 @@ async function main(): Promise<void> {
   const worktrees = parseWorktreeList(sh("git", ["worktree", "list", "--porcelain"]));
   const plan = ensurePlan(worktrees, headRef, pr);
 
-  if (plan.action === "create") plan.diverged = createWorktree(sh, plan.path, headRef, localBranchExists(headRef)) || undefined;
+  if (plan.action === "create") plan.diverged = createWorktree(sh, plan.path, headRef, pr, localBranchExists(headRef)) || undefined;
   process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
 }
 
