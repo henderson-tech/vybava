@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf16"
 )
 
 // Verb is a script ported to Go: it receives the arguments after the verb
@@ -34,6 +35,7 @@ var native = map[string]Verb{
 	"list-prs":       runListPRs,
 	"merge-precheck": runMergePrecheck,
 	"github-io":      runGitHubIO,
+	"resolve-fetch":  runResolveFetch,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
@@ -207,4 +209,70 @@ func jsParseInt(s string) (int, bool) {
 	}
 	n, err := strconv.Atoi(m)
 	return n, err == nil
+}
+
+// jsString is free text (a comment body, a title) encoded exactly as
+// JSON.stringify writes it: raw U+2028/U+2029, \b and \f short escapes, and a
+// lone surrogate left by a UTF-16 slice as \udXXX. Go's encoder differs on
+// all three, which would make a byte-level parity diff fail.
+type jsString struct {
+	s    string
+	lone uint16 // a trailing lone high surrogate, 0 when none
+}
+
+func (j jsString) String() string { return j.s }
+
+func (j jsString) MarshalJSON() ([]byte, error) {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range j.s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	if j.lone != 0 {
+		fmt.Fprintf(&b, `\u%04x`, j.lone)
+	}
+	b.WriteByte('"')
+	return []byte(b.String()), nil
+}
+
+// jsSlice is s.slice(0, n) in JavaScript: the first n UTF-16 code units. A
+// cut through a surrogate pair keeps the lone high half, as JS does.
+func jsSlice(s string, n int) jsString {
+	units := 0
+	for i, r := range s {
+		width := 1
+		if r > 0xFFFF {
+			width = 2
+		}
+		if units+width > n {
+			if width == 2 && units+1 == n {
+				high, _ := utf16.EncodeRune(r)
+				return jsString{s: s[:i], lone: uint16(high)}
+			}
+			return jsString{s: s[:i]}
+		}
+		units += width
+	}
+	return jsString{s: s}
 }
