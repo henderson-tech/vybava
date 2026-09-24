@@ -1,0 +1,51 @@
+{
+  "$schema": "https://vitrinka.ai/static/vitrinka.config.schema.json",
+  "version": 1,
+  "project": "vybava",
+  "origins": {
+    "https://app.vitrinka.ai": "fixit"
+  },
+  "index": {
+    "enabled": true,
+    "roots": [
+      "."
+    ],
+    "extensionGroups": [
+      "backend-systems",
+      "data-config",
+      "docs-shell",
+      "infrastructure",
+      "javascript-typescript",
+      "web-ui"
+    ],
+    "extensions": [],
+    "include": [],
+    "exclude": [
+      "**/*.generated.*",
+      "**/*.lock",
+      "**/*.map",
+      "**/*.min.css",
+      "**/*.min.js",
+      "**/*.pb.go",
+      "**/*_gen.go",
+      "**/Cargo.lock",
+      "**/Gemfile.lock",
+      "**/Pipfile.lock",
+      "**/bun.lock",
+      "**/bun.lockb",
+      "**/composer.lock",
+      "**/go.sum",
+      "**/node_modules/**",
+      "**/npm-shrinkwrap.json",
+      "**/package-lock.json",
+      "**/pnpm-lock.yaml",
+      "**/poetry.lock",
+      "**/third_party/**",
+      "**/vendor/**",
+      "**/yarn.lock",
+      ".github/**"
+    ],
+    "includeUntracked": false,
+    "useClaudeIgnore": true
+  }
+}
