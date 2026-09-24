@@ -156,11 +156,17 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		now = opts.Now
 	}
 	started := time.Now()
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return IndexReport{}, err
+	}
 	unlock, err := tryLock(filepath.Join(s.Dir, "index.lock"))
 	if err != nil {
 		return IndexReport{}, err
 	}
 	defer unlock()
+	if err := s.prepare(); err != nil {
+		return IndexReport{}, err
+	}
 
 	known, err := s.loadFiles()
 	if err != nil {

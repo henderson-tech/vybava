@@ -410,7 +410,7 @@ func TestReadOnlyOpenNeverCreatesMigratesOrWrites(t *testing.T) {
 }
 
 // A schema 2 store — no buckets_by_project yet — is refused read-only and
-// migrated by a read-write open. The project verb's bucket reads (its
+// migrated by the next index pass. The project verb's bucket reads (its
 // namesakes' lifetime sum, its range, its span) then seek that index instead
 // of scanning the permanent table, and the rollup and the verb answer byte
 // for byte what they answered without it.
@@ -436,12 +436,13 @@ func TestSchema3SeeksAProjectsBucketsWithoutChangingAnAnswer(t *testing.T) {
 	}
 
 	s = f.open(t)
+	f.index(t, s)
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != schemaVersion {
-		t.Fatalf("schema after a read-write open = %d, want %d", version, schemaVersion)
+		t.Fatalf("schema after an index pass = %d, want %d", version, schemaVersion)
 	}
 	if after := answers(s); after != before {
 		t.Fatalf("answers changed with the index:\nbefore %s\n after %s", before, after)

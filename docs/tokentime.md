@@ -84,10 +84,14 @@ credential and no message content is read beyond what decoding a line needs.
   cleanly: it commits what it read and exits with `INDEX_INTERRUPTED`.
 - **A held lock never blocks a rollup.** One pass at a time holds
   `index.lock`; `rollup` finding it held skips its own pass and serves the
-  store as committed, with `INDEX_BUSY`. Opening an up-to-date store writes
-  nothing, so a concurrent writer cannot stall it either, and the rollup
-  reads it in one transaction: a pass committing mid-read cannot make one
-  answer disagree with itself.
+  store as committed, with `INDEX_BUSY`. Only a pass holding the lock
+  creates or migrates the store: `rollup` and `status` open it without a
+  single write, so a concurrent writer cannot stall them and they never run
+  DDL beside it. A store an older binary wrote is served as long as its
+  schema still carries what they read; an older one is `STALE_SCHEMA`
+  (exit 2, next `tokentime index`), and the first pass the lock lets through
+  migrates it. The rollup reads in one transaction: a pass committing
+  mid-read cannot make one answer disagree with itself.
 
 ## The rollup
 

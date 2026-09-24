@@ -189,7 +189,7 @@ func (s *Store) Rollup(opts RollupOptions) (Rollup, error) {
 	}
 	// One snapshot: a pass committing mid-rollup cannot hand a bucket to a
 	// project this read has no name for.
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return Rollup{}, err
 	}

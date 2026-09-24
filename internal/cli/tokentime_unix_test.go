@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,10 @@ import (
 )
 
 // An orphaned or concurrent tokentime holding the index lock must never make
-// `rollup` block or fail: it skips its pass and serves the store it has.
+// `rollup` block, fail or migrate: it skips its pass and serves the store it
+// has — or, when that store's schema is too old for its queries, says
+// STALE_SCHEMA with `tokentime index` next. The first rollup the lock lets
+// through migrates it.
 func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 	base := t.TempDir()
 	state := filepath.Join(base, "state")
@@ -65,6 +69,47 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 	}
 	if !busy {
 		t.Fatalf("diagnostics = %v, want %s", env["diagnostics"], diagIndexBusy)
+	}
+
+	// schema runs ddl on the store as an older binary would and reads its version.
+	schema := func(ddl string) int {
+		t.Helper()
+		db, err := sql.Open("sqlite", filepath.Join(state, "tokentime.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if ddl != "" {
+			if _, err := db.Exec(ddl); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var v int
+		if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	schema("ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1")
+	env, took = run("rollup", "--days", "1", "--hours", "1")
+	stale := false
+	for _, d := range env["diagnostics"].([]any) {
+		stale = stale || d.(map[string]any)["code"] == diagStaleSchema
+	}
+	if env["ok"] != false || !stale || fmt.Sprint(env["next"]) != "[tokentime index]" || took > 5*time.Second {
+		t.Fatalf("rollup of a schema 1 store under a held lock = %v after %v; want %s, next tokentime index, promptly", env, took, diagStaleSchema)
+	}
+	if v := schema(""); v != 1 {
+		t.Fatalf("schema under a held lock is now %d: migrated without the lock", v)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if env, _ = run("rollup", "--days", "1", "--hours", "1"); env["ok"] != true {
+		t.Fatalf("rollup with the lock free = %v", env)
+	}
+	if v := schema(""); v != 3 {
+		t.Fatalf("schema after a rollup with the lock free = %d, want 3", v)
 	}
 }
 

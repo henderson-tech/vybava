@@ -121,7 +121,7 @@ func (s *Store) Project(opts ProjectOptions) (ProjectDetail, error) {
 	}
 	// Every query below reads one snapshot: a pass committing between them
 	// cannot make one answer disagree with itself.
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return ProjectDetail{}, err
 	}

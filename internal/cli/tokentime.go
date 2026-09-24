@@ -113,6 +113,19 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		}
 		return state, opts, nil
 	}
+	// storeErr names a store no read can serve: never indexed, or older than
+	// its queries. Only an index pass creates or migrates one.
+	storeErr := func(err error) error {
+		switch {
+		case errors.Is(err, tokentime.ErrNoStore):
+			return runx.DiagError{Diag: runx.Diagnostic{Code: diagNoStore, Severity: "error",
+				Detail: err.Error() + " — nothing has been indexed yet", Fix: "tokentime index"}}
+		case errors.Is(err, tokentime.ErrStaleSchema):
+			return runx.DiagError{Diag: runx.Diagnostic{Code: diagStaleSchema, Severity: "error",
+				Detail: err.Error() + " — one index pass migrates it", Fix: "tokentime index"}}
+		}
+		return err
+	}
 	priceDiags := func(p tokentime.Prices) []runx.Diagnostic {
 		if len(p.Incomplete) == 0 {
 			return nil
@@ -234,9 +247,12 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 					diags, next = indexDiags(report)
 				}
 			}
+			// With the lock busy (or --no-index) the store is served as the
+			// last pass left it — an older schema too, when its queries still
+			// run — and never migrated here.
 			out, err := store.Rollup(tokentime.RollupOptions{Days: days, Hours: hours})
 			if err != nil {
-				return finish(s, nil, diags, next, err)
+				return finish(s, nil, diags, next, storeErr(err))
 			}
 			prices, _ := tokentime.LoadPrices(state)
 			diags = append(diags, priceDiags(prices)...)
@@ -279,15 +295,8 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 			// Read-only: never creates the directory or database, never migrates.
 			store, err := tokentime.OpenReadOnly(state)
-			switch {
-			case errors.Is(err, tokentime.ErrNoStore):
-				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagNoStore, Severity: "error",
-					Detail: err.Error() + " — nothing has been indexed yet", Fix: "tokentime index"}})
-			case errors.Is(err, tokentime.ErrStaleSchema):
-				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagStaleSchema, Severity: "error",
-					Detail: err.Error() + " — one index pass migrates it", Fix: "tokentime index"}})
-			case err != nil:
-				return finish(s, nil, nil, nil, err)
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
 			}
 			defer store.Close()
 			out, err := store.Project(tokentime.ProjectOptions{Root: root, Range: rng})
@@ -322,7 +331,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			defer store.Close()
 			st, err := store.Status()
 			if err != nil {
-				return finish(s, nil, nil, nil, err)
+				return finish(s, nil, nil, nil, storeErr(err))
 			}
 			st.ClaudeRoot, st.CodexDir = opts.ClaudeRoot, opts.CodexDir
 			var next []string
