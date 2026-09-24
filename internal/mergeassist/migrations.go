@@ -146,7 +146,6 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 	type edit struct {
 		from, to migration
 		dir      string
-		body     string
 	}
 	var edits []edit
 	for _, p := range plans {
@@ -163,8 +162,12 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 			if !regexp.MustCompile(`\bclass\s+` + regexp.QuoteMeta(from.ident()) + `\b`).Match(body) {
 				return plans, &Diag{Code: DiagMigrationRefused, Detail: fmt.Sprintf("%s/%s has no `class %s`; TypeORM would keep ordering it by the old timestamp", p.Dir, r.From, from.ident()), Fix: "rename it by hand, keeping filename, class name and `name` in step"}
 			}
-			edits = append(edits, edit{from: from, to: to, dir: p.Dir, body: string(body)})
+			edits = append(edits, edit{from: from, to: to, dir: p.Dir})
 		}
+	}
+	unmerged, err := t.unmerged()
+	if err != nil {
+		return plans, err
 	}
 	for _, e := range edits {
 		oldPath, newPath := path.Join(e.dir, e.from.file), path.Join(e.dir, e.to.file)
@@ -176,18 +179,15 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 		if _, err := t.git("mv", "--", oldPath, newPath); err != nil {
 			return plans, err
 		}
-		if err := t.rewrite(newPath, e.body, e.from, e.to); err != nil {
-			return plans, err
-		}
-		for _, ref := range strings.Split(strings.TrimSpace(refs), "\n") {
-			if ref == "" || ref == oldPath {
+		// Read at write time: an earlier rename may already have rewritten this
+		// file's reference to another unmerged migration.
+		for _, rel := range append([]string{newPath}, strings.Split(strings.TrimSpace(refs), "\n")...) {
+			if rel == "" || rel == oldPath {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(t.Root, filepath.FromSlash(ref)))
-			if err != nil {
-				return plans, err
-			}
-			if err := t.rewrite(ref, string(body), e.from, e.to); err != nil {
+			// A conflicted file gets the new name inside its markers but stays
+			// unstaged: staging it would declare its conflict resolved.
+			if err := t.rewrite(rel, e.from, e.to, unmerged[rel] == nil); err != nil {
 				return plans, err
 			}
 		}
@@ -204,19 +204,34 @@ func (t *Tool) ApplyMigrations(plans []MigrationPlan) ([]MigrationPlan, error) {
 		out, err := cmd.CombinedOutput()
 		ok := err == nil
 		plans[i].CheckOK = &ok
+		// Journaled either way: a failed check is an open row, so the merge is
+		// never committed over it, and a passing rerun clears it.
+		check := gitmerge.Event{Path: p.Check, Class: gitmerge.ClassMigration, Outcome: gitmerge.OutcomeResolved, Detail: "migration check"}
 		if !ok {
 			plans[i].Output = tail(string(out), 8)
+			check.Outcome, check.Detail = gitmerge.OutcomeFailed, lastLine(plans[i].Output)
+		}
+		if err := gitmerge.Record(t.Root, check); err != nil {
+			return plans, err
 		}
 	}
 	return plans, nil
 }
 
-func (t *Tool) rewrite(rel, body string, from, to migration) error {
-	body = strings.ReplaceAll(body, from.ident(), to.ident())
-	body = strings.ReplaceAll(body, from.stem(), to.stem())
-	if err := os.WriteFile(filepath.Join(t.Root, filepath.FromSlash(rel)), []byte(body), 0o644); err != nil {
+func (t *Tool) rewrite(rel string, from, to migration, stage bool) error {
+	abs := filepath.Join(t.Root, filepath.FromSlash(rel))
+	data, err := os.ReadFile(abs)
+	if err != nil {
 		return err
 	}
-	_, err := t.git("add", "--", rel)
+	body := strings.ReplaceAll(string(data), from.ident(), to.ident())
+	body = strings.ReplaceAll(body, from.stem(), to.stem())
+	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		return err
+	}
+	if !stage {
+		return nil
+	}
+	_, err = t.git("add", "--", rel)
 	return err
 }

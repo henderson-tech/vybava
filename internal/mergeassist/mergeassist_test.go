@@ -56,12 +56,13 @@ func TestMergeLeavesOnlyCode(t *testing.T) {
 	write("vybava.config.json", `{
 	  "lok": {"catalogs": {"web": {"style": "english-as-key", "files": "i18n/{locale}.json", "locales": ["cs"]}}},
 	  "merge": {
-	    "generated": [{"paths": ["gen/*.d.ts"], "regen": "printf '// generated\\n' > gen/keys.d.ts && cat i18n/cs.json >> gen/keys.d.ts"}],
+	    "generated": [{"paths": ["gen/*.d.ts"], "regen": "printf '// generated\\n' > gen/keys.d.ts && cat i18n/cs.json >> gen/keys.d.ts && rm -f gen/stale.d.ts"}],
 	    "migrations": [{"dir": "db/migrations", "style": "typeorm", "step": 100, "check": "true"}]
 	  }
 	}`)
 	write("i18n/cs.json", "{\n  \"Archive\": \"Archivovat\"\n}\n")
 	write("src/app.txt", "shared\nvalue\n")
+	write("gen/stale.d.ts", "// obsolete output the regen deletes\n")
 	migration("100", "Init")
 	tool, err := Open(root)
 	if err != nil {
@@ -79,6 +80,7 @@ func TestMergeLeavesOnlyCode(t *testing.T) {
 	git("switch", "-q", "main")
 	write("i18n/cs.json", "{\n  \"Archive\": \"Archivovat\",\n  \"Main\": \"Hlavní\"\n}\n")
 	write("src/app.txt", "shared\nmain\n")
+	write("db/seed.ts", "// main's seed\n") // conflicts with the branch's, which names its migration
 	migration("300", "AddMain")
 	commit("main")
 	git("switch", "-q", "feature")
@@ -87,7 +89,7 @@ func TestMergeLeavesOnlyCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := classes(preview); got != "catalog:auto generated:auto migration:auto regen:pending code:open" {
+	if got := classes(preview); got != "catalog:auto generated:auto migration:auto regen:pending code:open code:open" {
 		t.Fatalf("preview rows: %s", got)
 	}
 	if git("status", "--porcelain") != "" {
@@ -101,7 +103,7 @@ func TestMergeLeavesOnlyCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := classes(rep); got != "catalog:auto generated:auto migration:auto regen:auto code:open" || rep.Open != 1 || rep.Committed != "" {
+	if got := classes(rep); got != "catalog:auto generated:auto migration:auto migration:auto regen:auto code:open code:open" || rep.Open != 2 || rep.Committed != "" {
 		t.Fatalf("merge rows: %s (open %d, committed %q)", got, rep.Open, rep.Committed)
 	}
 	if rep.Rows[len(rep.Rows)-1].Detail != "L2-6" {
@@ -121,11 +123,17 @@ func TestMergeLeavesOnlyCode(t *testing.T) {
 	if seed, _ := os.ReadFile(filepath.Join(root, "db/seed.ts")); !strings.Contains(string(seed), "AddFeature401 } from './migrations/401-AddFeature'") {
 		t.Fatalf("reference not rewritten: %s", seed)
 	}
+	if !strings.Contains(git("status", "--porcelain", "--", "db/seed.ts"), "AA db/seed.ts") {
+		t.Fatal("a conflicted reference is rewritten inside its markers but must stay unmerged")
+	}
+	if !strings.Contains(git("status", "--porcelain", "--", "gen"), "D  gen/stale.d.ts") {
+		t.Fatal("a file the regen deleted must be staged as deleted")
+	}
 	if _, err := os.Stat(filepath.Join(root, "db/migrations/300-AddMain.ts")); err != nil {
 		t.Fatal("main's migration must stay as it is")
 	}
 	for _, line := range strings.Split(strings.TrimSpace(git("status", "--porcelain")), "\n") {
-		if line != "UU src/app.txt" && line[1] != ' ' {
+		if line != "UU src/app.txt" && line != "AA db/seed.ts" && line[1] != ' ' {
 			t.Fatalf("everything but the code conflict must be staged, got %q", line)
 		}
 	}
@@ -137,4 +145,49 @@ func classes(r Report) string {
 		out = append(out, row.Class+":"+row.State)
 	}
 	return strings.Join(out, " ")
+}
+
+// TestFailedMigrationCheckBlocksCommit: a renumber whose guard fails leaves
+// the merge uncommitted even when nothing else conflicts.
+func TestFailedMigrationCheckBlocksCommit(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	add := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "-A")
+		git("commit", "-q", "-m", rel)
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+	add("vybava.config.json", `{"merge": {"migrations": [{"dir": "m", "style": "typeorm", "check": "echo guard says no; false"}]}}`)
+	git("switch", "-q", "-c", "feature")
+	add("m/200-AddFeature.ts", "export class AddFeature200 {}\n")
+	git("switch", "-q", "main")
+	add("m/300-AddMain.ts", "export class AddMain300 {}\n")
+	git("switch", "-q", "feature")
+
+	tool, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := tool.Merge(MergeOptions{Onto: "main", NoFetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Committed != "" || rep.Open != 1 || classes(rep) != "migration:auto migration:failed" {
+		t.Fatalf("failed check must block the commit: %s open=%d committed=%q", classes(rep), rep.Open, rep.Committed)
+	}
 }

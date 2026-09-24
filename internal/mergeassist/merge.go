@@ -234,8 +234,11 @@ func (t *Tool) rows(events []gitmerge.Event, unmerged map[string][]int, read fun
 		}
 		seen[e.Path] = true
 		state := StateAuto
-		if unmerged[e.Path] != nil || e.Outcome == gitmerge.OutcomeConflict {
+		switch {
+		case unmerged[e.Path] != nil || e.Outcome == gitmerge.OutcomeConflict:
 			state = StateOpen
+		case e.Outcome == gitmerge.OutcomeFailed:
+			state = StateFailed
 		}
 		rows = append(rows, Row{Path: e.Path, Class: e.Class, State: state, Detail: e.Detail})
 	}

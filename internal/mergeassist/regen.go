@@ -101,7 +101,7 @@ func (t *Tool) Regen() ([]RegenRun, error) {
 // excluded — those are the session's) and every untracked file, so a regen
 // stages exactly what it rewrote and never a session's unstaged edit.
 func (t *Tool) dirty() (map[string]string, error) {
-	modified, err := t.git("diff", "--name-only", "-z", "--diff-filter=ACMRT")
+	modified, err := t.git("diff", "--name-only", "-z", "--diff-filter=ACDMRT")
 	if err != nil {
 		return nil, err
 	}
