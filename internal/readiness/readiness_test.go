@@ -395,3 +395,30 @@ func TestRenderFollowsTheRunsScopeAndLanes(t *testing.T) {
 		t.Fatalf("path-escaping slug accepted: %v", err)
 	}
 }
+
+func TestDeviceRunnerBelowOneSetKeepsRealtimePairsTogether(t *testing.T) {
+	tool := fixture(t, adapter)
+	d := &tool.Config.Devices
+	d.Matrix = append(d.Matrix, Device{ID: "ios-tablet", Platform: "ios", Framework: "appium", Host: "mac", Name: "iPad", Run: "run {specs}"})
+	d.OneRunPerLane, d.Concurrent = true, 2
+	if problems := tool.Config.Validate(); len(problems) != 0 {
+		t.Fatalf("budget of one realtime pair rejected: %v", problems)
+	}
+	dir := t.TempDir()
+	if _, err := tool.Init(dir, "", false); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := ReadRun(dir)
+	run.Authority = Authority{Merge: "human", Finish: "main ready"}
+	run.Epic = TaskRef{ID: "1", URL: "https://example.test/t/1"}
+	if err := writeJSON(filepath.Join(dir, RunFile), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Render(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "device-runner.md"))
+	if !strings.Contains(string(got), "keep at most 2 devices booted, boot a realtime run's 2 role devices together") {
+		t.Fatalf("below-one-set budget line:\n%s", got)
+	}
+}
