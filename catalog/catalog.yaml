@@ -290,7 +290,7 @@ items:
     tool:
       probe: {command: vitrinka}
       install: {pultik: "vitrinka-cli-darwin-{arch}"}
-      setup: [vitrinka, setup]
+      setup: [[vitrinka, setup]]
 
   - id: vitrinka-app
     kind: tool
@@ -307,6 +307,15 @@ items:
     tool:
       probe: {app: SwitcherooBar.app}
       install: {pultik: switcheroo}
+
+  - id: switcheroo-cli
+    kind: tool
+    status: experimental
+    description: switcheroo CLI — Claude/Codex account switching and the cc/cco/ccl/cch/cx shell functions; setup writes the zshrc block, then signs in.
+    tool:
+      probe: {command: switcheroo}
+      install: {pultik: "switcheroo-cli-darwin-{arch}"}
+      setup: [[switcheroo, shell, install], [switcheroo, setup]]
 
   - id: pultik
     kind: tool
@@ -401,6 +410,7 @@ groups:
       - vitrinka-cli
       - vitrinka-app
       - switcheroo-bar
+      - switcheroo-cli
       - pultik
       - devbox
       - gitkit
@@ -421,6 +431,7 @@ groups:
       - vitrinka-cli
       - vitrinka-app
       - switcheroo-bar
+      - switcheroo-cli
       - pultik
       - devbox
       - worktime

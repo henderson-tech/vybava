@@ -91,10 +91,14 @@ func TestSelectionLeavesOptionalOutUnlessAsked(t *testing.T) {
 
 func TestPultikInstallsVerifiedBinary(t *testing.T) {
 	env := testEnv(t, shelfWith("tool-darwin-arm64", "tool", []byte("#!/bin/sh\n")))
-	item := toolItem("tool", catalog.Tool{Probe: catalog.Probe{Command: "tool"}, Install: catalog.Install{Pultik: "tool-darwin-{arch}"}})
+	item := toolItem("tool", catalog.Tool{Probe: catalog.Probe{Command: "tool"}, Install: catalog.Install{Pultik: "tool-darwin-{arch}"}, Setup: [][]string{{"tool", "shell", "install"}}})
 	res, err := Apply(env, item, Options{})
 	if err != nil || res.Action != "installed" {
 		t.Fatalf("apply = %+v, %v", res, err)
+	}
+	// ~/.local/bin may not be on PATH yet: the setup command runs by its probed path.
+	if want := filepath.Join(env.BinDir, "tool"); res.SetupArgv[0][0] != want {
+		t.Fatalf("setup argv = %v; want it to start with %s", res.SetupArgv[0], want)
 	}
 	info, err := os.Stat(filepath.Join(env.BinDir, "tool"))
 	if err != nil || info.Mode().Perm() != 0o755 {

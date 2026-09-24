@@ -29,7 +29,7 @@ installed by hand counts as installed).
   tool:
     probe: {command: vitrinka}                    # exactly one: app | command | path
     install: {pultik: "vitrinka-cli-darwin-{arch}"} # exactly one: brew_cask | brew | pultik | bun | run
-    setup: [vitrinka, setup]                      # guided step after a fresh install
+    setup: [[vitrinka, setup]]                    # guided commands after a fresh install, in order
     needs: [bun]                                  # tool ids installed first
     optional: true                                # unticked in the checklist
     interactive: true                             # installer needs a human terminal

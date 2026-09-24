@@ -11,10 +11,11 @@ import (
 // once it is (Setup). Every tool is installed by its product's own published
 // channel — Výbava orchestrates, it never re-implements an installer.
 type Tool struct {
-	Probe   Probe    `yaml:"probe" json:"probe"`
-	Install Install  `yaml:"install" json:"install"`
-	Setup   []string `yaml:"setup,omitempty" json:"setup,omitempty"`
-	Needs   []string `yaml:"needs,omitempty" json:"needs,omitempty"`
+	Probe   Probe   `yaml:"probe" json:"probe"`
+	Install Install `yaml:"install" json:"install"`
+	// Setup is the guided commands a fresh install owes, run in order.
+	Setup [][]string `yaml:"setup,omitempty" json:"setup,omitempty"`
+	Needs []string   `yaml:"needs,omitempty" json:"needs,omitempty"`
 	// Optional tools start unchecked in `vybava setup team`.
 	Optional bool `yaml:"optional,omitempty" json:"optional,omitempty"`
 	// Interactive installs need a human at the terminal (a guided

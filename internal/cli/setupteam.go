@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -85,19 +86,17 @@ func (rt *runtime) setupTeamCommand() *cobra.Command {
 			var next []string
 			for _, outcome := range outcomes {
 				res := outcome.Result
-				if res.Setup != "" && res.Action == "installed" {
-					// A fresh install owes its guided step (sign-in, wiring): run
-					// it now for a human, otherwise hand it back.
-					if interactive {
-						if err := toolsetup.ExecRunner(strings.Fields(res.Setup), true); err != nil {
-							next = append(next, res.Setup)
-						} else {
-							res.Setup = ""
-						}
-					} else {
-						next = append(next, res.Setup)
+				// A fresh install owes its guided steps (shell wiring, sign-in):
+				// run them now for a human, in order, otherwise hand them back.
+				owed := res.Setup[:0:0]
+				for i, argv := range res.SetupArgv {
+					if !interactive || toolsetup.ExecRunner(argv, true) != nil {
+						owed = append(owed, res.Setup[i:]...)
+						break
 					}
 				}
+				res.Setup = owed
+				next = append(next, owed...)
 				results = append(results, res)
 				if d := outcome.Diag; d != nil {
 					severity := "error"
@@ -109,6 +108,14 @@ func (rt *runtime) setupTeamCommand() *cobra.Command {
 						next = append(next, d.Fix)
 					}
 				}
+			}
+			if !slices.Contains(filepath.SplitList(os.Getenv("PATH")), env.BinDir) {
+				diagnostics = append(diagnostics, runx.Diagnostic{
+					Code: "SETUP_BIN_NOT_ON_PATH", Severity: "warning",
+					Detail: env.BinDir + " holds the installed CLIs but is not on PATH",
+					Fix:    `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`,
+				})
+				next = append(next, `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`)
 			}
 			ok := true
 			for _, d := range diagnostics {

@@ -66,7 +66,11 @@ type Result struct {
 	Action  string `json:"action"` // present | current | installed | updated | would-install | would-update | skipped | failed
 	Channel string `json:"channel"`
 	Detail  string `json:"detail,omitempty"`
-	Setup   string `json:"setup,omitempty"` // the guided step still owed, as a command line
+	// Setup lists the guided commands still owed, as command lines.
+	Setup []string `json:"setup,omitempty"`
+	// SetupArgv is Setup ready to run: a command named like the probed
+	// binary runs by its probed path, since ~/.local/bin may not be on PATH yet.
+	SetupArgv [][]string `json:"-"`
 }
 
 // Probe reports whether the tool is installed and where it was seen.
@@ -151,13 +155,10 @@ func Apply(env Env, item catalog.Item, opts Options) (Result, error) {
 	tool := *item.Tool
 	channel, target := tool.Install.Channel()
 	res := Result{ID: item.ID, Channel: channel}
-	if len(tool.Setup) > 0 {
-		res.Setup = strings.Join(tool.Setup, " ")
-	}
 	present, where := Probe(env, tool)
 	switch {
 	case present && !opts.Update:
-		res.Action, res.Detail, res.Setup = "present", where, ""
+		res.Action, res.Detail = "present", where
 		return res, nil
 	case tool.Interactive && !opts.Interactive:
 		res.Action = "skipped"
@@ -188,7 +189,7 @@ func Apply(env Env, item catalog.Item, opts Options) (Result, error) {
 		err = env.Exec(tool.Install.Run, tool.Interactive)
 	}
 	if errors.Is(err, errCurrent) {
-		res.Action, res.Setup = "current", ""
+		res.Action = "current"
 		return res, nil
 	}
 	if err != nil {
@@ -204,9 +205,18 @@ func Apply(env Env, item catalog.Item, opts Options) (Result, error) {
 		return res, Diag{Code: DiagProbeAfterFail, Detail: item.ID + " installed but its probe still fails — the recipe's probe or channel is wrong", Fix: "vybava catalog list --json"}
 	}
 	if present {
-		res.Action, res.Setup = "updated", ""
-	} else {
-		res.Action = "installed"
+		res.Action = "updated"
+		return res, nil
+	}
+	res.Action = "installed"
+	_, where = Probe(env, tool)
+	for _, argv := range tool.Setup {
+		resolved := append([]string{}, argv...)
+		if tool.Probe.Command != "" && resolved[0] == tool.Probe.Command {
+			resolved[0] = where
+		}
+		res.Setup = append(res.Setup, strings.Join(resolved, " "))
+		res.SetupArgv = append(res.SetupArgv, resolved)
 	}
 	return res, nil
 }
