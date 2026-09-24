@@ -294,7 +294,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 }
 
 func quoteArg(s string) string {
-	if !strings.ContainsAny(s, " '\"$`\\{}") {
+	if !strings.ContainsAny(s, " '\"$`\\{};&|<>()!#*?[]~") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

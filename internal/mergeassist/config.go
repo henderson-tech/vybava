@@ -84,7 +84,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("merge.generated[%d]: paths and regen are required", i)
 		}
 	}
+	dirs := map[string]bool{}
 	for i, m := range c.Migrations {
+		if dirs[m.Dir] {
+			return fmt.Errorf("merge.migrations[%d]: %s is listed twice; one entry (and one check) per directory", i, m.Dir)
+		}
+		dirs[m.Dir] = true
 		if m.Dir == "" || m.Style != StyleTypeORM {
 			return fmt.Errorf("merge.migrations[%d]: dir is required and style must be %q", i, StyleTypeORM)
 		}

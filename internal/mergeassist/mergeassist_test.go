@@ -210,3 +210,10 @@ func TestFailedMigrationCheckBlocksCommit(t *testing.T) {
 		t.Fatalf("a passing rerun must clear the failed check: %v %s", err, classes(st))
 	}
 }
+
+func TestValidateRejectsDuplicateMigrationDirs(t *testing.T) {
+	c := Config{Migrations: []Migrations{{Dir: "m", Style: StyleTypeORM, Check: "a"}, {Dir: "m", Style: StyleTypeORM, Check: "b"}}}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Fatalf("two entries for one directory would share its check row: %v", err)
+	}
+}
