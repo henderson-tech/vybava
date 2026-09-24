@@ -196,23 +196,29 @@ func RunHook(stdin io.Reader) HookDecision {
 	// OPEN on an unknown input.
 	if p.HookEventName != "PostToolUse" {
 		content := p.ToolInput.Content + "\n" + p.ToolInput.NewString + "\n" + addedPatchText(p.ToolInput.Command)
-		// The home's config and .memory-lint-allow live at its ROOT, like the
+		// A home's config and .memory-lint-allow live at its ROOT, like the
 		// post-write lint below reads them: the note's own directory (a ledger
 		// home's notes/) holds neither, so an allowlisted value blocked the write.
-		root := memoryHomeRoot(targets[0])
-		if IsHandoffHome(targets[0]) {
-			root = handoffHomeRoot(targets[0])
-		}
-		config, err := loadConfig(root)
-		if err != nil {
-			config = DefaultConfig()
-		}
-		scan := fixtureFindings
-		if IsHandoffHome(targets[0]) {
-			scan = secretFindings
-		}
-		if findings := scan(targets[0], []byte(content), config); len(findings) > 0 {
-			return HookDecision{Block: true, Message: "blocked write: " + formatFinding(findings[0])}
+		// A patch can touch notes in several homes and its added lines cannot be
+		// told apart, so the content is judged once per home and must pass them
+		// ALL: one home's allowlist never clears a value for another.
+		judged := map[string]bool{}
+		for _, target := range targets {
+			root, scan := memoryHomeRoot(target), fixtureFindings
+			if IsHandoffHome(target) {
+				root, scan = handoffHomeRoot(target), secretFindings
+			}
+			if judged[root] {
+				continue
+			}
+			judged[root] = true
+			config, err := loadConfig(root)
+			if err != nil {
+				config = DefaultConfig()
+			}
+			if findings := scan(target, []byte(content), config); len(findings) > 0 {
+				return HookDecision{Block: true, Message: "blocked write: " + formatFinding(findings[0])}
+			}
 		}
 		return HookDecision{}
 	}

@@ -598,6 +598,22 @@ func TestHookPreWriteReadsTheAllowlistFromTheHomeRoot(t *testing.T) {
 	if got := write("The box answers on 10.8.0.11 over WireGuard."); !got.Block {
 		t.Fatal("an address the home does not allowlist must still block")
 	}
+
+	// A patch across two homes passes only what BOTH allowlist.
+	other := filepath.Join(t.TempDir(), ".claude", "memory")
+	if err := os.MkdirAll(filepath.Join(other, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Add File: " + filepath.Join(home, "notes", "a.md") + "\n+The box answers on 10.8.0.10.\n" +
+		"*** Add File: " + filepath.Join(other, "notes", "b.md") + "\n+Nothing here.\n*** End Patch\n"
+	payload, err := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+		"tool_input": map[string]any{"command": patch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := RunHook(strings.NewReader(string(payload))); !got.Block {
+		t.Fatal("one home's allowlist must not clear a value for another home in the same patch")
+	}
 }
 
 func TestReindexSurvivesAnEmptyConfiguredType(t *testing.T) {
