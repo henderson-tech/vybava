@@ -48,15 +48,12 @@ func readGitConfig(root string) (gitConfig, bool, error) {
 	merged := gitConfig{}
 	found := false
 	for _, name := range []string{".claude/.claude.git.config", ".claude/.claude.git.config.local"} {
-		path := filepath.Join(root, name)
-		data, err := os.ReadFile(path)
-		// Only a config that is not there is absent. A permission error on the
-		// way to it fails too: absence would silently apply safety defaults.
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-			continue
-		}
+		data, present, err := readIfPresent(filepath.Join(root, name))
 		if err != nil {
-			return nil, false, nodeReadError(err, path)
+			return nil, false, err
+		}
+		if !present {
+			continue
 		}
 		found = true
 		for k, v := range parseConfig(string(data)) {
@@ -64,6 +61,21 @@ func readGitConfig(root string) (gitConfig, bool, error) {
 		}
 	}
 	return merged, found, nil
+}
+
+// readIfPresent reads a file that may legitimately be absent. Only a path
+// that is not there is absent; anything else — a directory, a permission
+// error on the way — is an error rendered as Node's, never absence, which
+// would silently apply defaults (safety defaults, for the git config).
+func readIfPresent(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+		return nil, false, nil
+	case err != nil:
+		return nil, true, nodeReadError(err, path)
+	}
+	return data, true, nil
 }
 
 // nodeReadError renders a readFileSync failure as Node does.
@@ -366,9 +378,9 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 	pm := packageManager(lockfiles)
 
 	scripts := map[string]any{}
-	if data, err := os.ReadFile(at("package.json")); err != nil && exists(at("package.json")) {
-		fmt.Fprintf(stderr, "warn: could not parse package.json (%s)\n", nodeReadError(err, at("package.json")))
-	} else if err == nil {
+	if data, present, err := readIfPresent(at("package.json")); err != nil {
+		fmt.Fprintf(stderr, "warn: could not parse package.json (%s)\n", err)
+	} else if present {
 		// Malformed package.json — recover to no scripts rather than crash the
 		// plan. A non-object top level or scripts field reads as no scripts,
 		// as property access does in JS; only null throws there.
@@ -440,14 +452,14 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 	if dbURL == "" {
 		line := regexp.MustCompile("(?m)^" + regexp.QuoteMeta(localDBURLVar) + "=(.*)$")
 		for _, f := range []string{".env.local", ".env"} {
-			if !exists(at(f)) {
-				continue
-			}
 			// Present but unreadable fails the plan: reading it as absent
 			// would report the DB state unknown for the wrong reason.
-			data, err := os.ReadFile(at(f))
+			data, present, err := readIfPresent(at(f))
 			if err != nil {
-				return fail(stderr, nodeReadError(err, at(f)))
+				return fail(stderr, err)
+			}
+			if !present {
+				continue
 			}
 			if m := line.FindStringSubmatch(string(data)); m != nil {
 				dbURL = strings.TrimSpace(m[1])

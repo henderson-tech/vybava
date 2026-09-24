@@ -251,4 +251,11 @@ func TestUnreadableInputsAreReported(t *testing.T) {
 	if code := runSyncContext([]string{"--repo", root}, io.Discard, &stderr); code != 1 || stderr.String() != "error: EISDIR: illegal operation on a directory, read\n" {
 		t.Errorf("unreadable .env.local: %d %q", code, stderr.String())
 	}
+	// A path whose lookup itself fails is not absent either.
+	os.Remove(filepath.Join(root, ".env.local"))
+	os.Symlink(".env.local", filepath.Join(root, ".env.local"))
+	stderr.Reset()
+	if code := runSyncContext([]string{"--repo", root}, io.Discard, &stderr); code != 1 || !strings.HasPrefix(stderr.String(), "error: ELOOP: too many symbolic links encountered, open '") {
+		t.Errorf("looping .env.local: %d %q", code, stderr.String())
+	}
 }

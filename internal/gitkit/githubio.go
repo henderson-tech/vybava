@@ -185,9 +185,15 @@ func detectWorkflows(cwd string) ([]Workflow, error) {
 func nodeFSError(err error, syscallName, path string) error {
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		codes := map[syscall.Errno]string{syscall.ENOTDIR: "ENOTDIR", syscall.EACCES: "EACCES", syscall.EISDIR: "EISDIR"}
-		if code, ok := codes[errno]; ok {
-			return fmt.Errorf("%s: %s, %s '%s'", code, errno.Error(), syscallName, path)
+		// libuv's code and message, as Node prints them.
+		codes := map[syscall.Errno][2]string{
+			syscall.ENOTDIR: {"ENOTDIR", "not a directory"},
+			syscall.EACCES:  {"EACCES", "permission denied"},
+			syscall.EISDIR:  {"EISDIR", "illegal operation on a directory"},
+			syscall.ELOOP:   {"ELOOP", "too many symbolic links encountered"},
+		}
+		if c, ok := codes[errno]; ok {
+			return fmt.Errorf("%s: %s, %s '%s'", c[0], c[1], syscallName, path)
 		}
 	}
 	return err
