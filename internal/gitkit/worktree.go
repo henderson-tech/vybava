@@ -172,7 +172,7 @@ func runWorktree(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	git := func(a ...string) (string, error) {
-		return execFile(execOpts{dir: root, echo: stderr, timeout: 120 * time.Second}, "git", a...)
+		return execFile(execOpts{dir: root, echo: stderr, timeout: 120 * time.Second, maxBuffer: 32 << 20}, "git", a...)
 	}
 	list, err := git("worktree", "list", "--porcelain")
 	if err != nil {

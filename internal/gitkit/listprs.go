@@ -109,7 +109,7 @@ func runListPRs(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	opts := execOpts{dir: root, echo: stderr, timeout: 60 * time.Second}
+	opts := execOpts{dir: root, echo: stderr, timeout: 60 * time.Second, maxBuffer: 32 << 20}
 	owner, name, err := ghRepo(opts)
 	if err != nil {
 		return fail(stderr, err)

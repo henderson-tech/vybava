@@ -76,41 +76,77 @@ func (e *commandError) Unwrap() error { return e.err }
 // execOpts mirrors the execFileSync options the scripts pass.
 type execOpts struct {
 	dir string
-	// echo, when set, receives the child's stderr as it is produced — Node's
-	// default stdio does this; scripts passing an explicit stdio leave it nil.
+	// echo, when set, receives the child's stderr — Node's default stdio
+	// does this; scripts passing an explicit stdio leave it nil.
 	echo    io.Writer
 	timeout time.Duration
+	// maxBuffer caps stdout and stderr each; 0 is Node's 1 MiB default.
+	maxBuffer int
+}
+
+// nodeMaxBuffer is execFileSync's default maxBuffer.
+const nodeMaxBuffer = 1024 * 1024
+
+// cappedBuffer collects output up to limit; past it, it records the
+// overflow and kills the child, as Node does before throwing ENOBUFS.
+type cappedBuffer struct {
+	buf      bytes.Buffer // not embedded: its ReadFrom would bypass Write
+	limit    int
+	overflow bool
+	kill     func()
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.overflow {
+		return len(p), nil
+	}
+	if b.buf.Len()+len(p) > b.limit {
+		b.overflow = true
+		b.kill()
+		return len(p), nil
+	}
+	return b.buf.Write(p)
 }
 
 // execFile runs name with args and returns stdout, failing the way Node's
 // execFileSync does: "Command failed: <argv>\n<stderr>", "spawnSync <name>
-// ENOENT", "spawnSync <name> ETIMEDOUT".
+// ENOENT" / "ETIMEDOUT" / "ENOBUFS".
 func execFile(o execOpts, name string, args ...string) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if o.timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, o.timeout)
 		defer cancel()
 	}
+	limit := o.maxBuffer
+	if limit == 0 {
+		limit = nodeMaxBuffer
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	// A killed git can leave a grandchild (ssh, a credential helper) holding
+	// the output pipes; without a WaitDelay, Wait blocks until it exits.
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = o.dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if o.echo != nil {
-		cmd.Stderr = io.MultiWriter(&stderr, o.echo)
-	}
+	stdout := &cappedBuffer{limit: limit, kill: cancel}
+	stderr := &cappedBuffer{limit: limit, kill: cancel}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
+	if o.echo != nil {
+		_, _ = o.echo.Write(stderr.buf.Bytes())
+	}
 	switch {
-	case err == nil:
-		return stdout.String(), nil
 	case errors.Is(err, exec.ErrNotFound):
 		return "", fmt.Errorf("spawnSync %s ENOENT", name)
-	case ctx.Err() != nil:
+	case stdout.overflow || stderr.overflow:
+		return "", fmt.Errorf("spawnSync %s ENOBUFS", name)
+	case err != nil && ctx.Err() == context.DeadlineExceeded:
 		return "", fmt.Errorf("spawnSync %s ETIMEDOUT", name)
+	case err != nil:
+		return stdout.buf.String(), &commandError{argv: append([]string{name}, args...), stderr: stderr.buf.String(), err: err}
 	}
-	return stdout.String(), &commandError{argv: append([]string{name}, args...), stderr: stderr.String(), err: err}
+	return stdout.buf.String(), nil
 }
 
 var jsDecimal = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
