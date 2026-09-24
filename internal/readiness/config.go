@@ -162,7 +162,7 @@ var (
 	hosts       = []string{"mac", "devbox", "ci"}
 	directions  = []string{"both", "one"}
 	idPattern   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	tokenRe     = regexp.MustCompile(`\{([A-Za-z]+)\}`)
+	tokenRe     = regexp.MustCompile(`\{([A-Za-z][A-Za-z0-9_]*)\}`)
 )
 
 // DefaultConcurrent mirrors claude-guards' default simCap.
@@ -300,8 +300,17 @@ func (c Config) Validate() []string {
 	if d.Runner == "device-runner" && macDevices == 0 {
 		add("devices.runner is device-runner but no matrix device is a simulator/emulator on the mac")
 	}
-	if d.Runner == "device-runner" && macDevices > 0 && d.ConcurrentDevices() < macDevices {
-		add("devices.concurrent (%d) is below one full set of mac devices (%d)", d.ConcurrentDevices(), macDevices)
+	// One lane needs its whole matrix at once, unless its runs go one after
+	// another; then only a realtime pairing needs several devices together.
+	need := macDevices
+	if d.OneRunPerLane {
+		need = 1
+		if d.Realtime != nil && len(d.Realtime.Roles) > need {
+			need = len(d.Realtime.Roles)
+		}
+	}
+	if d.Runner == "device-runner" && macDevices > 0 && d.ConcurrentDevices() < need {
+		add("devices.concurrent (%d) is below the %d devices one lane needs at once", d.ConcurrentDevices(), need)
 	}
 	if rt := d.Realtime; rt != nil {
 		if len(rt.Specs) == 0 {
@@ -312,7 +321,12 @@ func (c Config) Validate() []string {
 		}
 		rtTokens := []string{"spec", "apiUrl", "runDir", "worktree", "iosApp", "androidApp", "port"}
 		roleTokens := slices.Clone(rtTokens)
+		seenRole := map[string]bool{}
 		for i, role := range rt.Roles {
+			if seenRole[role] {
+				add("devices.realtime.roles[%d]: %q is listed twice; each role is a distinct actor", i, role)
+			}
+			seenRole[role] = true
 			if !idPattern.MatchString(role) || strings.Contains(role, "-") {
 				add("devices.realtime.roles[%d]: %q must be a lowercase word (it doubles as the {%s} token)", i, role, role)
 			}

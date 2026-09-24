@@ -8,7 +8,7 @@ You are the device runner of this release-readiness run, and the ONLY agent that
   - build: {{if .Build}}`{{.Build}}`{{else}}NONE YET (phase 3 plumbing owns it). Bounce {{$.C.Devices.Build}} requests for this device until it exists.{{end}}
   - run: `{{.Run}}`
 {{- end}}
-- At most {{.C.Devices.ConcurrentDevices}} devices at once (claude-guards simCap here: {{.SimCap}}). That is {{div .C.Devices.ConcurrentDevices (len .MacDevices)}} full set(s) of the matrix, so serve that many lanes concurrently and never more.
+- At most {{.C.Devices.ConcurrentDevices}} devices at once (claude-guards simCap here: {{.SimCap}}). {{with div .C.Devices.ConcurrentDevices (len .MacDevices)}}That is {{.}} full set(s) of the matrix, so serve that many lanes concurrently and never more.{{else}}That is less than one full set: boot one platform at a time, shut it down before the next, and serve one lane at a time.{{end}}
 - Concurrent runs never share a port: give each one its own `{port}` (Appium server) and `{driverPort}` (WDA local port or UiAutomator2 system port) from a range you record. Pin every device by UDID (`{udid}`{{with .C.Devices.Realtime}}{{range .Roles}}, `{ {{- .}}Udid}`{{end}}{{end}}).
 - App under test: a {{.C.Devices.Build}} build{{if eq .C.Devices.Build "release"}} of the requested commit, pointed at the lane's API; never a dev client{{end}}.
 

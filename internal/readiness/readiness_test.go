@@ -114,10 +114,10 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	if problems := c.Validate(); len(problems) != 0 {
 		t.Fatalf("shell expansion or role tokens rejected: %v", problems)
 	}
-	c.Lane.Worktree = "create {branch}"
+	c.Lane.Worktree = "create {branch} {driver_port}"
 	c.Merge.Order = []string{"api"}
 	c.Devices.Realtime.Run = "run {spec} as {admin}"
-	c.Devices.Realtime.Roles = []string{"customer", "spec"}
+	c.Devices.Realtime.Roles = []string{"customer", "spec", "customer"}
 	c.Devices.Concurrent = 1
 	c.Repos[0].Production.Branch = "release"
 	c.Repos = append(c.Repos, Repo{ID: "eve", Path: "../eve", GitHub: "acme/eve", Production: Production{Tag: "v*"}, Integration: "main"})
@@ -127,13 +127,24 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 		`merge.order[0]: "api" is not a repo id`,
 		"devices.realtime.run: unknown token {admin}",
 		`devices.realtime.roles[1]: "spec" collides with the built-in {spec} token`,
-		"devices.concurrent (1) is below one full set of mac devices (2)",
+		"devices.concurrent (1) is below the 2 devices one lane needs at once",
+		"lane.worktree: unknown token {driver_port}",
+		`devices.realtime.roles[2]: "customer" is listed twice`,
 		"repos[0].production: set tag or branch, not both",
 		"repos[1].worktree is required",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
+	}
+	// Runs one after another need only one device at a time, a realtime pair aside.
+	var seq Config
+	if err := json.Unmarshal([]byte(adapter), &seq); err != nil {
+		t.Fatal(err)
+	}
+	seq.Devices.OneRunPerLane, seq.Devices.Concurrent, seq.Devices.Realtime = true, 1, nil
+	if problems := seq.Validate(); len(problems) != 0 {
+		t.Errorf("sequential single-device matrix rejected: %v", problems)
 	}
 	c.Devices.Runner = "swarm"
 	if got := strings.Join(c.Validate(), "\n"); !strings.Contains(got, `devices.runner: "swarm" is not one of lane | device-runner`) {
@@ -373,6 +384,11 @@ func TestRenderFollowsTheRunsScopeAndLanes(t *testing.T) {
 	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
 		t.Fatalf("unknown authority device accepted: %v", err)
 	}
+	write(InventoryFile, strings.Replace(inv, `"repos": ["app"]`, `"repos": ["api"]`, 1))
+	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {
+		t.Fatalf("feature naming an unknown repo accepted: %v", err)
+	}
+	write(InventoryFile, inv)
 	write(RunFile, runJSON)
 	write(LanesFile, strings.Replace(lanes, `"refunds"`, `"../escape"`, 1))
 	if _, err := tool.Render(dir, true); code(err) != DiagRunInvalid {

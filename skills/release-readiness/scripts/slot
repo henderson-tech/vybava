@@ -48,17 +48,36 @@ slots_now() {
 while :; do
   n_now=$(slots_now)
   if [ "$(avail_gb)" -ge "$MIN_GB" ] && [ "$(load1)" -lt "$MAX_LOAD" ] && [ "$n_now" -gt 0 ]; then
-    for i in $(seq 1 "$n_now"); do
-      exec {fd}>"$D/$i.lock"
+    # Admission is serialized and counts EVERY held slot of the N: when the
+    # headroom shrinks to one slot, jobs still running on slots 2..N count
+    # against it, so a free slot 1 never admits an extra job.
+    exec {adm}>"$D/admit.lock"
+    flock "$adm"
+    busy=0
+    free=""
+    for i in $(seq 1 "$N"); do
+      exec {probe}>"$D/$i.lock"
+      if flock -n "$probe"; then
+        [ -z "$free" ] && free=$i
+        flock -u "$probe"
+      else
+        busy=$((busy + 1))
+      fi
+      exec {probe}>&-
+    done
+    if [ "$busy" -lt "$n_now" ] && [ -n "$free" ]; then
+      exec {fd}>"$D/$free.lock"
       if flock -n "$fd"; then
-        echo "[readiness-slot] slot $i/$n_now (of $N), $(avail_gb) GB available, slice headroom $(slice_headroom_gb) GB, load $(load1)" >&2
+        exec {adm}>&-
+        echo "[readiness-slot] slot $free ($((busy + 1)) of $n_now allowed, $N max), $(avail_gb) GB available, slice headroom $(slice_headroom_gb) GB, load $(load1)" >&2
         "$@"
         rc=$?
         exec {fd}>&-
         exit "$rc"
       fi
       exec {fd}>&-
-    done
+    fi
+    exec {adm}>&-
   fi
   sleep 15
 done

@@ -12,14 +12,15 @@ J="$R/${2:-playwright-junit.xml}"
 [ -f "$J.orig" ] || cp "$J" "$J.orig"
 rm -rf "$R/shots" && mkdir -p "$R/shots"
 
-# One mapping for the copy and the rewrite: every / in the attachment path becomes __.
+# One injective mapping for the copy and the rewrite: every _ becomes _1, then every
+# / becomes _2 (a plain / → __ would map a/b__c and a__b/c to the same name).
 grep -o '\[\[ATTACHMENT|[^]]*\]\]' "$J.orig" | sed 's/^\[\[ATTACHMENT|//; s/\]\]$//' | sort -u |
   while IFS= read -r p; do
     [ -f "$R/$p" ] || { echo "missing: $p" >&2; continue; }
-    cp "$R/$p" "$R/shots/$(printf '%s' "$p" | sed 's#/#__#g')"
+    cp "$R/$p" "$R/shots/$(printf '%s' "$p" | sed 's/_/_1/g; s#/#_2#g')"
   done
 
-perl -pe 's#\[\[ATTACHMENT\|([^\]]+)\]\]#"[[ATTACHMENT|shots/" . ($1 =~ s{/}{__}gr) . "]]"#ge' "$J.orig" > "$J"
+perl -pe 's#\[\[ATTACHMENT\|([^\]]+)\]\]#"[[ATTACHMENT|shots/" . (($1 =~ s{_}{_1}gr) =~ s{/}{_2}gr) . "]]"#ge' "$J.orig" > "$J"
 
 missing=0
 for f in $(grep -o 'ATTACHMENT|shots/[^]]*' "$J" | sed 's/^ATTACHMENT|//' | sort -u); do

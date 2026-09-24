@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 )
@@ -244,6 +245,14 @@ func (t *Tool) Render(dir string, check bool) (Result, error) {
 			}
 			if v.Journeys, err = pick(inv, l.Journeys, func(c Cluster) []Journey { return c.Journeys }, "journey", l.Slug); err != nil {
 				return res, err
+			}
+			for _, f := range v.Features {
+				for _, r := range f.Repos {
+					if !slices.ContainsFunc(t.Config.Repos, func(c Repo) bool { return c.ID == r }) {
+						return res, diag(DiagRunInvalid, fmt.Sprintf("lane %s: feature %q names repo %q, which is not in the readiness section", l.Slug, f.Name, r),
+							"fix the feature's repos in inventory.json to the configured repo ids")
+					}
+				}
 			}
 			for _, u := range l.Unassigned {
 				if u < 0 || u >= len(inv.Critic.Unassigned) {
