@@ -100,3 +100,40 @@ Every write returns a receipt — `{catalog, key, locales, written,
 afterWrite: {cmd, ok}}` — so a generated type (`afterWrite`) is never a
 silent side effect; a failing `afterWrite` still returns the receipt next to
 `AFTER_WRITE_FAILED`.
+
+## Merging catalogs
+
+`lok merge-driver %O %A %B %P` is the git merge driver for declared catalogs
+(`merge-assist setup` registers it; see [merge-assist.md](merge-assist.md)).
+Git calls it when both sides of a merge touched the same catalog file. It
+merges by key, not by line:
+
+```text
+equal on both sides            kept
+changed or deleted on one side that side wins (a deletion is honoured, never resurrected)
+changed differently on both    CLASH: the file stays conflicted, the keys are printed
+two objects (path style)       merged key by key, recursively
+```
+
+The result keeps theirs' order (the branch merged in, usually main) and
+inserts ours' additions where `lok add` would put them on theirs, so the
+merged file diffs against main by exactly the branch's changes. The file is
+only written when theirs round-trips byte-for-byte through lok's writer;
+anything else (another indent, CRLF), an undeclared path and a missing
+config all fall back to git's own text merge, so the driver never loses
+behaviour. When the merged catalog differs from theirs, its `afterWrite` is
+queued for `merge-assist regen`.
+
+A clash is always a conflict, even when git's line merge would be clean:
+two branches adding the same key worded differently at different lines
+merge "cleanly" into a file holding the key twice, where the last copy
+silently wins. Settle it without reading the file:
+
+```text
+lok merge apps/web/i18n/strings.cs.json --prefer theirs --json   # re-merge from the index stages, write, git add
+lok set 'Save' --tr cs='Uložit'                                   # then word the keys that need a mix
+```
+
+`lok merge <path>` without `--prefer` re-merges an unmerged catalog left by
+a merge that ran without the driver; it fails `MERGE_CLASH` listing the
+clashing keys with their base, ours and theirs values.

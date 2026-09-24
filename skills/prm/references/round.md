@@ -116,7 +116,7 @@ carries them all.
 | `review APPROVED by <x>` | `gitkit merge-precheck` immediately; `gates.allPass` → ready terminus. Never idle-wait after an approval. |
 | `review DISMISSED by <x>` | Re-run `gitkit merge-precheck`; report an invalidated approval. |
 | `push <sha7>` | Matches `lastPushSha` → our own push, skip silently. Foreign → `git -C <worktree> pull --ff-only`, then round. |
-| `mergeable MERGEABLE->CONFLICTING` | Round: merge `origin/<base>` in the worktree, resolve, verify, push. Non-trivial conflicts → STOP and report; never guess through a semantic conflict. |
+| `mergeable MERGEABLE->CONFLICTING` | Round: merge `origin/<base>` in the worktree (`vybava merge-assist merge origin/<base>` when the repo's `vybava.config.ts` has a `merge` or `lok` section: it settles catalogs, generated files and migration timestamps and lists only the open rows), resolve, verify, push. Non-trivial conflicts → STOP and report; never guess through a semantic conflict. |
 | `draft` / `ready` | Note; `ready` re-evaluates readiness. |
 | `merged` | Terminus case A (auto-teardown). In-session merges `TaskStop` the Monitor at merge time — don't wait for the event. |
 | `closed` | Summarize; keep the worktree. |

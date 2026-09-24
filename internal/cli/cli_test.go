@@ -22,6 +22,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"plaud", "plaud"},
 		{"claude-guards", "claude-guards"},
 		{"lok", "lok"},
+		{"merge-assist", "merge-assist"},
 		{"memo", "memo"},
 		{"tokentime", "tokentime"},
 		{"/usr/local/bin/perfrig", "perfrig"}, // dispatch is on the basename
