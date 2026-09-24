@@ -103,6 +103,9 @@ func (e Env) ensureAll(p HookPayload, now time.Time) HookResult {
 			if r.Rendered {
 				res.Rendered = append(res.Rendered, filepath.Join(h.Path, IndexFile))
 			}
+			if r.Tracked != nil {
+				res.Problems = append(res.Problems, r.Tracked.Detail+" (fix: "+r.Tracked.Fix+")")
+			}
 		}
 	}
 	return res
@@ -347,7 +350,9 @@ func (e Env) credit(h Home, c Citations, now time.Time) (int, bool, error) {
 	if err != nil {
 		return added, false, err
 	}
-	changed, err := WriteIndex(l, all, now)
+	// A tracked surface stays as committed; the Stop hook never nags, the
+	// SessionStart line and `memo render` name the fix.
+	changed, _, err := WriteIndex(l, all, now)
 	return added, changed, err
 }
 

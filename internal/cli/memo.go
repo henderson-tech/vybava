@@ -134,6 +134,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		if d := memo.LegacyHome(homes[0].Path); d != nil {
+			return finish(s, nil, nil, nil, d)
+		}
 		l, d, err := env.Open(homes[0], true)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
@@ -147,7 +150,8 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
-		if _, err := memo.WriteIndex(l, events, now); err != nil {
+		_, tracked, err := memo.WriteIndex(l, events, now)
+		if err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
 		data := map[string]any{"row": row, "line": row.Format(), "home": l.Home(), "cite": row.Cite()}
@@ -158,7 +162,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				data["snapshot"] = rev
 			}
 		}
-		return finish(s, data, []string{fmt.Sprintf("memo show %s%d%s --json", row.IDPrefix(), row.ID, homeArg(homes[0]))}, []*memo.Diag{memo.SentenceWarning(sentence)}, nil)
+		return finish(s, data, []string{fmt.Sprintf("memo show %s%d%s --json", row.IDPrefix(), row.ID, homeArg(homes[0]))}, []*memo.Diag{memo.SentenceWarning(sentence), tracked}, nil)
 	}
 	add.Flags().StringArrayVar(&links, "link", nil, "link after ->: [[notes/<slug>]], [[LEDGER#^m<id>]], [[<alias>/...]], https://...")
 	add.Flags().IntVar(&supersedes, "supersedes", 0, "mark row N superseded by this one")
@@ -303,6 +307,8 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		}
 		now := time.Now()
 		results := []map[string]any{}
+		var warnings []*memo.Diag
+		next := []string{"memo render --check" + flagIf(homeSpec) + " --json"}
 		for _, h := range homes {
 			l, d, err := env.Open(h, false)
 			if d != nil || err != nil {
@@ -311,6 +317,15 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 			events, d, err := memo.LoadEvents(h.Path)
 			if d != nil || err != nil {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
+			// A tracked MEMORY.md is left as committed, so --check has no
+			// drift to judge and a write has nothing to do: both answer with
+			// the untracking fix instead.
+			if tracked := memo.TrackedIndex(h.Path, l.Kind); tracked != nil {
+				warnings = append(warnings, tracked)
+				next = append(next, tracked.Fix)
+				results = append(results, map[string]any{"home": h.Path, "tracked": true})
+				continue
 			}
 			if check {
 				same, err := memo.CheckIndex(l, events, now)
@@ -323,13 +338,13 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				results = append(results, map[string]any{"home": h.Path, "drift": false})
 				continue
 			}
-			changed, err := memo.WriteIndex(l, events, now)
+			changed, _, err := memo.WriteIndex(l, events, now)
 			if err != nil {
 				return finish(s, nil, nil, nil, err)
 			}
 			results = append(results, map[string]any{"home": h.Path, "changed": changed, "rows": len(memo.Order(l, events, now))})
 		}
-		return finish(s, map[string]any{"homes": results}, []string{"memo render --check" + flagIf(homeSpec) + " --json"}, nil, nil)
+		return finish(s, map[string]any{"homes": results}, next, warnings, nil)
 	}
 	render.Flags().BoolVar(&check, "check", false, "exit 2 when MEMORY.md on disk differs")
 
@@ -344,14 +359,20 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		}
 		now := time.Now()
 		results := []memo.EnsureResult{}
+		var warnings []*memo.Diag
+		next := []string{"memo render --check" + flagIf(homeSpec) + " --json"}
 		for _, h := range homes {
 			r, d, err := env.EnsureHome(h, now)
 			if d != nil || err != nil {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
+			if r.Tracked != nil {
+				warnings = append(warnings, r.Tracked)
+				next = append(next, r.Tracked.Fix)
+			}
 			results = append(results, r)
 		}
-		return finish(s, map[string]any{"homes": results}, []string{"memo render --check" + flagIf(homeSpec) + " --json"}, nil, nil)
+		return finish(s, map[string]any{"homes": results}, next, warnings, nil)
 	}
 
 	// import
@@ -393,7 +414,8 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
-		if _, err := memo.WriteIndex(l, events, now); err != nil {
+		_, tracked, err := memo.WriteIndex(l, events, now)
+		if err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
 		result := map[string]any{"home": l.Home(), "added": len(added), "first": added[0].ID, "last": added[len(added)-1].ID}
@@ -404,7 +426,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				result["snapshot"] = rev
 			}
 		}
-		return finish(s, result, []string{"memorylint check " + l.Home()}, nil, nil)
+		return finish(s, result, []string{"memorylint check " + l.Home()}, []*memo.Diag{tracked}, nil)
 	}
 
 	// migrate
@@ -670,6 +692,8 @@ func recordEvent(env memo.Env, home string, row int, kind string) error {
 	if err != nil {
 		return err
 	}
-	_, err = memo.WriteIndex(l, all, now)
+	// The event is what show/touch owe; a tracked surface stays as committed
+	// and `memo render` names its fix.
+	_, _, err = memo.WriteIndex(l, all, now)
 	return err
 }
