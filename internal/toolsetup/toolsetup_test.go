@@ -161,3 +161,18 @@ func TestApplyAllStopsDependentsOfAMissingNeed(t *testing.T) {
 		t.Fatalf("dependent of an uninstalled need = %+v", outcomes[1])
 	}
 }
+
+func TestPathGapComparesCleanedEntriesAndNamesBinDir(t *testing.T) {
+	env := Env{Home: "/Users/me", BinDir: "/Users/me/.local/bin"}
+	if gap := PathGap(env, "/usr/bin:/Users/me/.local/bin/"); gap != nil {
+		t.Fatalf("a trailing slash still counts as on PATH: %+v", gap)
+	}
+	gap := PathGap(env, "/usr/bin:/bin")
+	if gap == nil || gap.Fix != `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile` {
+		t.Fatalf("gap = %+v", gap)
+	}
+	env.BinDir = "/opt/tools/bin"
+	if gap := PathGap(env, "/usr/bin"); gap == nil || gap.Fix != `echo 'export PATH="/opt/tools/bin:$PATH"' >> ~/.zprofile` {
+		t.Fatalf("an out-of-home bin dir must be named as is: %+v", gap)
+	}
+}

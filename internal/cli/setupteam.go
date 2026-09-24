@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -109,13 +108,9 @@ func (rt *runtime) setupTeamCommand() *cobra.Command {
 					}
 				}
 			}
-			if !slices.Contains(filepath.SplitList(os.Getenv("PATH")), env.BinDir) {
-				diagnostics = append(diagnostics, runx.Diagnostic{
-					Code: "SETUP_BIN_NOT_ON_PATH", Severity: "warning",
-					Detail: env.BinDir + " holds the installed CLIs but is not on PATH",
-					Fix:    `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`,
-				})
-				next = append(next, `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`)
+			if gap := toolsetup.PathGap(env, os.Getenv("PATH")); gap != nil {
+				diagnostics = append(diagnostics, runx.Diagnostic{Code: gap.Code, Severity: "warning", Detail: gap.Detail, Fix: gap.Fix})
+				next = append(next, gap.Fix)
 			}
 			ok := true
 			for _, d := range diagnostics {

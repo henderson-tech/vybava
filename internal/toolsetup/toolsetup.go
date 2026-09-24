@@ -333,3 +333,26 @@ func Selection(items []catalog.Item, only, with []string) (selected []catalog.It
 	}
 	return selected, unknown
 }
+
+// DiagBinNotOnPath: the CLIs landed in BinDir but a new shell will not find them.
+const DiagBinNotOnPath = "SETUP_BIN_NOT_ON_PATH"
+
+// PathGap reports BinDir missing from a PATH value, entries compared cleaned,
+// with a fix that names BinDir itself ($HOME-relative when it lives there).
+func PathGap(env Env, pathValue string) *Diag {
+	want := filepath.Clean(env.BinDir)
+	for _, entry := range filepath.SplitList(pathValue) {
+		if entry != "" && filepath.Clean(entry) == want {
+			return nil
+		}
+	}
+	dir := want
+	if rel, err := filepath.Rel(env.Home, want); err == nil && !strings.HasPrefix(rel, "..") {
+		dir = "$HOME/" + rel
+	}
+	return &Diag{
+		Code:   DiagBinNotOnPath,
+		Detail: want + " holds the installed CLIs but is not on PATH",
+		Fix:    `echo 'export PATH="` + dir + `:$PATH"' >> ~/.zprofile`,
+	}
+}

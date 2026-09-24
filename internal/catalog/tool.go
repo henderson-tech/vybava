@@ -74,6 +74,11 @@ func (t *Tool) validate() error {
 	if count(i.BrewCask != "", i.Brew != "", i.Pultik != "", i.Bun != "", len(i.Run) > 0) != 1 {
 		return errors.New("install must name exactly one of brew_cask, brew, pultik, bun, run")
 	}
+	for i, command := range t.Setup {
+		if len(command) == 0 || command[0] == "" {
+			return fmt.Errorf("setup command %d is empty", i+1)
+		}
+	}
 	if t.Probe.App != "" && !strings.HasSuffix(t.Probe.App, ".app") {
 		return fmt.Errorf("probe app %q must end in .app", t.Probe.App)
 	}
