@@ -220,7 +220,9 @@ only when every signal agrees (`internal/claudeguards/idle.go`):
   the session's memory, so the transcript is the one witness. It is read
   incrementally (4 MiB per session start, all of it for `--text`) with the
   cursor cached in `~/Library/Caches/vybava/claude-guards/`, and the session
-  is held until the read reaches the end.
+  is held until the read reaches the end. A record over 16 MiB is stepped
+  over unread and could be the call, so a transcript holding one stays held
+  unless a readable `CronCreate` decides it.
 
 A pending ScheduleWakeup needs no check: its delay is clamped to 60-3600 s
 and every wakeup runs a turn, which refreshes `statusUpdatedAt`. Whatever

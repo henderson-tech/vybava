@@ -194,6 +194,35 @@ func TestSessionCronScan(t *testing.T) {
 	}
 }
 
+// A record past the record limit is stepped over unread and may be the
+// CronCreate call, so reading to the end cannot decide the session: it stays
+// held, on later runs too, until a CronCreate elsewhere decides it.
+func TestSessionCronScanHoldsAnUninspectableRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	big := `{"type":"assistant","message":{"content":[{"type":"text","text":"` + strings.Repeat("x", 200) +
+		`"},{"type":"tool_use","id":"t1","name":"CronCreate","input":{"cron":"0 9 * * *"}}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"}}`+"\n"+big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := &cronCache{entries: map[string]cronScan{}, used: map[string]bool{}, recordLimit: 128}
+	budget := int64(1 << 20)
+	if cron, decided := cache.scan("s", path, &budget); cron || decided {
+		t.Fatalf("a skipped oversize record must leave the session undecided: cron=%v decided=%v", cron, decided)
+	}
+	if cron, decided := cache.scan("s", path, &budget); cron || decided {
+		t.Fatalf("the unchanged file must stay undecided on the next run: cron=%v decided=%v", cron, decided)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"CronCreate","input":{}}]}}` + "\n")
+	_ = f.Close()
+	if cron, decided := cache.scan("s", path, &budget); !cron || !decided {
+		t.Fatalf("a readable CronCreate call decides it: cron=%v decided=%v", cron, decided)
+	}
+}
+
 // An in-process background agent shows only as writes under the session's
 // directory after the lead went idle; no directory means none ever ran.
 func TestWrittenAfter(t *testing.T) {

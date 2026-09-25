@@ -27,7 +27,8 @@ package claudeguards
 //     are visible nowhere else, so the transcript is read incrementally
 //     under a byte budget (a cold 55 MB read took 8.5 s on a loaded Mac),
 //     with the cursor cached between runs; until it has been read to the
-//     end the session is held.
+//     end, or while it holds a record too large to inspect, the session is
+//     held.
 //
 // A pending ScheduleWakeup needs no check: its delay is clamped to [60,
 // 3600] s and every wakeup runs a turn, which refreshes statusUpdatedAt, so a
@@ -460,12 +461,17 @@ type cronScan struct {
 	Path   string             `json:"path"`
 	Cursor transcripts.Cursor `json:"cursor"`
 	Cron   bool               `json:"cron"`
+	// Uninspectable: the scan stepped over a record too large to hold
+	// (transcripts.DefaultRecordLimit), which may have called CronCreate.
+	Uninspectable bool `json:"uninspectable,omitempty"`
 }
 
 type cronCache struct {
 	entries map[string]cronScan
 	used    map[string]bool
 	dirty   bool
+	// recordLimit overrides transcripts.DefaultRecordLimit (tests).
+	recordLimit int
 }
 
 func loadCronCache(path string) *cronCache {
@@ -478,7 +484,10 @@ func loadCronCache(path string) *cronCache {
 
 // scan reads the transcript from its cached cursor while the run's budget
 // lasts. decided is true once the file has been read to its end, or as soon
-// as a CronCreate is seen.
+// as a CronCreate is seen. A record past the record limit is stepped over
+// unread, so it cannot rule a cron out: a transcript holding one stays
+// undecided (held) until a CronCreate elsewhere decides it or the file is
+// replaced.
 func (c *cronCache) scan(sessionID, path string, budget *int64) (cron, decided bool) {
 	c.used[sessionID] = true
 	e, known := c.entries[sessionID]
@@ -493,13 +502,13 @@ func (c *cronCache) scan(sessionID, path string, budget *int64) (cron, decided b
 		return false, false
 	}
 	if known && e.Cursor.Unchanged(info) {
-		return false, true
+		return false, !e.Uninspectable
 	}
 	if *budget <= 0 {
 		return false, false
 	}
 	saw := false
-	res, err := transcripts.Scan(path, e.Cursor, known, transcripts.ScanOptions{Budget: *budget, SkipOversize: true}, func(line []byte, _ int64) error {
+	res, err := transcripts.Scan(path, e.Cursor, known, transcripts.ScanOptions{Budget: *budget, RecordLimit: c.recordLimit, SkipOversize: true}, func(line []byte, _ int64) error {
 		saw = saw || cronCreateRecord(line)
 		return nil
 	})
@@ -507,10 +516,15 @@ func (c *cronCache) scan(sessionID, path string, budget *int64) (cron, decided b
 		return false, false // vanished since the stat: nothing to decide on
 	}
 	*budget -= res.Read
-	// A reset re-read from byte 0, so saw covers the whole file either way.
+	// A cached true returned above, so e.Cron was false and saw covers
+	// everything read since; a reset re-read from byte 0 and starts over.
+	if res.Reset {
+		e.Uninspectable = false
+	}
 	e.Path, e.Cursor, e.Cron = path, res.Cursor, saw
+	e.Uninspectable = e.Uninspectable || res.Oversize > 0
 	c.entries[sessionID], c.dirty = e, true
-	return e.Cron, e.Cron || res.Pending == 0
+	return e.Cron, e.Cron || (res.Pending == 0 && !e.Uninspectable)
 }
 
 // save writes the cache atomically, keeping entries this run used or read
