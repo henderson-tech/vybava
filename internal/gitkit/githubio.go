@@ -224,7 +224,7 @@ var githubIOArgs = map[string]verbArgs{
 func githubIOUsageFor(sub string) string {
 	for _, line := range strings.Split(githubIOUsage, "\n") {
 		if strings.HasPrefix(line, "  "+sub+" ") {
-			return "usage: vybava gitkit github-io " + strings.TrimSpace(line)
+			return "usage: vybava gitkit github-io " + strings.Join(strings.Fields(line), " ")
 		}
 	}
 	return githubIOUsage
