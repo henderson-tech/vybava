@@ -146,14 +146,17 @@ Pods project builds from them until the next pod install.
 
 Report only by default. --apply refuses while a bun install-family process
 (install, add, remove, update, link, pm, patch, init, create and their aliases,
-after any global flags) has its cwd in the checkout. Any other bun there (a
-dev server, a script such as a session launcher, bunx) only resolves modules
-and does not count, nor does one inside a nested checkout with its own .git and
-package.json, such as a worktree at .worktrees/<slug>: bun installs that
-project, not this one. It keeps anything modified within --min-age, walks
-again right before deleting (refusing if what it read changed meanwhile, as an
-install that ran during the walk leaves it), and runs at background priority
-(the dry run does not: the throttle starves a read-only walk on a loaded Mac).
+after any global flags) has its cwd in the checkout or names a directory in it
+with --cwd. Any other bun there (a dev server, a script such as a session
+launcher, bunx) only resolves modules and does not count, nor does one inside
+a nested checkout with its own .git and package.json, such as a worktree at
+.worktrees/<slug>: bun installs that project, not this one. It keeps anything
+modified within --min-age, checks the processes again right before deleting,
+refuses if anything the walk read changed meanwhile (the .bun listing,
+package.json and its workspace directories, the node_modules directories,
+Podfile.lock), as an install that ran during the walk leaves it, and runs at
+background priority (the dry run does not: the throttle starves a read-only
+walk on a loaded Mac).
 The global store (~/.bun/install/cache/links) is never touched.`,
 		Example: `  reclaim bun-prune ~/Work/app              # dry run
   reclaim bun-prune ~/Work/app --apply      # delete what the dry run listed

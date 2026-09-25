@@ -159,8 +159,13 @@ Sizes count hardlinks once; APFS clones still share blocks, so the `df`
 delta `--apply` prints is the truth. `--apply`:
 
 - refuses while a bun install-family process has its cwd inside the
-  checkout, checked before the walk and again right before the first
-  delete. One `lsof -c bun -d cwd` finds the cwds, compared case-folded
+  checkout, or names a directory inside it with `--cwd` (`bun
+  --cwd=~/Work/app install` started in `$HOME` writes the checkout while lsof
+  reports `$HOME`; a relative value resolves against the process cwd, a
+  symlinked one is also compared resolved, and since ps joins argv with
+  spaces, a longer space-joined run that names an existing directory counts
+  too), checked before the walk and again right before the first delete. One
+  `lsof -c bun -d cwd` finds the cwds, compared case-folded
   (APFS keeps a typed `~/work/app` spelling that lsof reports as
   `~/Work/app`), and one `ps -axo pid=,args=` reads their command lines
   through the same parser as the bun step's guard. Only a writer counts:

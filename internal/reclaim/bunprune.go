@@ -28,14 +28,14 @@ package reclaim
 // unreachable from node_modules. Such an entry, and what it links to, is
 // kept and listed apart (BunPruneReport.Native), never deleted.
 //
-// --apply refuses while a bun install-family process has its cwd inside the
-// checkout (outside a nested checkout that is its own bun project), keeps
-// every entry modified within MinAge (an install in flight writes fresh
-// entries), checks the processes again right before deleting, refuses when
-// anything the plan read (walkFence) changed before the first rename (an
-// install that ran start to finish during it), and renames each target into
-// a trash directory first, so a later install never finds a half-deleted
-// package under a name it trusts.
+// --apply refuses while a bun install-family process has its cwd, or a --cwd
+// it was given, inside the checkout (outside a nested checkout that is its
+// own bun project), keeps every entry modified within MinAge (an install in
+// flight writes fresh entries), checks the processes again right before
+// deleting, refuses when anything the plan read (walkFence) changed before
+// the first rename (an install that ran start to finish during it), and
+// renames each target into a trash directory first, so a later install never
+// finds a half-deleted package under a name it trusts.
 
 import (
 	"bytes"
@@ -655,8 +655,9 @@ func sizeDedup(ctx context.Context, path string, seen map[fileID]bool) (int64, e
 // line is install-family (bunCheckoutWriterArgs), or one whose command line
 // is unknown. Any other bun (a dev server, a script such as a session
 // launcher) only resolves modules, and resolution from the checkout reaches
-// only reachable entries, which a prune keeps. A cwd in a nested bun project
-// (nestedBunProject) does not count either.
+// only reachable entries, which a prune keeps. A writer counts by its OS cwd
+// or any directory its --cwd flag names (bunEffectiveDirs); one in a nested
+// bun project (nestedBunProject) does not count.
 func refuseBusyCheckout(ctx context.Context, opts BunPruneOptions, spellings []string) error {
 	procs, err := opts.BunCwds(ctx)
 	if err != nil {
@@ -667,25 +668,81 @@ func refuseBusyCheckout(ctx context.Context, opts BunPruneOptions, spellings []s
 		if p.Args != "" && !bunCheckoutWriterArgs.MatchString(p.Args) {
 			continue
 		}
-		cwd := strings.ToLower(p.Cwd)
-		for _, root := range spellings {
-			root = strings.ToLower(root)
-			if cwd == root || strings.HasPrefix(cwd, root+string(filepath.Separator)) {
-				if !nestedBunProject(p.Cwd, root) {
-					args := firstField(p.Args, 3)
-					if args == "" {
-						args = "command line unknown"
-					}
-					inside = append(inside, fmt.Sprintf("%d (%s, in %s)", p.PID, args, p.Cwd))
-				}
-				break
+		if dir, ok := busyIn(bunEffectiveDirs(p), spellings); ok {
+			args := firstField(p.Args, 3)
+			if args == "" {
+				args = "command line unknown"
 			}
+			inside = append(inside, fmt.Sprintf("%d (%s, in %s)", p.PID, args, dir))
 		}
 	}
 	if len(inside) > 0 {
 		return fmt.Errorf("bun is running inside %s: pid %s; rerun once it finishes", spellings[len(spellings)-1], strings.Join(inside, ", "))
 	}
 	return nil
+}
+
+// busyIn returns the first of dirs inside one of the checkout's spellings and
+// not in a nested bun project, compared case-folded.
+func busyIn(dirs, spellings []string) (string, bool) {
+	for _, dir := range dirs {
+		folded := strings.ToLower(dir)
+		for _, root := range spellings {
+			root = strings.ToLower(root)
+			if folded == root || strings.HasPrefix(folded, root+string(filepath.Separator)) {
+				if !nestedBunProject(dir, root) {
+					return dir, true
+				}
+				break
+			}
+		}
+	}
+	return "", false
+}
+
+// bunEffectiveDirs is where a bun process may write: its OS cwd, plus every
+// directory a --cwd flag in its command line may name. bun accepts --cwd=<dir>
+// and --cwd <dir> before or after the verb, so `bun --cwd=/w/app install`
+// started in $HOME installs into /w/app while lsof reports $HOME. ps joins
+// argv with spaces, so a value is ambiguous when the path holds one: the first
+// word always counts, and each longer space-joined run of the following words
+// counts when it names an existing directory (bun cannot install into a
+// missing one). A relative value resolves against the OS cwd, and a candidate
+// that resolves through a symlink is listed under both spellings.
+func bunEffectiveDirs(p BunProcess) []string {
+	dirs := []string{p.Cwd}
+	words := strings.Fields(p.Args)
+	for i, word := range words {
+		var value []string
+		switch {
+		case strings.HasPrefix(word, "--cwd="):
+			value = append([]string{strings.TrimPrefix(word, "--cwd=")}, words[i+1:]...)
+		case word == "--cwd" && i+1 < len(words):
+			value = words[i+1:]
+		default:
+			continue
+		}
+		for n := 1; n <= len(value); n++ {
+			dir := strings.Join(value[:n], " ")
+			if dir == "" {
+				continue
+			}
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(p.Cwd, dir)
+			}
+			dir = filepath.Clean(dir)
+			if n > 1 {
+				if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+					continue
+				}
+			}
+			dirs = append(dirs, dir)
+			if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+				dirs = append(dirs, resolved)
+			}
+		}
+	}
+	return dirs
 }
 
 // nestedBunProject reports whether cwd, under the checkout that folds to

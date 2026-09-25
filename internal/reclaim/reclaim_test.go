@@ -823,6 +823,55 @@ func TestBunPruneBusyCheckCountsOnlyInstalls(t *testing.T) {
 	}
 }
 
+// An install started elsewhere with --cwd pointing into the checkout writes
+// it while lsof reports the outside cwd: the flag's directory counts, in
+// every spelling (=, a separate word, after the verb, relative to the OS cwd,
+// through a symlink, a path holding a space), and one pointing elsewhere or
+// into a nested bun project does not.
+func TestBunPruneBusyCheckFollowsCwdFlag(t *testing.T) {
+	base := t.TempDir()
+	checkout := filepath.Join(base, "my app")
+	outside := filepath.Join(base, "home")
+	for _, dir := range []string{outside, filepath.Join(checkout, "apps/web"), filepath.Join(checkout, ".worktrees/wt")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"package.json", ".worktrees/wt/package.json", ".worktrees/wt/.git"} {
+		if err := os.WriteFile(filepath.Join(checkout, f), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	symlink(t, checkout, filepath.Join(outside, "app-link"))
+	// BunPrune passes the checkout as typed and resolved (macOS /var is /private/var).
+	spellings := []string{checkout}
+	if resolved, err := filepath.EvalSymlinks(checkout); err == nil && resolved != checkout {
+		spellings = append(spellings, resolved)
+	}
+	cases := []struct {
+		args    string
+		refuses bool
+	}{
+		{"bun --cwd=" + checkout + " install", true},
+		{"bun install --cwd " + checkout, true},
+		{"bun --cwd=" + filepath.Join(checkout, "apps/web") + " add zod", true},
+		{"bun --cwd=../my app install", true},
+		{"bun --cwd=app-link install", true},
+		{"bun --cwd=" + outside + " install", false},
+		{"bun --cwd=" + filepath.Join(checkout, ".worktrees/wt") + " install", false},
+		{"bun install", false},
+	}
+	for _, c := range cases {
+		procs := func(context.Context) ([]BunProcess, error) {
+			return []BunProcess{{PID: 7, Cwd: outside, Args: c.args}}, nil
+		}
+		err := refuseBusyCheckout(context.Background(), BunPruneOptions{BunCwds: procs}, spellings)
+		if refused := err != nil; refused != c.refuses {
+			t.Errorf("%q started in %s: refused = %v (%v), want %v", c.args, outside, refused, err, c.refuses)
+		}
+	}
+}
+
 func TestParseLsofCwds(t *testing.T) {
 	got := parseLsofCwds([]byte("p123\nfcwd\nn/w/app\np456\nfcwd\nn/w/other dir\n"))
 	if len(got) != 2 || got[0] != (BunProcess{PID: 123, Cwd: "/w/app"}) || got[1] != (BunProcess{PID: 456, Cwd: "/w/other dir"}) {
