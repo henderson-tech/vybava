@@ -173,7 +173,6 @@ func cdsCertain(prefix string) bool {
 	return quote == 0 && strings.TrimSpace(seg.String()) == ""
 }
 
-
 // bunCwd is dir moved by a bun `--cwd <dir>` / `--cwd=<dir>` in the segment.
 func bunCwd(seg, dir, home string) string {
 	f := shellFields(seg)
