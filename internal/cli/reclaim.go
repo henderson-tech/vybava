@@ -120,7 +120,123 @@ unclassified — those are surfaced as by-hand notes at the end.`,
 	command.Flags().StringSliceVar(&skip, "skip", nil, "skip these step ids")
 	command.Flags().IntVar(&keepDays, "keep-days", 60, "aged steps keep files newer than this")
 	command.Flags().BoolVar(&list, "list", false, "print the ladder and exit")
+	command.AddCommand(rt.bunPruneCommand())
 	return command
+}
+
+func (rt *runtime) bunPruneCommand() *cobra.Command {
+	var (
+		apply  bool
+		minAge time.Duration
+		top    int
+	)
+	command := &cobra.Command{
+		Use:   "bun-prune [checkout]",
+		Short: "Report, then with --apply delete, a checkout's unreachable node_modules/.bun directories and .old_modules leftovers",
+		Long: `bun never deletes a node_modules/.bun entry its lockfile stopped naming, and a
+linker switch leaves node_modules/.old_modules-<hash> behind. This walks one
+checkout (default: the current directory) from its roots - node_modules, each
+workspace package's node_modules and .bun/node_modules - through every
+project-local entry's own links, and lists the project-local .bun directories
+nothing reaches, with sizes (hardlinks counted once; df after --apply is the
+truth). Unreachable symlinks into the global store are only counted: bun links
+every lockfile package, so a fresh install has hundreds, and each frees nothing.
+Entries only an ios/Podfile.lock still names are kept and listed apart: the
+Pods project builds from them until the next pod install.
+
+Report only by default. --apply refuses while a bun install-family process
+(install, add, remove, update, link, pm, patch, init, create and their aliases,
+after any global flags) has its cwd in the checkout. Any other bun there (a
+dev server, a script such as a session launcher, bunx) only resolves modules
+and does not count, nor does one inside a nested checkout with its own .git and
+package.json, such as a worktree at .worktrees/<slug>: bun installs that
+project, not this one. It keeps anything modified within --min-age, walks
+again right before deleting (refusing if what it read changed meanwhile, as an
+install that ran during the walk leaves it), and runs at background priority
+(the dry run does not: the throttle starves a read-only walk on a loaded Mac).
+The global store (~/.bun/install/cache/links) is never touched.`,
+		Example: `  reclaim bun-prune ~/Work/app              # dry run
+  reclaim bun-prune ~/Work/app --apply      # delete what the dry run listed
+  reclaim bun-prune . --json`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			checkout := "."
+			if len(args) == 1 {
+				checkout = args[0]
+			}
+			// Only the delete runs in the background band: on a loaded Mac
+			// (load ~250 on 14 cores) its I/O throttle starved even the
+			// read-only walk of a fresh worktree past two minutes.
+			if apply {
+				if err := reclaim.Background(); err != nil {
+					fmt.Fprintf(rt.stderr, "warning: background priority not set: %v\n", err)
+				}
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+			report, err := reclaim.BunPrune(ctx, reclaim.BunPruneOptions{Checkout: checkout, Apply: apply, MinAge: minAge})
+			if err != nil {
+				return err
+			}
+			if rt.json {
+				return writeJSON(rt.stdout, report)
+			}
+			rt.bunPruneSummary(report, top, minAge)
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "delete what the report lists (default: report only)")
+	command.Flags().DurationVar(&minAge, "min-age", 24*time.Hour, "keep candidates modified more recently than this")
+	command.Flags().IntVar(&top, "top", 15, "unreachable entries to list by size")
+	return command
+}
+
+func (rt *runtime) bunPruneSummary(r reclaim.BunPruneReport, top int, minAge time.Duration) {
+	mode := "dry run - nothing is deleted"
+	if r.Applied {
+		mode = "applied"
+	}
+	fmt.Fprintf(rt.stdout, "bun-prune %s  (%s)\n", r.Checkout, mode)
+	fmt.Fprintf(rt.stdout, ".bun entries %d · reachable %d · unreachable dirs %d · unreachable symlinks %d (kept: bun links every lockfile package, each frees nothing)\n",
+		r.Entries, r.Reachable, len(r.Unreachable), r.UnreachableLinks)
+	if !r.Applied {
+		for i, e := range r.Unreachable {
+			if i == top {
+				fmt.Fprintf(rt.stdout, "  … %d more (--top, --json)\n", len(r.Unreachable)-top)
+				break
+			}
+			fmt.Fprintf(rt.stdout, "  %8s  %s  %s\n", reclaim.Human(e.Bytes), e.Modified.Format("2006-01-02"), e.Name)
+		}
+	}
+	for _, e := range r.Leftovers {
+		size := reclaim.Human(e.Bytes)
+		if r.Applied {
+			size = "deleted" // --apply does not size first; the df delta below is the figure
+		}
+		fmt.Fprintf(rt.stdout, "  %8s  %s  node_modules/%s (leftover)\n", size, e.Modified.Format("2006-01-02"), e.Name)
+	}
+	if len(r.Young) > 0 {
+		fmt.Fprintf(rt.stdout, "kept %d candidates modified within %s\n", len(r.Young), minAge)
+	}
+	if len(r.Native) > 0 {
+		size := ""
+		if !r.Applied {
+			size = " (" + reclaim.Human(r.NativeBytes) + ")"
+		}
+		fmt.Fprintf(rt.stdout, "kept %d entries%s that only %s names: its Pods build from them; `pod install` re-points it, then prune again\n",
+			len(r.Native), size, strings.Join(r.NativeManifests, ", "))
+	}
+	if r.Applied {
+		fmt.Fprintf(rt.stdout, "deleted %s logical · df %s\n", reclaim.Human(r.Bytes), reclaim.Signed(r.FreeAfter-r.FreeBefore))
+		for _, e := range r.Errors {
+			fmt.Fprintf(rt.stdout, "  error: %s\n", e)
+		}
+		return
+	}
+	fmt.Fprintf(rt.stdout, "total %s logical (hardlinks once; APFS clones share blocks, so df after --apply is the truth)\n", reclaim.Human(r.Bytes))
+	if len(r.Unreachable)+len(r.Leftovers) > 0 {
+		fmt.Fprintf(rt.stdout, "next: reclaim bun-prune %s --apply\n", r.Checkout)
+	}
 }
 
 func dryLabel(dry bool) string {
@@ -174,8 +290,12 @@ func (rt *runtime) reclaimList(plan []reclaim.Step) error {
 	}
 	for _, s := range plan {
 		what := strings.Join(s.Paths, " ")
-		if what == "" {
+		switch {
+		case what != "":
+		case s.Needs != "":
 			what = "(" + s.Needs + ")"
+		default:
+			what = "(built-in)"
 		}
 		fmt.Fprintf(rt.stdout, "[%d] %-16s %-44s  regenerates: %s\n      %s\n", s.Tier, s.ID, trunc(s.Title, 44), s.Regenerates, what)
 	}

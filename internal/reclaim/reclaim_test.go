@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -61,10 +62,19 @@ func newFakeEnv(t *testing.T, home string, free int64) *fakeEnv {
 	return f
 }
 
+// A symlink inside the read-only directory (a .bun entry's link into the
+// global store) is unlinked; the unlock never re-modes its target.
 func TestRemoveTreeAccountsAndUnlocks(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "a/b/one"), 100, 0)
 	write(t, filepath.Join(root, "a/two"), 50, 0)
+	write(t, filepath.Join(root, "store/pkg.js"), 7, 0)
+	if err := os.Chmod(filepath.Join(root, "store/pkg.js"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "store/pkg.js"), filepath.Join(root, "a/b/link")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(filepath.Join(root, "a/two"), 0o400); err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +85,14 @@ func TestRemoveTreeAccountsAndUnlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removeTree: %v", err)
 	}
-	if n != 150 {
-		t.Fatalf("bytes = %d, want 150", n)
+	if n < 150 {
+		t.Fatalf("bytes = %d, want 150 plus the link", n)
 	}
 	if _, err := os.Stat(filepath.Join(root, "a")); !os.IsNotExist(err) {
 		t.Fatal("tree should be gone")
+	}
+	if info, err := os.Stat(filepath.Join(root, "store/pkg.js")); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("the link's target must be untouched: %v %v", info, err)
 	}
 }
 
@@ -360,5 +373,397 @@ func TestPartialFailureIsAggregatedAndTheLadderContinues(t *testing.T) {
 	}
 	if r := byID["npm"]; r.Status != StatusDone || r.Bytes != 50 {
 		t.Fatalf("the ladder must continue past a failed step: %+v", r)
+	}
+}
+
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// psOutput makes the fake env answer `ps` with the given table.
+func psOutput(env *fakeEnv, table string) {
+	inner := env.Exec
+	env.Exec = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "ps" {
+			return []byte(table), nil
+		}
+		return inner(ctx, name, args...)
+	}
+}
+
+// A globalStore checkout's .bun entries are absolute symlinks into links/;
+// the bun step deletes tarballs, index dirs and manifests around it and the
+// checkout still resolves. Dot-entries (in-flight staging) stay too, and a
+// running non-install bun (a dev server) does not block the step.
+func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".bun/install/cache")
+	write(t, filepath.Join(cache, "links/is-odd@3.0.1-abc/node_modules/is-odd/index.js"), 10, 0)
+	write(t, filepath.Join(cache, "is-odd@3.0.1@@@1/index.js"), 100, 0)
+	symlink(t, filepath.Join(cache, "is-odd@3.0.1@@@1"), filepath.Join(cache, "is-odd/3.0.1@@@1"))
+	write(t, filepath.Join(cache, "@s/b@2.0.0@@@1/x.js"), 50, 0)
+	write(t, filepath.Join(cache, "abc.npm"), 7, 0)
+	write(t, filepath.Join(cache, ".staging-1/partial"), 5, 0)
+	checkout := filepath.Join(home, "app/node_modules/.bun/is-odd@3.0.1")
+	symlink(t, filepath.Join(cache, "links/is-odd@3.0.1-abc"), checkout)
+
+	env := newFakeEnv(t, home, 1<<30)
+	psOutput(env, "  900 /Users/x/.bun/bin/bun run app:dev\n  901 bun index.ts\n")
+	rep, err := Run(context.Background(), env.Env, Options{Only: []string{"bun"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Status != StatusDone || r.Bytes < 157 {
+		t.Fatalf("bun step: %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "node_modules/is-odd/index.js")); err != nil {
+		t.Fatalf("the checkout must still resolve through links/: %v", err)
+	}
+	for _, gone := range []string{"is-odd@3.0.1@@@1", "is-odd", "@s", "abc.npm"} {
+		if exists(filepath.Join(cache, gone)) {
+			t.Errorf("%s should be deleted", gone)
+		}
+	}
+	if !exists(filepath.Join(cache, ".staging-1/partial")) {
+		t.Error("dot-entries (in-flight staging) must survive")
+	}
+	if trashes, _ := filepath.Glob(filepath.Join(home, ".bun/install", bunTrashPrefix+"*")); len(trashes) > 0 {
+		t.Errorf("trash left behind: %v", trashes)
+	}
+}
+
+func TestBunStepSkipsWhileAnInstallRuns(t *testing.T) {
+	// Global flags may precede the verb. bunx writes the cache too, though
+	// never a checkout's node_modules (bun-prune lets it run).
+	for _, install := range []string{"/Users/x/.bun/bin/bun install --frozen-lockfile", "bun --cwd apps/web add zod", "bunx expo start"} {
+		home := t.TempDir()
+		write(t, filepath.Join(home, ".bun/install/cache/is-odd@3.0.1@@@1/index.js"), 100, 0)
+		env := newFakeEnv(t, home, 1<<30)
+		psOutput(env, "  900 "+install+"\n")
+		rep, err := Run(context.Background(), env.Env, Options{Only: []string{"bun"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := rep.Results[0]; r.Status != StatusSkipped || !strings.Contains(r.Reason, "pid 900") {
+			t.Fatalf("a running %q must skip the step: %+v", install, r)
+		}
+		if !exists(filepath.Join(home, ".bun/install/cache/is-odd@3.0.1@@@1/index.js")) {
+			t.Fatalf("nothing may be deleted while %q runs", install)
+		}
+	}
+}
+
+// bunPruneTree builds a globalStore checkout in miniature. Reachable: react
+// (root), @s+local (scoped root, a project-local dir), dep (only through
+// @s+local's own links), deeper (only through dep, transitively), tool (via
+// .bin), api-only (via a workspace package) and fallback (via .bun's
+// fallback node_modules). Unreachable: the stale-dir directory, and the
+// symlinks stale-link and scheduler, which only react's links/ entry names
+// (links/ resolves inside links/, never back into the checkout); symlinks
+// are counted, never deleted. young is an unreachable dir, but fresh.
+// native and native-dep (through native's own links) are unreachable from
+// node_modules but kept: apps/api/ios/Podfile.lock names native.
+func bunPruneTree(t *testing.T) (checkout, links string) {
+	t.Helper()
+	root := t.TempDir()
+	links = filepath.Join(root, "links")
+	checkout = filepath.Join(root, "app")
+	nm := filepath.Join(checkout, "node_modules")
+	store := filepath.Join(nm, ".bun")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "package.json"), []byte(`{"workspaces":["apps/*"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"react-h", "deeper-h", "tool-h", "api-h", "fallback-h", "stale-h", "scheduler-h"} {
+		write(t, filepath.Join(links, name, "node_modules/pkg/index.js"), 1, 0)
+	}
+	symlink(t, "../../scheduler-h/node_modules/pkg", filepath.Join(links, "react-h/node_modules/scheduler"))
+
+	symlink(t, ".bun/react@19/node_modules/react", filepath.Join(nm, "react"))
+	symlink(t, "../.bun/@s+local@1+hash/node_modules/@s/local", filepath.Join(nm, "@s/local"))
+	symlink(t, "../.bun/tool@1/node_modules/tool/bin/tool", filepath.Join(nm, ".bin/tool"))
+	symlink(t, "../../../node_modules/.bun/api-only@1/node_modules/api-only", filepath.Join(checkout, "apps/api/node_modules/api-only"))
+	write(t, filepath.Join(checkout, "apps/.DS_Store"), 8, 0) // `apps/*` matches files too
+	symlink(t, "../fallback@1/node_modules/fallback", filepath.Join(store, "node_modules/fallback"))
+
+	symlink(t, filepath.Join(links, "react-h"), filepath.Join(store, "react@19"))
+	write(t, filepath.Join(store, "@s+local@1+hash/node_modules/@s/local/index.js"), 3, 0)
+	symlink(t, "../../../dep@2/node_modules/dep", filepath.Join(store, "@s+local@1+hash/node_modules/@s/dep"))
+	write(t, filepath.Join(store, "dep@2/node_modules/dep/index.js"), 3, 0)
+	symlink(t, "../../deeper@3/node_modules/deeper", filepath.Join(store, "dep@2/node_modules/deeper"))
+	symlink(t, filepath.Join(links, "deeper-h"), filepath.Join(store, "deeper@3"))
+	symlink(t, filepath.Join(links, "tool-h"), filepath.Join(store, "tool@1"))
+	symlink(t, filepath.Join(links, "api-h"), filepath.Join(store, "api-only@1"))
+	symlink(t, filepath.Join(links, "fallback-h"), filepath.Join(store, "fallback@1"))
+	symlink(t, filepath.Join(links, "scheduler-h"), filepath.Join(store, "scheduler@0"))
+	symlink(t, filepath.Join(links, "stale-h"), filepath.Join(store, "stale-link@0"))
+	write(t, filepath.Join(store, "stale-dir@0/node_modules/stale/big.bin"), 4000, 0)
+	write(t, filepath.Join(store, "young@0/node_modules/young/index.js"), 9, 0)
+	write(t, filepath.Join(store, "native@1/node_modules/native/ios/a.m"), 6, 0)
+	symlink(t, "../../native-dep@1/node_modules/native-dep", filepath.Join(store, "native@1/node_modules/native-dep"))
+	write(t, filepath.Join(store, "native-dep@1/node_modules/native-dep/index.js"), 6, 0)
+	pods := "EXTERNAL SOURCES:\n  Native:\n    :path: \"../../../node_modules/.bun/native@1/node_modules/native/ios\"\n" +
+		"  React:\n    :path: \"../../../node_modules/.bun/react@19/node_modules/react\"\n"
+	if err := os.MkdirAll(filepath.Join(checkout, "apps/api/ios"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "apps/api/ios/Podfile.lock"), []byte(pods), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(nm, ".old_modules-abc/f.bin"), 1000, 0)
+	// A hardlink shared by the leftover and a stale entry counts once.
+	if err := os.Link(filepath.Join(nm, ".old_modules-abc/f.bin"), filepath.Join(store, "stale-dir@0/node_modules/stale/f.bin")); err != nil {
+		t.Fatal(err)
+	}
+	return checkout, links
+}
+
+func noBun(context.Context) ([]BunProcess, error) { return nil, nil }
+
+func TestBunPruneReachabilityWalk(t *testing.T) {
+	checkout, _ := bunPruneTree(t)
+	now := time.Now().Add(48 * time.Hour) // everything built above is two days old
+	young := filepath.Join(checkout, "node_modules/.bun/young@0")
+	if err := os.Chtimes(young, now, now); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, Now: now, BunCwds: noBun})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unreachable []string
+	for _, e := range rep.Unreachable {
+		unreachable = append(unreachable, e.Name+":"+string(e.Kind))
+	}
+	sort.Strings(unreachable)
+	if got, want := strings.Join(unreachable, " "), "stale-dir@0:dir"; got != want {
+		t.Fatalf("unreachable = %s, want %s", got, want)
+	}
+	if rep.Entries != 13 || rep.Reachable != 7 || rep.UnreachableLinks != 2 {
+		t.Fatalf("entries %d reachable %d links %d, want 13, 7 and 2 (scheduler, stale-link)", rep.Entries, rep.Reachable, rep.UnreachableLinks)
+	}
+	var native []string
+	for _, e := range rep.Native {
+		native = append(native, e.Name)
+	}
+	sort.Strings(native)
+	if got := strings.Join(native, " "); got != "native-dep@1 native@1" || rep.NativeBytes != 12 ||
+		strings.Join(rep.NativeManifests, " ") != filepath.FromSlash("apps/api/ios/Podfile.lock") {
+		t.Fatalf("kept_native = %s (%d bytes) from %v", got, rep.NativeBytes, rep.NativeManifests)
+	}
+	if len(rep.Young) != 1 || rep.Young[0].Name != "young@0" {
+		t.Fatalf("young = %+v", rep.Young)
+	}
+	if len(rep.Leftovers) != 1 || rep.Leftovers[0].Name != ".old_modules-abc" {
+		t.Fatalf("leftovers = %+v", rep.Leftovers)
+	}
+	if rep.Bytes != 5000 {
+		t.Fatalf("bytes = %d, want 5000 (the shared hardlink counted once)", rep.Bytes)
+	}
+	if !exists(filepath.Join(checkout, "node_modules/.bun/stale-dir@0")) {
+		t.Fatal("a dry run deleted")
+	}
+}
+
+func TestBunPruneApplyRefusesBusyAndDeletesOnlyCandidates(t *testing.T) {
+	checkout, _ := bunPruneTree(t)
+	now := time.Now().Add(48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(checkout, "node_modules/.bun/young@0"), now, now); err != nil {
+		t.Fatal(err)
+	}
+	busy := func(context.Context) ([]BunProcess, error) {
+		// lsof reports the disk's case; the checkout may be spelled otherwise.
+		return []BunProcess{{PID: 42, Cwd: strings.ToUpper(filepath.Join(checkout, "apps/api")), Args: "bun add zod"}}, nil
+	}
+	if _, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, Apply: true, Now: now, BunCwds: busy}); err == nil || !strings.Contains(err.Error(), "bun is running inside") {
+		t.Fatalf("a bun process in the checkout must refuse --apply: %v", err)
+	}
+	store := filepath.Join(checkout, "node_modules/.bun")
+	if !exists(filepath.Join(store, "stale-dir@0")) {
+		t.Fatal("a refused apply deleted")
+	}
+	rep, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, Apply: true, Now: now, BunCwds: noBun})
+	if err != nil || !rep.Applied || len(rep.Errors) > 0 {
+		t.Fatalf("apply: %v %+v", err, rep)
+	}
+	for _, gone := range []string{"stale-dir@0", "../.old_modules-abc"} {
+		if exists(filepath.Join(store, gone)) {
+			t.Errorf("%s should be deleted", gone)
+		}
+	}
+	for _, kept := range []string{"stale-link@0", "scheduler@0", "young@0", "native@1", "native-dep@1"} {
+		if !exists(filepath.Join(store, kept)) {
+			t.Errorf("%s must survive: symlinks are only counted, young and Podfile.lock-named entries kept", kept)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "node_modules/@s/local/index.js")); err != nil {
+		t.Fatalf("a reachable project-local package must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store, "deeper@3/node_modules/pkg/index.js")); err != nil {
+		t.Fatalf("a transitively reachable entry must survive: %v", err)
+	}
+	if trashes, _ := filepath.Glob(filepath.Join(checkout, "node_modules", bunPruneTrashPrefix+"*")); len(trashes) > 0 {
+		t.Errorf("trash left behind: %v", trashes)
+	}
+}
+
+// An install that starts and finishes between the two busy checks (here:
+// relinking a root to stale-dir@0, an old entry, so not young) is invisible
+// to both; the fence over what the walk read refuses the delete.
+func TestBunPruneApplyRefusesAnInstallThatRanDuringTheWalk(t *testing.T) {
+	checkout, _ := bunPruneTree(t)
+	now := time.Now().Add(48 * time.Hour)
+	checks := 0
+	installDuringWalk := func(context.Context) ([]BunProcess, error) {
+		if checks++; checks == 2 {
+			symlink(t, ".bun/stale-dir@0/node_modules/stale", filepath.Join(checkout, "node_modules/stale"))
+		}
+		return nil, nil
+	}
+	_, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, Apply: true, Now: now, BunCwds: installDuringWalk})
+	if err == nil || !strings.Contains(err.Error(), "changed during the walk") {
+		t.Fatalf("a root relinked during the walk must refuse --apply: %v", err)
+	}
+	if !exists(filepath.Join(checkout, "node_modules/.bun/stale-dir@0/node_modules/stale/big.bin")) {
+		t.Fatal("the entry the install relinked was deleted")
+	}
+}
+
+// A bun in a checkout nested under the pruned one (a worktree's .git file, a
+// clone's .git dir) with a package.json of its own is its own project and does
+// not hold the prune. Anywhere else under the checkout it does, and so does a
+// nested checkout bun resolves to the pruned root: no package.json on the way
+// up, or one the root's workspaces list. The checkout may be typed in another
+// case than lsof reports.
+func TestBunPruneBusyCheckSkipsNestedBunProjects(t *testing.T) {
+	checkout := filepath.Join(t.TempDir(), "App")
+	file := func(rel, body string) {
+		t.Helper()
+		path := filepath.Join(checkout, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file("package.json", `{"workspaces":["apps/*"]}`)
+	file("apps/api/package.json", `{}`)
+	file(".worktrees/wt/.git", "gitdir: ../../.git/worktrees/wt\n")
+	file(".worktrees/wt/package.json", `{"workspaces":["apps/*"]}`)
+	file(".worktrees/wt/apps/api/package.json", `{}`)
+	file("vendor/clone/.git/HEAD", "ref: refs/heads/main\n")
+	file("vendor/clone/package.json", `{}`)
+	file(".worktrees/no-pkg/.git", "gitdir: ../../.git/worktrees/no-pkg\n")
+	file("apps/submodule/.git", "gitdir: ../../.git/modules/submodule\n")
+	file("apps/submodule/package.json", `{}`)
+	// Look-alikes that are no checkout: a plain dir under .worktrees, and one
+	// whose .git is only a symlink.
+	file(".worktrees/plain/package.json", `{}`)
+	file(".worktrees/linked/package.json", `{}`)
+	if err := os.Symlink(filepath.Join(checkout, ".worktrees/wt/.git"), filepath.Join(checkout, ".worktrees/linked/.git")); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		cwd     string
+		refuses bool
+	}{
+		{"", true},
+		{"apps/api", true},
+		{".worktrees/wt/apps/api", false},
+		{".worktrees/wt", false},
+		{"vendor/clone", false},
+		{".worktrees/no-pkg", true},
+		{"apps/submodule", true},
+		{".worktrees/plain", true},
+		{".worktrees/linked", true},
+	}
+	for _, spelling := range []string{checkout, strings.ToUpper(checkout)} {
+		for _, c := range cases {
+			cwd := filepath.Join(checkout, c.cwd)
+			procs := func(context.Context) ([]BunProcess, error) { return []BunProcess{{PID: 7, Cwd: cwd}}, nil }
+			err := refuseBusyCheckout(context.Background(), BunPruneOptions{BunCwds: procs}, []string{spelling})
+			if refused := err != nil; refused != c.refuses {
+				t.Errorf("checkout %s, bun in %q: refused = %v (%v), want %v", spelling, c.cwd, refused, err, c.refuses)
+			}
+		}
+	}
+}
+
+// Only a bun that writes node_modules holds the prune: the install family in
+// every argv shape (full path, flag-first, a flag value before the verb, which
+// bun itself would read as the verb, so counting it only over-counts), or a
+// bun whose command line ps no longer listed. A session launcher, a dev server
+// or bunx with its cwd in the checkout root only resolves modules.
+func TestBunPruneBusyCheckCountsOnlyInstalls(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, "package.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		args    string
+		refuses bool
+	}{
+		{"bun /Users/x/Work/Projects/Libraries/claude-switcheroo/bin/switcheroo start --model opus", false},
+		{"bun /Users/x/.local/bin/switcheroo start --resume-pick", false},
+		{"bun run app:dev:e2e", false},
+		{"/Users/x/.bun/bin/bun --cwd apps/web run dev", false},
+		{"bun --bun next dev", false},
+		{"bun --watch src/index.ts", false},
+		{"bun index.ts", false},
+		{"bun cli.ts", false},
+		{"bun x expo start", false},
+		{"bunx expo start", false},
+		{"bun install", true},
+		{"/Users/x/.bun/bin/bun install --frozen-lockfile", true},
+		{"bun i", true},
+		{"bun --cwd x install", true},
+		{"bun --cwd=apps/web add zod", true},
+		{"bun --filter @fixit/api a zod", true},
+		{"bun --silent add x", true},
+		{"bun remove zod", true},
+		{"bun rm zod", true},
+		{"bun uninstall zod", true},
+		{"bun update", true},
+		{"bun upgrade", true},
+		{"bun link", true},
+		{"bun unlink", true},
+		{"bun pm trust --all", true},
+		{"bun patch react", true},
+		{"bun patch-commit node_modules/react", true},
+		{"bun ci", true},
+		{"bun create vite scratch", true},
+		{"bun c vite scratch", true},
+		{"bun init -y", true},
+		{"", true},
+	}
+	for _, c := range cases {
+		procs := func(context.Context) ([]BunProcess, error) {
+			return []BunProcess{{PID: 7, Cwd: checkout, Args: c.args}}, nil
+		}
+		err := refuseBusyCheckout(context.Background(), BunPruneOptions{BunCwds: procs}, []string{checkout})
+		if refused := err != nil; refused != c.refuses {
+			t.Errorf("bun %q in the checkout root: refused = %v (%v), want %v", c.args, refused, err, c.refuses)
+		}
+	}
+}
+
+func TestParseLsofCwds(t *testing.T) {
+	got := parseLsofCwds([]byte("p123\nfcwd\nn/w/app\np456\nfcwd\nn/w/other dir\n"))
+	if len(got) != 2 || got[0] != (BunProcess{PID: 123, Cwd: "/w/app"}) || got[1] != (BunProcess{PID: 456, Cwd: "/w/other dir"}) {
+		t.Fatalf("got %+v", got)
 	}
 }

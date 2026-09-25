@@ -114,6 +114,12 @@ type Result struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// skipError lets a Run step decline at run time on a condition only the run
+// can see (an install in flight); the step reports skipped, not failed.
+type skipError string
+
+func (e skipError) Error() string { return string(e) }
+
 // Note is a by-hand item the run surfaces but never deletes.
 type Note struct {
 	Title  string `json:"title"`
@@ -319,8 +325,12 @@ func runStep(ctx context.Context, env Env, opts Options, step Step) Result {
 	res.Bytes = bytes
 	res.Seconds = time.Since(started).Seconds()
 	res.FreeAfter, _, _ = env.Free(env.Volume)
+	var skip skipError
 	switch {
 	case err == nil:
+	case errors.As(err, &skip):
+		res.Status = StatusSkipped
+		res.Reason = string(skip)
 	case errors.Is(err, context.Canceled):
 		res.Status = StatusStopped
 		res.Reason = "target reached"
