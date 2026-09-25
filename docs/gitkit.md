@@ -34,6 +34,13 @@ vybava gitkit pr-extensions --stage ensure-pr --repo "$PWD"   # the repo's prm e
     invocation; a bad anchor fails loudly, never falls back to cwd.
 - Script verbs never parse flags — every argument belongs to the verb — and
   run in-process; the verb's return value is the exit code.
+- ⚠️ The ported verbs keep their Node grammar: they look up the flags they know
+  and IGNORE the rest, `--help` included, so a mistyped flag runs the default.
+  That leniency is frozen by the byte-for-byte contract, not endorsed. A verb
+  born in Go (`pr-extensions`) validates its argv instead: an unknown argument
+  or a bad value is `GITKIT_BAD_ARGS` (exit 2, a runx envelope under `--json`,
+  `✗ CODE: detail — fix` otherwise) and `--help` prints real help. New verbs
+  follow that, never the ported pattern.
 
 ## Tests
 
@@ -56,7 +63,7 @@ go test ./internal/gitkit/...
 | `synccontext` | local-vs-remote DB url detection, globs, `--freeze`, the verb end to end |
 | `classifypaths` · `tddclassify` | commit bundling and TDD classification |
 | `worktree` · `reporoot` · `listprs` · `beforereview` | path, listing and hook helpers |
-| `prextensions` | extensions come only from `origin/<default>` (never a PR branch, an uncommitted edit, an untracked draft or an unpushed commit), `--stage` filtering, `.local` switch-off, every malformed file and symlink refused |
+| `prextensions` | extensions come only from `origin/<default>` (never a PR branch, an uncommitted edit, an untracked draft or an unpushed commit), `--stage` filtering, `.local` switch-off, every malformed file and symlink refused, strict argv (`GITKIT_BAD_ARGS`, real `--help`) |
 | `native` | `execFile`'s Node failure modes, `Number()` parsing |
 
 Mutating `github-io` subcommands are tested on argv construction only; never

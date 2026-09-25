@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/runx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -184,19 +185,96 @@ func resolvePRExtensions(glob string, tree []treeEntry, read func(oid string) (s
 	return out, nil
 }
 
-func runPRExtensions(args []string, stdout, stderr io.Writer) int {
-	var stage *string
-	if i := slices.Index(args, "--stage"); i != -1 {
-		next := ""
-		if i+1 < len(args) {
-			next = args[i+1]
+const prExtensionsUsage = "vybava gitkit pr-extensions [--stage ensure-pr|round|merge] [--repo <abs path>] [--json]"
+
+const prExtensionsHelp = "usage: " + prExtensionsUsage + `
+
+List and validate the repo's prm extensions: PR_EXTENSIONS=<glob> in
+.claude/.claude.git.config, key and files read as git blobs at
+origin/<default branch> — never a working tree.
+
+  --stage S   only the extensions for stage S: ensure-pr, round or merge
+  --repo P    the checkout to anchor on (default: GIT_SKILL_REPO, else cwd)
+  --json      diagnostics as a JSON envelope (the result is always JSON)
+  -h, --help  this help
+
+stdout  {prExtensions, stage, ref, commit,
+         extensions: [{name, stages, description, relPath, instructions}]}
+exit    0 listed (possibly none) · 1 a glob matching nothing, a malformed or
+        symlinked extension, a tracked .local, no default branch ·
+        2 an argument this verb does not take (GITKIT_BAD_ARGS)
+contract: the prm skill's references/extensions.md
+`
+
+// prExtensionsArgs is pr-extensions' argv. Unlike the ported verbs, whose
+// Node grammar ignored what it did not know, this one refuses it: a caller
+// passing --ref must not believe it validated something it did not.
+type prExtensionsArgs struct {
+	stage      *string
+	repo       *string // resolved from here only, never by re-reading argv
+	json, help bool
+}
+
+func parsePRExtensionsArgs(args []string) (prExtensionsArgs, error) {
+	var out prExtensionsArgs
+	var bad error
+	refuse := func(format string, a ...any) {
+		if bad == nil {
+			bad = fmt.Errorf(format, a...)
 		}
-		if !slices.Contains(PRExtensionStages, next) {
-			return fail(stderr, fmt.Errorf("--stage must be one of %s", strings.Join(PRExtensionStages, ", ")))
-		}
-		stage = &next
 	}
-	root, err := repoRoot(args)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name, value, inline := strings.Cut(arg, "=")
+		switch {
+		case arg == "-h" || arg == "--help":
+			out.help = true
+		case arg == "--json":
+			out.json = true
+		case name == "--stage" || name == "--repo":
+			if !inline {
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+					value = args[i]
+				}
+			}
+			slot := &out.repo
+			if name == "--stage" {
+				slot = &out.stage
+			}
+			switch {
+			case value == "":
+				refuse("%s needs a value", name)
+			case *slot != nil:
+				refuse("%s is given twice", name)
+			case name == "--stage" && !slices.Contains(PRExtensionStages, value):
+				refuse("--stage %q is not a stage (one of %s)", value, strings.Join(PRExtensionStages, ", "))
+			default:
+				*slot = &value
+			}
+		default:
+			refuse("unknown argument %q", arg)
+		}
+	}
+	return out, bad
+}
+
+func runPRExtensions(args []string, stdout, stderr io.Writer) int {
+	parsed, bad := parsePRExtensionsArgs(args)
+	if parsed.help {
+		fmt.Fprint(stdout, prExtensionsHelp)
+		return 0
+	}
+	if bad != nil {
+		s := &runx.Session{Tool: "gitkit", JSON: parsed.json, Verb: "pr-extensions", Stdout: stdout, Stderr: stderr}
+		return s.Finish(runx.DiagError{Diag: runx.Diagnostic{Code: DiagBadArgs, Severity: "error", Detail: bad.Error(), Fix: prExtensionsUsage}})
+	}
+	stage := parsed.stage
+	anchor := []string{} // GIT_SKILL_REPO, else cwd — as every verb resolves it
+	if parsed.repo != nil {
+		anchor = []string{"--repo", *parsed.repo}
+	}
+	root, err := repoRoot(anchor)
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -46,10 +46,11 @@ to do, say nothing.
   version already merged (none, for the first one) — follow the new file by hand on
   that PR if it needs it.
 - `PR_EXTENSIONS=` (empty) in the gitignored `.local` switches them off on one machine.
-- **Exit 1 is a STOP at that stage** — a glob that matches nothing, a malformed file
-  (missing or unknown key, unknown stage, empty body, a name used twice, a symlink),
-  an unresolvable default branch, a `.local` git tracks (it could pin the ref to a
-  PR branch): print the error line + the PR URL. A repo that
+- **A non-zero exit is a STOP at that stage.** Exit 1: a glob that matches nothing, a
+  malformed file (missing or unknown key, unknown stage, empty body, a name used
+  twice, a symlink), an unresolvable default branch, a `.local` git tracks (it could
+  pin the ref to a PR branch). Exit 2 (`GITKIT_BAD_ARGS`): an argument the verb does
+  not take — `--help` lists them. Print the error line + the PR URL. A repo that
   ships an extension expects it to run; it is never skipped.
 
 ## Stages
