@@ -60,6 +60,14 @@ A STOP prints the blocker + PR URL and stops. 6 iterations still red → STOP an
    failure (timeout, runner error, network) → `gitkit github-io rerun-failed --runId <id>`
    once; still red → STOP.
 
+## Extensions before the merge (`merge` stage)
+
+Gates green → `vybava gitkit pr-extensions --stage merge --repo <ABS checkout path>`
+→ follow each listed extension per `extensions.md`, immediately before the merge call.
+None listed → skip silently. One that pushes moved the head: re-run the precheck and
+Drive to green, then run the `merge` extensions again (they must now change
+nothing). One that fails is a STOP — nothing merges.
+
 ## Merge
 
 `gh pr merge <pr> --<mergeMethod> --delete-branch` — `mergeMethod` is what
@@ -267,6 +275,14 @@ AFTER_MERGE_STOP_SERVERS=repo
 # Same tokens. Must be idempotent and cheap. Stops processes we own (dev servers,
 # bundlers, emulators) — never databases/containers, which stay warm.
 BEFORE_REVIEW_CMD=/wk:pause {slug}
+
+# Markdown files prm reads and FOLLOWS at a stage of its flow — for a project step that
+# needs the model (drafting a release note from the diff), which a shell hook cannot do.
+# One glob relative to the repo root. Key and files are read at origin/<default branch>:
+# only merged instructions run, never a working tree or a PR branch's copy. Frontmatter:
+# name, stage (ensure-pr | round | merge, or a list), description. Listed per stage by
+# gitkit pr-extensions; contract in extensions.md.
+PR_EXTENSIONS=.claude/prm/*.md
 
 # The branch PRs land on and the seat the main clone sits on. Set it in the gitignored
 # .claude/.claude.git.config.local while one machine adopts an integration branch ahead of

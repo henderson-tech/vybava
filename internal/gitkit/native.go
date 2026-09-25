@@ -37,6 +37,7 @@ var native = map[string]Verb{
 	"github-io":      runGitHubIO,
 	"resolve-fetch":  runResolveFetch,
 	"pr-events":      runPREvents,
+	"pr-extensions":  runPRExtensions,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.
