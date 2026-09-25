@@ -345,6 +345,44 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	project.Flags().StringVar(&projTo, "to", "", "last local day, YYYY-MM-DD (included)")
 	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")
 
+	var beatsFrom, beatsTo string
+	beats := &cobra.Command{
+		Use: "beats", Short: "Minutes you prompted in and minutes agents answered in, per project, across local days (read-only, no index pass)", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s := session(cmd)
+			if beatsFrom == "" || beatsTo == "" {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
+					Detail: "--from and --to are required", Fix: "tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
+			}
+			rng, err := tokentime.ParseBeatsRange(beatsFrom, beatsTo)
+			if err != nil {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
+					Detail: err.Error(), Fix: "tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
+			}
+			state, _, err := paths()
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			// Read-only: never creates the directory or database, never migrates.
+			store, err := tokentime.OpenReadOnly(state)
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
+			}
+			defer store.Close()
+			out, err := store.Beats(tokentime.BeatsOptions{Range: rng})
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
+			}
+			var next []string
+			if !out.Coverage.Complete {
+				next = append(next, "tokentime index")
+			}
+			return finish(s, out, nil, next, nil)
+		},
+	}
+	beats.Flags().StringVar(&beatsFrom, "from", "", "first local day, YYYY-MM-DD")
+	beats.Flags().StringVar(&beatsTo, "to", "", "last local day, YYYY-MM-DD (included)")
+
 	status := &cobra.Command{
 		Use: "status", Short: "What is indexed and what is still pending", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -404,7 +442,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		},
 	}
 
-	root.AddCommand(index, rollup, project, status, prices)
+	root.AddCommand(index, rollup, project, beats, status, prices)
 	return root
 }
 

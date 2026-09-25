@@ -59,7 +59,7 @@ const (
 const schema = `
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0, beats TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, root TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS roots(cwd TEXT PRIMARY KEY, root TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buckets(
@@ -87,17 +87,30 @@ CREATE TABLE IF NOT EXISTS session_hours(
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS session_hours_by_hour ON session_hours(hour);
 CREATE TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY, src INTEGER NOT NULL, day INTEGER NOT NULL);
-PRAGMA user_version=3;
+CREATE TABLE IF NOT EXISTS beats(
+	minute INTEGER NOT NULL,
+	project INTEGER NOT NULL,
+	kind INTEGER NOT NULL,
+	PRIMARY KEY(minute, project, kind)
+) WITHOUT ROWID;
+PRAGMA user_version=4;
 `
 
 // schemaVersion is the user_version the schema above ends on.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // readableSchema is the oldest schema the rollup and status queries run on
-// unchanged — schema 3 only added an index — so a store an index pass has not
-// migrated yet is still served. A migration that changes a table they read
-// raises it.
+// unchanged — schema 3 only added an index, schema 4 a table and a column
+// they never read — so a store an index pass has not migrated yet is still
+// served. A migration that changes a table they read raises it.
 const readableSchema = 2
+
+// projectSchema is the oldest schema the project verb reads: the first with
+// buckets_by_project. beatsSchema is the first that records beats.
+const (
+	projectSchema = 3
+	beatsSchema   = 4
+)
 
 // migrations bring an older schema up to date, keyed by the version they
 // start from. The schema itself re-runs after them on every older store, so
@@ -108,9 +121,28 @@ const readableSchema = 2
 // already bounded by session_hours_by_hour and its primary key, and a
 // project-leading one would win the rollup's DISTINCT project, session read
 // over its hour range and turn it into a whole-table scan.
-var migrations = map[int]string{
+//
+// Every migration adds one column, and adds it only when it is missing: the
+// schema's version bump is a separate statement, so a pass killed between the
+// two leaves the column behind in a store still at the old version, and
+// ALTER TABLE ADD COLUMN is not idempotent.
+var migrations = map[int]column{
 	// v1 → v2: a file whose unread bytes are an unterminated tail.
-	1: "ALTER TABLE files ADD COLUMN tail INTEGER NOT NULL DEFAULT 0",
+	1: {"files", "tail", "INTEGER NOT NULL DEFAULT 0"},
+	// v3 → v4: each file's beats backlog ('' = read before beats existed).
+	3: {"files", "beats", "TEXT NOT NULL DEFAULT ''"},
+}
+
+type column struct{ table, name, decl string }
+
+// addColumn adds c unless its table already has it.
+func addColumn(db *sql.DB, c column) error {
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", c.table, c.name).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec("ALTER TABLE " + c.table + " ADD COLUMN " + c.name + " " + c.decl)
+	return err
 }
 
 // Seen-identity sources. Every identity is kept forever: a transcript or
@@ -119,6 +151,12 @@ var migrations = map[int]string{
 const (
 	srcClaude = 0
 	srcCodex  = 1
+)
+
+// Beat kinds: a minute you typed a prompt in, a minute an agent answered in.
+const (
+	beatHuman = 0
+	beatAI    = 1
 )
 
 // Store is the state directory: tokentime.db plus its lock and price override.
@@ -183,9 +221,12 @@ func (s *Store) prepare() error {
 		return err
 	}
 	if version < schemaVersion {
-		if m, ok := migrations[version]; ok {
-			if _, err := s.db.Exec(m); err != nil {
-				return fmt.Errorf("migrate %s from schema %d: %w", path, version, err)
+		// A new store (version 0) gets every column from the schema itself.
+		for from := max(version, 1); version > 0 && from < schemaVersion; from++ {
+			if c, ok := migrations[from]; ok {
+				if err := addColumn(s.db, c); err != nil {
+					return fmt.Errorf("migrate %s from schema %d: %w", path, from, err)
+				}
 			}
 		}
 		if _, err := s.db.Exec(schema); err != nil {
@@ -226,9 +267,9 @@ func OpenReadOnly(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version < schemaVersion {
+	if version < projectSchema {
 		db.Close()
-		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads %d", ErrStaleSchema, path, version, schemaVersion)
+		return nil, fmt.Errorf("%w: %s is schema %d, this binary reads %d or later", ErrStaleSchema, path, version, projectSchema)
 	}
 	return &Store{Dir: dir, db: db, version: version}, nil
 }

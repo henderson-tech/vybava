@@ -29,11 +29,54 @@ type SessionMeta struct {
 	Timestamp  string `json:"timestamp"`
 	CWD        string `json:"cwd"`
 	CLIVersion string `json:"cli_version"`
-	Git        *struct {
+	Originator string `json:"originator"`
+	// Source is "cli", "vscode", "exec", … — or an object for a thread
+	// another thread spawned (a subagent, a guardian).
+	Source json.RawMessage `json:"source"`
+	Git    *struct {
 		Branch        string `json:"branch"`
 		CommitHash    string `json:"commit_hash"`
 		RepositoryURL string `json:"repository_url"`
 	} `json:"git"`
+}
+
+// Interactive reports whether a person drives the thread: its header names a
+// CLI or editor source — not a headless `codex exec`, not a thread another
+// thread spawned (an object source). A header naming no source is unknown,
+// and unknown is never a person.
+func (m SessionMeta) Interactive() bool {
+	var source string
+	if m.Originator == "codex_exec" || json.Unmarshal(m.Source, &source) != nil {
+		return false
+	}
+	return source != "" && source != "exec"
+}
+
+// EventHeader is the part of an event_msg payload that names what happened.
+type EventHeader struct {
+	Type string `json:"type"`
+	Item *struct {
+		Type string `json:"type"`
+	} `json:"item"`
+}
+
+// UserPrompt reports whether an event is the user's own message: a completed
+// UserMessage item (CLI 0.150+) or, in older rollouts, a user_message event.
+// Injected context — AGENTS.md, internal continuations — is a response_item,
+// never one of these.
+func (e EventHeader) UserPrompt() bool {
+	switch e.Type {
+	case EventUserMessage:
+		return true
+	case EventItemCompleted:
+		return e.Item != nil && e.Item.Type == ItemUserMessage
+	}
+	return false
+}
+
+// RolloutUserLine is the cheap prefilter for UserPrompt.
+func RolloutUserLine(line []byte) bool {
+	return bytes.Contains(line, []byte(`"UserMessage"`)) || bytes.Contains(line, []byte(`"user_message"`))
 }
 
 // TurnContext is a turn_context payload: the model (session_meta carries none)
@@ -96,6 +139,9 @@ const (
 	RolloutUsageRecord = "token_usage_record"
 	RolloutEventMsg    = "event_msg"
 	EventTokenCount    = "token_count"
+	EventItemCompleted = "item_completed"
+	EventUserMessage   = "user_message"
+	ItemUserMessage    = "UserMessage"
 )
 
 // RolloutUsageLine is the cheap prefilter: a rollout is mostly transcript, and

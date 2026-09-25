@@ -543,7 +543,7 @@ func TestSchema3SeeksAProjectsBucketsWithoutChangingAnAnswer(t *testing.T) {
 		}
 		return string(out)
 	}
-	if _, err := s.db.Exec("DROP INDEX buckets_by_project; PRAGMA user_version=2"); err != nil { // as the schema 2 binary left it
+	if _, err := s.db.Exec(dropBeats + "DROP INDEX buckets_by_project; PRAGMA user_version=2"); err != nil { // as the schema 2 binary left it
 		t.Fatal(err)
 	}
 	before := answers(s)

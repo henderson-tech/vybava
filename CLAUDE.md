@@ -84,7 +84,9 @@ codexusage read through it; never add a fourth parser. `internal/tokentime`
 builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract
-with claude-switcheroo (`src/arcade/contract.ts`). Rules: `docs/tokentime.md`.
+with claude-switcheroo (`src/arcade/contract.ts`), the beats JSON with its
+timesheet (`src/timesheet/contract.ts`). Beats (per-minute human/ai presence)
+backfill through a beats-only backlog read that never charges. Rules: `docs/tokentime.md`.
 
 `internal/plaud` reads the Plaud account directly (PKCE login, vault-injected
 refresh token, cached access token only); the manual-only skill is

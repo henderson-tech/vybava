@@ -106,6 +106,9 @@ func (f fixture) index(t *testing.T, s *Store) IndexReport {
 
 var prague, _ = time.LoadLocation("Europe/Prague")
 
+// dropBeats leaves a store as the schema 3 binary did: no beats, no backlog column.
+const dropBeats = "DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; "
+
 func rollupOf(t *testing.T, s *Store, days, hours int) Rollup {
 	t.Helper()
 	r, err := s.Rollup(RollupOptions{Days: days, Hours: hours, Now: time.Date(2026, 9, 23, 15, 30, 0, 0, prague), Location: prague})
@@ -490,8 +493,9 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 		ddl      string
 		readable bool
 	}{
-		{2, "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
-		{1, "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},
+		{3, dropBeats + "PRAGMA user_version=3", true},
+		{2, dropBeats + "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
+		{1, dropBeats + "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},
 	} {
 		w, _, err := openDB(db, "")
 		if err != nil {
@@ -524,6 +528,25 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 			t.Fatalf("schema %d after the next pass = %d, want %d", old.version, v, schemaVersion)
 		}
 		s.Close()
+	}
+}
+
+// A pass killed after a migration's ALTER but before the version bump leaves
+// the column in a store still at the old version; the next pass finishes the
+// migration instead of failing on the column it already added.
+func TestAMigrationCutShortAfterItsAlterFinishesOnTheNextPass(t *testing.T) {
+	f := newFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	if _, err := s.db.Exec("DROP TABLE beats; PRAGMA user_version=3"); err != nil { // files.beats stays: the ALTER ran
+		t.Fatal(err)
+	}
+	s.Close()
+	s = f.open(t)
+	f.index(t, s)
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("schema after the next pass = %d, %v; want %d", version, err, schemaVersion)
 	}
 }
 
