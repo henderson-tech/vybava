@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -103,7 +104,8 @@ type Job struct {
 // Workflow is one file under .github/workflows.
 type Workflow struct {
 	Path string `json:"path"`
-	// PullRequest: the workflow runs on pull_request / pull_request_target,
+	// PullRequest: the workflow runs on pull_request (pull_request_target is
+	// outside the standard — see triggersPullRequest),
 	// so its jobs need the guard. Others are listed with no jobs.
 	PullRequest bool  `json:"pullRequest"`
 	Jobs        []Job `json:"jobs"`
@@ -297,7 +299,9 @@ func needsOf(n *yaml.Node) []string {
 // runsAfterSkip: a status function in the condition opts the job back in
 // when its needs were skipped, so `needs` no longer implies skipped.
 func runsAfterSkip(cond string) bool {
-	for _, fn := range []string{"always()", "cancelled()", "failure()"} {
+	// success() included: an explicit status function disables the implicit
+	// success() gate, so `success() || x` can run when its needs were skipped.
+	for _, fn := range []string{"always()", "cancelled()", "failure()", "success()"} {
 		if strings.Contains(cond, fn) {
 			return true
 		}
@@ -382,20 +386,23 @@ func evalUnary(s string) tv {
 func evalAtom(s string) tv {
 	a := strings.Join(strings.Fields(s), " ")
 	switch {
-	case a == "github.event_name != 'pull_request'", a == "github.event_name == 'pull_request'":
-		if strings.Contains(a, "!=") {
-			return tvFalse
+	// Actions compares strings case-insensitively: 'Pull_Request' matches.
+	case eventCmp.MatchString(a):
+		m := eventCmp.FindStringSubmatch(a)
+		equal := strings.EqualFold(m[2], "pull_request")
+		if (m[1] == "==") == equal {
+			return tvTrue
 		}
-		return tvTrue
-	case strings.HasPrefix(a, "github.event_name == '"):
 		return tvFalse
-	case strings.HasPrefix(a, "github.event_name != '"):
-		return tvTrue
 	case a == strings.Join(strings.Fields(guardCore[1:]), " "):
 		return tvTrue // contains(labels, 'skip-ci')
 	}
 	return tvUnknown
 }
+
+// eventCmp is `github.event_name == 'x'` / `!= 'x'`, the one fact the
+// evaluator knows about the run.
+var eventCmp = regexp.MustCompile(`^github\.event_name (==|!=) '([^']*)'$`)
 
 // balanced: the parentheses of s close inside s (so `(a) || (b)` is not one
 // parenthesised group).
@@ -577,7 +584,9 @@ func trailingComment(line string) string {
 		c := line[i]
 		switch {
 		case quote != 0:
-			if c == quote {
+			if c == '\\' && quote == '"' {
+				i++ // an escaped char inside double quotes never closes them
+			} else if c == quote {
 				quote = 0
 			}
 		case c == '\'' || c == '"':

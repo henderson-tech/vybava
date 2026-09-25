@@ -262,3 +262,25 @@ func TestWrapKeepsTrailingComment(t *testing.T) {
 		t.Errorf("trailing comment lost:\n%s", out)
 	}
 }
+
+func TestEvaluatorEdgeCases(t *testing.T) {
+	for cond, want := range map[string]bool{
+		"github.event_name == 'Pull_Request' && github.event.action == 'opened'": false, // == is case-insensitive
+		"github.event_name != 'PULL_REQUEST'":                                    true,
+		"github.event_name == 'Push'":                                            true,
+		"success() || github.event_name == 'push'":                               false,
+	} {
+		if got := skipsLabelledPR(cond); got != want {
+			t.Errorf("skipsLabelledPR(%q) = %v, want %v", cond, got, want)
+		}
+	}
+	if !runsAfterSkip("success() || github.event_name == 'pull_request'") {
+		t.Error("an explicit success() disables the implicit one: the dependant may run")
+	}
+	if got := trailingComment(`    if: "github.actor == \"a # b\""  # real`); got != " # real" {
+		t.Errorf("escaped quote: %q", got)
+	}
+	if got := trailingComment(`    if: "github.actor == \"a # b\""`); got != "" {
+		t.Errorf("no comment after an escaped quote: %q", got)
+	}
+}

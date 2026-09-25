@@ -36,7 +36,7 @@ case "$*" in
   "repo view"*) echo "acme/widgets" ;;
   "pr view"*) echo '{"number":7,"url":"https://github.com/acme/widgets/pull/7","headRefOid":"abc123","labels":[{"name":"eve-ignore"},{"name":"bug"}]}' ;;
   "run list"*) echo '[{"databaseId":1,"status":"completed","workflowName":"CI"},{"databaseId":2,"status":"in_progress","workflowName":"CI"},{"databaseId":3,"status":"queued","workflowName":"Lint"}]' ;;
-  "label list"*) printf 'bug\nskip-ci\n' ;;
+  "label list"*) echo '[{"name":"good first issue"},{"name":"skip-ci"}]' ;;
   "run cancel 3"*) echo "already completed" >&2; exit 1 ;;
   *) : ;;
 esac
@@ -56,7 +56,7 @@ esac
 		"repo view --json nameWithOwner --jq .nameWithOwner",
 		"pr view 7 --repo acme/widgets --json number,url,headRefOid,labels",
 		"run list --repo acme/widgets --commit abc123 --limit 200 --json databaseId,status,workflowName",
-		"label list --repo acme/widgets --limit 200 --json name --jq .[].name",
+		"label list --repo acme/widgets --limit 1000 --json name",
 		"pr edit 7 --repo acme/widgets --add-label skip-ci",
 		"run cancel 2 --repo acme/widgets",
 		"run cancel 3 --repo acme/widgets",

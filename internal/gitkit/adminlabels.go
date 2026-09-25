@@ -138,18 +138,29 @@ func runAdminLabels(args []string, stdout, stderr io.Writer) int {
 	if err := json.Unmarshal([]byte(runsOut), &runs); err != nil {
 		return fail(stderr, err)
 	}
-	repoLabelsOut, err := gh("label", "list", "--repo", slug, "--limit", "200", "--json", "name", "--jq", ".[].name")
+	repoLabelsOut, err := gh("label", "list", "--repo", slug, "--limit", "1000", "--json", "name")
 	if err != nil {
 		return fail(stderr, err)
 	}
-	repoLabels := strings.Fields(repoLabelsOut)
+	var repoLabelRows []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(repoLabelsOut), &repoLabelRows); err != nil {
+		return fail(stderr, err)
+	}
+	repoLabels := make([]string, 0, len(repoLabelRows))
+	for _, r := range repoLabelRows {
+		repoLabels = append(repoLabels, r.Name)
+	}
 
 	toAdd, toCancel := planAdminLabels(present, runs)
 	// Create only what the REPO lacks — a label a human recoloured or
 	// re-described is theirs; the PR-side gap alone never rewrites it.
 	for _, l := range skipci.Labels() {
 		if slices.Contains(toAdd, l.Name) && !slices.Contains(repoLabels, l.Name) {
-			if _, err := gh(skipci.LabelArgs(l, slug)...); err != nil {
+			// "already exists" (a label past the list, or a race) is not a
+			// failure: the label is there, which is all the next step needs.
+			if _, err := gh(skipci.LabelArgs(l, slug)...); err != nil && !strings.Contains(err.Error(), "already exists") {
 				return fail(stderr, err)
 			}
 		}

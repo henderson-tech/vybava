@@ -51,7 +51,7 @@ jobs:
 ## The three tools
 
 **`vybava skipci check|apply [repo]`** — the drift check and the generator.
-`check` lists each job of each `pull_request` (or `pull_request_target`)
+`check` lists each job of each `pull_request`
 workflow as `guarded`, `missing` (no `if:`), `wrap` (a single-line `if:` the
 guard can be AND-ed onto) or `manual` (a block or multi-line condition a human
 edits), exit 1 when any is not guarded. `apply` inserts and wraps by line
