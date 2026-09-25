@@ -67,15 +67,7 @@ func guardDevboxOnly(in *HookInput) *Denial {
 	if len(cfg.DevboxOnly) == 0 {
 		return nil
 	}
-	patterns := make([]*regexp.Regexp, 0, len(cfg.DevboxOnly))
-	for _, p := range cfg.DevboxOnly {
-		re, err := regexp.Compile(p)
-		if err != nil {
-			continue // loadGuardConfig already rejected invalid patterns
-		}
-		patterns = append(patterns, re)
-	}
-	seg := devboxOnlyMatch(cmd, patterns)
+	seg := devboxOnlyMatch(cmd, compileDevboxPatterns(cfg.DevboxOnly))
 	if seg == "" {
 		return nil
 	}

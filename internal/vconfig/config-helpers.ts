@@ -159,6 +159,8 @@ export interface VybavaConfig {
     testWorkerCap?: number;
     /** RE2 patterns over one local command segment; a match must run through `devbox run -- '<cmd>'` (machine:devbox-only). Escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1. */
     devboxOnly?: string[];
+    /** RE2 patterns matched like devboxOnly, refused only in a checkout that has a Devbox workspace (a `sync:` path under ~/.devbox/workspaces, parked or not) - machine:devbox-workspace; elsewhere the command may run here. Escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1. */
+    devboxWhenWorkspace?: string[];
     /** Most booted simulators before a boot is refused (machine:sim-cap); at least 1, default 2. */
     simCap?: number;
     /** Most Metro/next/API dev servers before a start is refused (machine:dev-server-cap); at least 1, default 3. */

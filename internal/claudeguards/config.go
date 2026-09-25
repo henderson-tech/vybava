@@ -23,6 +23,9 @@ type Config struct {
 	// DevboxOnly lists RE2 patterns; a local command segment matching one
 	// must run through `devbox run` (machine:devbox-only).
 	DevboxOnly []string `json:"devboxOnly,omitempty"`
+	// DevboxWhenWorkspace lists RE2 patterns matched the same way, refused
+	// only when the checkout has a Devbox workspace (machine:devbox-workspace).
+	DevboxWhenWorkspace []string `json:"devboxWhenWorkspace,omitempty"`
 	// SimCap is the most booted simulators this Mac may hold before a boot
 	// is refused (machine:sim-cap); DevServerCap the same for Metro/next/
 	// API dev servers (machine:dev-server-cap).
@@ -73,9 +76,11 @@ func guardSection(cfg *vconfig.Config) (Config, error) {
 	if result.DevServerCap < 1 {
 		return defaultGuardConfig(), errors.New("guards.devServerCap must be at least 1")
 	}
-	for _, pattern := range result.DevboxOnly {
-		if _, err := regexp.Compile(pattern); err != nil {
-			return defaultGuardConfig(), fmt.Errorf("guards.devboxOnly %q: %w", pattern, err)
+	for name, patterns := range map[string][]string{"devboxOnly": result.DevboxOnly, "devboxWhenWorkspace": result.DevboxWhenWorkspace} {
+		for _, pattern := range patterns {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return defaultGuardConfig(), fmt.Errorf("guards.%s %q: %w", name, pattern, err)
+			}
 		}
 	}
 	for name, patterns := range map[string][]string{"noRead": result.NoRead, "appiumSessionDirs": result.AppiumSessionDirs} {

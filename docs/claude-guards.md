@@ -114,6 +114,8 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1) ·
                   a command matching a repo's guards.devboxOnly run outside
                   devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
+                  a command matching guards.devboxWhenWorkspace run locally in
+                  a checkout that has a Devbox workspace (same escape) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
                   (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
@@ -168,6 +170,20 @@ and on 2026-09-19/20 three Metro bundlers, four API servers and two
 next-servers ran on the Mac anyway. The message prints the exact `devbox run
 -- '<cmd>'` form; a hand test the user asked for here sets
 `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+
+`machine:devbox-workspace` is its conditional sibling for work that is fine
+on the Mac in a bare worktree but belongs on the box once the checkout is
+synced to a workspace: `guards.devboxWhenWorkspace` takes the same RE2
+patterns, and a match is refused only when the devbox CLI's local registry
+(`~/.devbox/workspaces/<name>/workspace.yaml`, whose apps carry the synced
+checkout under `sync:`; a parked workspace keeps its record, `devbox down`
+and gc drop it) names this checkout or a parent of it. No network and no
+subprocess: the lookup reads that directory once per matching command. FixIt
+put its typechecks there on 2026-09-25 (the api spec check alone is 3 GB and
+60 s; several at once froze the Mac at 50 GB of swap the day before, but a
+worktree without a workspace still typechecks locally). The message names the
+workspace and prints the `devbox run --no-up -- '<cmd>'` form; the escape is
+the same `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
 
 `machine:sim-cap` and `machine:dev-server-cap` count what already runs before
 a boot or a start. A simulator boot (`xcrun simctl boot`, `expo run:ios`,

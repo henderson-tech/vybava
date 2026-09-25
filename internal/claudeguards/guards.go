@@ -59,6 +59,7 @@ func Bash(in *HookInput) *Denial {
 		guardAppiumChurn,
 		guardTestWorkerCap,
 		guardDevboxOnly,
+		guardDevboxWhenWorkspace,
 		guardMachineCap,
 		guardBudget,
 		guardContextBash,
