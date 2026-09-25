@@ -211,6 +211,7 @@ contract: the prm skill's references/extensions.md
 // passing --ref must not believe it validated something it did not.
 type prExtensionsArgs struct {
 	stage      *string
+	repo       *string // resolved from here only, never by re-reading argv
 	json, help bool
 }
 
@@ -226,25 +227,30 @@ func parsePRExtensionsArgs(args []string) (prExtensionsArgs, error) {
 		arg := args[i]
 		name, value, inline := strings.Cut(arg, "=")
 		switch {
-		case arg == "-h" || arg == "--help" || arg == "help":
+		case arg == "-h" || arg == "--help":
 			out.help = true
 		case arg == "--json":
 			out.json = true
 		case name == "--stage" || name == "--repo":
 			if !inline {
-				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-					refuse("%s needs a value", name)
-					continue
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+					value = args[i]
 				}
-				i++
-				value = args[i]
 			}
+			slot := &out.repo
 			if name == "--stage" {
-				if !slices.Contains(PRExtensionStages, value) {
-					refuse("--stage %q is not a stage (one of %s)", value, strings.Join(PRExtensionStages, ", "))
-					continue
-				}
-				out.stage = &value
+				slot = &out.stage
+			}
+			switch {
+			case value == "":
+				refuse("%s needs a value", name)
+			case *slot != nil:
+				refuse("%s is given twice", name)
+			case name == "--stage" && !slices.Contains(PRExtensionStages, value):
+				refuse("--stage %q is not a stage (one of %s)", value, strings.Join(PRExtensionStages, ", "))
+			default:
+				*slot = &value
 			}
 		default:
 			refuse("unknown argument %q", arg)
@@ -264,7 +270,11 @@ func runPRExtensions(args []string, stdout, stderr io.Writer) int {
 		return s.Finish(runx.DiagError{Diag: runx.Diagnostic{Code: DiagBadArgs, Severity: "error", Detail: bad.Error(), Fix: prExtensionsUsage}})
 	}
 	stage := parsed.stage
-	root, err := repoRoot(args)
+	anchor := []string{} // GIT_SKILL_REPO, else cwd — as every verb resolves it
+	if parsed.repo != nil {
+		anchor = []string{"--repo", *parsed.repo}
+	}
+	root, err := repoRoot(anchor)
 	if err != nil {
 		return fail(stderr, err)
 	}

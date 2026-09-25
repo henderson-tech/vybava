@@ -138,6 +138,9 @@ func TestPRExtensionsRefusesArgumentsItDoesNotTake(t *testing.T) {
 		{[]string{"--stage"}, "--stage needs a value"},
 		{[]string{"--stage=deploy"}, `--stage "deploy" is not a stage`},
 		{[]string{"--repo", "--stage", "round"}, "--repo needs a value"},
+		{[]string{"--repo", ""}, "--repo needs a value"}, // never a silent fallback to cwd
+		{[]string{"--repo=/a", "--repo", "/b"}, "--repo is given twice"},
+		{[]string{"help"}, `unknown argument "help"`},
 	} {
 		var stdout, stderr strings.Builder
 		code := runPRExtensions(tc.args, &stdout, &stderr)
