@@ -104,8 +104,8 @@ type beatsLag struct {
 	// Written is the last write (unix nanoseconds) of the content whose beats
 	// the debt owes, recorded when the debt opens: what a lost debt moves
 	// coverage past, however many passes later the loss is found. The token
-	// cursor cannot stand in for it, since a rewrite moves that to today. 0 in
-	// a debt recorded by an older build.
+	// cursor cannot stand in for it, since a rewrite moves that to today. A
+	// debt an older build encoded without it takes it on decode (lagOf).
 	Written int64 `json:"written,omitempty"`
 }
 
@@ -125,11 +125,16 @@ func (l beatsLag) encode() string {
 // lagOf reads a stored backlog. A file read before beats existed (empty) owes
 // everything up to where its stored token cursor stands, written by the time
 // that cursor saw; beats are idempotent, so an unreadable backlog is owed
-// again from byte 0 rather than lost.
+// again from byte 0 rather than lost. An open debt an older build encoded
+// without Written takes the stored cursor's the same way, and keeps it once
+// saved, before a later rewrite can move that cursor.
 func lagOf(stored string, cur transcripts.Cursor) beatsLag {
 	var l beatsLag
 	if stored == "" || json.Unmarshal([]byte(stored), &l) != nil {
 		return beatsLag{Until: cur.Offset, Written: cur.Modified}
+	}
+	if l.Written == 0 && !l.done() {
+		l.Written = cur.Modified
 	}
 	return l
 }
@@ -341,12 +346,8 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 				if lag := lagOf(row.beats, row.cur); row.beats != beatsDone && !lag.done() {
 					// Gone with beats unread: no day up to the last write of the
 					// content it owed for is complete any more. Its cursor may
-					// already be a rewrite's; only an older build's debt uses it.
-					at := lag.Written
-					if at == 0 {
-						at = row.cur.Modified
-					}
-					beatsSince = max(beatsSince, at/int64(time.Second))
+					// already be a rewrite's, so the debt's Written bounds it.
+					beatsSince = max(beatsSince, lag.Written/int64(time.Second))
 				}
 				if _, err := tx.Exec("DELETE FROM files WHERE path = ?", path); err != nil {
 					tx.Rollback()
@@ -832,14 +833,10 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 			row.beats = beats
 			if lost {
 				// What it owed went with the old content, whose last write the
-				// debt recorded when it opened. A debt an older build recorded
-				// falls back to the token cursor from before this pass — right
-				// only when this pass read the rewrite. lag.Cursor is the new
-				// content's, which for a live transcript is today.
+				// debt recorded when it opened (or lagOf gave an older build's).
+				// Only a stored cursor that never saw a write leaves it 0;
+				// lag.Cursor is the new content's, for a live transcript today.
 				at := lag.Written
-				if at == 0 {
-					at = known[t.path].cur.Modified
-				}
 				if at == 0 {
 					at = lag.Cursor.Modified
 				}

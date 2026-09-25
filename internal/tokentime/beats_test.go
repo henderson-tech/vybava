@@ -316,6 +316,46 @@ func TestALossFoundAPassAfterTheRewriteMovesCoveragePastTheOldContent(t *testing
 	}
 }
 
+// A debt an earlier build encoded without Written takes it from the stored
+// cursor the first time a pass decodes it, so a rewrite read before the loss
+// is found cannot move the bound past the old content's last write.
+func TestADebtEncodedWithoutWrittenKeepsTheOldContentsBoundAcrossARewrite(t *testing.T) {
+	f := beatsFixture(t)
+	s2 := filepath.Join(f.claude, "-work-app", "s2.jsonl")
+	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(s2, written, written); err != nil {
+		t.Fatal(err)
+	}
+	s := f.open(t)
+	f.index(t, s)
+	var until int64
+	if err := s.db.QueryRow("SELECT json_extract(cursor, '$.offset') FROM files WHERE path = ?", s2).Scan(&until); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE files SET beats = ? WHERE path = ?", beatsLag{Until: until}.encode(), s2); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	put(t, s2, lines(mustJSON(map[string]any{"type": "user", "sessionId": "s2", "cwd": f.worktree, "timestamp": "2026-09-23T09:00:00Z",
+		"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": "again"}})))
+	rewritten := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(s2, rewritten, rewritten); err != nil {
+		t.Fatal(err)
+	}
+	s = f.open(t)
+	opts := f.options()
+	opts.Budget = 1 // the token read of the rewrite spends it: no backlog this pass
+	if _, err := s.Index(opts); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.index(t, s); r.BeatsPendingBytes != 0 {
+		t.Fatalf("backlog left %d bytes, want it paid", r.BeatsPendingBytes)
+	}
+	if got := beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage; got.From == nil || *got.From != "2026-09-24" || !got.Complete {
+		t.Fatalf("coverage after losing an older build's debt on a transcript written 23.09 and rewritten 25.09 = %s, want complete from 2026-09-24", mustJSON(got))
+	}
+}
+
 // A rollout read while its saved state cannot tell a person's prompt yet owes
 // the prompts that read passed over: lost before its backlog, it moves
 // coverage past that read, not only past the content its debt opened on.
