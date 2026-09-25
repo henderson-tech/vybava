@@ -505,6 +505,11 @@ func bunPackageDirs(checkout string, fence *walkFence) ([]string, error) {
 			base = filepath.Dir(base)
 		}
 		fence.stamp(base)
+		// filepath.Glob drops directory read errors, so an unreadable parent
+		// would yield no matches and silently lose every root under it.
+		if _, err := os.ReadDir(base); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("workspace pattern %q: %w", pattern, err)
+		}
 		matches, err := filepath.Glob(glob)
 		if err != nil {
 			return nil, fmt.Errorf("workspace pattern %q: %w", pattern, err)

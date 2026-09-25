@@ -425,6 +425,10 @@ func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
 		write(t, filepath.Join(cache, u), 11, 0)
 	}
 	symlink(t, filepath.Join(cache, "is-odd@3.0.1@@@1"), filepath.Join(cache, "mystery/3.0.1@@@1"))
+	// An empty directory is no name index: nothing proves bun owns it.
+	if err := os.MkdirAll(filepath.Join(cache, "empty-future-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	checkout := filepath.Join(home, "app/node_modules/.bun/is-odd@3.0.1")
 	symlink(t, filepath.Join(cache, "links/is-odd@3.0.1-abc"), checkout)
 
@@ -445,7 +449,7 @@ func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
 			t.Errorf("%s should be deleted", gone)
 		}
 	}
-	for _, u := range unknown {
+	for _, u := range append(unknown, "empty-future-dir") {
 		if !exists(filepath.Join(cache, u)) {
 			t.Errorf("unrecognized %s must survive", u)
 		}
@@ -716,6 +720,21 @@ func TestBunPruneRefusesAnUnreadableWorkspaceMatch(t *testing.T) {
 	_, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, BunCwds: noBun})
 	if err == nil || !strings.Contains(err.Error(), `workspace pattern "apps/*"`) {
 		t.Fatalf("an unreadable workspace match must fail the plan: %v", err)
+	}
+}
+
+// filepath.Glob drops read errors: an unlistable workspace parent must fail the
+// plan instead of yielding no matches and losing every root under it.
+func TestBunPruneRefusesAnUnlistableWorkspaceParent(t *testing.T) {
+	checkout, _ := bunPruneTree(t)
+	apps := filepath.Join(checkout, "apps")
+	if err := os.Chmod(apps, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(apps, 0o755) })
+	_, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, BunCwds: noBun})
+	if err == nil || !strings.Contains(err.Error(), `workspace pattern "apps/*"`) {
+		t.Fatalf("an unlistable workspace parent must fail the plan: %v", err)
 	}
 }
 

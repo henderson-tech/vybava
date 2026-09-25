@@ -147,8 +147,8 @@ func bunRegenerable(path string, entry fs.DirEntry) bool {
 		return true
 	}
 	versions, err := os.ReadDir(path)
-	if err != nil {
-		return false
+	if err != nil || len(versions) == 0 {
+		return false // an empty dir proves nothing about who owns it
 	}
 	for _, v := range versions {
 		if v.Type()&fs.ModeSymlink == 0 {
