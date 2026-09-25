@@ -179,10 +179,11 @@ names exactly the checkout the command RUNS in. That checkout is the git root
 above the session cwd moved by the command's own `cd <dir>` segments and a bun
 `--cwd <dir>` on the matched segment (a worktree's `.git` file counts), so
 `(cd .worktrees/x && tsc)` from a synced main clone is judged by `.worktrees/x`.
-A `cd` counts only when a pure `&&` chain (optionally opened by one `(`) leads
-to the command; after `;`, `||`, a closed subshell or a pipe the command may run
-in the session's checkout too, so every candidate directory is checked and any
-synced one refuses. A command that runs outside every checkout has no
+A `cd` is certain when it is followed by `&&` and sits in no subshell that
+closes before the command (`echo; cd x && tsc` is; `cd x; tsc`, `cd x || tsc`
+and `(cd x && a); tsc` are not). When one is not, every directory the shell may
+be in is a candidate, each later relative `cd` resolved from all of them, and
+any synced candidate refuses. A command that runs outside every checkout has no
 workspace.
 The registry is `$DEVBOX_WORKSPACES_DIR`, else `~/.devbox/workspaces/`, read
 as the CLI writes it: each entry's `workspace.yaml` (`apps.<app>.sync`) and

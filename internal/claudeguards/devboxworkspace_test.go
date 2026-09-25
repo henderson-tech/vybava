@@ -141,6 +141,12 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 			t.Errorf("%q may run in the synced main clone, should block: %v", c, d)
 		}
 	}
+	// The matched command is located by position, never by its first textual
+	// occurrence: an echoed copy before a pure chain does not pull the synced
+	// main clone in.
+	if d := guardDevboxWhenWorkspace(hook("echo 'bun run typecheck'; cd .worktrees/bare && bun run typecheck")); d != nil {
+		t.Errorf("the typecheck runs only in the bare worktree, should pass:\n%s", d.Text())
+	}
 	// A command that runs outside every checkout has no workspace, whatever
 	// the session's checkout has.
 	outside := t.TempDir()
@@ -168,6 +174,11 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	}
 	if d := guardDevboxWhenWorkspace(hookAt(bare2, "(cd ../bare && bun run typecheck)")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
 		t.Errorf("cd into a synced worktree should block naming fixit-bare: %v", d)
+	}
+	// A relative cd after a closed subshell is resolved from every directory
+	// the shell may be in: this one really lands in the synced bare worktree.
+	if d := guardDevboxWhenWorkspace(hookAt(bare2, "(cd /tmp && echo ok); cd ../bare && bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
+		t.Errorf("relative cd after a closed subshell should block naming fixit-bare: %v", d)
 	}
 	// The rerun enters the destination checkout and folds bun's --cwd into its
 	// cd: devbox run starts at that checkout's root, where ../bare is wrong.
@@ -214,8 +225,40 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 		t.Errorf("a rendered-only entry should block naming its directory: %v", d)
 	}
 
+	// A quoted bun --cwd is folded into the rerun's cd as a whole word.
+	register("fixit-work-x", root)
+	if err := os.MkdirAll(filepath.Join(root, "sub dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d = guardDevboxWhenWorkspace(hook("bun --cwd 'sub dir' run typecheck"))
+	if want := `devbox run --no-up -- 'cd '\''sub dir'\'' && bun run typecheck'`; d == nil || !strings.Contains(d.Text(), want) {
+		t.Errorf("quoted --cwd rerun, want %s in:\n%v", want, d)
+	}
+
 	// No patterns configured: the rule is inert even with a workspace.
 	if d := guardDevboxWhenWorkspace(hookCmd("bun run typecheck")); d != nil {
 		t.Errorf("unconfigured repo blocked: %s", d.Text())
+	}
+}
+
+func TestCdsCertain(t *testing.T) {
+	for prefix, want := range map[string]bool{
+		"":                              true,
+		"cd x && ":                      true,
+		"(cd x && ":                     true,
+		"echo 'a; b'; cd x && lint && ": true,
+		"cd x && (":                     true,
+		"cd x; ":                        false, // the cd may have failed
+		"cd x || ":                      false,
+		"cd x | ":                       false,
+		"(cd x && echo ok); ":           false, // its subshell closed
+		"(cd x && echo ok) && ":         false,
+		"cd $(pwd) && ":                 false,
+		"echo 'unterminated && ":        false,
+		"bash -c 'cd x && ":             false,
+	} {
+		if got := cdsCertain(prefix); got != want {
+			t.Errorf("cdsCertain(%q) = %v, want %v", prefix, got, want)
+		}
 	}
 }

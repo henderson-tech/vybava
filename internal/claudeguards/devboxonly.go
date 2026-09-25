@@ -32,44 +32,58 @@ type devboxHit struct {
 }
 
 // devboxMatch returns the first local segment matching one of patterns and
-// the directories it may run in. When the text before it is a pure `&&`
-// chain (`(cd .worktrees/x && tsc)`, `cd apps/api && lint && tsc`) each `cd`
-// provably applies, so the one tracked directory is the answer. Any other shape
-// (`;`, `||`, a closing subshell, a pipe) leaves it open where the command runs
+// the directories it may run in. When every `cd` before it provably applies
+// (cdsCertain: `(cd .worktrees/x && tsc)`, `echo; cd x && lint && tsc`) the one
+// tracked directory is the answer. Otherwise it is open where the command runs
 // - `(cd x && echo); tsc` runs in the session's checkout, `cd x || tsc` runs
-// where the cd failed - so the session cwd and every cd target are candidates.
-// A bun `--cwd <dir>` on the segment moves each candidate.
+// where the cd failed - so every directory the command could be in is a
+// candidate: each `cd` may or may not have applied, and a relative one is
+// resolved against every directory possible at that point (capped at
+// maxDevboxCandidates). A bun `--cwd <dir>` on the segment moves each.
 func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
 	if len(patterns) == 0 {
 		return devboxHit{}, false
 	}
 	home, _ := os.UserHomeDir()
-	dir, targets := cwd, []string{cwd}
+	dir, possible := cwd, []string{cwd}
+	cursor := 0 // segments come in order: each is located after the previous one
 	for _, raw := range localSegments(cmd) {
-		if f := shellFields(strings.TrimSpace(trimSubshell(raw))); len(f) > 1 && f[0] == "cd" {
+		text := strings.TrimSpace(trimAssignments(trimSubshell(raw)))
+		pos := -1
+		if at := strings.Index(cmd[cursor:], text); text != "" && at >= 0 {
+			pos = cursor + at
+			cursor = pos + len(text)
+		}
+		if f := shellFields(text); len(f) > 1 && f[0] == "cd" {
 			dir = resolveDir(f[1], dir, home)
-			targets = append(targets, dir)
+			for _, d := range possible {
+				if next := resolveDir(f[1], d, home); !slices.Contains(possible, next) && len(possible) < maxDevboxCandidates {
+					possible = append(possible, next)
+				}
+			}
 			continue
 		}
-		if textOnly(raw) {
-			continue
-		}
-		s := strings.TrimSpace(trimAssignments(trimSubshell(raw)))
-		if s == "" {
+		if textOnly(raw) || text == "" {
 			continue
 		}
 		for _, re := range patterns {
-			if !re.MatchString(s) && !re.MatchString(unwrapRunners(s)) {
+			if !re.MatchString(text) && !re.MatchString(unwrapRunners(text)) {
 				continue
 			}
-			full := leadingAssignments(cmd, s) + s
-			candidates := []string{dir}
-			if at := strings.Index(cmd, full); at < 0 || !pureAndChain(cmd[:at]) {
-				candidates = append(candidates, targets...)
+			prefix, assigns := "", ""
+			if pos >= 0 {
+				prefix = cmd[:pos]
+				if m := assignmentTail.FindString(prefix); m != "" {
+					assigns, prefix = m, prefix[:len(prefix)-len(m)]
+				}
 			}
-			hit := devboxHit{seg: s, full: full}
+			candidates := []string{dir}
+			if pos < 0 || !cdsCertain(prefix) {
+				candidates = append(candidates, possible...)
+			}
+			hit := devboxHit{seg: text, full: assigns + text}
 			for _, c := range candidates {
-				if r := bunCwd(s, c, home); !slices.Contains(hit.runs, r) {
+				if r := bunCwd(text, c, home); !slices.Contains(hit.runs, r) {
 					hit.runs = append(hit.runs, r)
 				}
 			}
@@ -79,26 +93,86 @@ func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
 	return devboxHit{}, false
 }
 
-// pureAndChain reports whether the text before a command is empty or only
-// `&&`-joined commands, optionally opened by one `(`: then every `cd` in it
-// runs, in order, in the command's own shell. Anything with `;`, `|`, `||`,
-// `&`, a parenthesis, a backquote or a newline is not.
-func pureAndChain(prefix string) bool {
-	p := strings.TrimSpace(prefix)
-	return p == "" || andChain.MatchString(p)
-}
+// maxDevboxCandidates bounds the directories one command is judged in.
+const maxDevboxCandidates = 32
 
-var andChain = regexp.MustCompile("^\\(?\\s*([^;&|()`\\n]+&&\\s*)+$")
+// assignmentTail is the `VAR=value ` run right before a command (localSegments
+// strips it), so a rerun keeps NODE_OPTIONS=… and the like.
+var assignmentTail = regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s'"]*)[ \t]+)+$`)
 
-// leadingAssignments is the `VAR=value ` run written right before seg in cmd
-// (localSegments strips it), so a rerun keeps NODE_OPTIONS=… and the like.
-func leadingAssignments(cmd, seg string) string {
-	re := regexp.MustCompile(`((?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s'"]*)[ \t]+)+)` + regexp.QuoteMeta(seg))
-	if m := re.FindStringSubmatch(cmd); m != nil {
-		return m[1]
+// cdsCertain reports whether every `cd` in the text before a command provably
+// moved it: each cd is followed by `&&` (so the command runs only if the cd
+// succeeded) and sits in no subshell that closes before the command. `echo;
+// cd x && tsc` is certain; `cd x; tsc`, `cd x || tsc`, `(cd x && a); tsc` are
+// not. Quotes are respected; a command substitution or backquote is never
+// certain.
+func cdsCertain(prefix string) bool {
+	depth := 0
+	var cdDepths []int
+	var seg strings.Builder
+	var quote byte
+	endSegment := func(sep string) bool {
+		s := strings.TrimSpace(trimAssignments(seg.String()))
+		seg.Reset()
+		if f := strings.Fields(s); len(f) > 0 && f[0] == "cd" {
+			if sep != "&&" {
+				return false
+			}
+			cdDepths = append(cdDepths, depth)
+		}
+		return true
 	}
-	return ""
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		if quote != 0 {
+			seg.WriteByte(c)
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch {
+		case c == '\'' || c == '"':
+			quote = c
+			seg.WriteByte(c)
+		case c == '`' || (c == '$' && i+1 < len(prefix) && prefix[i+1] == '('):
+			return false
+		case c == '(':
+			if !endSegment("(") {
+				return false
+			}
+			depth++
+		case c == ')':
+			if !endSegment(")") {
+				return false
+			}
+			depth--
+			for _, d := range cdDepths {
+				if d > depth {
+					return false // its subshell closed: the cd no longer applies
+				}
+			}
+		case strings.HasPrefix(prefix[i:], "&&"):
+			if !endSegment("&&") {
+				return false
+			}
+			i++
+		case strings.HasPrefix(prefix[i:], "||"):
+			if !endSegment("||") {
+				return false
+			}
+			i++
+		case c == ';' || c == '|' || c == '&' || c == '\n':
+			if !endSegment(string(c)) {
+				return false
+			}
+		default:
+			seg.WriteByte(c)
+		}
+	}
+	return quote == 0 && strings.TrimSpace(seg.String()) == ""
 }
+
 
 // bunCwd is dir moved by a bun `--cwd <dir>` / `--cwd=<dir>` in the segment.
 func bunCwd(seg, dir, home string) string {
@@ -139,7 +213,7 @@ func devboxRerun(h devboxHit, dir, sessionCwd, flags string) string {
 }
 
 // bunCwdFlag is a bun `--cwd <dir>` / `--cwd=<dir>`, folded into the rerun's cd.
-var bunCwdFlag = regexp.MustCompile(`\s--cwd(=|\s+)\S+`)
+var bunCwdFlag = regexp.MustCompile(`\s--cwd(?:=|\s+)(?:'[^']*'|"[^"]*"|[^\s'"]+)+`)
 
 // shellArg is s as one shell argument: verbatim when the shell reads it so.
 func shellArg(s string) string {
