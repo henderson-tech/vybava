@@ -469,18 +469,24 @@ func gitPushDest(dir string) []string {
 		_, branch, _ := strings.Cut(ref, "/")
 		dests = append(dests, branch)
 	}
-	// push.default=matching pushes every local branch its remote also has.
-	if git(dir, "config", "--get", "push.default") == "matching" {
-		dests = append(dests, splitLines(git(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads"))...)
-	}
-	// remote.<name>.push refspecs replace the default mapping outright.
+	// push.default=matching pushes every local branch its remote also has;
+	// a wildcard remote.<name>.push refspec (refs/heads/*:refs/heads/*) does
+	// the same. Other remote.<name>.push refspecs name their destination.
+	everyBranch := git(dir, "config", "--get", "push.default") == "matching"
 	for _, l := range splitLines(git(dir, "config", "--get-regexp", `^remote\..*\.push$`)) {
 		_, spec, _ := strings.Cut(l, " ")
-		if _, dst, ok := strings.Cut(strings.TrimPrefix(spec, "+"), ":"); ok {
-			dests = append(dests, dst)
-		} else {
-			dests = append(dests, spec)
+		dst := strings.TrimPrefix(spec, "+")
+		if _, after, ok := strings.Cut(dst, ":"); ok {
+			dst = after
 		}
+		if strings.Contains(dst, "*") {
+			everyBranch = true
+			continue
+		}
+		dests = append(dests, dst)
+	}
+	if everyBranch {
+		dests = append(dests, splitLines(git(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads"))...)
 	}
 	return dests
 }

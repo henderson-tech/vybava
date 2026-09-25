@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -195,6 +196,34 @@ func TestReadProdBranchesRealWorktree(t *testing.T) {
 	}
 	if _, err := readProdBranches(wt); err == nil {
 		t.Fatal("an unreadable config read as no policy")
+	}
+}
+
+// gitPushDest against real git: a wildcard remote.<name>.push refspec and
+// push.default=matching both reach every local branch, canary included.
+func TestGitPushDestRealRepo(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "feat/x")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("branch", "canary")
+	if got := gitPushDest(dir); slices.Contains(got, "canary") {
+		t.Fatalf("plain repo already names canary: %v", got)
+	}
+	run("config", "remote.origin.push", "refs/heads/*:refs/heads/*")
+	if got := gitPushDest(dir); !slices.Contains(got, "canary") {
+		t.Fatalf("wildcard push refspec: %v", got)
+	}
+	run("config", "--unset", "remote.origin.push")
+	run("config", "push.default", "matching")
+	if got := gitPushDest(dir); !slices.Contains(got, "canary") {
+		t.Fatalf("push.default=matching: %v", got)
 	}
 }
 
