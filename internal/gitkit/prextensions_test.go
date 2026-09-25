@@ -80,6 +80,12 @@ func TestPRExtensionsRunOnlyMergedContent(t *testing.T) {
 	if off := runPRExtensionsJSON(t, "--repo", wt); off.PRExtensions != nil || len(off.Extensions) != 0 {
 		t.Fatalf(".local override = %+v", off)
 	}
+	// A tracked .local is branch content: it could pin DEFAULT_BRANCH to a PR.
+	git(main, "add", "-f", ".claude/.claude.git.config.local")
+	var stdout, stderr strings.Builder
+	if code := runPRExtensions([]string{"--repo", wt}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "is tracked by git") {
+		t.Fatalf("tracked .local: exit %d, %s", code, stderr.String())
+	}
 }
 
 // A repo that ships an extension expects it to run: every defect is an

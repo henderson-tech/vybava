@@ -48,7 +48,8 @@ to do, say nothing.
 - `PR_EXTENSIONS=` (empty) in the gitignored `.local` switches them off on one machine.
 - **Exit 1 is a STOP at that stage** — a glob that matches nothing, a malformed file
   (missing or unknown key, unknown stage, empty body, a name used twice, a symlink),
-  an unresolvable default branch: print the error line + the PR URL. A repo that
+  an unresolvable default branch, a `.local` git tracks (it could pin the ref to a
+  PR branch): print the error line + the PR URL. A repo that
   ships an extension expects it to run; it is never skipped.
 
 ## Stages

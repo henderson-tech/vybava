@@ -212,8 +212,17 @@ func runPRExtensions(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, errors.New("could not determine the main clone from `git worktree list`"))
 	}
 	// .local is the machine's own gitignored file; everything else is read
-	// at the merged ref.
-	localData, _, err := readIfPresent(filepath.Join(mainClone, ".claude/.claude.git.config.local"))
+	// at the merged ref. A .local git tracks is branch content in disguise —
+	// a PR could force-add one pinning DEFAULT_BRANCH to itself — so refuse it.
+	const localConfig = ".claude/.claude.git.config.local"
+	tracked, err := execFile(execOpts{dir: mainClone, echo: stderr, timeout: 30 * time.Second}, "git", "ls-files", "--", localConfig)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if strings.TrimSpace(tracked) != "" {
+		return fail(stderr, fmt.Errorf("%s is tracked by git in %s — it must stay machine-local: `git rm --cached %s`", localConfig, mainClone, localConfig))
+	}
+	localData, _, err := readIfPresent(filepath.Join(mainClone, localConfig))
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -223,7 +232,8 @@ func runPRExtensions(args []string, stdout, stderr io.Writer) int {
 		if commit, err = git("rev-parse", "--verify", "-q", ref+"^{commit}"); err != nil {
 			return "", nil, nil, fmt.Errorf("%s does not exist — run `git fetch origin %s`", ref, branch)
 		}
-		listing, err := git("ls-tree", "-r", "-z", "--full-tree", ref)
+		commit = strings.TrimSpace(commit) // walk this snapshot, never the ref again: a fetch may move it
+		listing, err := git("ls-tree", "-r", "-z", "--full-tree", commit)
 		if err != nil {
 			return "", nil, nil, err
 		}
@@ -237,7 +247,7 @@ func runPRExtensions(args []string, stdout, stderr io.Writer) int {
 				committed = parseConfig(data)
 			}
 		}
-		return strings.TrimSpace(commit), committed, tree, nil
+		return commit, committed, tree, nil
 	}
 	branch, pinned := local.get("DEFAULT_BRANCH")
 	if !pinned || branch == "" {
