@@ -270,6 +270,90 @@ func TestATranscriptShrunkUnderItsBacklogEndsItAndMovesCoverage(t *testing.T) {
 	}
 }
 
+// A loss found a pass after the rewrite — the pass that read the new content
+// had no budget left for its backlog, or the file vanished before the next —
+// is still bounded by the old content's last write, which the debt keeps from
+// the moment it was recorded, never by the rewrite the token cursor moved to.
+func TestALossFoundAPassAfterTheRewriteMovesCoveragePastTheOldContent(t *testing.T) {
+	for _, vanish := range []bool{false, true} {
+		t.Run(map[bool]string{false: "shrunk", true: "vanished"}[vanish], func(t *testing.T) {
+			f := beatsFixture(t)
+			s2 := filepath.Join(f.claude, "-work-app", "s2.jsonl")
+			written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(s2, written, written); err != nil {
+				t.Fatal(err)
+			}
+			s := f.open(t)
+			f.index(t, s)
+			if _, err := s.db.Exec(dropBeats + "DELETE FROM meta WHERE key LIKE 'beats_%'; PRAGMA user_version=3"); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			put(t, s2, lines(mustJSON(map[string]any{"type": "user", "sessionId": "s2", "cwd": f.worktree, "timestamp": "2026-09-23T09:00:00Z",
+				"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": "again"}})))
+			rewritten := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(s2, rewritten, rewritten); err != nil {
+				t.Fatal(err)
+			}
+			s = f.open(t)
+			opts := f.options()
+			opts.Budget = 1 // the token read of the rewrite spends it: no backlog this pass
+			if _, err := s.Index(opts); err != nil {
+				t.Fatal(err)
+			}
+			if vanish {
+				if err := os.Remove(s2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if r := f.index(t, s); r.BeatsPendingBytes != 0 {
+				t.Fatalf("backlog left %d bytes, want it paid", r.BeatsPendingBytes)
+			}
+			if got := beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage; got.From == nil || *got.From != "2026-09-24" || !got.Complete {
+				t.Fatalf("coverage after losing a transcript written 23.09 and rewritten 25.09 = %s, want complete from 2026-09-24", mustJSON(got))
+			}
+		})
+	}
+}
+
+// A rollout read while its saved state cannot tell a person's prompt yet owes
+// the prompts that read passed over: lost before its backlog, it moves
+// coverage past that read, not only past the content its debt opened on.
+func TestARolloutLostWithUnrecordedPromptsMovesCoveragePastThem(t *testing.T) {
+	f := beatsFixture(t)
+	thread := filepath.Join(f.codex, "sessions", "2026", "09", "23", "rollout-2026-09-23T15-00-00-thread-H.jsonl")
+	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(thread, written, written); err != nil {
+		t.Fatal(err)
+	}
+	s := f.open(t)
+	f.index(t, s)
+	if _, err := s.db.Exec(dropBeats + `DELETE FROM meta WHERE key LIKE 'beats_%';
+		UPDATE files SET state = json_remove(state, '$.human') WHERE state != '';
+		PRAGMA user_version=3`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	appendFile(t, thread, lines(rollout("2026-09-24T15:20:00Z", "event_msg", map[string]any{"type": "item_completed", "item": map[string]any{"type": "UserMessage"}})))
+	prompted := time.Date(2026, 9, 24, 15, 21, 0, 0, time.UTC)
+	if err := os.Chtimes(thread, prompted, prompted); err != nil {
+		t.Fatal(err)
+	}
+	s = f.open(t)
+	opts := f.options()
+	opts.Budget = 1 // the token read of the prompt spends it: no backlog this pass
+	if _, err := s.Index(opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(thread); err != nil {
+		t.Fatal(err)
+	}
+	f.index(t, s)
+	if got := beatsOf(t, s, "2026-09-22", "2026-09-24").Coverage; got.From == nil || *got.From != "2026-09-25" || !got.Complete {
+		t.Fatalf("coverage after losing a rollout prompted 24.09 before its header was read = %s, want complete from 2026-09-25", mustJSON(got))
+	}
+}
+
 // Live reads record an AI minute only for a response the rollup charges: a
 // copy of a charged response — another file, another cwd, another time —
 // adds none, just as it adds no tokens.

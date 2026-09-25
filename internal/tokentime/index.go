@@ -101,6 +101,12 @@ type beatsLag struct {
 	Until  int64              `json:"until"`
 	// State is a rollout's parse state at Cursor.
 	State *codexState `json:"state,omitempty"`
+	// Written is the last write (unix nanoseconds) of the content whose beats
+	// the debt owes, recorded when the debt opens: what a lost debt moves
+	// coverage past, however many passes later the loss is found. The token
+	// cursor cannot stand in for it, since a rewrite moves that to today. 0 in
+	// a debt recorded by an older build.
+	Written int64 `json:"written,omitempty"`
 }
 
 // beatsDone is the stored backlog of a file whose every read byte has its beats.
@@ -117,12 +123,13 @@ func (l beatsLag) encode() string {
 }
 
 // lagOf reads a stored backlog. A file read before beats existed (empty) owes
-// everything up to where its token cursor stands; beats are idempotent, so an
-// unreadable backlog is owed again from byte 0 rather than lost.
+// everything up to where its stored token cursor stands, written by the time
+// that cursor saw; beats are idempotent, so an unreadable backlog is owed
+// again from byte 0 rather than lost.
 func lagOf(stored string, cur transcripts.Cursor) beatsLag {
 	var l beatsLag
 	if stored == "" || json.Unmarshal([]byte(stored), &l) != nil {
-		return beatsLag{Until: cur.Offset}
+		return beatsLag{Until: cur.Offset, Written: cur.Modified}
 	}
 	return l
 }
@@ -331,10 +338,15 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		}
 		for path, row := range known {
 			if !present[path] {
-				if row.beats != beatsDone && !lagOf(row.beats, row.cur).done() {
-					// Gone with beats unread: no day up to its last write is
-					// complete any more.
-					beatsSince = max(beatsSince, row.cur.Modified/int64(time.Second))
+				if lag := lagOf(row.beats, row.cur); row.beats != beatsDone && !lag.done() {
+					// Gone with beats unread: no day up to the last write of the
+					// content it owed for is complete any more. Its cursor may
+					// already be a rewrite's; only an older build's debt uses it.
+					at := lag.Written
+					if at == 0 {
+						at = row.cur.Modified
+					}
+					beatsSince = max(beatsSince, at/int64(time.Second))
 				}
 				if _, err := tx.Exec("DELETE FROM files WHERE path = ?", path); err != nil {
 					tx.Rollback()
@@ -486,6 +498,12 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 			// before beats cannot tell a person's prompt from a spawned
 			// thread's until the backlog reads the owner header either.
 			lag.Until = max(lag.Until, cur.Offset)
+			if t.codex && cs.Human == nil {
+				// Its prompts went unrecorded, so the debt now owes what this
+				// read saw too. Any other read records the beats of what it
+				// reads, and Written stays with the content the debt opened on.
+				lag.Written = max(lag.Written, cur.Modified)
+			}
 		}
 		ix.files[t.path] = fileRow{cur: cur, state: state, tail: tail, beats: lag.encode()}
 		ix.read[t.path] = ix.files[t.path]
@@ -813,11 +831,15 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 		if beats := lag.encode(); beats != row.beats {
 			row.beats = beats
 			if lost {
-				// What it owed went with the old content, bounded by the last
-				// write the token read saw before this pass (the bound a vanished
-				// file gets; Until tracks that cursor). lag.Cursor is the new
+				// What it owed went with the old content, whose last write the
+				// debt recorded when it opened. A debt an older build recorded
+				// falls back to the token cursor from before this pass — right
+				// only when this pass read the rewrite. lag.Cursor is the new
 				// content's, which for a live transcript is today.
-				at := known[t.path].cur.Modified
+				at := lag.Written
+				if at == 0 {
+					at = known[t.path].cur.Modified
+				}
 				if at == 0 {
 					at = lag.Cursor.Modified
 				}
