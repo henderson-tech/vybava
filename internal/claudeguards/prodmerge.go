@@ -66,7 +66,7 @@ var (
 	reAPIRepoPath   = regexp.MustCompile(`^/?repos/([^/]+)/([^/]+)/`)
 	reGraphQLMerge  = regexp.MustCompile(`\b(mergePullRequest|enablePullRequestAutoMerge)\b`)
 	// `-F query=@file`, `--field query=@file`, `-f query=@…` or `--input`.
-	reGraphQLFileBody = regexp.MustCompile(`(\s|^)(-[fF]|--field|--raw-field)\s+["']?query=@|(\s|^)--input(\s|=|$)`)
+	reGraphQLFileBody = regexp.MustCompile(`(\s|^)(-[fF]|--field|--raw-field)(\s+|=)?["']?query=@|(\s|^)--input(\s|=|$)`)
 	reListSep         = regexp.MustCompile(`[,\s]+`)
 )
 
@@ -221,9 +221,15 @@ func prodMergeAPI(args []string, seg, dir string) *Denial {
 			i++
 		case strings.HasPrefix(a, "--method="):
 			method = strings.ToUpper(strings.TrimPrefix(a, "--method="))
+		case strings.HasPrefix(a, "-X"):
+			method = strings.ToUpper(strings.TrimPrefix(a, "-X"))
 		case slices.Contains([]string{"-f", "-F", "--field", "--raw-field", "--input"}, a):
 			writes = true
 			i++
+		// The attached forms write too: --input=f, --field=k=v, -Fk=v.
+		case strings.HasPrefix(a, "--input=") || strings.HasPrefix(a, "--field=") || strings.HasPrefix(a, "--raw-field=") ||
+			len(a) > 2 && (strings.HasPrefix(a, "-f") || strings.HasPrefix(a, "-F")):
+			writes = true
 		case slices.Contains([]string{"-H", "--header", "-q", "--jq", "-t", "--template", "--hostname", "--cache", "-p", "--preview"}, a):
 			i++
 		case strings.HasPrefix(a, "-"):
@@ -234,7 +240,9 @@ func prodMergeAPI(args []string, seg, dir string) *Denial {
 	if method == "" && writes {
 		method = "POST"
 	}
-	if method == "" || method == "GET" || method == "HEAD" {
+	// GraphQL is checked whatever the method: a mutation is the only way it
+	// merges, and the body decides, not the verb.
+	if endpoint != "graphql" && (method == "" || method == "GET" || method == "HEAD") {
 		return nil
 	}
 	if endpoint == "graphql" {
@@ -338,8 +346,9 @@ func prodMergeGitPush(args []string, dir, home string) *Denial {
 	} else {
 		// A bare push goes where the branch pushes (@{push}: an upstream or a
 		// push mapping may name canary for a differently named branch), and
-		// under push.default=matching/current to the same name: check both.
-		dests = []string{currentBranchOf(dir), pushDestOf(dir)}
+		// under push.default=current to the same name; matching and
+		// remote.<name>.push add more (gitPushDest): check them all.
+		dests = append([]string{currentBranchOf(dir)}, pushDestOf(dir)...)
 	}
 	for _, dst := range dests {
 		dst = strings.TrimPrefix(dst, "refs/heads/")
@@ -454,14 +463,26 @@ func gitCurrentBranch(dir string) string {
 
 // gitPushDest is the branch a bare push updates on its remote ("" when the
 // branch has no push destination): @{push} is refs/remotes/<remote>/<branch>.
-func gitPushDest(dir string) string {
-	ref := git(dir, "rev-parse", "--symbolic-full-name", "@{push}")
-	rest, ok := strings.CutPrefix(ref, "refs/remotes/")
-	if !ok {
-		return ""
+func gitPushDest(dir string) []string {
+	var dests []string
+	if ref, ok := strings.CutPrefix(git(dir, "rev-parse", "--symbolic-full-name", "@{push}"), "refs/remotes/"); ok {
+		_, branch, _ := strings.Cut(ref, "/")
+		dests = append(dests, branch)
 	}
-	_, branch, _ := strings.Cut(rest, "/")
-	return branch
+	// push.default=matching pushes every local branch its remote also has.
+	if git(dir, "config", "--get", "push.default") == "matching" {
+		dests = append(dests, splitLines(git(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads"))...)
+	}
+	// remote.<name>.push refspecs replace the default mapping outright.
+	for _, l := range splitLines(git(dir, "config", "--get-regexp", `^remote\..*\.push$`)) {
+		_, spec, _ := strings.Cut(l, " ")
+		if _, dst, ok := strings.Cut(strings.TrimPrefix(spec, "+"), ":"); ok {
+			dests = append(dests, dst)
+		} else {
+			dests = append(dests, spec)
+		}
+	}
+	return dests
 }
 
 // normalizeSlug turns a --repo value (owner/name, host/owner/name or a URL)

@@ -22,7 +22,7 @@ func stubProdMerge(t *testing.T, repoDir string, bases map[string]string, curren
 		apiPRBaseFor = saved[2].(func(string, string) (string, error))
 		originSlugFor = saved[3].(func(string) string)
 		currentBranchOf = saved[4].(func(string) string)
-		pushDestOf = saved[5].(func(string) string)
+		pushDestOf = saved[5].(func(string) []string)
 	})
 	prodBranchesFor = func(dir string) ([]string, error) {
 		if strings.HasPrefix(dir, repoDir) {
@@ -45,13 +45,13 @@ func stubProdMerge(t *testing.T, repoDir string, bases map[string]string, curren
 		}
 		return "henderson-tech/vybava"
 	}
-	// current is "<branch>" or "<branch>><push destination>".
+	// current is "<branch>" or "<branch>><push destinations, comma-separated>".
 	branch, push, split := strings.Cut(current, ">")
 	if !split {
 		push = branch
 	}
 	currentBranchOf = func(string) string { return branch }
-	pushDestOf = func(string) string { return push }
+	pushDestOf = func(string) []string { return strings.Split(push, ",") }
 	return calls
 }
 
@@ -132,6 +132,11 @@ func TestProdMerge(t *testing.T) {
 		// a GraphQL body from a file hides the mutation
 		{"GraphQL query from a file", "gh api graphql -F query=@merge.graphql -F id=PR_x", wt, "", true},
 		{"GraphQL --input", "gh api graphql --input body.json", wt, "", true},
+		{"GraphQL --input= attached", "gh api graphql --input=body.json", wt, "", true},
+		{"GraphQL --field= attached file query", "gh api graphql --field=query=@m.graphql", wt, "", true},
+		{"GraphQL -F attached file query", "gh api graphql -Fquery=@m.graphql", wt, "", true},
+		{"REST merge with attached -XPUT", "gh api -XPUT repos/Reservine/ReservineBack/pulls/12/merge", other, "", true},
+		{"bare push under push.default=matching with a local canary", "git push origin", wt, "feat/x>feat/x,canary", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
