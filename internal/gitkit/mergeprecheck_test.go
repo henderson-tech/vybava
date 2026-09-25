@@ -297,9 +297,9 @@ func TestResolveMergeMethod(t *testing.T) {
 		{"squash-only buttons", "", rulesOf(func(r *mergeRules) { r.buttons = map[string]bool{"squash": true} }), "squash", "<nil>", "repository", nil, ""},
 		{"ruleset narrows", "", rulesOf(func(r *mergeRules) { r.rulesetMethods = []rulesetMethods{{`repo ruleset "main"`, []string{"rebase"}}} }), "rebase", "<nil>", "repository", nil, ""},
 	} {
-		c, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": tc.raw}, tc.rules)
+		c, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": tc.raw}, tc.rules, "feat/x")
 		if tc.raw == "" {
-			c, err = resolveMergeMethod(gitConfig{}, tc.rules)
+			c, err = resolveMergeMethod(gitConfig{}, tc.rules, "feat/x")
 		}
 		if err != nil || c.method != tc.method || invalid(policy{invalid: c.invalid}) != tc.bad || c.source != tc.source ||
 			(tc.allowed != nil && !slices.Equal(c.allowed, tc.allowed)) || !strings.Contains(c.reason, tc.reasonPattern) {
@@ -310,9 +310,41 @@ func TestResolveMergeMethod(t *testing.T) {
 		r.buttons = map[string]bool{"merge": true}
 		r.linearHistory = []string{"branch protection"}
 	})
-	if _, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": "merge"}, deadlock); err == nil ||
+	if _, err := resolveMergeMethod(gitConfig{"MERGE_METHOD": "merge"}, deadlock, "feat/x"); err == nil ||
 		!strings.Contains(err.Error(), "no merge method is permitted into main (merge: branch protection requires linear history") {
 		t.Errorf("deadlock: %v", err)
+	}
+}
+
+// MERGE_METHOD_BY_HEAD: a promotion lands as a merge commit by default, every
+// other head keeps MERGE_METHOD, and a base refusing the matched method is a
+// STOP — never the squash fallback.
+func TestHeadMergeMethod(t *testing.T) {
+	squash := gitConfig{"MERGE_METHOD": "squash"}
+	if c, err := resolveMergeMethod(squash, rulesOf(nil), "promote/canary-20260925"); err != nil || c.method != "merge" || c.source != "head" ||
+		!strings.Contains(c.reason, "matches MERGE_METHOD_BY_HEAD promote/*:merge") {
+		t.Errorf("promotion: %+v %v", c, err)
+	}
+	if c, err := resolveMergeMethod(squash, rulesOf(nil), "feat/x"); err != nil || c.method != "squash" || c.source != "config" {
+		t.Errorf("feature: %+v %v", c, err)
+	}
+	linear := rulesOf(func(r *mergeRules) { r.linearHistory = []string{`repo ruleset "canary"`} })
+	if c, err := resolveMergeMethod(squash, linear, "promote/canary-20260925"); err == nil ||
+		!strings.Contains(err.Error(), `STOP — promote/canary-20260925 must land as merge`) || !strings.Contains(err.Error(), `requires linear history`) {
+		t.Errorf("refused promotion fell back: %+v %v", c, err)
+	}
+	custom := gitConfig{"MERGE_METHOD": "squash", "MERGE_METHOD_BY_HEAD": "release/*:rebase, promote/*:merge"}
+	if c, err := resolveMergeMethod(custom, rulesOf(nil), "release/2026-10"); err != nil || c.method != "rebase" {
+		t.Errorf("first match: %+v %v", c, err)
+	}
+	off := gitConfig{"MERGE_METHOD": "squash", "MERGE_METHOD_BY_HEAD": ""}
+	if c, err := resolveMergeMethod(off, rulesOf(nil), "promote/x"); err != nil || c.method != "squash" {
+		t.Errorf("empty value turns it off: %+v %v", c, err)
+	}
+	for _, bad := range []string{"promote/*", "promote/*:ff", ":merge", "promote/[:merge"} {
+		if _, err := resolveMergeMethod(gitConfig{"MERGE_METHOD_BY_HEAD": bad}, rulesOf(nil), "feat/x"); err == nil {
+			t.Errorf("malformed %q accepted", bad)
+		}
 	}
 }
 

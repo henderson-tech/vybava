@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -302,12 +303,44 @@ type rulesetMethods struct {
 type mergeMethodChoice struct {
 	method  string
 	invalid *string
-	source  string // config | repository
+	source  string // head | config | repository
 	reason  string
 	allowed []string
 }
 
-func resolveMergeMethod(cfg gitConfig, rules mergeRules) (mergeMethodChoice, error) {
+// MERGE_METHOD_BY_HEAD: `<head glob>:<method>` pairs (comma/space separated,
+// first match wins, path.Match globs) that override MERGE_METHOD for the PRs
+// whose head matches. A promotion (promote/*) lands as a merge commit so the
+// promoted history arrives intact, while every other PR keeps the repo's
+// method. Absent → the built-in promote/*:merge; an empty value turns it off.
+// A matched method the base refuses is a STOP, never a fallback: a squashed
+// promotion drops exactly the history it exists to carry.
+const defaultMergeMethodByHead = "promote/*:merge"
+
+// headMergeMethod returns the first MERGE_METHOD_BY_HEAD pair matching head,
+// or "" when none does. A malformed pair is an error, not a skipped row.
+func headMergeMethod(cfg gitConfig, head string) (glob, method string, err error) {
+	raw, set := cfg.get("MERGE_METHOD_BY_HEAD")
+	if !set {
+		raw = defaultMergeMethodByHead
+	}
+	for _, pair := range botListSeparator.Split(strings.TrimSpace(raw), -1) {
+		if pair == "" {
+			continue
+		}
+		g, m, ok := strings.Cut(pair, ":")
+		m = strings.ToLower(m)
+		if _, globErr := path.Match(g, ""); !ok || g == "" || !slices.Contains(mergeMethods, m) || globErr != nil {
+			return "", "", fmt.Errorf("merge-precheck: MERGE_METHOD_BY_HEAD entry %q is not <head glob>:<merge|squash|rebase>; fix .claude/.claude.git.config", pair)
+		}
+		if matched, _ := path.Match(g, head); matched {
+			return g, m, nil
+		}
+	}
+	return "", "", nil
+}
+
+func resolveMergeMethod(cfg gitConfig, rules mergeRules, headRef string) (mergeMethodChoice, error) {
 	refusals := map[string]string{}
 	refuse := func(m, why string) {
 		if _, done := refusals[m]; !done {
@@ -341,6 +374,19 @@ func resolveMergeMethod(cfg gitConfig, rules mergeRules) (mergeMethodChoice, err
 	if len(allowed) == 0 {
 		return mergeMethodChoice{}, fmt.Errorf("merge-precheck: no merge method is permitted into %s (%s). "+
 			"Enable squash or rebase in the repository settings (henderson-tech: `vybava repolicy apply`, see Výbava docs/repolicy.md).", rules.base, whyText)
+	}
+	glob, want, err := headMergeMethod(cfg, headRef)
+	if err != nil {
+		return mergeMethodChoice{}, err
+	}
+	if want != "" {
+		if !slices.Contains(allowed, want) {
+			return mergeMethodChoice{}, fmt.Errorf("merge-precheck: STOP — %s must land as %s (MERGE_METHOD_BY_HEAD %s:%s), but %s refuses it (%s). "+
+				"Never merge it another way: the base's settings or rules must permit %s first — that is the repo owner's change.",
+				headRef, want, glob, want, rules.base, refusals[want], want)
+		}
+		return mergeMethodChoice{method: want, source: "head", allowed: allowed,
+			reason: fmt.Sprintf("head %s matches MERGE_METHOD_BY_HEAD %s:%s, permitted on %s", headRef, glob, want, rules.base)}, nil
 	}
 	raw, _ := cfg.get("MERGE_METHOD")
 	v := strings.ToLower(strings.TrimSpace(raw))
@@ -812,7 +858,7 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		if requested, reviews, rules, err = gatherOpenPR(gh, owner, name, pr.Number); err != nil {
 			return fail(stderr, err)
 		}
-		choice, err := resolveMergeMethod(cfg, rules)
+		choice, err := resolveMergeMethod(cfg, rules, pr.HeadRefName)
 		if err != nil {
 			return fail(stderr, err)
 		}
