@@ -87,10 +87,16 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	if d == nil {
 		t.Fatal("subdirectory of a synced checkout should block")
 	}
-	for _, want := range []string{"fixit-work-x", `devbox run --no-up -- 'bun run typecheck -- '\''a b'\'''`, "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1"} {
+	// devbox run starts at the checkout root: the rerun gets its cd back.
+	for _, want := range []string{"fixit-work-x", `devbox run --no-up -- 'cd apps/api && bun run typecheck -- '\''a b'\'''`, "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1"} {
 		if !strings.Contains(d.Text(), want) {
 			t.Errorf("message lacks %q:\n%s", want, d.Text())
 		}
+	}
+	// ...and keeps the command's leading assignments.
+	d = guardDevboxWhenWorkspace(hook("NODE_OPTIONS=--max-old-space-size=8192 bunx tsc -p tsconfig.spec.json"))
+	if want := `devbox run --no-up -- 'NODE_OPTIONS=--max-old-space-size=8192 bunx tsc -p tsconfig.spec.json'`; d == nil || !strings.Contains(d.Text(), want) {
+		t.Errorf("rerun dropped the assignment, want %s in:\n%v", want, d)
 	}
 
 	// A worktree nested inside the synced checkout is its own checkout: the
@@ -112,10 +118,38 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	if d := guardDevboxWhenWorkspace(hookAt(nested, "bun run typecheck")); d != nil {
 		t.Errorf("nested bare worktree inherited the main clone's workspace:\n%s", d.Text())
 	}
+	// The command's cd / --cwd decides, never the session's cwd: from the
+	// synced main clone, a typecheck that runs in the bare worktree is allowed.
+	for _, c := range []string{
+		"(cd .worktrees/bare && bun run typecheck)",
+		"cd " + nested + " && bun run typecheck",
+		"bun --cwd .worktrees/bare run typecheck",
+	} {
+		if d := guardDevboxWhenWorkspace(hook(c)); d != nil {
+			t.Errorf("%q from the main clone runs in a bare worktree, should pass:\n%s", c, d.Text())
+		}
+	}
 	// ...until it has one of its own.
 	register("fixit-bare", nested)
 	if d := guardDevboxWhenWorkspace(hookAt(nested, "bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
 		t.Errorf("nested worktree with its own workspace should block naming fixit-bare: %v", d)
+	}
+	// ...and a session in another, unsynced worktree that cds into it is
+	// judged by it, too.
+	bare2 := filepath.Join(root, ".worktrees", "bare2")
+	if err := os.MkdirAll(bare2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{".git": "gitdir: " + filepath.Join(root, ".git", "worktrees", "bare2") + "\n", "vybava.config.json": cfg} {
+		if err := os.WriteFile(filepath.Join(bare2, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := guardDevboxWhenWorkspace(hookAt(bare2, "bun run typecheck")); d != nil {
+		t.Errorf("an unsynced worktree should pass:\n%s", d.Text())
+	}
+	if d := guardDevboxWhenWorkspace(hookAt(bare2, "(cd ../bare && bun run typecheck)")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
+		t.Errorf("cd into a synced worktree should block naming fixit-bare: %v", d)
 	}
 
 	// The registry may hold a symlinked spelling of the checkout.
@@ -126,6 +160,31 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	register("fixit-work-x", link)
 	if d := guardDevboxWhenWorkspace(hook("bun run typecheck")); d == nil {
 		t.Error("symlinked registry path should still match the checkout")
+	}
+	// ...and the mirror: the cwd is the symlinked spelling.
+	register("fixit-work-x", root)
+	if d := guardDevboxWhenWorkspace(hookAt(link, "bun run typecheck")); d == nil {
+		t.Error("a symlinked cwd should still match the registered checkout")
+	}
+
+	// An entry with only rendered/mutagen.yaml (no workspace.yaml, as a third
+	// of real entries are) still names its checkout through the alpha path;
+	// DEVBOX_WORKSPACES_DIR relocates the registry exactly as the CLI does.
+	other := t.TempDir()
+	t.Setenv("DEVBOX_WORKSPACES_DIR", other)
+	if d := guardDevboxWhenWorkspace(hook("bun run typecheck")); d != nil {
+		t.Errorf("the relocated registry is empty, should pass:\n%s", d.Text())
+	}
+	rendered := filepath.Join(other, "fixit-rendered-only", "rendered")
+	if err := os.MkdirAll(rendered, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mutagen := "sync:\n  defaults:\n    mode: one-way-replica\n  ws-fixit-rendered-only-api:\n    alpha: \"" + root + "\"\n    beta: \"devops:ws/fixit-rendered-only/api\"\n"
+	if err := os.WriteFile(filepath.Join(rendered, "mutagen.yaml"), []byte(mutagen), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := guardDevboxWhenWorkspace(hook("bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-rendered-only") {
+		t.Errorf("a rendered-only entry should block naming its directory: %v", d)
 	}
 
 	// No patterns configured: the rule is inert even with a workspace.

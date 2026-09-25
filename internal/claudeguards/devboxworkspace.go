@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -78,13 +79,51 @@ func pathVariants(p string) []string {
 	return out
 }
 
-// devboxWorkspacesDir is the devbox CLI's local workspace registry.
+// devboxWorkspacesDir is the devbox CLI's local workspace registry, resolved
+// as the CLI resolves it: $DEVBOX_WORKSPACES_DIR, else ~/.devbox/workspaces.
 func devboxWorkspacesDir() string {
+	if dir := os.Getenv("DEVBOX_WORKSPACES_DIR"); dir != "" {
+		return dir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".devbox", "workspaces")
+}
+
+// workspaceSyncPaths lists the Mac-side checkouts one registry entry syncs:
+// its workspace.yaml apps[].sync and its rendered/mutagen.yaml sessions'
+// alpha. Both are read because a third of the entries on a real Mac carry only
+// the rendered file. name is the manifest's name, else "".
+func workspaceSyncPaths(entry string) (name string, paths []string) {
+	if raw, err := os.ReadFile(filepath.Join(entry, "workspace.yaml")); err == nil {
+		var ws struct {
+			Name string `yaml:"name"`
+			Apps map[string]struct {
+				Sync string `yaml:"sync"`
+			} `yaml:"apps"`
+		}
+		if yaml.Unmarshal(raw, &ws) == nil {
+			name = ws.Name
+			for _, app := range ws.Apps {
+				paths = append(paths, app.Sync)
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(entry, "rendered", "mutagen.yaml")); err == nil {
+		var m struct {
+			Sync map[string]struct {
+				Alpha string `yaml:"alpha"`
+			} `yaml:"sync"`
+		}
+		if yaml.Unmarshal(raw, &m) == nil {
+			for _, session := range m.Sync {
+				paths = append(paths, session.Alpha)
+			}
+		}
+	}
+	return name, paths
 }
 
 // devboxWorkspaceFor returns the name of the Devbox workspace whose synced
@@ -103,32 +142,18 @@ func devboxWorkspaceFor(root string) string {
 		if !e.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "workspace.yaml"))
-		if err != nil {
-			continue
-		}
-		var ws struct {
-			Name string `yaml:"name"`
-			Apps map[string]struct {
-				Sync string `yaml:"sync"`
-			} `yaml:"apps"`
-		}
-		if yaml.Unmarshal(raw, &ws) != nil {
-			continue
-		}
-		for _, app := range ws.Apps {
-			sync := strings.TrimSpace(app.Sync)
-			if sync == "" || sync == "." {
-				continue
+		name, paths := workspaceSyncPaths(filepath.Join(dir, e.Name()))
+		for _, sync := range paths {
+			sync = strings.TrimSpace(sync)
+			if !filepath.IsAbs(sync) {
+				continue // empty, or a box-side path (devops:ws/…)
 			}
 			for _, s := range pathVariants(sync) {
-				for _, r := range roots {
-					if r == s {
-						if ws.Name != "" {
-							return ws.Name
-						}
-						return e.Name()
+				if slices.Contains(roots, s) {
+					if name != "" {
+						return name
 					}
+					return e.Name()
 				}
 			}
 		}
@@ -145,11 +170,14 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 	if len(cfg.DevboxWhenWorkspace) == 0 {
 		return nil
 	}
-	seg := devboxOnlyMatch(cmd, compileDevboxPatterns(cfg.DevboxWhenWorkspace))
-	if seg == "" {
+	hit, ok := devboxMatch(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxWhenWorkspace))
+	if !ok {
 		return nil
 	}
-	root := checkoutRoot(in.CWD)
+	// The checkout the command RUNS in (after its cd / --cwd), never the
+	// session's: from the main clone, `(cd .worktrees/x && tsc)` is judged by
+	// .worktrees/x, which may have no workspace at all.
+	root := checkoutRoot(hit.run)
 	if root == "" {
 		root = cfg.root
 	}
@@ -161,7 +189,7 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 
 runs on this Mac, and this checkout is synced to the Devbox workspace %s; this
 repo's guards.devboxWhenWorkspace routes it there:
-    devbox run --no-up -- %s
+    %s
 (drop --no-up when the command needs the app services). A checkout without a
-workspace may run the same command here; the registry is ~/.devbox/workspaces.`, seg, ws, shellSingleQuote(seg)), devboxOnlyEscape)
+workspace may run the same command here; the registry is ~/.devbox/workspaces.`, hit.seg, ws, devboxRerun(hit, " --no-up")), devboxOnlyEscape)
 }

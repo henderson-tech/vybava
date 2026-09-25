@@ -175,18 +175,26 @@ next-servers ran on the Mac anyway. The message prints the exact `devbox run
 on the Mac in a bare worktree but belongs on the box once the checkout is
 synced to a workspace: `guards.devboxWhenWorkspace` takes the same RE2
 patterns, and a match is refused only when the devbox CLI's local registry
-(`~/.devbox/workspaces/<name>/workspace.yaml`, whose apps carry the synced
-checkout under `sync:`; a parked workspace keeps its record, `devbox down`
-and gc drop it) names exactly this checkout: the git root above the command's
-cwd, symlinks resolved on both sides. Equality, never a parent match, because
-worktrees nest inside their main clone (`.worktrees/<name>`) and the main
-clone's workspace must not route a bare worktree. No network and no
-subprocess: the lookup reads that directory once per matching command. FixIt
-put its typechecks there on 2026-09-25 (the api spec check alone is 3 GB and
-60 s; several at once froze the Mac at 50 GB of swap the day before, but a
-worktree without a workspace still typechecks locally). The message names the
-workspace and prints the `devbox run --no-up -- '<cmd>'` form; the escape is
-the same `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+names exactly the checkout the command RUNS in. That checkout is the git root
+above the session cwd moved by the command's own `cd <dir>` segments and a bun
+`--cwd <dir>` on the matched segment (a worktree's `.git` file counts), so
+`(cd .worktrees/x && tsc)` from a synced main clone is judged by `.worktrees/x`.
+The registry is `$DEVBOX_WORKSPACES_DIR`, else `~/.devbox/workspaces/`, read
+as the CLI writes it: each entry's `workspace.yaml` (`apps.<app>.sync`) and
+`rendered/mutagen.yaml` (each session's `alpha`; a third of real entries carry
+only this file). A parked workspace keeps its record; `devbox down` and gc drop
+it. Paths compare for equality with symlinks resolved on both sides, never as
+a parent match: worktrees nest inside their main clone and the main clone's
+workspace must not route a bare worktree. No network and no subprocess: the
+lookup reads that directory once per matching command. FixIt put its
+typechecks there on 2026-09-25 (the api spec check alone is 3 GB and 60 s;
+several at once froze the Mac at 50 GB of swap the day before, but a worktree
+without a workspace still typechecks locally). The message names the workspace
+and prints the `devbox run --no-up -- '<cmd>'` rerun. Because `devbox run`
+starts at the synced checkout's root, the rerun carries the command's `cd` back
+and keeps its leading assignments (`NODE_OPTIONS=…`); `machine:devbox-only`
+prints its rerun the same way. The escape is the same
+`CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
 
 A `guards` key this binary does not know (a config written for a newer
 claude-guards) is skipped with one stderr line naming it; every key it does
