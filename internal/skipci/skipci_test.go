@@ -110,7 +110,7 @@ func TestApplyInsertsWrapsAndIsIdempotent(t *testing.T) {
 		"  verify:\n    if: " + Guard + "\n    runs-on: ubuntu-latest",
 		"  gated:\n    if: (github.event.action == 'opened' || github.event.action == 'reopened') && (" + Guard + ")\n",
 		"  shelled:\n    if: ${{ (inputs.deploy == true) && (" + Guard + ") }}\n",
-		"  # the plain job: no condition at all\n",               // comments survive
+		"  # the plain job: no condition at all\n",                                            // comments survive
 		"    if: >-\n      github.ref == 'refs/heads/main' &&\n      inputs.deploy == true\n", // manual left alone
 	} {
 		if !strings.Contains(text, want) {
