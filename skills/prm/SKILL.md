@@ -61,8 +61,12 @@ takes the draft, forwards `--auto`, and says the merge waits on `gh pr ready`).
 
 Watch flags: `--auto` (merge without asking once ready) · `--audit` (run the
 `auto-audit.md` regression audit before any auto-merge — the human opts in by passing
-it; without it `--auto` merges on the precheck gates alone) · `--admin` (admin merge
-over branch protection — only when passed, or via merge.md's solo-owner carve-out) ·
+it; without it `--auto` merges on the precheck gates alone) · `--admin` (the admin
+lane: at ensure-pr the PR gets the org skip labels `skip-ci` + `eve-ignore` via
+`vybava gitkit admin-labels` — its queued/running CI is cancelled and Eve never
+reviews it — and the merge is `--admin` over branch protection; standard:
+Výbava `docs/skip-ci.md`. The merge half alone is also reachable via merge.md's
+solo-owner carve-out) ·
 `--bg` (delegate rounds to fresh ephemeral subagents; implied for `all`) · `--once`
 (single round, no Monitor) · `--every <dur>` (watcher poll cadence, default 60s;
 floor 30s) · `--cap <N>` (max concurrent delegated round agents, default 2) ·
@@ -168,11 +172,13 @@ head moved ⇒ stale ⇒ re-run. Inconclusive counts as BLOCK.
 | ready + `--audit` **BLOCK** | No merge. Foreign author → ONE CHANGES_REQUESTED review via `gitkit github-io review`. Our PR → a round fixes the findings and pushes, then re-audit. Monitor stays alive. |
 | **3rd consecutive BLOCK** | Stop: `TaskStop` the Monitor, report findings + URL, hand to the user. |
 | `REVIEW_REQUIRED` / `CHANGES_REQUESTED` (human) | Keep watching, never bypass — EXCEPT the solo-owner carve-out (`merge.md`): precheck → (audit if `--audit`) → `--admin` merge. Never self-approve. |
+| `--admin` passed | The labels went on at ensure-pr, so `merge-precheck` reports `gates.ciWaived: true` (cancelled/red runs are not a gate) and no bot or Eve review will arrive. Gate = clean + mergeable + non-thread findings answered (+ audit if `--audit`) → `--admin` merge → teardown. A red gate other than CI still STOPs. |
 | repo has `MERGE_POLICY=self` (`merge-precheck` → `mergePolicy`) | No review loop at all: create (labelled `eve-ignore`) → `ensure-pr` extensions → gate (clean, CI, mergeable, required bots) → `merge` extensions → `--admin` merge → teardown, in one pass (`round` extensions never run). `--auto` is implied; a red gate still STOPs as in `merge.md`. |
 | required **bot** approval pending | Keep watching; it clears only via the bot's own APPROVED review, prompted by resolving its findings and pushing. |
 | CI red, CONFLICTING, draft | Unchanged; every `merge.md` STOP still STOPs. |
 
-`--auto` never implies `--admin` (carve-out aside) and never self-approves. Applies
+`--auto` never implies `--admin` (carve-out aside) and never self-approves; `--admin`
+never implies `--auto` — without it the ready PR is still offered, not merged. Applies
 to `all` per-PR as each reaches ready (+ PASS when audited). `--once --auto`: merge
 only if already ready; a blocked PR is reported, not waited on. Non-thread findings
 and open DEFERs still block the auto-merge even though `merge-precheck` can't see
@@ -237,5 +243,10 @@ and never executed (`verdicts.md`).
 - Never leave a PR with a commit-log body, a missing `Blockers & risks` section, or a
   missing links table (`pr-body.md`).
 - `--audit`: audit lens-4 irreversibles land in `Blockers & risks` BEFORE merge.
+- The skip labels go on ONLY under `--admin` (or `eve-ignore` alone under
+  `MERGE_POLICY=self`); prm never labels a PR `skip-ci` on its own judgement, and a
+  PR someone hand-labelled `skip-ci` is reported as such (`gates.ciWaived`) and
+  needs `--admin` to land — never a plain merge attempt that branch protection
+  refuses.
 - Write no files beyond code changes, the `refs/pr/<N>` ref, the lessons commit
   (`round.md`) and what a repo extension prescribes; scratchpad body files are fine.

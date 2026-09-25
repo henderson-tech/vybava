@@ -116,6 +116,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "plugin-gc" {
 		return rt.pluginGCApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "skipci" {
+		return rt.skipCIApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "handoffs" {
 		return rt.handoffsApplet(), nil
 	}
@@ -192,6 +195,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.reclaimCommand("reclaim"),
 		rt.macwatchCommand("macwatch"),
 		rt.pluginGCCommand("plugin-gc"),
+		rt.skipCICommand("skipci"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
 		rt.plaudCommand("plaud"),

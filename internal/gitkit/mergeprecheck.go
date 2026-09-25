@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/skipci"
 )
 
 // merge-precheck — read-only pre-merge gate gathering for /prm's terminus.
@@ -103,6 +105,7 @@ type gateInput struct {
 	state, mergeable, mergeStateStatus, reviewDecision, checks string
 	worktreeDirty, isDraft, botApprovalOK                      bool
 	hasWorkflows                                               bool // does the repo define any GitHub Actions workflow?
+	ciWaived                                                   bool // the PR carries skip-ci: its checks are not a gate
 }
 
 // GateSummary is the gates object, keys in wire order.
@@ -116,6 +119,10 @@ type GateSummary struct {
 	BotApprovalOK bool     `json:"botApprovalOk"`
 	AllPass       bool     `json:"allPass"`
 	Failed        []string `json:"failed"`
+	// CIWaived: ciOk holds because the PR carries the `skip-ci` label, not
+	// because its checks are green — the runs that started before the label
+	// landed read cancelled/skipped. Landing such a PR is an `--admin` merge.
+	CIWaived bool `json:"ciWaived"`
 }
 
 // repoHasWorkflows: at least one .yml/.yaml under .github/workflows.
@@ -145,7 +152,8 @@ func summarizeGates(g gateInput) GateSummary {
 		// repo WITH workflows it means path filters matched nothing, a run got
 		// no runner, or nothing triggered yet — "no test ran" must never read
 		// as "every test passed".
-		CIOK:          g.checks == "SUCCESS" || (g.checks == "NONE" && !g.hasWorkflows),
+		CIOK:          g.checks == "SUCCESS" || (g.checks == "NONE" && !g.hasWorkflows) || g.ciWaived,
+		CIWaived:      g.ciWaived,
 		BotApprovalOK: g.botApprovalOK,
 		Failed:        []string{},
 	}
@@ -701,6 +709,7 @@ type Precheck struct {
 	StopServersInvalid      *string         `json:"stopServersInvalid"`
 	BeforeReviewCmd         *string         `json:"beforeReviewCmd"`
 	ResolvedBeforeReviewCmd *string         `json:"resolvedBeforeReviewCmd"`
+	Labels                  []string        `json:"labels"`
 	Raw                     precheckRawView `json:"raw"`
 }
 
@@ -754,7 +763,7 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 	if prArg != "" {
 		viewArgs = append(viewArgs, prArg)
 	}
-	prOut, err := gh(append(viewArgs, "--json", "number,state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefName,baseRefName,url,title,isDraft")...)
+	prOut, err := gh(append(viewArgs, "--json", "number,state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefName,baseRefName,url,title,isDraft,labels")...)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -762,10 +771,13 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		precheckRawView
 		Number            int         `json:"number"`
 		StatusCheckRollup []checkNode `json:"statusCheckRollup"`
-		HeadRefName       string      `json:"headRefName"`
-		BaseRefName       string      `json:"baseRefName"`
-		URL               string      `json:"url"`
-		Title             string      `json:"title"`
+		Labels            []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		HeadRefName string `json:"headRefName"`
+		BaseRefName string `json:"baseRefName"`
+		URL         string `json:"url"`
+		Title       string `json:"title"`
 	}
 	if err := json.Unmarshal([]byte(prOut), &pr); err != nil {
 		return fail(stderr, err)
@@ -813,10 +825,14 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 	}
 	var isDraft bool
 	_ = json.Unmarshal(pr.IsDraft, &isDraft)
+	labels := make([]string, 0, len(pr.Labels))
+	for _, l := range pr.Labels {
+		labels = append(labels, l.Name)
+	}
 	gates := summarizeGates(gateInput{
 		state: state, mergeable: rawString(pr.Mergeable), mergeStateStatus: rawString(pr.MergeStateStatus),
 		reviewDecision: rawString(pr.ReviewDecision), checks: checks, worktreeDirty: paths.dirty, isDraft: isDraft,
-		botApprovalOK: botApproval.OK, hasWorkflows: hasWorkflows,
+		botApprovalOK: botApproval.OK, hasWorkflows: hasWorkflows, ciWaived: slices.Contains(labels, skipci.LabelSkipCI),
 	})
 
 	// AFTER_MERGE_CMD runs INSTEAD of the generic teardown, so it bypasses
@@ -834,7 +850,7 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 		Checks: checks, Gates: gates, BotApproval: botApproval, RequiredBotReviewers: requiredBots,
 		MergePolicy: mergePolicy.value, MergePolicyInvalid: mergePolicy.invalid,
 		MergeMethodReason: "PR is " + state + " — no merge ahead", MergeMethodsAllowed: []string{},
-		StopServers: "", Raw: pr.precheckRawView,
+		StopServers: "", Labels: labels, Raw: pr.precheckRawView,
 	}
 	if m := mergeMethod; m != nil {
 		out.MergeMethod, out.MergeMethodInvalid, out.MergeMethodSource = &m.method, m.invalid, &m.source

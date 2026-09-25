@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/skipci"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,12 +55,28 @@ type Policy struct {
 	Owners   []string        `yaml:"owners" json:"owners,omitempty"`
 	Exclude  []string        `yaml:"exclude" json:"exclude,omitempty"`
 	Settings map[string]bool `yaml:"settings" json:"settings"`
+	// Labels every repository must carry. Presence is the policy — an
+	// existing label keeps whatever colour and text a human gave it; only a
+	// missing one is created, with the declared colour and description.
+	Labels []Label `yaml:"labels" json:"labels,omitempty"`
+}
+
+// Label is one repository label the policy requires.
+type Label struct {
+	Name        string `yaml:"name" json:"name"`
+	Color       string `yaml:"color" json:"color,omitempty"`
+	Description string `yaml:"description" json:"description,omitempty"`
 }
 
 // DefaultPolicy is what ships when no policy file is given: merged branches
-// disappear, everything else stays the owner's business.
+// disappear, the two skip labels exist (docs/skip-ci.md), everything else
+// stays the owner's business.
 func DefaultPolicy() Policy {
-	return Policy{Settings: map[string]bool{"deleteBranchOnMerge": true}}
+	var labels []Label
+	for _, l := range skipci.Labels() {
+		labels = append(labels, Label{Name: l.Name, Color: l.Color, Description: l.Description})
+	}
+	return Policy{Settings: map[string]bool{"deleteBranchOnMerge": true}, Labels: labels}
 }
 
 // LoadPolicy reads a YAML policy file and validates its vocabulary.
@@ -84,8 +101,13 @@ func LoadPolicy(path string) (Policy, error) {
 // Validate refuses a policy that declares nothing or names a setting outside
 // the vocabulary — a typo must never pass as "no drift".
 func (p Policy) Validate() error {
-	if len(p.Settings) == 0 {
-		return fmt.Errorf("policy declares no settings — one of: %s", strings.Join(keys(), ", "))
+	if len(p.Settings) == 0 && len(p.Labels) == 0 {
+		return fmt.Errorf("policy declares no settings and no labels — settings are one of: %s", strings.Join(keys(), ", "))
+	}
+	for _, l := range p.Labels {
+		if strings.TrimSpace(l.Name) == "" {
+			return fmt.Errorf("labels: every entry needs a name")
+		}
 	}
 	for key := range p.Settings {
 		if find(key) == nil {
@@ -137,6 +159,7 @@ type Change struct {
 type Report struct {
 	Owners   []string        `json:"owners"`
 	Settings map[string]bool `json:"settings"`
+	Labels   []Label         `json:"labels,omitempty"`
 	Checked  int             `json:"checked"`
 	Skipped  []string        `json:"skipped,omitempty"`
 	Drift    []Drift         `json:"drift"`
@@ -171,7 +194,7 @@ func Audit(r Runner, p Policy, owners []string, opts Options) (Report, error) {
 		opts.Limit = 500
 	}
 	excluded := index(p.Exclude)
-	report := Report{Owners: owners, Settings: p.Settings}
+	report := Report{Owners: owners, Settings: p.Settings, Labels: p.Labels}
 
 	for _, owner := range owners {
 		repos, err := list(r, owner, p, opts)
@@ -204,6 +227,17 @@ func Audit(r Runner, p Policy, owners []string, opts Options) (Report, error) {
 					report.Drift = append(report.Drift, Drift{Repo: name, Setting: k.Key, Want: want, Got: got})
 				}
 			}
+			if len(p.Labels) > 0 {
+				have, ok := labelNames(repo["labels"])
+				if !ok {
+					report.Warnings = append(report.Warnings, fmt.Sprintf("%s: gh did not report labels — labels skipped", name))
+				}
+				for _, l := range p.Labels {
+					if ok && !have[l.Name] {
+						report.Drift = append(report.Drift, Drift{Repo: name, Setting: labelKey(l.Name), Want: true, Got: false})
+					}
+				}
+			}
 		}
 	}
 	sort.SliceStable(report.Drift, func(i, j int) bool { return report.Drift[i].Repo < report.Drift[j].Repo })
@@ -211,8 +245,10 @@ func Audit(r Runner, p Policy, owners []string, opts Options) (Report, error) {
 }
 
 // Apply audits, then converges each drifting repository with ONE PATCH
-// carrying all of its off-policy settings. A repository the token cannot
-// administer is reported, never fatal — the rest of the sweep still lands.
+// carrying all of its off-policy settings, plus one `gh label create` per
+// missing label (the REST label endpoint takes one at a time). A repository
+// the token cannot administer is reported, never fatal — the rest of the
+// sweep still lands.
 func Apply(r Runner, p Policy, owners []string, opts Options) (Report, error) {
 	report, err := Audit(r, p, owners, opts)
 	if err != nil {
@@ -220,21 +256,66 @@ func Apply(r Runner, p Policy, owners []string, opts Options) (Report, error) {
 	}
 	for _, repo := range order(report.Drift) {
 		args := []string{"api", "-X", "PATCH", "repos/" + repo, "--silent"}
-		var names []string
+		var names, labels []string
 		for _, d := range report.Drift {
 			if d.Repo != repo {
 				continue
 			}
 			names = append(names, d.Setting)
+			if l, ok := strings.CutPrefix(d.Setting, labelPrefix); ok {
+				labels = append(labels, l)
+				continue
+			}
 			args = append(args, "-F", find(d.Setting).REST+"="+strconv.FormatBool(d.Want))
 		}
 		change := Change{Repo: repo, Settings: names, OK: true}
-		if _, err := r.Run("", "gh", args...); err != nil {
-			change.OK, change.Error = false, err.Error()
+		failed := func(err error) { change.OK, change.Error = false, err.Error() }
+		if len(names) > len(labels) {
+			if _, err := r.Run("", "gh", args...); err != nil {
+				failed(err)
+			}
+		}
+		for _, name := range labels {
+			l := p.label(name)
+			if _, err := r.Run("", "gh", skipci.LabelArgs(skipci.Label{Name: l.Name, Color: l.Color, Description: l.Description}, repo)...); err != nil && change.OK {
+				failed(err)
+			}
 		}
 		report.Applied = append(report.Applied, change)
 	}
 	return report, nil
+}
+
+// labelPrefix keys a label row in Drift.Setting and Change.Settings, so the
+// one report shape carries both kinds of drift.
+const labelPrefix = "label:"
+
+func labelKey(name string) string { return labelPrefix + name }
+
+// labelNames reads the label names `gh repo list --json labels` served.
+func labelNames(v any) (map[string]bool, bool) {
+	rows, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := map[string]bool{}
+	for _, row := range rows {
+		if m, ok := row.(map[string]any); ok {
+			if name, _ := m["name"].(string); name != "" {
+				out[name] = true
+			}
+		}
+	}
+	return out, true
+}
+
+func (p Policy) label(name string) Label {
+	for _, l := range p.Labels {
+		if l.Name == name {
+			return l
+		}
+	}
+	return Label{Name: name}
 }
 
 // list asks gh for exactly the fields the policy declares — never the whole
@@ -243,6 +324,9 @@ func list(r Runner, owner string, p Policy, opts Options) ([]map[string]any, err
 	fields := []string{"nameWithOwner"}
 	for _, k := range p.declared() {
 		fields = append(fields, k.List)
+	}
+	if len(p.Labels) > 0 {
+		fields = append(fields, "labels")
 	}
 	args := []string{"repo", "list", owner, "--limit", strconv.Itoa(opts.Limit), "--json", strings.Join(fields, ",")}
 	if !opts.IncludeArchived {

@@ -11,6 +11,7 @@ vybava gitkit doctor --json          # same list; nothing else to check
 vybava gitkit resolve-fetch 42 --repo "$PWD"
 vybava gitkit pr-events 42 --every-seconds 60 --repo "$PWD"   # under Monitor
 vybava gitkit pr-extensions --stage ensure-pr --repo "$PWD"   # the repo's prm extensions
+vybava gitkit admin-labels 42 --repo "$PWD"                   # prm --admin: skip labels + cancel live runs
 ```
 
 ## Contract
@@ -110,3 +111,16 @@ is the permitted set. Unreadable settings or rules, or a base that permits no
 method at all, exit 1 with the cause and fix — the precheck never guesses.
 The buttons-only reading chose `merge` on a linear-history repository and
 GitHub refused the merge (semafor#3, 2026-09-24).
+
+## admin-labels and the skip-ci waiver
+
+`admin-labels <pr> --repo <path>` is `prm --admin`'s deterministic half
+(`docs/skip-ci.md`): it creates the org skip labels in the repo when missing,
+adds the ones the PR lacks (`labelsAdded`) and cancels every queued or running
+workflow run on the head SHA (`runsCancelled`; `runsLeft` names what gh could
+not cancel — reported, never fatal). The runs must be cancelled here because a
+label added after the push cannot reach the runs that push queued.
+`merge-precheck` reads the PR's `labels` and, for one carrying `skip-ci`,
+reports `gates.ciWaived: true` with `ciOk` held — the cancelled runs are
+expected — while every other gate stays as it was. Born in Go, the verb
+validates its argv (`GITKIT_BAD_ARGS`-style usage error, exit 1).

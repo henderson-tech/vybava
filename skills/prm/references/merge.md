@@ -38,7 +38,7 @@ While `gates.allPass === false`, act per failed gate, then re-run merge-precheck
 | failed gate | action |
 |---|---|
 | `clean` (dirty worktree) | commit the whole tree per the `push-all` skill commit doctrine, then `git push` |
-| `ci` / `ci-absent` | the CI fix loop below |
+| `ci` / `ci-absent` | the CI fix loop below. Never fires for a PR carrying `skip-ci` — `gates.ciWaived: true` makes `ciOk` hold over cancelled/red runs, by design (`docs/skip-ci.md`); such a PR lands only with `--admin`, so without it (and no carve-out) **STOP: "labelled skip-ci — needs --admin"** |
 | `review` + `CHANGES_REQUESTED` | a round (resolve comments + push). Still not `APPROVED` → **STOP: "blocked on human approval"** |
 | `review` + `REVIEW_REQUIRED` | `mergePolicy === "self"` → the review gate is not a gate: `--admin` merge now (no round, no watcher). Else the solo-owner carve-out applies (below) → `--admin` merge, not a STOP. Otherwise **STOP: "blocked on human approval"** — never self-approve (`--admin` does NOT fake an approval) |
 | `botReview` (`botApproval.pending` names which) | bot has open threads → a round (resolve + push); the bot re-reviews on the push. Still pending → **STOP: "blocked on bot review (`<bot>` pending)"** — never self-approve, dismiss, or `--admin` past a required bot |
@@ -76,7 +76,8 @@ branch permits (`mergeMethodSource: "config"`), else the first of merge → squa
 that the repository's buttons AND the base's rulesets/protection permit (`"repository"`
 — linear history refuses merge commits, so henderson-tech repos land as squash with no
 key). Never substitute a method of your own; `mergeMethodReason` says why. Append
-`--admin` only when the user passed it or the carve-out applies. Remote branch deleted.
+`--admin` only when the user passed it or the carve-out applies — a `gates.ciWaived`
+PR has no green required check, so it needs one of the two. Remote branch deleted.
 A non-null `mergeMethodInvalid` is a config typo or a method the base refuses: say so,
 run as `mergeMethod`. A precheck that exits 1 with `cannot read …` or `no merge method is
 permitted …` is a STOP with that line — never fall back to `--merge`.

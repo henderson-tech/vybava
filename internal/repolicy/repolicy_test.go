@@ -33,8 +33,10 @@ func (f *fake) Run(_, name string, args ...string) (string, error) {
 
 func repos(rows ...string) string { return "[" + strings.Join(rows, ",") + "]" }
 
+// row carries both standard labels so the default policy sees only the
+// setting drift a test scripts.
 func row(name string, deleteOnMerge bool) string {
-	return fmt.Sprintf(`{"nameWithOwner":%q,"deleteBranchOnMerge":%t}`, name, deleteOnMerge)
+	return fmt.Sprintf(`{"nameWithOwner":%q,"deleteBranchOnMerge":%t,"labels":[{"name":"skip-ci"},{"name":"eve-ignore"}]}`, name, deleteOnMerge)
 }
 
 func TestAuditReportsOnlyOffPolicyRepos(t *testing.T) {
@@ -167,5 +169,52 @@ func TestMistypedTopLevelKeyIsRefused(t *testing.T) {
 	_, err := LoadPolicy(path)
 	if err == nil || !strings.Contains(err.Error(), "excludes") {
 		t.Fatalf("err = %v, want the unknown field named", err)
+	}
+}
+
+func TestLabelsAreAuditedByPresenceAndCreatedOneByOne(t *testing.T) {
+	f := &fake{out: map[string]string{
+		"repo list acme": repos(
+			`{"nameWithOwner":"acme/full","deleteBranchOnMerge":true,"labels":[{"name":"skip-ci"},{"name":"eve-ignore"},{"name":"bug"}]}`,
+			`{"nameWithOwner":"acme/bare","deleteBranchOnMerge":false,"labels":[{"name":"bug"}]}`,
+		),
+	}}
+	report, err := Apply(f, DefaultPolicy(), []string{"acme"}, Options{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !strings.Contains(f.calls[0], "--json nameWithOwner,deleteBranchOnMerge,labels") {
+		t.Fatalf("list must ask for labels: %q", f.calls[0])
+	}
+	var settings []string
+	for _, d := range report.Drift {
+		settings = append(settings, d.Repo+" "+d.Setting)
+	}
+	want := "acme/bare deleteBranchOnMerge, acme/bare label:skip-ci, acme/bare label:eve-ignore"
+	if got := strings.Join(settings, ", "); got != want {
+		t.Fatalf("drift = %q, want %q", got, want)
+	}
+	// One PATCH for the setting, one `label create` per missing label (no --force:
+	// an existing label is never rewritten).
+	wantCalls := []string{
+		"gh api -X PATCH repos/acme/bare --silent -F delete_branch_on_merge=true",
+		"gh label create skip-ci --color ededed --description skip CI on this PR — every pull_request job guards on it; merge is --admin --repo acme/bare",
+		"gh label create eve-ignore --color ededed --description skip eve's automatic PR review --repo acme/bare",
+	}
+	if got := f.calls[1:]; strings.Join(got, "\n") != strings.Join(wantCalls, "\n") {
+		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(wantCalls, "\n"))
+	}
+	if len(report.Applied) != 1 || !report.Applied[0].OK || len(report.Applied[0].Settings) != 3 {
+		t.Fatalf("applied = %+v", report.Applied)
+	}
+}
+
+func TestLabelsOnlyPolicyIsValid(t *testing.T) {
+	p := Policy{Labels: []Label{{Name: "skip-ci"}}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("labels-only policy: %v", err)
+	}
+	if err := (Policy{Labels: []Label{{Name: " "}}}).Validate(); err == nil {
+		t.Fatal("a nameless label must be refused")
 	}
 }
