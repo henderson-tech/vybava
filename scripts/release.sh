@@ -29,7 +29,16 @@ git tag -a "$next" -m "Release $next"
 git push origin "$next"
 
 echo "watching the Release workflow…"
-sleep 5
-run_id=$(gh run list --workflow Release --branch "$next" --limit 1 --json databaseId --jq '.[0].databaseId')
+# GitHub registers the tag-triggered run seconds after the push; poll ~2 min for it.
+run_id=""
+for _ in {1..24}; do
+  sleep 5
+  run_id=$(gh run list --workflow Release --branch "$next" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  if [ -n "$run_id" ]; then break; fi
+done
+if [ -z "$run_id" ]; then
+  echo "no Release run for $next appeared within 2 min; $next is pushed — watch it with: gh run list --workflow Release --branch $next" >&2
+  exit 1
+fi
 gh run watch "$run_id" --exit-status
 echo "released $next — upgrade with: brew upgrade --cask vybava"
