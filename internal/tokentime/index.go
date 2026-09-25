@@ -813,8 +813,16 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 		if beats := lag.encode(); beats != row.beats {
 			row.beats = beats
 			if lost {
+				// What it owed went with the old content, bounded by the last
+				// write the token read saw before this pass (the bound a vanished
+				// file gets; Until tracks that cursor). lag.Cursor is the new
+				// content's, which for a live transcript is today.
+				at := known[t.path].cur.Modified
+				if at == 0 {
+					at = lag.Cursor.Modified
+				}
 				ix.lost[t.path] = row
-				ix.lostSince = max(ix.lostSince, lag.Cursor.Modified/int64(time.Second))
+				ix.lostSince = max(ix.lostSince, at/int64(time.Second))
 			} else {
 				ix.files[t.path] = row
 				sinceCommit++

@@ -230,9 +230,16 @@ func TestATranscriptLostBeforeItsBacklogMovesCoveragePastIt(t *testing.T) {
 
 // A transcript rewritten shorter than its backlog lost what it owed with its
 // old content: the backlog ends where the new content does, and coverage
-// moves past its last write as it does for a deleted one.
+// moves past the old content's last write as it does for a deleted one —
+// never past the rewrite, which for a live transcript is today.
 func TestATranscriptShrunkUnderItsBacklogEndsItAndMovesCoverage(t *testing.T) {
 	f := beatsFixture(t)
+	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	for _, name := range []string{"s1.jsonl", "s2.jsonl"} {
+		if err := os.Chtimes(filepath.Join(f.claude, "-work-app", name), written, written); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s := f.open(t)
 	f.index(t, s)
 	if _, err := s.db.Exec(dropBeats + "DELETE FROM meta WHERE key LIKE 'beats_%'; PRAGMA user_version=3"); err != nil {
@@ -241,14 +248,14 @@ func TestATranscriptShrunkUnderItsBacklogEndsItAndMovesCoverage(t *testing.T) {
 	s.Close()
 	prompt := lines(mustJSON(map[string]any{"type": "user", "sessionId": "s2", "cwd": f.worktree, "timestamp": "2026-09-23T09:00:00Z",
 		"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": "again"}}))
-	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	rewritten := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
 	for name, content := range map[string]string{
 		"s2.jsonl": prompt,
 		"s1.jsonl": prompt + `{"type":"user"`, // ends in a record its writer never finished
 	} {
 		shrunk := filepath.Join(f.claude, "-work-app", name)
 		put(t, shrunk, content)
-		if err := os.Chtimes(shrunk, written, written); err != nil {
+		if err := os.Chtimes(shrunk, rewritten, rewritten); err != nil {
 			t.Fatal(err)
 		}
 	}
