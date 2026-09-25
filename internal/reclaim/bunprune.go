@@ -31,11 +31,11 @@ package reclaim
 // --apply refuses while a bun install-family process has its cwd inside the
 // checkout (outside a nested checkout that is its own bun project), keeps
 // every entry modified within MinAge (an install in flight writes fresh
-// entries), walks again right before deleting, refuses when a directory or
-// lockfile that walk read changed before the first rename (an install that
-// ran start to finish during it), and renames each target into a trash
-// directory first, so a later install never finds a half-deleted package
-// under a name it trusts.
+// entries), checks the processes again right before deleting, refuses when
+// anything the plan read (walkFence) changed before the first rename (an
+// install that ran start to finish during it), and renames each target into
+// a trash directory first, so a later install never finds a half-deleted
+// package under a name it trusts.
 
 import (
 	"bytes"
@@ -209,11 +209,15 @@ func planBunPrune(ctx context.Context, checkout string, spellings []string, opts
 		Native: []BunPruneEntry{}, NativeManifests: []string{}}
 	nm := filepath.Join(checkout, "node_modules")
 	store := filepath.Join(nm, ".bun")
+	// The store listing names every candidate: an install that adds, removes or
+	// replaces an entry after it moves the directory.
+	var fence walkFence
+	fence.stamp(store)
 	names, err := bunStoreEntries(store)
 	if err != nil {
 		return report, nil, nil, fmt.Errorf("%s is not a bun isolated install: %w", checkout, err)
 	}
-	reached, manifests, fence, err := bunReachable(checkout, spellings)
+	reached, manifests, err := bunReachable(checkout, spellings, &fence)
 	if err != nil {
 		return report, nil, nil, err
 	}
@@ -326,17 +330,16 @@ const (
 )
 
 // bunReachable returns what keeps each kept .bun entry, plus the native
-// lockfiles read (checkout-relative) and the fence of everything read. The
-// node_modules walk runs to the end first, so reachNative marks only what
-// nothing else reaches. An unreadable root, package directory or lockfile is
-// an error, never a skip: a missed root would make live entries look
-// unreachable.
-func bunReachable(checkout string, spellings []string) (map[string]bunReach, []string, walkFence, error) {
-	dirs, err := bunPackageDirs(checkout)
+// lockfiles read (checkout-relative), stamping everything it reads into
+// fence. The node_modules walk runs to the end first, so reachNative marks
+// only what nothing else reaches. An unreadable root, package directory or
+// lockfile is an error, never a skip: a missed root would make live entries
+// look unreachable.
+func bunReachable(checkout string, spellings []string, fence *walkFence) (map[string]bunReach, []string, error) {
+	dirs, err := bunPackageDirs(checkout, fence)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	var fence walkFence
 	var stores []string
 	for _, s := range spellings {
 		stores = append(stores, filepath.Join(s, "node_modules", ".bun"))
@@ -367,7 +370,7 @@ func bunReachable(checkout string, spellings []string) (map[string]bunReach, []s
 			case info.Mode()&fs.ModeSymlink != 0:
 				mark(path) // follows only when it lands back inside .bun
 			case info.IsDir():
-				if err := scanModuleLinks(filepath.Join(path, "node_modules"), mark, &fence); err != nil {
+				if err := scanModuleLinks(filepath.Join(path, "node_modules"), mark, fence); err != nil {
 					return err
 				}
 			}
@@ -379,32 +382,35 @@ func bunReachable(checkout string, spellings []string) (map[string]bunReach, []s
 		roots = append(roots, filepath.Join(dir, "node_modules"))
 	}
 	for _, root := range roots {
-		if err := scanModuleLinks(root, mark, &fence); err != nil {
-			return nil, nil, nil, err
+		if err := scanModuleLinks(root, mark, fence); err != nil {
+			return nil, nil, err
 		}
 	}
 	if err := walk(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	phase = reachNative
-	names, manifests, err := nativeBunRefs(checkout, dirs, &fence)
+	names, manifests, err := nativeBunRefs(checkout, dirs, fence)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for _, name := range names {
 		enqueue(name)
 	}
 	if err := walk(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return reached, manifests, fence, nil
+	return reached, manifests, nil
 }
 
-// walkFence is the mtime of every directory and lockfile the reachability
-// walk read (zero: absent then). An install that starts and finishes between
-// --apply's two busy checks relinks a root or a lockfile names a new entry,
-// and either moves an mtime here; --apply re-reads the fence right before the
-// first rename and refuses on any change.
+// walkFence is the mtime of every directory and file the plan read (zero:
+// absent then): the .bun store listing, the root package.json and each
+// workspace pattern's parent directory, every node_modules directory walked
+// and every Podfile.lock. An install that starts and finishes between
+// --apply's two busy checks adds or replaces a store entry, relinks a root, or
+// a lockfile or workspace list names something new, and each moves an mtime
+// here; --apply re-reads the fence right before the first rename and refuses
+// on any change.
 type walkFence []pathStamp
 
 type pathStamp struct {
@@ -412,8 +418,12 @@ type pathStamp struct {
 	mod  time.Time
 }
 
-// stamp records path as it is right before the walk reads it.
+// stamp records path as it is right before the walk reads it. A nil fence
+// records nothing.
 func (f *walkFence) stamp(path string) {
+	if f == nil {
+		return
+	}
 	var mod time.Time
 	if info, err := os.Lstat(path); err == nil {
 		mod = info.ModTime()
@@ -467,10 +477,18 @@ func nativeBunRefs(checkout string, dirs []string, fence *walkFence) ([]string, 
 	return names, manifests, nil
 }
 
-// bunPackageDirs is the checkout plus every workspace package directory.
-func bunPackageDirs(checkout string) ([]string, error) {
+// bunPackageDirs is the checkout plus every workspace package directory,
+// stamping into fence (nil: none) the root package.json and each pattern's
+// deepest literal directory, so an edited workspace list or a package
+// directory that appears or goes moves the fence. A match that cannot be
+// stat'ed is an error: a missed package directory would make its entries look
+// unreachable. One that is gone by then (a dangling symlink, a racing delete)
+// is no package.
+func bunPackageDirs(checkout string, fence *walkFence) ([]string, error) {
 	dirs := []string{checkout}
-	patterns, err := workspacePatterns(filepath.Join(checkout, "package.json"))
+	manifest := filepath.Join(checkout, "package.json")
+	fence.stamp(manifest)
+	patterns, err := workspacePatterns(manifest)
 	if err != nil {
 		return nil, err
 	}
@@ -481,14 +499,27 @@ func bunPackageDirs(checkout string) ([]string, error) {
 		if strings.Contains(pattern, "**") {
 			return nil, fmt.Errorf("workspace pattern %q: ** is not expanded here; refusing rather than missing a root", pattern)
 		}
-		matches, err := filepath.Glob(filepath.Join(checkout, filepath.FromSlash(pattern)))
+		glob := filepath.Join(checkout, filepath.FromSlash(pattern))
+		base := filepath.Dir(glob)
+		for strings.ContainsAny(base, `*?[\`) {
+			base = filepath.Dir(base)
+		}
+		fence.stamp(base)
+		matches, err := filepath.Glob(glob)
 		if err != nil {
 			return nil, fmt.Errorf("workspace pattern %q: %w", pattern, err)
 		}
 		for _, m := range matches {
+			info, err := os.Stat(m)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("workspace pattern %q: %w", pattern, err)
+			}
 			// `apps/*` also matches files (apps/.DS_Store): only a directory
 			// can be a workspace package.
-			if info, err := os.Stat(m); err == nil && info.IsDir() {
+			if info.IsDir() {
 				dirs = append(dirs, m)
 			}
 		}
@@ -690,7 +721,7 @@ func nestedBunProject(cwd, root string) bool {
 			continue
 		}
 		if info, err := os.Lstat(filepath.Join(d, ".git")); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
-			workspaces, err := bunPackageDirs(dir)
+			workspaces, err := bunPackageDirs(dir, nil)
 			if err != nil {
 				return false // unreadable workspaces: count it, the safe side
 			}

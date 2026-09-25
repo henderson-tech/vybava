@@ -642,6 +642,68 @@ func TestBunPruneApplyRefusesAnInstallThatRanDuringTheWalk(t *testing.T) {
 	}
 }
 
+// The same race where no walked node_modules directory moves: the install
+// replaced a store entry, the workspace list gained a pattern whose package
+// links stale-dir@0, or a new package directory appeared under a pattern.
+// Each must refuse, and stale-dir@0 must survive.
+func TestBunPruneApplyRefusesAStoreOrWorkspaceChangeDuringTheWalk(t *testing.T) {
+	cases := map[string]func(t *testing.T, checkout string){
+		"store entry replaced": func(t *testing.T, checkout string) {
+			store := filepath.Join(checkout, "node_modules/.bun")
+			if err := os.Rename(filepath.Join(store, "stale-dir@0"), filepath.Join(store, ".stale-dir@0-old")); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(store, "stale-dir@0/node_modules/stale/big.bin"), 4000, 0)
+		},
+		"workspace list edited": func(t *testing.T, checkout string) {
+			if err := os.WriteFile(filepath.Join(checkout, "package.json"), []byte(`{"workspaces":["apps/*","tools/*"]}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"workspace package added": func(t *testing.T, checkout string) {
+			symlink(t, "../../../node_modules/.bun/stale-dir@0/node_modules/stale", filepath.Join(checkout, "apps/web/node_modules/stale"))
+		},
+	}
+	for name, install := range cases {
+		t.Run(name, func(t *testing.T) {
+			checkout, _ := bunPruneTree(t)
+			// Outside the workspace list until the edit adds tools/*.
+			symlink(t, "../../../node_modules/.bun/stale-dir@0/node_modules/stale", filepath.Join(checkout, "tools/gen/node_modules/stale"))
+			now := time.Now().Add(48 * time.Hour)
+			checks := 0
+			installDuringWalk := func(context.Context) ([]BunProcess, error) {
+				if checks++; checks == 2 {
+					install(t, checkout)
+				}
+				return nil, nil
+			}
+			_, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, Apply: true, Now: now, BunCwds: installDuringWalk})
+			if err == nil || !strings.Contains(err.Error(), "changed during the walk") {
+				t.Fatalf("%s during the walk must refuse --apply: %v", name, err)
+			}
+			if !exists(filepath.Join(checkout, "node_modules/.bun/stale-dir@0/node_modules/stale/big.bin")) {
+				t.Fatal("the entry the install made live was deleted")
+			}
+		})
+	}
+}
+
+// A workspace match that exists but cannot be stat'ed (here apps/ is
+// listable but not searchable) may be a package whose entries are live: the
+// plan fails rather than dropping its root.
+func TestBunPruneRefusesAnUnreadableWorkspaceMatch(t *testing.T) {
+	checkout, _ := bunPruneTree(t)
+	apps := filepath.Join(checkout, "apps")
+	if err := os.Chmod(apps, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(apps, 0o755) })
+	_, err := BunPrune(context.Background(), BunPruneOptions{Checkout: checkout, BunCwds: noBun})
+	if err == nil || !strings.Contains(err.Error(), `workspace pattern "apps/*"`) {
+		t.Fatalf("an unreadable workspace match must fail the plan: %v", err)
+	}
+}
+
 // A bun in a checkout nested under the pruned one (a worktree's .git file, a
 // clone's .git dir) with a package.json of its own is its own project and does
 // not hold the prune. Anywhere else under the checkout it does, and so does a

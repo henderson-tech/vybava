@@ -130,9 +130,9 @@ package's `node_modules` from the root `package.json` `workspaces`, and
 symlink there that lands in `.bun/<entry>` marks the entry; a marked entry that
 is a real directory (a project-local package) adds its own `node_modules`
 links, transitively. A marked entry that is a symlink into `links/` ends the
-walk, since `links/` only points at `links/`. An unreadable root is an error,
-never a skip, and a `**` workspace pattern refuses rather than risk a missed
-root.
+walk, since `links/` only points at `links/`. An unreadable root, or a
+workspace match that exists but cannot be stat'ed, is an error, never a skip,
+and a `**` workspace pattern refuses rather than risk a missed root.
 
 Only unreachable real directories (project-local packages, where the bytes
 are) and leftovers are deleted. Unreachable symlinks into `links/` are
@@ -187,10 +187,13 @@ delta `--apply` prints is the truth. `--apply`:
   only lands on reachable entries, which are never pruned. A nested checkout
   bun would resolve to the pruned root (no `package.json` of its own, or a
   submodule the root's `workspaces` list) still refuses;
-- refuses when any directory or `Podfile.lock` the walk read changed before
-  the first rename: an install that started and finished during a throttled
-  walk passes both busy checks, but relinking a root moves its directory's
-  mtime;
+- refuses when anything the plan read changed before the first rename: the
+  `.bun` listing, the root `package.json`, each workspace pattern's literal
+  parent directory (`apps/` for `apps/*`), every `node_modules` directory
+  walked and every `Podfile.lock`. An install that started and finished
+  during a throttled walk passes both busy checks, but adding or replacing a
+  store entry, relinking a root, editing the workspace list or adding a
+  package directory each moves an mtime there;
 - keeps every candidate modified within `--min-age` (24 h), where an install
   in flight writes;
 - renames each target into `node_modules/.bun-prune-trash-<pid>/` before
