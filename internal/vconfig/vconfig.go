@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,6 +53,48 @@ func (c *Config) Section(name string, v any) error {
 		return fmt.Errorf("section %q: %w", name, err)
 	}
 	return nil
+}
+
+// unknownFieldErr is encoding/json's DisallowUnknownFields message.
+var unknownFieldErr = regexp.MustCompile(`^json: unknown field "([^"]+)"$`)
+
+// SectionAllowUnknown decodes like Section but skips top-level keys v does
+// not declare and returns their names: a config written for a newer applet
+// than this binary. Types stay strict and a nested unknown key still errors.
+// For an applet that must keep enforcing every key it DOES know (the guards:
+// before 2026-09-25 one new key made an older binary drop the whole section
+// to its defaults). Everyone else keeps Section's typo check.
+func (c *Config) SectionAllowUnknown(name string, v any) ([]string, error) {
+	raw, ok := c.Sections[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNoSection, name)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("section %q: %w", name, err)
+	}
+	var unknown []string
+	for {
+		doc, err := json.Marshal(obj)
+		if err != nil {
+			return unknown, fmt.Errorf("section %q: %w", name, err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(doc))
+		dec.DisallowUnknownFields()
+		err = dec.Decode(v)
+		if err == nil {
+			return unknown, nil
+		}
+		m := unknownFieldErr.FindStringSubmatch(err.Error())
+		if m == nil {
+			return unknown, fmt.Errorf("section %q: %w", name, err)
+		}
+		if _, top := obj[m[1]]; !top {
+			return unknown, fmt.Errorf("section %q: %w", name, err)
+		}
+		delete(obj, m[1])
+		unknown = append(unknown, m[1])
+	}
 }
 
 // ErrNoSection means the config has no entry for the requested applet.

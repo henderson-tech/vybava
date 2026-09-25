@@ -188,6 +188,13 @@ worktree without a workspace still typechecks locally). The message names the
 workspace and prints the `devbox run --no-up -- '<cmd>'` form; the escape is
 the same `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
 
+A `guards` key this binary does not know (a config written for a newer
+claude-guards) is skipped with one stderr line naming it; every key it does
+know still applies, and a wrong type on a known key still voids the section.
+Before 2026-09-25 the section was decoded strictly, so the first new key a
+repo adopted switched ALL of that repo's guards off on every machine still
+running an older build: keep that in mind for binaries older than this.
+
 `machine:sim-cap` and `machine:dev-server-cap` count what already runs before
 a boot or a start. A simulator boot (`xcrun simctl boot`, `expo run:ios`,
 `bun run run:sim:*`, `run.ts sim`, `emulator -avd`) is refused at
