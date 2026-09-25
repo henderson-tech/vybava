@@ -83,6 +83,8 @@ type ScanResult struct {
 	Read int64
 	// Pending is what is left after the sweep: size − offset.
 	Pending int64
+	// Oversize counts the records SkipOversize stepped over unread.
+	Oversize int
 }
 
 // Scan reads the complete records after cur and hands each to fn with its
@@ -189,7 +191,9 @@ func Scan(path string, cur Cursor, known bool, opts ScanOptions, fn func(line []
 		if err != nil {
 			return ScanResult{}, err
 		}
-		if !over {
+		if over {
+			res.Oversize++
+		} else {
 			buf = line
 			// line is reused by the next record; fn must copy what it keeps.
 			if err := fn(line, cur.Offset); err != nil {

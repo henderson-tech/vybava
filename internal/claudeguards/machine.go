@@ -21,11 +21,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
-// machineProc is one row of `ps -axo pid=,ppid=,etime=,tty=,args=`.
+// machineProc is one row of `ps -axo pid=,ppid=,rss=,etime=,tty=,args=`.
 type machineProc struct {
-	pid, ppid        int
+	pid, ppid, rssKB int
 	etime, tty, args string
 }
 
@@ -45,7 +48,7 @@ func (p machineProc) base() string {
 
 // machineProcTable reads the live process table; tests inject their own.
 var machineProcTable = func() []machineProc {
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=,etime=,tty=,args=").Output()
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,rss=,etime=,tty=,args=").Output()
 	if err != nil {
 		return nil
 	}
@@ -56,15 +59,16 @@ func parseProcTable(out string) []machineProc {
 	var table []machineProc
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 5 {
+		if len(f) < 6 {
 			continue
 		}
 		pid, err1 := strconv.Atoi(f[0])
 		ppid, err2 := strconv.Atoi(f[1])
-		if err1 != nil || err2 != nil {
+		rss, err3 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
-		table = append(table, machineProc{pid: pid, ppid: ppid, etime: f[2], tty: f[3], args: strings.Join(f[4:], " ")})
+		table = append(table, machineProc{pid: pid, ppid: ppid, rssKB: rss, etime: f[3], tty: f[4], args: strings.Join(f[5:], " ")})
 	}
 	return table
 }
@@ -133,18 +137,15 @@ func procKind(p machineProc) string {
 	return ""
 }
 
-// machineCounts is what the table holds right now. Stale lists claude/codex
-// sessions older than staleSessionAge.
+// machineCounts is what the table holds right now. Which sessions are idle
+// is a separate, costlier read (idle.go), made only under pressure.
 type machineCounts struct {
 	Sims, Emulators, Metro, Next, API, Claude, Codex int
 	Servers                                          []machineProc // every counted dev server (metro/next/api)
-	Stale                                            []machineProc
 }
 
 func (c machineCounts) sims() int       { return c.Sims + c.Emulators }
 func (c machineCounts) devServers() int { return c.Metro + c.Next + c.API }
-
-const staleSessionAge = 10 * 3600
 
 var devKinds = map[string]bool{kindMetro: true, kindNext: true, kindAPI: true}
 
@@ -173,9 +174,6 @@ func countMachine(table []machineProc) machineCounts {
 				c.Claude++
 			} else {
 				c.Codex++
-			}
-			if sec, ok := etimeSeconds(p.etime); ok && sec > staleSessionAge {
-				c.Stale = append(c.Stale, p)
 			}
 		case kindMetro, kindNext, kindAPI:
 			if hasDevDescendant(p.pid, byPID, kinds) {
@@ -293,9 +291,9 @@ func parseVMStat(out string) (freeGB, compressorGB float64, err error) {
 
 // Weather prints the machine-pressure line. The hook form (text=false) is
 // what SessionStart injects into the model's context: one line always, a
-// second only under pressure. --text adds the stale-session table for a
-// human. Any sampling failure prints nothing — a weather report must never
-// brick a session start. With reap (the SessionStart hook form) the same
+// second only under pressure, naming the idle sessions (idle.go). --text adds
+// them as a table for a human. Any sampling failure prints nothing: a weather
+// report must never brick a session start. With reap (the SessionStart hook form) the same
 // table then feeds the orphan sweep: one `ps` per session start, not two.
 func Weather(text, reap bool, w, stderr io.Writer) error {
 	table := machineProcTable()
@@ -313,16 +311,47 @@ func Weather(text, reap bool, w, stderr io.Writer) error {
 	cwd, _ := os.Getwd()
 	cfg := guardConfig(cwd)
 	fmt.Fprint(w, weatherLine(stats, c))
-	if pressure := weatherPressure(stats, c, cfg); pressure != "" {
+	if !pressured(stats, c, cfg) && !text {
+		return nil
+	}
+	// The hook reads at most 4 MiB of transcripts per session start and
+	// finishes a big one over later starts; a human asking gets all of it.
+	budget := int64(transcripts.DefaultBudget)
+	if text {
+		budget = 1 << 30
+	}
+	var idle idleReport
+	if home, err := os.UserHomeDir(); err == nil {
+		facts, flush := liveSessionFacts(home, budget, cronCachePath())
+		idle = idleSessions(table, time.Now(), facts)
+		flush()
+	}
+	if pressure := weatherPressure(stats, c, cfg, idle); pressure != "" {
 		fmt.Fprint(w, pressure)
 	}
-	if text && len(c.Stale) > 0 {
-		fmt.Fprintf(w, "\nSessions older than 10 h (pid · kind · tty · elapsed):\n")
-		for _, p := range c.Stale {
-			fmt.Fprintf(w, "  %d · %s · %s · %s\n", p.pid, p.base(), p.tty, p.etime)
-		}
+	if text {
+		weatherIdleTable(w, idle)
 	}
 	return nil
+}
+
+// weatherIdleTable is --text's list. It names; it never kills or parks.
+func weatherIdleTable(w io.Writer, idle idleReport) {
+	if len(idle.Idle) > 0 {
+		fmt.Fprintf(w, "\nClaude sessions idle for 10 h+, no background task, teammate or cron (pid · idle · RSS with children · session · project):\n")
+		for _, s := range idle.Idle {
+			fmt.Fprintf(w, "  %d · %s · %s · %.8s · %s\n", s.pid, fmtIdle(s.idleFor), fmtKB(s.rssKB), s.sessionID, s.project)
+		}
+	}
+	var held []string
+	for _, h := range []sessionHold{holdTask, holdTeammates, holdCron, holdUndecided} {
+		if n := idle.Held[h]; n > 0 {
+			held = append(held, fmt.Sprintf("%d %s", n, h))
+		}
+	}
+	if len(held) > 0 {
+		fmt.Fprintf(w, "Kept off the list: %s.\n", strings.Join(held, ", "))
+	}
 }
 
 func weatherLine(s machineStats, c machineCounts) string {
@@ -330,12 +359,15 @@ func weatherLine(s machineStats, c machineCounts) string {
 		s.Load1, s.Cores, s.FreeGB, s.CompressorGB, s.TotalGB, c.Claude, c.Codex, c.sims(), c.Metro, c.Next, c.API)
 }
 
-func weatherPressure(s machineStats, c machineCounts, cfg Config) string {
-	pressured := s.FreeGB < 2 || s.Load1 > float64(s.Cores) || c.sims() >= cfg.SimCap || c.devServers() >= cfg.DevServerCap
-	if !pressured {
+func pressured(s machineStats, c machineCounts, cfg Config) bool {
+	return s.FreeGB < 2 || s.Load1 > float64(s.Cores) || c.sims() >= cfg.SimCap || c.devServers() >= cfg.DevServerCap
+}
+
+func weatherPressure(s machineStats, c machineCounts, cfg Config, idle idleReport) string {
+	if !pressured(s, c, cfg) {
 		return ""
 	}
-	return fmt.Sprintf("⚠️ At the memory ceiling: start nothing heavy here — dev servers and suites go to the Devbox (devbox run -- '<cmd>'), idle worktrees get paused (/wk:pause), and %d Claude sessions older than 10 h are candidates to close.\n", len(c.Stale))
+	return "⚠️ At the memory ceiling: start nothing heavy here. Dev servers and suites go to the Devbox (devbox run -- '<cmd>'), idle worktrees get paused (/wk:pause)" + idle.idleClause() + ".\n"
 }
 
 // shortArgs trims a command line for a block message: home stripped, at most

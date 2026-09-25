@@ -41,9 +41,13 @@ func removeTree(ctx context.Context, path string, dry bool) (int64, error) {
 		n, err := removeTree(ctx, child, dry)
 		total += n
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			// unlock and retry once — read-only files under a writable dir
+			// Unlock and retry once: read-only files under a writable dir.
+			// Only a real directory: Chmod follows a symlink and would
+			// re-mode its target (a .bun link into the global store).
 			if !dry {
-				_ = os.Chmod(child, 0o700)
+				if fi, lerr := os.Lstat(child); lerr == nil && fi.IsDir() {
+					_ = os.Chmod(child, 0o700)
+				}
 				if _, retry := os.Lstat(child); retry == nil {
 					left, _ := treeSize(ctx, child) // what the first pass could not remove
 					if err2 := os.RemoveAll(child); err2 == nil {

@@ -181,7 +181,7 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			return claudeguards.Weather(weatherText, weatherReap, rt.stdout, rt.stderr)
 		},
 	}
-	weather.Flags().BoolVar(&weatherText, "text", false, "print the human report (with stale sessions) instead of the hook JSON")
+	weather.Flags().BoolVar(&weatherText, "text", false, "print the human report (with the idle sessions it would name) instead of the hook JSON")
 	weather.Flags().BoolVar(&weatherReap, "reap", false, "then run reap on the same process table (the SessionStart hook form)")
 	root.AddCommand(weather)
 

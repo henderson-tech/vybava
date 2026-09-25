@@ -52,7 +52,10 @@ The lifecycle hooks have no matcher, so SessionStart fires on startup, resume,
 ```text
 SessionStart  doctor --fix                reads settings.json; writes only on drift
               weather --reap              one `ps -axo`, sysctl, vm_stat and a
-                                          config load (~0.5 s); the orphan sweep
+                                          config load (~0.5 s); under pressure also
+                                          one session file per claude and at most
+                                          4 MiB of idle sessions' transcripts;
+                                          the orphan sweep
                                           reuses the table and, when it kills,
                                           adds a `pgrep` per victim process and 2 s
               swarm-teardown --dead-only  a tmux socket scan; per dead swarm
@@ -204,8 +207,47 @@ a quiet Mac sets `CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1`.
 with — load against cores, free and compressor GB, claude and codex sessions,
 sims, metro, next and api counts — and a second, warning line only under
 pressure (free < 2 GB, load above the core count, or a cap already reached)
-that names the Devbox, `/wk:pause` and how many sessions are older than 10 h;
-`--text` adds those sessions as a table. `claude-guards reap` (SessionEnd,
+that names the Devbox, `/wk:pause` and the Claude sessions idle for 10 h+:
+how much memory they hold with their children and the three largest, by
+project. `--text` lists them all, plus how many were kept off the list and why.
+It warns only; nothing is ever killed or parked, and closing one is the
+user's call.
+
+Idle is never process age: the sessions that run long on purpose (a
+`release:monitored` ScheduleWakeup babysit, a persistent e2e writer, a vitrinka
+listen loop) are exactly the ones that must not be named. A session counts
+only when every signal agrees (`internal/claudeguards/idle.go`):
+
+- `~/.claude/sessions/<pid>.json` has status `idle` and a `statusUpdatedAt`
+  10 h+ old, and its `procStart` matches the process (a recycled pid never
+  reads another session's file). Transcript mtime is not a signal: Claude
+  Code rewrites idle transcripts in place, and one idle for four days carried
+  that day's mtime.
+- No live child but an MCP server or `caffeinate`. A `run_in_background` Bash
+  task or a Monitor is a `zsh -c source …/shell-snapshots/…` child while it
+  runs, and any shell counts as a task whatever its command mentions.
+- No live teammate (`claude --parent-session-id <id>`). Teammates are never
+  named themselves; they belong to their lead.
+- No durable cron in `<cwd>/.claude/scheduled_tasks.json` (or the repo
+  root's).
+- Nothing written under its session directory (`subagents/`, `workflows/`,
+  `tool-results/` beside the transcript) since it went idle, with a minute of
+  slack. An in-process background agent or workflow has no process of its
+  own, and a lead waiting on one reads `idle`; its transcript there is the
+  only trace. As a hold, a spurious write only keeps a session off the list.
+- No `CronCreate` call in its transcript. Session-only crons exist only in
+  the session's memory, so the transcript is the one witness. It is read
+  incrementally (4 MiB per session start, all of it for `--text`) with the
+  cursor cached in `~/Library/Caches/vybava/claude-guards/`, and the session
+  is held until the read reaches the end. A record over 16 MiB is stepped
+  over unread and could be the call, so a transcript holding one stays held
+  unless a readable `CronCreate` decides it.
+
+A pending ScheduleWakeup needs no check: its delay is clamped to 60-3600 s
+and every wakeup runs a turn, which refreshes `statusUpdatedAt`. Whatever
+cannot be decided is held, never named: no session file, a stale one or one
+without `statusUpdatedAt`, a transcript not yet read. Codex sessions have no status file and are never
+named. `claude-guards reap` (SessionEnd,
 and SessionStart through `weather --reap`, which hands over the process table
 it already read) kills orphaned WebDriverAgent runners, `xcodebuild
 test-without-building` and Appium servers older than ten minutes whose
