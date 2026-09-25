@@ -57,6 +57,7 @@ var (
 	apiPRBaseFor    = ghAPIPRBase
 	originSlugFor   = gitOriginSlug
 	currentBranchOf = gitCurrentBranch
+	pushDestOf      = gitPushDest
 )
 
 var (
@@ -64,53 +65,67 @@ var (
 	reAPIPullMerge  = regexp.MustCompile(`^/?repos/([^/]+)/([^/]+)/pulls/([0-9]+)/merge$`)
 	reAPIRepoPath   = regexp.MustCompile(`^/?repos/([^/]+)/([^/]+)/`)
 	reGraphQLMerge  = regexp.MustCompile(`\b(mergePullRequest|enablePullRequestAutoMerge)\b`)
-	reListSep       = regexp.MustCompile(`[,\s]+`)
+	// `-F query=@file`, `--field query=@file`, `-f query=@…` or `--input`.
+	reGraphQLFileBody = regexp.MustCompile(`(\s|^)(-[fF]|--field|--raw-field)\s+["']?query=@|(\s|^)--input(\s|=|$)`)
+	reListSep         = regexp.MustCompile(`[,\s]+`)
 )
 
 func guardProdMerge(in *HookInput) *Denial {
 	cmd := strings.ReplaceAll(in.ToolInput.Command, "\\\n", " ")
 	if !strings.Contains(cmd, "merge") && !strings.Contains(cmd, "push") &&
-		!strings.Contains(cmd, "git/refs") && !strings.Contains(cmd, "AutoMerge") {
+		!strings.Contains(cmd, "git/refs") && !strings.Contains(cmd, "graphql") {
 		return nil
 	}
-	if !reProdMergeHint.MatchString(cmd) || escapeHatch(cmd, prodMergeEscapeVar) {
+	if !reProdMergeHint.MatchString(cmd) {
 		return nil
 	}
 	home, _ := os.UserHomeDir()
 	dir := in.CWD
-	for _, seg := range segments(cmd) {
-		if textOnly(seg) {
-			continue
-		}
-		f := shellFields(seg)
-		if len(f) == 0 {
-			continue
-		}
-		if commandWord(seg) == "cd" {
-			if len(f) > 1 {
-				dir = resolveDir(f[1], dir, home)
+	// The escape counts only for the simple command it prefixes (and what that
+	// command runs): `CLAUDE_ALLOW_PROD_MERGE=1 true; gh pr merge …` is no go.
+	for _, top := range shellSegments(cmd) {
+		escaped := escapeHatch(strings.Trim(top.text, " \t\r"), prodMergeEscapeVar)
+		for _, seg := range appendSegments(nil, top.text, 0, false) {
+			if textOnly(seg) {
+				continue
 			}
-			continue
-		}
-		if args := afterCommand(f, "gh"); args != nil {
-			if d := prodMergeGH(args, seg, dir); d != nil {
-				return d
+			f := shellFields(seg)
+			if len(f) == 0 {
+				continue
 			}
-		}
-		if args := afterCommand(f, "git"); args != nil {
-			if d := prodMergeGitPush(args, dir, home); d != nil {
-				return d
+			if commandWord(seg) == "cd" {
+				if len(f) > 1 {
+					dir = resolveDir(f[1], dir, home)
+				}
+				continue
+			}
+			if escaped {
+				continue
+			}
+			if args := afterCommand(f, "gh"); args != nil {
+				if d := prodMergeGH(args, seg, dir); d != nil {
+					return d
+				}
+			}
+			if args := afterCommand(f, "git"); args != nil {
+				if d := prodMergeGitPush(args, dir, home); d != nil {
+					return d
+				}
 			}
 		}
 	}
 	return nil
 }
 
-// afterCommand returns the arguments after name when the fields RUN it — as
-// the command word or through a launcher chain (`sudo gh …`); nil otherwise.
+// afterCommand returns the arguments after name when the fields RUN it: as
+// the command word, or anywhere behind a launcher (`timeout 60 gh …`,
+// `sudo -u me gh …`, `xargs -I{} git push …`) whose own arguments are
+// skipped. A launcher naming it as a mere argument reads as running it too:
+// the rule fails closed on command text.
 func afterCommand(f []string, name string) []string {
+	launched := false
 	for i, t := range f {
-		if assignPrefix.MatchString(t) {
+		if assignPrefix.MatchString(t) && !launched {
 			continue
 		}
 		if j := strings.LastIndexByte(t, '/'); j >= 0 {
@@ -119,9 +134,10 @@ func afterCommand(f []string, name string) []string {
 		if t == name {
 			return f[i+1:]
 		}
-		if !commandRunners[t] {
+		if !launched && !commandRunners[t] {
 			return nil
 		}
+		launched = true
 	}
 	return nil
 }
@@ -222,9 +238,18 @@ func prodMergeAPI(args []string, seg, dir string) *Denial {
 		return nil
 	}
 	if endpoint == "graphql" {
-		if reGraphQLMerge.MatchString(seg) {
+		// A body read from a file (`-F query=@q.graphql`, `--input`) hides
+		// which mutation it sends: in an opted-in repo that counts as one.
+		what := ""
+		switch {
+		case reGraphQLMerge.MatchString(seg):
+			what = "a GraphQL merge mutation (its base hides behind a node id)"
+		case reGraphQLFileBody.MatchString(seg):
+			what = "a GraphQL request whose body comes from a file (it may carry a merge mutation)"
+		}
+		if what != "" {
 			if branches, source := prodPolicy(dir, ""); len(branches) > 0 {
-				return prodMergeDeny("a GraphQL merge mutation (its base hides behind a node id)", strings.Join(branches, "/"), source)
+				return prodMergeDeny(what, strings.Join(branches, "/"), source)
 			}
 		}
 		return nil
@@ -298,21 +323,25 @@ func prodMergeGitPush(args []string, dir, home string) *Denial {
 	if all {
 		return prodMergeDeny("git push --all/--mirror (it pushes every local branch, production ones included)", strings.Join(branches, "/"), source)
 	}
-	refspecs := []string{}
+	var dests []string
 	if len(pos) > 1 {
-		refspecs = pos[1:]
-	}
-	if len(refspecs) == 0 {
-		refspecs = []string{"HEAD"}
-	}
-	for _, r := range refspecs {
-		dst := strings.TrimPrefix(r, "+")
-		if _, after, ok := strings.Cut(dst, ":"); ok {
-			dst = after
+		for _, r := range pos[1:] {
+			dst := strings.TrimPrefix(r, "+")
+			if _, after, ok := strings.Cut(dst, ":"); ok {
+				dst = after
+			}
+			if dst == "HEAD" || dst == "@" {
+				dst = currentBranchOf(dir)
+			}
+			dests = append(dests, dst)
 		}
-		if dst == "HEAD" || dst == "@" {
-			dst = currentBranchOf(dir)
-		}
+	} else {
+		// A bare push goes where the branch pushes (@{push}: an upstream or a
+		// push mapping may name canary for a differently named branch), and
+		// under push.default=matching/current to the same name: check both.
+		dests = []string{currentBranchOf(dir), pushDestOf(dir)}
+	}
+	for _, dst := range dests {
 		dst = strings.TrimPrefix(dst, "refs/heads/")
 		if slices.Contains(branches, dst) {
 			return prodMergeDeny("git push to "+dst, dst, source)
@@ -344,10 +373,19 @@ merge is the user's decision, not yours.`, what, err), prodMergeEscape)
 // readProdBranches returns PROD_BRANCHES of dir's main clone; nil when the
 // repo sets none (or dir is not a repo).
 func readProdBranches(dir string) ([]string, error) {
-	common := git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if common == "" {
-		return nil, nil
+	// Only a proven non-repository has no policy; any other git failure (no
+	// git, unreadable metadata, a missing directory) is an error, which
+	// prodPolicy answers with the conservative default.
+	c := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	var out, errb bytes.Buffer
+	c.Stdout, c.Stderr = &out, &errb
+	if err := c.Run(); err != nil {
+		if strings.Contains(errb.String(), "not a git repository") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git rev-parse in %s: %v %s", dir, err, strings.TrimSpace(errb.String()))
 	}
+	common := strings.TrimSpace(out.String())
 	root := common
 	if filepath.Base(common) == ".git" {
 		root = filepath.Dir(common)
@@ -356,13 +394,13 @@ func readProdBranches(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var branches []string
 	for _, b := range reListSep.Split(cfg["PROD_BRANCHES"], -1) {
 		if b = strings.TrimSpace(b); b != "" {
-			out = append(out, b)
+			branches = append(branches, b)
 		}
 	}
-	return out, nil
+	return branches, nil
 }
 
 func ghOutput(dir string, args ...string) (string, error) {
@@ -412,6 +450,18 @@ func gitOriginSlug(dir string) string {
 
 func gitCurrentBranch(dir string) string {
 	return git(dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+}
+
+// gitPushDest is the branch a bare push updates on its remote ("" when the
+// branch has no push destination): @{push} is refs/remotes/<remote>/<branch>.
+func gitPushDest(dir string) string {
+	ref := git(dir, "rev-parse", "--symbolic-full-name", "@{push}")
+	rest, ok := strings.CutPrefix(ref, "refs/remotes/")
+	if !ok {
+		return ""
+	}
+	_, branch, _ := strings.Cut(rest, "/")
+	return branch
 }
 
 // normalizeSlug turns a --repo value (owner/name, host/owner/name or a URL)

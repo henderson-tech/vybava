@@ -2,6 +2,9 @@ package claudeguards
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,13 +15,14 @@ import (
 func stubProdMerge(t *testing.T, repoDir string, bases map[string]string, current string) *[]string {
 	t.Helper()
 	calls := &[]string{}
-	saved := []any{prodBranchesFor, prBaseFor, apiPRBaseFor, originSlugFor, currentBranchOf}
+	saved := []any{prodBranchesFor, prBaseFor, apiPRBaseFor, originSlugFor, currentBranchOf, pushDestOf}
 	t.Cleanup(func() {
 		prodBranchesFor = saved[0].(func(string) ([]string, error))
 		prBaseFor = saved[1].(func(string, string, string) (string, error))
 		apiPRBaseFor = saved[2].(func(string, string) (string, error))
 		originSlugFor = saved[3].(func(string) string)
 		currentBranchOf = saved[4].(func(string) string)
+		pushDestOf = saved[5].(func(string) string)
 	})
 	prodBranchesFor = func(dir string) ([]string, error) {
 		if strings.HasPrefix(dir, repoDir) {
@@ -41,7 +45,13 @@ func stubProdMerge(t *testing.T, repoDir string, bases map[string]string, curren
 		}
 		return "henderson-tech/vybava"
 	}
-	currentBranchOf = func(string) string { return current }
+	// current is "<branch>" or "<branch>><push destination>".
+	branch, push, split := strings.Cut(current, ">")
+	if !split {
+		push = branch
+	}
+	currentBranchOf = func(string) string { return branch }
+	pushDestOf = func(string) string { return push }
 	return calls
 }
 
@@ -109,6 +119,19 @@ func TestProdMerge(t *testing.T) {
 		{"push the feature branch", "git push -u origin promote/canary-20260925", wt, "promote/canary-20260925", false},
 		{"push option value is not the remote", "git push -o ci.skip origin feat/x", wt, "feat/x", false},
 		{"push in a repo without PROD_BRANCHES", "git push origin master", other, "master", false},
+		{"bare push of a branch whose upstream is canary", "git push", wt, "fix/x>canary", true},
+
+		// launchers skip their own arguments; the escape covers only its segment
+		{"timeout launcher", "timeout 60 gh pr merge 12 --merge", wt, "", true},
+		{"sudo -u launcher", "sudo -u me gh pr merge 12 --merge", wt, "", true},
+		{"xargs launcher push", "echo x | xargs -I{} git push origin {}:canary", wt, "", true},
+		{"escape on another segment", "CLAUDE_ALLOW_PROD_MERGE=1 true; gh pr merge 12 --merge", wt, "", true},
+		{"escape covers only the merge it prefixes", "CLAUDE_ALLOW_PROD_MERGE=1 gh pr merge 12 --merge && git push origin HEAD:canary", wt, "", true},
+		{"escape in a subshell", "(CLAUDE_ALLOW_PROD_MERGE=1 gh pr merge 12 --merge)", wt, "", false},
+
+		// a GraphQL body from a file hides the mutation
+		{"GraphQL query from a file", "gh api graphql -F query=@merge.graphql -F id=PR_x", wt, "", true},
+		{"GraphQL --input", "gh api graphql --input body.json", wt, "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -121,6 +144,62 @@ func TestProdMerge(t *testing.T) {
 				t.Fatalf("denial %q / %q", d.Rule, d.EscapeHatch)
 			}
 		})
+	}
+}
+
+// readProdBranches against real git: a linked worktree answers with its MAIN
+// clone's config (+ .local), a repo without the key has no policy, a
+// non-repository has none, and an unreadable config is an error, not "none".
+func TestReadProdBranchesRealWorktree(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	run := func(dir string, args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(main, "init", "-q")
+	run(main, "commit", "-q", "--allow-empty", "-m", "init")
+	wt := filepath.Join(main, ".worktrees", "promote-x")
+	run(main, "worktree", "add", "-q", "-b", "promote/x", wt)
+
+	if got, err := readProdBranches(wt); err != nil || got != nil {
+		t.Fatalf("no config: %v %v", got, err)
+	}
+	writeFile(t, filepath.Join(main, ".claude", ".claude.git.config"), "MERGE_METHOD=squash\nPROD_BRANCHES=canary release master\n")
+	if got, err := readProdBranches(wt); err != nil || strings.Join(got, ",") != "canary,release,master" {
+		t.Fatalf("worktree reads the main clone's config: %v %v", got, err)
+	}
+	writeFile(t, filepath.Join(main, ".claude", ".claude.git.config.local"), "PROD_BRANCHES=canary\n")
+	if got, err := readProdBranches(wt); err != nil || strings.Join(got, ",") != "canary" {
+		t.Fatalf(".local overrides: %v %v", got, err)
+	}
+	if got, err := readProdBranches(t.TempDir()); err != nil || got != nil {
+		t.Fatalf("non-repository: %v %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(main, ".claude", ".claude.git.config.local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(main, ".claude", ".claude.git.config.local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProdBranches(wt); err == nil {
+		t.Fatal("an unreadable config read as no policy")
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

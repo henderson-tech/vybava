@@ -129,10 +129,14 @@ prod-merge:*      landing on a production branch the repo names in
                   .claude/.claude.git.config PROD_BRANCHES (main clone; unset →
                   none): gh pr merge (--auto/--admin, prm's terminus), gh api
                   PUT …/pulls/N/merge and git/refs writes, GraphQL
-                  mergePullRequest/enablePullRequestAutoMerge, git push to one
-                  (refspec, --all/--mirror, bare push from one). A merge aimed
-                  at another repo than the checkout's gets canary/release/master;
-                  an unreadable PR base fails closed
+                  mergePullRequest/enablePullRequestAutoMerge (or any GraphQL
+                  body read from a file), git push to one (refspec,
+                  --all/--mirror, a bare push from one or to its @{push}),
+                  also behind launchers (timeout, sudo -u, xargs). The escape
+                  covers only the command it prefixes. A merge aimed at
+                  another repo than the checkout's, or a repo whose policy
+                  cannot be read, gets canary/release/master; an unreadable
+                  PR base fails closed
                   (escape: CLAUDE_ALLOW_PROD_MERGE=1, only on the user's go for
                   that one merge)
 context:*         inline python/node scripts that write files · cat/tee over an
