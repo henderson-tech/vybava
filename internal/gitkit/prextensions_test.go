@@ -72,7 +72,7 @@ func TestPRExtensionsRunOnlyMergedContent(t *testing.T) {
 		len(got.Extensions) != 1 || got.Extensions[0].Name != "notes" || got.Extensions[0].Instructions != "Draft them." {
 		t.Fatalf("--stage round = %+v", got)
 	}
-	all := runPRExtensionsJSON(t, "--repo", wt)
+	all := runPRExtensionsJSON(t, "--json", "--repo="+wt) // --json and the = form are accepted
 	if len(all.Extensions) != 2 || all.Extensions[0].RelPath != ".claude/prm/audit.md" || strings.Join(all.Extensions[0].Stages, ",") != "merge" {
 		t.Fatalf("no stage = %+v", all)
 	}
@@ -122,5 +122,44 @@ func TestPRExtensionsRefusesWhatCannotRun(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A caller passing an argument the verb does not take must not believe it
+// validated something: every one is GITKIT_BAD_ARGS, exit 2, before any
+// repo is read — and --help is real help, never a silent default run.
+func TestPRExtensionsRefusesArgumentsItDoesNotTake(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--stage", "ensure-pr", "--ref", "HEAD"}, `unknown argument "--ref"`},
+		{[]string{"extra"}, `unknown argument "extra"`},
+		{[]string{"--stage"}, "--stage needs a value"},
+		{[]string{"--stage=deploy"}, `--stage "deploy" is not a stage`},
+		{[]string{"--repo", "--stage", "round"}, "--repo needs a value"},
+	} {
+		var stdout, stderr strings.Builder
+		code := runPRExtensions(tc.args, &stdout, &stderr)
+		if code != 2 || !strings.Contains(stdout.String(), "GITKIT_BAD_ARGS: "+tc.want) || !strings.Contains(stdout.String(), prExtensionsUsage) {
+			t.Errorf("%v: exit %d, stdout %q", tc.args, code, stdout.String())
+		}
+	}
+
+	var stdout, stderr strings.Builder
+	if code := runPRExtensions([]string{"--json", "--bogus"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("--json --bogus: exit %d", code)
+	}
+	var env struct {
+		OK          bool `json:"ok"`
+		Diagnostics []struct{ Code, Fix string }
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &env); err != nil || env.OK || len(env.Diagnostics) != 1 || env.Diagnostics[0].Code != DiagBadArgs {
+		t.Fatalf("--json --bogus envelope = %s (%v)", stdout.String(), err)
+	}
+
+	stdout.Reset()
+	if code := runPRExtensions([]string{"--help", "--ref", "HEAD"}, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), "usage: "+prExtensionsUsage) {
+		t.Fatalf("--help: exit %d, %q", code, stdout.String())
 	}
 }
