@@ -74,8 +74,8 @@ func guardDevboxOnly(in *HookInput) *Denial {
 	return deny("machine:devbox-only", fmt.Sprintf(`%s
 
 runs on this Mac; this repo's guards.devboxOnly routes it to the Devbox:
-    devbox run -- '%s'
+    devbox run -- %s
 From a worktree without a workspace, /devbox resolves-or-creates one. The
 Mac keeps simulators, Appium specs and native builds; everything else that
-serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, seg, seg), devboxOnlyEscape)
+serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, seg, shellSingleQuote(seg)), devboxOnlyEscape)
 }

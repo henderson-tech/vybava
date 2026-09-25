@@ -177,7 +177,10 @@ synced to a workspace: `guards.devboxWhenWorkspace` takes the same RE2
 patterns, and a match is refused only when the devbox CLI's local registry
 (`~/.devbox/workspaces/<name>/workspace.yaml`, whose apps carry the synced
 checkout under `sync:`; a parked workspace keeps its record, `devbox down`
-and gc drop it) names this checkout or a parent of it. No network and no
+and gc drop it) names exactly this checkout: the git root above the command's
+cwd, symlinks resolved on both sides. Equality, never a parent match, because
+worktrees nest inside their main clone (`.worktrees/<name>`) and the main
+clone's workspace must not route a bare worktree. No network and no
 subprocess: the lookup reads that directory once per matching command. FixIt
 put its typechecks there on 2026-09-25 (the api spec check alone is 3 GB and
 60 s; several at once froze the Mac at 50 GB of swap the day before, but a

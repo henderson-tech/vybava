@@ -22,6 +22,11 @@ import (
 // registry, ~/.devbox/workspaces/<name>/workspace.yaml, whose apps carry the
 // synced checkout path (`sync:`). A parked workspace keeps its record, so it
 // still counts; `devbox down`/gc drop it. No network, no subprocess.
+//
+// The checkout is the git root above the command's cwd, compared for
+// EQUALITY with the recorded path: worktrees nest inside the main clone
+// (`.worktrees/<name>`), so a parent match would hand the main clone's
+// workspace to every bare worktree under it.
 // ---------------------------------------------------------------------------
 
 // compileDevboxPatterns compiles a guards list; loadGuardConfig already
@@ -36,6 +41,43 @@ func compileDevboxPatterns(list []string) []*regexp.Regexp {
 	return patterns
 }
 
+// shellSingleQuote renders s as one POSIX shell word, so a suggested rerun
+// command survives an apostrophe inside the original.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// checkoutRoot is the nearest ancestor of dir (dir included) holding a .git
+// entry - a worktree's .git FILE counts, so a nested worktree is its own
+// checkout, never its main clone. "" when dir is outside any checkout.
+func checkoutRoot(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	for d := filepath.Clean(abs); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+// pathVariants is the cleaned path plus its symlink-resolved form when that
+// differs, so /var vs /private/var or a symlinked ~/Work still compares equal.
+func pathVariants(p string) []string {
+	out := []string{filepath.Clean(p)}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil && filepath.Clean(resolved) != out[0] {
+		out = append(out, filepath.Clean(resolved))
+	}
+	return out
+}
+
 // devboxWorkspacesDir is the devbox CLI's local workspace registry.
 func devboxWorkspacesDir() string {
 	home, err := os.UserHomeDir()
@@ -46,7 +88,7 @@ func devboxWorkspacesDir() string {
 }
 
 // devboxWorkspaceFor returns the name of the Devbox workspace whose synced
-// checkout is root (or a parent of it), or "" when no local record says so.
+// checkout is exactly root, or "" when no local record says so.
 func devboxWorkspaceFor(root string) string {
 	dir := devboxWorkspacesDir()
 	if dir == "" || root == "" {
@@ -56,10 +98,7 @@ func devboxWorkspaceFor(root string) string {
 	if err != nil {
 		return ""
 	}
-	roots := []string{filepath.Clean(root)}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != roots[0] {
-		roots = append(roots, resolved)
-	}
+	roots := pathVariants(root)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -78,16 +117,18 @@ func devboxWorkspaceFor(root string) string {
 			continue
 		}
 		for _, app := range ws.Apps {
-			sync := filepath.Clean(strings.TrimSpace(app.Sync))
-			if sync == "." || sync == "" {
+			sync := strings.TrimSpace(app.Sync)
+			if sync == "" || sync == "." {
 				continue
 			}
-			for _, r := range roots {
-				if r == sync || strings.HasPrefix(r, sync+string(filepath.Separator)) {
-					if ws.Name != "" {
-						return ws.Name
+			for _, s := range pathVariants(sync) {
+				for _, r := range roots {
+					if r == s {
+						if ws.Name != "" {
+							return ws.Name
+						}
+						return e.Name()
 					}
-					return e.Name()
 				}
 			}
 		}
@@ -108,7 +149,11 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 	if seg == "" {
 		return nil
 	}
-	ws := devboxWorkspaceFor(cfg.root)
+	root := checkoutRoot(in.CWD)
+	if root == "" {
+		root = cfg.root
+	}
+	ws := devboxWorkspaceFor(root)
 	if ws == "" {
 		return nil
 	}
@@ -116,7 +161,7 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 
 runs on this Mac, and this checkout is synced to the Devbox workspace %s; this
 repo's guards.devboxWhenWorkspace routes it there:
-    devbox run --no-up -- '%s'
+    devbox run --no-up -- %s
 (drop --no-up when the command needs the app services). A checkout without a
-workspace may run the same command here; the registry is ~/.devbox/workspaces.`, seg, ws, seg), devboxOnlyEscape)
+workspace may run the same command here; the registry is ~/.devbox/workspaces.`, seg, ws, shellSingleQuote(seg)), devboxOnlyEscape)
 }

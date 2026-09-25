@@ -53,6 +53,11 @@ func TestGuardDevboxOnly(t *testing.T) {
 			t.Errorf("message lacks %q:\n%s", want, d.Text())
 		}
 	}
+	// An apostrophe in the command survives as one shell word in the rerun.
+	d = guardDevboxOnly(hook("bun run test:integration -t 'it''s'"))
+	if want := `devbox run -- 'bun run test:integration -t '\''it'\'''\''s'\'''`; d == nil || !strings.Contains(d.Text(), want) {
+		t.Errorf("rerun command not single-quoted, want %s in:\n%v", want, d)
+	}
 	// No patterns configured: the rule is inert.
 	if d := guardDevboxOnly(hookCmd("bun run dev:api")); d != nil {
 		t.Errorf("unconfigured repo blocked: %s", d.Text())
