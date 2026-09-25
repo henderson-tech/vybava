@@ -151,3 +151,13 @@ A pultik artifact is placed only after its sha256 matches the shelf.
 private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
 `docs/envbridge.md` before using its sensitive read output.
+
+`internal/skipci` is the org skip standard (`docs/skip-ci.md`): two labels
+(`skip-ci`, `eve-ignore`) and ONE job-level guard every `pull_request` job
+carries — job-level because a workflow-level skip leaves required checks
+pending forever, and without a `labeled` trigger because that re-runs CI on
+every unrelated label. `skipci check|apply` holds a repo's workflows to it by
+line edits (multi-line conditions are `manual`, never rewritten); repolicy's
+default policy carries the labels; `gitkit admin-labels` puts them on a PR and
+cancels the runs the push already queued; `merge-precheck` waives only the CI
+gate (`ciWaived`) for a `skip-ci` PR, which still needs `--admin` to land.

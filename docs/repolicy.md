@@ -58,6 +58,27 @@ The three names for one knob (policy key, the `gh repo list --json` field, the
 REST field the PATCH carries) are mapped in `Vocabulary`; adding a knob is one
 line there plus a row here.
 
+## Labels
+
+```yaml
+labels:
+  - name: skip-ci
+    color: ededed
+    description: skip CI on this PR — every pull_request job guards on it; merge is --admin
+  - name: eve-ignore
+    color: ededed
+    description: skip eve's automatic PR review
+```
+
+**Presence is the policy.** A repository drifts when a declared label is
+absent (`label:<name>` in the drift rows); `apply` creates it with the declared
+colour and description through `gh label create --force`, one call per missing
+label. A label that already exists keeps whatever colour and text a human gave
+it — repolicy never rewrites one. The default policy (no `--policy` file)
+carries the two labels above: they are the org skip standard `prm --admin`
+applies and every pull_request workflow guards on (`docs/skip-ci.md`). A
+policy may declare labels alone, with no `settings:`.
+
 ## The henderson-tech policy
 
 `policies/henderson-tech.yaml` holds the org's own stance — squash is the only

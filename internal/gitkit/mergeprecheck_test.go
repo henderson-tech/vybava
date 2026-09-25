@@ -351,3 +351,20 @@ func TestReadMergeRules(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipCILabelWaivesTheCIGateOnly(t *testing.T) {
+	g := gateInput{state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", checks: "FAILURE", botApprovalOK: true, hasWorkflows: true}
+	if s := summarizeGates(g); s.CIOK || s.CIWaived || !slices.Contains(s.Failed, "ci") {
+		t.Fatalf("red CI without the label must fail: %+v", s)
+	}
+	g.ciWaived = true
+	s := summarizeGates(g)
+	if !s.CIOK || !s.CIWaived || !s.AllPass || len(s.Failed) != 0 {
+		t.Errorf("skip-ci must waive a red/cancelled run: %+v", s)
+	}
+	// The waiver is CI-only: a conflict still blocks.
+	g.mergeStateStatus, g.mergeable = "DIRTY", "CONFLICTING"
+	if s := summarizeGates(g); s.AllPass || !slices.Contains(s.Failed, "conflict") {
+		t.Errorf("waiver must not reach other gates: %+v", s)
+	}
+}

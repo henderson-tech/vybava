@@ -38,6 +38,7 @@ var native = map[string]Verb{
 	"resolve-fetch":  runResolveFetch,
 	"pr-events":      runPREvents,
 	"pr-extensions":  runPRExtensions,
+	"admin-labels":   runAdminLabels,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.

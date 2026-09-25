@@ -53,6 +53,15 @@ Steps:
    · PR #N"), the final artifact's § Delivery and the run door all read `pr`
    refs. Re-attaching the same (kind, ref) only updates meta, so re-running is
    safe. No `vt-<id>` or no binding → skip silently, never ask.
+5. **`--admin` → `vybava gitkit admin-labels <N> --repo <ABS repo path>`** (created,
+   found or adopted alike). It creates `skip-ci` + `eve-ignore` in the repo when
+   missing, adds whichever the PR lacks, and cancels every queued/running workflow run
+   on the head SHA — the push that opened the PR queued them with an event payload
+   that predates the label, and the workflows' job guard only sees the NEXT push.
+   Report `labelsAdded` and `runsCancelled`; a non-empty `runsLeft` is said, not
+   retried. Never under `--auto` alone, never on a foreign-authored PR (labelling
+   someone else's PR silences a review they may be waiting on — STOP and say so).
+   Standard: Výbava `docs/skip-ci.md`.
 
 With the PR in hand, the orchestrator runs the repo's `ensure-pr` extensions before
 the initial round (`extensions.md`).

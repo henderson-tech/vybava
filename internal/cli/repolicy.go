@@ -111,8 +111,8 @@ Settings the policy does not name are never read and never written.`,
 }
 
 func (rt *runtime) repolicyReport(report repolicy.Report) {
-	fmt.Fprintf(rt.stdout, "REPOLICY  %s  ·  %d repositories  ·  %s\n",
-		strings.Join(report.Owners, ", "), report.Checked, repolicySettings(report.Settings))
+	fmt.Fprintf(rt.stdout, "REPOLICY  %s  ·  %d repositories  ·  %s%s\n",
+		strings.Join(report.Owners, ", "), report.Checked, repolicySettings(report.Settings), repolicyLabels(report.Labels))
 	if len(report.Skipped) > 0 {
 		fmt.Fprintf(rt.stdout, "excluded: %s\n", strings.Join(report.Skipped, ", "))
 	}
@@ -143,6 +143,18 @@ func (rt *runtime) repolicyReport(report repolicy.Report) {
 	for _, warning := range report.Warnings {
 		fmt.Fprintln(rt.stderr, "note:", warning)
 	}
+}
+
+// repolicyLabels names the required labels in the header, after the settings.
+func repolicyLabels(labels []repolicy.Label) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(labels))
+	for _, l := range labels {
+		names = append(names, l.Name)
+	}
+	return "  ·  labels " + strings.Join(names, ", ")
 }
 
 func repolicyApplyHint(report repolicy.Report) string {
