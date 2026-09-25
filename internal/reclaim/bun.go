@@ -8,7 +8,7 @@ package reclaim
 // can least afford. The step keeps links/ and deletes only what bun derives
 // again on its own: extracted tarballs (<pkg>@<ver>@@@N), the per-name index
 // directories of version symlinks beside them (also under @scope/), and the
-// *.npm registry manifests.
+// *.npm registry manifests. Anything else in the cache stays (bunCacheTargets).
 //
 // Measured before allowing that (read-only, 2026-09-25, docs/reclaim.md):
 // every one of the 8,337 dependency symlinks inside links/ resolves to a
@@ -31,6 +31,7 @@ package reclaim
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -97,8 +98,15 @@ func bunCacheDir(home string) string {
 	return filepath.Join(home, ".bun", "install", "cache")
 }
 
-// bunCacheTargets lists what the step deletes: every entry of the cache root
-// except links/ and dot-entries (bun's in-flight staging).
+// bunCacheTargets lists what the step deletes, and only entries it recognizes
+// as regenerable: an extracted tarball (a directory named with bun's `@@@`
+// marker: <pkg>@<ver>@@@N, its _patch_hash= variants, @T@<hash> tarball-URL
+// sources), a per-name index directory holding nothing but version symlinks,
+// and a *.npm manifest file, at the root or one level into an @scope
+// directory (the scope directory itself stays). Everything else stays:
+// links/, dot-entries (bun's in-flight staging) and anything unrecognized,
+// such as the 69 MB bun-darwin-x64-v1.3.14 executable this Mac's cache root
+// held on 2026-09-25, a user's file, or a directory a future bun adds.
 func bunCacheTargets(cache string) ([]string, error) {
 	entries, err := os.ReadDir(cache)
 	if err != nil {
@@ -107,12 +115,47 @@ func bunCacheTargets(cache string) ([]string, error) {
 	var out []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == bunLinksDir || strings.HasPrefix(name, ".") {
-			continue
+		path := filepath.Join(cache, name)
+		switch {
+		case name == bunLinksDir || strings.HasPrefix(name, "."):
+		case strings.HasPrefix(name, "@") && !strings.Contains(name, "@@@") && entry.IsDir():
+			scoped, err := os.ReadDir(path)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range scoped {
+				if bunRegenerable(filepath.Join(path, s.Name()), s) {
+					out = append(out, filepath.Join(path, s.Name()))
+				}
+			}
+		case bunRegenerable(path, entry):
+			out = append(out, path)
 		}
-		out = append(out, filepath.Join(cache, name))
 	}
 	return out, nil
+}
+
+// bunRegenerable recognizes an extracted tarball, a name index or a manifest.
+func bunRegenerable(path string, entry fs.DirEntry) bool {
+	name := entry.Name()
+	switch {
+	case entry.Type().IsRegular():
+		return strings.HasSuffix(name, ".npm")
+	case !entry.IsDir() || strings.HasPrefix(name, "."):
+		return false
+	case strings.Contains(name, "@@@"):
+		return true
+	}
+	versions, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, v := range versions {
+		if v.Type()&fs.ModeSymlink == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // bunInstallRunning reports the first live process that writes the cache.

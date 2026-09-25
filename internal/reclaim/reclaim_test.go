@@ -404,8 +404,9 @@ func psOutput(env *fakeEnv, table string) {
 
 // A globalStore checkout's .bun entries are absolute symlinks into links/;
 // the bun step deletes tarballs, index dirs and manifests around it and the
-// checkout still resolves. Dot-entries (in-flight staging) stay too, and a
-// running non-install bun (a dev server) does not block the step.
+// checkout still resolves. Dot-entries (in-flight staging) and unrecognized
+// entries stay too, and a running non-install bun (a dev server) does not
+// block the step.
 func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
 	home := t.TempDir()
 	cache := filepath.Join(home, ".bun/install/cache")
@@ -414,7 +415,16 @@ func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
 	symlink(t, filepath.Join(cache, "is-odd@3.0.1@@@1"), filepath.Join(cache, "is-odd/3.0.1@@@1"))
 	write(t, filepath.Join(cache, "@s/b@2.0.0@@@1/x.js"), 50, 0)
 	write(t, filepath.Join(cache, "abc.npm"), 7, 0)
+	write(t, filepath.Join(cache, "@T@0b30bd7c55f0d1d7@@@1/y.js"), 4, 0)
+	write(t, filepath.Join(cache, "jest@29.7.0@@@1_patch_hash=d2bd60c8/LICENSE"), 3, 0)
 	write(t, filepath.Join(cache, ".staging-1/partial"), 5, 0)
+	// Unrecognized entries stay: a root file, a directory holding more than
+	// version symlinks, and a scoped file that is no manifest.
+	unknown := []string{"bun-darwin-x64-v1.3.14", "mystery/data.bin", "@s/notes.txt"}
+	for _, u := range unknown {
+		write(t, filepath.Join(cache, u), 11, 0)
+	}
+	symlink(t, filepath.Join(cache, "is-odd@3.0.1@@@1"), filepath.Join(cache, "mystery/3.0.1@@@1"))
 	checkout := filepath.Join(home, "app/node_modules/.bun/is-odd@3.0.1")
 	symlink(t, filepath.Join(cache, "links/is-odd@3.0.1-abc"), checkout)
 
@@ -430,9 +440,14 @@ func TestBunStepKeepsLinksAndCheckoutsResolve(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(checkout, "node_modules/is-odd/index.js")); err != nil {
 		t.Fatalf("the checkout must still resolve through links/: %v", err)
 	}
-	for _, gone := range []string{"is-odd@3.0.1@@@1", "is-odd", "@s", "abc.npm"} {
+	for _, gone := range []string{"is-odd@3.0.1@@@1", "is-odd", "@s/b@2.0.0@@@1", "abc.npm", "@T@0b30bd7c55f0d1d7@@@1", "jest@29.7.0@@@1_patch_hash=d2bd60c8"} {
 		if exists(filepath.Join(cache, gone)) {
 			t.Errorf("%s should be deleted", gone)
+		}
+	}
+	for _, u := range unknown {
+		if !exists(filepath.Join(cache, u)) {
+			t.Errorf("unrecognized %s must survive", u)
 		}
 	}
 	if !exists(filepath.Join(cache, ".staging-1/partial")) {

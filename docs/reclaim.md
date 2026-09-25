@@ -44,7 +44,7 @@ own. No `du`, no classification pass — the first delete starts immediately.
 | 1 | `go-build` | `~/Library/Caches/go-build`, `~/.cache/go-build` | next `go build` |
 | 1 | `docker-builder` | `docker builder prune -af` | next build |
 | 1 | `docker-images` | `docker image prune -af` (unreferenced only) | re-pull / rebuild |
-| 1 | `bun` | `~/.bun/install/cache` tarballs, index dirs, `*.npm` manifests; never `links/` (skips while a bun install runs) | next install re-downloads what it newly materializes |
+| 1 | `bun` | `~/.bun/install/cache` tarballs, index dirs, `*.npm` manifests; never `links/` or an unrecognized entry (skips while a bun install runs) | next install re-downloads what it newly materializes |
 | 1 | `npm` | `~/.npm/_cacache`, `~/.npm/_npx` | next install / npx |
 | 1 | `derived-data` | `~/Library/Developer/Xcode/DerivedData/*` | next Xcode build |
 | 1 | `gradle` | `~/.gradle/caches` | next gradle build |
@@ -80,10 +80,15 @@ With `globalStore = true` in a bunfig (FixIt sets it), every checkout's
 `~/.bun/install/cache/links/<pkg>-<hash>`. Until 2026-09-25 the `bun` step
 deleted `~/.bun/install/cache` whole, which dangles every such checkout at
 once; the repair is one `bun install` per checkout, the install storm a full
-disk can least afford. The step now deletes only the cache root's other
-entries: extracted tarballs (`<pkg>@<ver>@@@N`), the per-name index dirs of
-version symlinks beside them (also under `@scope/`) and the `*.npm`
-manifests. Dot-entries (bun's staging) and `links/` stay.
+disk can least afford. The step now deletes only the cache entries it
+recognizes as regenerable: extracted tarballs (a directory named with bun's
+`@@@` marker: `<pkg>@<ver>@@@N`, its `_patch_hash=` variants, `@T@<hash>`
+tarball-URL sources), the per-name index dirs holding only version symlinks
+and the `*.npm` manifests, at the root or one level into an `@scope/` dir
+(the scope dir itself stays). Dot-entries (bun's staging), `links/` and
+anything unrecognized stay: this Mac's cache root held a 69 MB
+`bun-darwin-x64-v1.3.14` executable on 2026-09-25, and a future bun may add a
+directory whose loss is not free.
 
 Why deleting the extracted dirs is safe, measured read-only on 2026-09-25:
 
