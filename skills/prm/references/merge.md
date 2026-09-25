@@ -71,15 +71,27 @@ nothing). One that fails is a STOP — nothing merges.
 ## Merge
 
 `gh pr merge <pr> --<mergeMethod> --delete-branch` — `mergeMethod` is what
-`merge-precheck` read from the config and GitHub: an explicit `MERGE_METHOD` the base
-branch permits (`mergeMethodSource: "config"`), else the first of merge → squash → rebase
+`merge-precheck` read from the config and GitHub: the first `MERGE_METHOD_BY_HEAD` pair
+matching the head (`mergeMethodSource: "head"`; built in: `promote/*:merge`, so a
+promotion lands as a merge commit), else an explicit `MERGE_METHOD` the base
+branch permits (`"config"`), else the first of merge → squash → rebase
 that the repository's buttons AND the base's rulesets/protection permit (`"repository"`
 — linear history refuses merge commits, so henderson-tech repos land as squash with no
 key). Never substitute a method of your own; `mergeMethodReason` says why. Append
 `--admin` only when the user passed it or the carve-out applies. Remote branch deleted.
 A non-null `mergeMethodInvalid` is a config typo or a method the base refuses: say so,
-run as `mergeMethod`. A precheck that exits 1 with `cannot read …` or `no merge method is
-permitted …` is a STOP with that line — never fall back to `--merge`.
+run as `mergeMethod`. A precheck that exits 1 with `cannot read …`, `no merge method is
+permitted …` or `STOP — <head> must land as …` (a head override the base refuses) is a
+STOP with that line — never fall back to another method.
+
+**Promotion heads (`promote/*`) are immutable**: the branch is content-identical to
+commits already reviewed and tested upstream, so no review rounds, no CI-fix pushes and
+no update-branch on it. Any red gate is a STOP: "cut the promotion again".
+
+**Production bases**: when the repo's `PROD_BRANCHES` names the base, the merge call
+is blocked by claude-guards `prod-merge:merge`. That is the user's merge: STOP and hand
+the green PR back. Only on the user's explicit go for that one PR, run the merge with
+`CLAUDE_ALLOW_PROD_MERGE=1` in front.
 
 ## Solo-owner carve-out — unsatisfiable review gate
 
@@ -258,6 +270,16 @@ MERGE_POLICY=self
 # squash, else rebase — squash-only and linear-history repos need no key. A value the
 # base refuses falls back and is echoed as `mergeMethodInvalid`.
 MERGE_METHOD=squash
+
+# Head-glob overrides of MERGE_METHOD, first match wins (path.Match globs). Unset →
+# promote/*:merge (promotions keep their history); empty → no override. A matched
+# method the base refuses is a STOP, never a fallback.
+MERGE_METHOD_BY_HEAD=promote/*:merge
+
+# Production branches: claude-guards prod-merge blocks an agent's gh pr merge, gh api
+# merge/ref write and git push landing on any of them (escape CLAUDE_ALLOW_PROD_MERGE=1,
+# only on the user's go for that merge). Read from the MAIN clone. Unset → none.
+PROD_BRANCHES=canary release master
 
 # Runs INSTEAD of the generic worktree-remove + branch -d after a successful merge.
 # Tokens substituted by gitkit merge-precheck: {slug} {branch} {worktree} {pr}

@@ -47,8 +47,9 @@ func deny(rule, msg, escapeHatch string) *Denial {
 // denied call pays. It is not by cost: the first five rules do no I/O,
 // guardAppiumChurn is the first to load the repo config (memoized for the
 // rest), guardMachineCap may fork `ps -axo`, and guardBudget and
-// guardContextBash read the transcript and files. commit-secrets runs last
-// because it forks git and may call gh.
+// guardContextBash read the transcript and files. prod-merge and
+// commit-secrets run last because they fork git and may call gh (prod-merge
+// only for a merge or push command in a repo that declares PROD_BRANCHES).
 func Bash(in *HookInput) *Denial {
 	for _, g := range []func(*HookInput) *Denial{
 		guardDestructive,
@@ -63,6 +64,7 @@ func Bash(in *HookInput) *Denial {
 		guardBudget,
 		guardContextBash,
 		guardE2EScreenshot,
+		guardProdMerge,
 		guardCommitSecrets,
 	} {
 		if d := g(in); d != nil {

@@ -33,6 +33,11 @@ commit-secrets    any `git … commit` in the command text (fail closed, no
                   lines, a synchronous `gh repo view`
                   (≤2.5 s) once per repo — a failure is cached as unknown and
                   retried in the background (~80 ms per commit without gh)
+prod-merge        a `gh pr merge`, a writing `gh api` or a `git push`: one
+                  `git rev-parse` (the main clone) and the config read; only
+                  when that repo sets PROD_BRANCHES, one `gh pr view` / `gh api`
+                  (≤8 s) for the PR's base, plus a git fork for --repo/origin
+                  or a bare push's current branch
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
                   simulator or starts a dev server (a `dev:*` script counts
                   when its package.json body is one)
@@ -120,6 +125,16 @@ machine:*         playwright test / vitest / jest started on this Mac with no
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
+prod-merge:*      landing on a production branch the repo names in
+                  .claude/.claude.git.config PROD_BRANCHES (main clone; unset →
+                  none): gh pr merge (--auto/--admin, prm's terminus), gh api
+                  PUT …/pulls/N/merge and git/refs writes, GraphQL
+                  mergePullRequest/enablePullRequestAutoMerge, git push to one
+                  (refspec, --all/--mirror, bare push from one). A merge aimed
+                  at another repo than the checkout's gets canary/release/master;
+                  an unreadable PR base fails closed
+                  (escape: CLAUDE_ALLOW_PROD_MERGE=1, only on the user's go for
+                  that one merge)
 context:*         inline python/node scripts that write files · cat/tee over an
                   existing file · cat/sed/head/tail or Read above 200 lines ·
                   dumping a ~/.claude/projects transcript · any raw read of a

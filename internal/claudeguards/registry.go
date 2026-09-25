@@ -37,6 +37,7 @@ const (
 	escapeWorkers    = "CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1"
 	escapeLocalStack = "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1"
 	escapeMachineCap = "CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1"
+	escapeProdMerge  = prodMergeEscapeVar + "=1"
 )
 
 // Rules is every rule the package can deny with, ordered by family then id.
@@ -69,6 +70,7 @@ var Rules = []Rule{
 	{"machine:sim-cap", "machine", eventBash, "a simulator boot while guards.simCap simulators are already booted", escapeMachineCap},
 	{"machine:test-worker-cap", "machine", eventBash, "playwright/vitest/jest on this Mac with no worker cap or one above guards.testWorkerCap", escapeWorkers},
 	{"plugincache:package-install", "plugincache", eventBash, "a package install targeting ~/.claude/plugins/cache", escapeNone},
+	{"prod-merge:merge", "prod-merge", eventBash, "gh pr merge / gh api merge or ref write / git push landing on a branch the repo's PROD_BRANCHES names", escapeProdMerge},
 	{"secrets:env-dump", "secrets", eventBash, "env/printenv/export with no name-only projection", escapeDangerous},
 	{"secrets:inspect-config-env", "secrets", eventBash, "docker inspect templating .Config.Env", escapeDangerous},
 	{"secrets:proc-environ", "secrets", eventBash, "a read of /proc/*/environ", escapeDangerous},

@@ -63,6 +63,14 @@ func readGitConfig(root string) (gitConfig, bool, error) {
 	return merged, found, nil
 }
 
+// ReadGitConfig is readGitConfig for other packages (claude-guards reads
+// PROD_BRANCHES from the same files, parsed the same way): the merged
+// KEY=value map, empty when neither file exists.
+func ReadGitConfig(root string) (map[string]string, error) {
+	cfg, _, err := readGitConfig(root)
+	return cfg, err
+}
+
 // readIfPresent reads a file that may legitimately be absent. Only a path
 // that is not there is absent; anything else — a directory, a permission
 // error on the way — is an error rendered as Node's, never absence, which

@@ -97,6 +97,11 @@ actually accept into its base branch — the repository's merge buttons AND the
 base's effective rules (org + repo rulesets, classic protection), fetched in
 the same GraphQL round as the bot gate:
 
+- the first `MERGE_METHOD_BY_HEAD` pair (`<head glob>:<method>`, comma/space
+  separated; unset → `promote/*:merge`, empty → off) matching the PR's head
+  wins → `"head"`. A base that refuses the matched method exits 1 with
+  `STOP — <head> must land as …`, never a fallback: a squashed promotion
+  loses the history it carries;
 - an explicit `MERGE_METHOD` the base permits wins → `mergeMethodSource: "config"`;
 - otherwise the first permitted of merge → squash → rebase → `"repository"`.
   `required_linear_history` refuses merge commits and a `pull_request` rule's
