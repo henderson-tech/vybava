@@ -30,6 +30,9 @@ import (
 // status}] (runs gh could not cancel — reported, never fatal).
 const adminLabelsUsage = "usage: vybava gitkit admin-labels <pr> --repo <path>"
 
+// adminLabelsArgs: one PR and the repo anchor.
+var adminLabelsArgs = verbArgs{values: []string{"repo"}, positionals: 1, usage: adminLabelsUsage}
+
 // AdminLabels is the verb's stdout, keys in wire order.
 type AdminLabels struct {
 	PR            int        `json:"pr"`
@@ -72,30 +75,20 @@ func planAdminLabels(present []string, runs []ghRun) (toAdd []string, toCancel [
 }
 
 func runAdminLabels(args []string, stdout, stderr io.Writer) int {
+	// A bare or empty --repo must never fall through to the cwd: this verb
+	// labels a PR and cancels its runs. parse refuses both, and a second PR.
+	flags, pos, err := adminLabelsArgs.parse("admin-labels", args)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	prArg := ""
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--repo" {
-			// A bare --repo must never fall through to the cwd: this verb
-			// labels a PR and cancels its runs, so the anchor is explicit or
-			// the call is refused.
-			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
-				return fail(stderr, fmt.Errorf("--repo needs a path\n%s", adminLabelsUsage))
-			}
-			i++
-			continue
-		}
-		if strings.HasPrefix(args[i], "--") {
-			return fail(stderr, fmt.Errorf("unknown argument %s\n%s", args[i], adminLabelsUsage))
-		}
-		if prArg != "" {
-			return fail(stderr, fmt.Errorf("one PR at a time\n%s", adminLabelsUsage))
-		}
-		prArg = args[i]
+	if len(pos) == 1 {
+		prArg = pos[0]
 	}
 	if _, ok := positiveInt(prArg); !ok {
 		return fail(stderr, fmt.Errorf("a PR number is required\n%s", adminLabelsUsage))
 	}
-	root, err := repoRoot(args)
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -83,7 +83,7 @@ func TestParseFlags(t *testing.T) {
 		{"resolve-thread", []string{"--threadId", "RT", "--pr", "5"}, "unknown argument --pr"},
 	} {
 		_, err := parseFlags(tc.sub, tc.argv)
-		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "usage: github-io "+tc.sub) {
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "usage: vybava gitkit github-io "+tc.sub) {
 			t.Errorf("%s %q: err = %v, want %q + the usage line", tc.sub, tc.argv, err, tc.want)
 		}
 	}

@@ -2,6 +2,7 @@ package gitkit
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,30 @@ func TestClassifyStatusPreservesOrder(t *testing.T) {
 		!slices.Equal(r.Secrets, []string{".env", "server.key"}) ||
 		!slices.Equal(r.Artifacts, []string{"allure-results/r.json"}) {
 		t.Fatalf("partition = %+v", r)
+	}
+}
+
+// classify-paths reads its paths from git status, so a path in argv is
+// refused rather than silently left unclassified — before any git call.
+func TestClassifyPathsArgs(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--repo", "/abs/repo"}, // push-all SKILL.md, commands/dirty.md
+		{"--repo=/abs/repo", "--json"},
+		nil,
+	} {
+		if _, _, err := classifyPathsArgs.parse("classify-paths", argv); err != nil {
+			t.Errorf("%q: %v", argv, err)
+		}
+	}
+	for want, argv := range map[string][]string{
+		"unknown argument --staged":  {"--staged", "--repo", "/abs/repo"},
+		`unexpected argument ".env"`: {"--repo", "/abs/repo", ".env"},
+		"--repo needs a value":       {"--repo="}, // never the cwd's repository
+	} {
+		var stderr strings.Builder
+		if code := runClassifyPaths(argv, &strings.Builder{}, &stderr); code != 1 || !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), classifyPathsArgs.usage) {
+			t.Errorf("%q: %d %q, want %q + usage", argv, code, stderr.String(), want)
+		}
 	}
 }
 

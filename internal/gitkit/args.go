@@ -21,6 +21,12 @@ type verbArgs struct {
 // parse validates argv against the declaration. It returns each flag's value
 // (a boolean flag maps to "") and the positionals in order, so a verb never
 // scans argv itself and never mistakes a flag's value for a positional.
+//
+// --json is accepted by every verb: it is gitkit's persistent flag, and the
+// CLI turns flag parsing off, so `vybava gitkit --json <verb>` delivers it in
+// the verb's own argv. A flag given twice and an empty value are refused -
+// `--repo ""` quietly meaning "the cwd's repository" is the wrong-repo answer
+// the anchor exists to prevent.
 func (s verbArgs) parse(verb string, argv []string) (map[string]string, []string, error) {
 	flags := map[string]string{}
 	var pos []string
@@ -41,18 +47,24 @@ func (s verbArgs) parse(verb string, argv []string) (map[string]string, []string
 			continue
 		}
 		name, inline, hasInline := strings.Cut(name, "=")
+		if _, twice := flags[name]; twice {
+			return refuse("--%s is given twice", name)
+		}
 		switch {
 		case slices.Contains(s.values, name):
-			if hasInline {
-				flags[name] = inline
-				continue
+			value := inline
+			if !hasInline {
+				if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "--") {
+					return refuse("--%s needs a value", name)
+				}
+				i++
+				value = argv[i]
 			}
-			if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "--") {
+			if value == "" {
 				return refuse("--%s needs a value", name)
 			}
-			i++
-			flags[name] = argv[i]
-		case slices.Contains(s.bools, name):
+			flags[name] = value
+		case slices.Contains(s.bools, name) || name == "json":
 			if hasInline {
 				return refuse("--%s takes no value", name)
 			}
@@ -62,4 +74,14 @@ func (s verbArgs) parse(verb string, argv []string) (map[string]string, []string
 		}
 	}
 	return flags, pos, nil
+}
+
+// repoAnchor is the repoRoot argv for a parsed --repo: the explicit anchor
+// when one was given, else nil (GIT_SKILL_REPO, then the cwd). parse already
+// refused an empty value, so the anchor is never silently dropped.
+func repoAnchor(flags map[string]string) []string {
+	if repo, ok := flags["repo"]; ok {
+		return []string{"--repo", repo}
+	}
+	return nil
 }

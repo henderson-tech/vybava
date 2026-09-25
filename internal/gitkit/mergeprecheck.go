@@ -774,15 +774,24 @@ func rawString(m json.RawMessage) string {
 	return s
 }
 
+// mergePrecheckArgs: the PR (anything `gh pr view` takes; none = this
+// checkout's branch) and the repo anchor. The first bare token used to be the
+// PR, so `--repo <path> 104` read the path as the PR.
+var mergePrecheckArgs = verbArgs{values: []string{"repo"}, positionals: 1,
+	usage: "usage: vybava gitkit merge-precheck [<pr>] [--repo <path>]"}
+
 func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
-	prArg := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "--") {
-			prArg = a
-			break
-		}
+	flags, pos, err := mergePrecheckArgs.parse("merge-precheck", args)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	root, err := repoRoot(args)
+	prArg := ""
+	if len(pos) == 1 {
+		prArg = pos[0]
+	}
+	// --repo=<v>, never --repo <v>: an empty value must fail resolution,
+	// not fall back to the cwd's repository.
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

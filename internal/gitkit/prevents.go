@@ -304,17 +304,24 @@ func parseRepoFlag(value string) (nameWithOwner string, strip bool, err error) {
 	return "", false, fmt.Errorf("--repo expects owner/name or an absolute repo path, got: %s", value)
 }
 
-// pollInterval is `--every-seconds N` with a 30 s floor. A value that is not
-// a number, or past what a timer can hold, is the default — Node's NaN or
-// overflowing setTimeout would poll every millisecond.
-func pollInterval(args []string) time.Duration {
+// pollInterval is `--every-seconds N`'s value ("" when absent) with a 30 s
+// floor. A value that is not a number, or past what a timer can hold, is the
+// default — Node's NaN or overflowing setTimeout would poll every millisecond.
+func pollInterval(value string) time.Duration {
 	seconds := 30.0
-	if i := slices.Index(args, "--every-seconds"); i >= 0 && i+1 < len(args) {
-		if n, ok := jsNumber(args[i+1]); ok && n > seconds && n*1000 <= math.MaxInt32 {
-			seconds = n
-		}
+	if n, ok := jsNumber(value); ok && n > seconds && n*1000 <= math.MaxInt32 {
+		seconds = n
 	}
 	return time.Duration(seconds * float64(time.Second))
+}
+
+// prEventsArgs is pr-events' argv: ONE PR, wherever it sits — the hand scan
+// it replaces took the first non-flag token, so `--every-seconds 60 42`
+// watched PR #60 and `--repo=owner/name` was read as a directory.
+var prEventsArgs = verbArgs{
+	values:      []string{"repo", "every-seconds"},
+	positionals: 1,
+	usage:       "usage: vybava gitkit pr-events <pr> [--repo <abs repo path>|owner/name] [--every-seconds N]",
 }
 
 var rateLimitish = regexp.MustCompile(`(?i)rate limit|429|403`)
@@ -323,41 +330,43 @@ var rateLimitish = regexp.MustCompile(`(?i)rate limit|429|403`)
 var sleep = time.Sleep
 
 func runPREvents(args []string, stdout, stderr io.Writer) int {
+	flags, pos, err := prEventsArgs.parse("pr-events", args)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	prArg := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "--") {
-			prArg = a
-			break
-		}
+	if len(pos) > 0 {
+		prArg = pos[0]
 	}
 	pr, ok := positiveInt(prArg)
-	if !ok || prArg == "" {
-		return fail(stderr, errors.New("usage: pr-events.ts <pr> [--repo <abs repo path>|owner/name] [--every-seconds N]"))
+	if !ok {
+		return fail(stderr, errors.New(prEventsArgs.usage))
 	}
-	every := pollInterval(args)
+	every := pollInterval(flags["every-seconds"])
 
 	// --repo owner/name pins the target. Without it the repo is derived from
 	// the anchor — a cross-repo watch from another project's directory once
 	// polled the WRONG repo's PR #340 and exited on a bogus `closed`.
-	repoValue := ""
-	if i := slices.Index(args, "--repo"); i >= 0 && i+1 < len(args) {
-		repoValue = args[i+1]
-	}
+	repoValue, repoGiven := flags["repo"] // parse refused an empty value
 	nameWithOwner, strip, err := parseRepoFlag(repoValue)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	anchorArgs := args
-	if strip {
-		i := slices.Index(args, "--repo")
-		anchorArgs = slices.Delete(slices.Clone(args), i, min(i+2, len(args)))
+	// A path anchors the checkout; owner/name only pins the API target, and
+	// the anchor stays GIT_SKILL_REPO or the cwd.
+	var anchor []string
+	if repoGiven && !strip {
+		anchor = []string{"--repo", repoValue}
 	}
 	// The anchor resolves lazily and sticks once found, as every call would
-	// otherwise re-resolve it; a failure is retried with the call.
+	// otherwise re-resolve it; a failure is retried with the call. A pinned
+	// owner/name needs no checkout at all (every poll names owner and repo):
+	// resolving one anyway made a watch started outside git retry forever.
+	pinned := strip
 	root := ""
 	gh := func(a ...string) (string, error) {
-		if root == "" {
-			r, err := repoRoot(anchorArgs)
+		if root == "" && !pinned {
+			r, err := repoRoot(anchor)
 			if err != nil {
 				return "", err
 			}
