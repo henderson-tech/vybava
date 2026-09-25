@@ -33,9 +33,10 @@ func runPRExtensionsJSON(t *testing.T, args ...string) PRExtensions {
 	return got
 }
 
-// Only merged content runs: the key and the files come from the main clone's
-// tracked tree, so a PR branch — a foreign one included — can never write the
-// steps prm executes on it, and an untracked draft never runs either.
+// Only merged content runs: the key and the files are read at
+// origin/<default>, so a PR branch — a foreign one included — never writes
+// the steps prm executes on it, and neither does anything in a working tree:
+// an uncommitted edit, an untracked draft, a local commit never pushed.
 // --stage filters; the main clone's .local can switch the key off.
 func TestPRExtensionsRunOnlyMergedContent(t *testing.T) {
 	main := t.TempDir()
@@ -51,6 +52,13 @@ func TestPRExtensionsRunOnlyMergedContent(t *testing.T) {
 	writeFile(t, filepath.Join(main, ".claude/prm/audit.md"), "---\nname: audit\nstage: merge\ndescription: Re-check before merge.\n---\nCheck.\n")
 	git(main, "add", ".")
 	git(main, "commit", "-q", "-m", "c1")
+	git(main, "update-ref", "refs/remotes/origin/main", "HEAD")
+	git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	merged, _ := exec.Command("git", "-C", main, "rev-parse", "HEAD").Output()
+	writeFile(t, filepath.Join(main, ".claude/prm/local.md"), "---\nname: local\nstage: round\ndescription: Never pushed.\n---\nNo.\n")
+	git(main, "add", ".")
+	git(main, "commit", "-q", "-m", "local only")
+	writeFile(t, filepath.Join(main, ".claude/prm/notes.md"), "---\nname: notes\nstage: [ensure-pr, round]\ndescription: Draft release notes.\n---\nUncommitted edit.\n")
 	writeFile(t, filepath.Join(main, ".claude/prm/draft.md"), "---\nname: draft\nstage: round\ndescription: Untracked.\n---\nNo.\n")
 	wt := filepath.Join(main, ".worktrees", "feat-x")
 	git(main, "worktree", "add", "-q", "-b", "feat/x", wt)
@@ -60,7 +68,8 @@ func TestPRExtensionsRunOnlyMergedContent(t *testing.T) {
 
 	got := runPRExtensionsJSON(t, "--stage", "round", "--repo", wt)
 	if got.PRExtensions == nil || *got.PRExtensions != ".claude/prm/*.md" || got.Stage == nil || *got.Stage != "round" ||
-		len(got.Extensions) != 1 || got.Extensions[0].Name != "notes" || got.Extensions[0].Path != filepath.Join(got.MainClone, ".claude/prm/notes.md") {
+		got.Ref != "origin/main" || got.Commit != strings.TrimSpace(string(merged)) ||
+		len(got.Extensions) != 1 || got.Extensions[0].Name != "notes" || got.Extensions[0].Instructions != "Draft them." {
 		t.Fatalf("--stage round = %+v", got)
 	}
 	all := runPRExtensionsJSON(t, "--repo", wt)
@@ -90,16 +99,19 @@ func TestPRExtensionsRefusesWhatCannotRun(t *testing.T) {
 		{"no description", "prm/*.md", map[string]string{"prm/a.md": strings.Replace(ok, "Notes.", "", 1)}, "description must be one non-empty line"},
 		{"no instructions", "prm/*.md", map[string]string{"prm/a.md": strings.TrimSuffix(ok, "Do it.\n")}, "has no instructions"},
 		{"duplicate name", "prm/*.md", map[string]string{"prm/a.md": ok, "prm/b.md": ok}, `prm/b.md: name "notes" is already used by prm/a.md`},
+		{"symlink", "prm/*.md", map[string]string{"prm/link.md 120000": "/home/x/anything.md"}, "prm/link.md: must be a regular file, not mode 120000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			files := []string{}
-			for rel, text := range tc.files {
-				writeFile(t, filepath.Join(root, rel), text)
-				files = append(files, rel)
+			tree := []treeEntry{}
+			for key := range tc.files {
+				path, mode, found := strings.Cut(key, " ")
+				if !found {
+					mode = "100644"
+				}
+				tree = append(tree, treeEntry{mode: mode, oid: key, path: path})
 			}
-			slices.Sort(files)
-			_, err := resolvePRExtensions(tc.glob, files, root)
+			slices.SortFunc(tree, func(a, b treeEntry) int { return strings.Compare(a.path, b.path) })
+			_, err := resolvePRExtensions(tc.glob, tree, func(oid string) (string, error) { return tc.files[oid], nil })
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}

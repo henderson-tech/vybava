@@ -31,22 +31,25 @@ All three keys are required and no other key is allowed; the body must not be em
 ## Resolve
 
 `vybava gitkit pr-extensions --stage <stage> --repo <ABS path of the PR's checkout>`
-→ `{configFound, configPath, prExtensions, stage, mainClone, extensions: [{name,
-stages, description, path, relPath}]}` — the extensions for that stage, ordered by
-path. `extensions: []` (key unset or empty) → nothing to do, say nothing.
+→ `{prExtensions, stage, ref, commit, extensions: [{name, stages, description,
+relPath, instructions}]}` — the extensions for that stage, ordered by path, each
+carrying its body as `instructions`. `extensions: []` (key unset or empty) → nothing
+to do, say nothing.
 
-- **Only merged content runs.** The key is read like every other key (main clone,
-  `.local` overlay) and the glob matches the files git tracks in the MAIN CLONE —
-  never the PR branch's copy. prm follows an extension with full tool access, so its
-  instructions must be reviewed and merged: reading the branch would let any PR, a
-  foreign one included, write the steps prm then executes on it. The PR that adds or
-  edits an extension therefore runs the version already on the default branch (none,
-  for the first one) — follow the new file by hand on that PR if it needs it.
+- **Only merged content runs.** The key and the files are read as git blobs at
+  `ref` = `origin/<default branch>` (as of the last fetch; the default branch is
+  `DEFAULT_BRANCH` from `.local`, else the one committed there, else `origin/HEAD`) —
+  never from a working tree, never a PR branch's copy, never a symlink. prm follows
+  an extension with full tool access, so its instructions must be reviewed and
+  merged: anything else would let a PR, a foreign one included, write the steps prm
+  then executes on it. The PR that adds or edits an extension therefore runs the
+  version already merged (none, for the first one) — follow the new file by hand on
+  that PR if it needs it.
 - `PR_EXTENSIONS=` (empty) in the gitignored `.local` switches them off on one machine.
 - **Exit 1 is a STOP at that stage** — a glob that matches nothing, a malformed file
-  (missing or unknown key, unknown stage, empty body, a name used twice): print the
-  error line + the PR URL. A repo that ships an extension expects it to run; it is
-  never skipped.
+  (missing or unknown key, unknown stage, empty body, a name used twice, a symlink),
+  an unresolvable default branch: print the error line + the PR URL. A repo that
+  ships an extension expects it to run; it is never skipped.
 
 ## Stages
 
@@ -60,9 +63,10 @@ path. `extensions: []` (key unset or empty) → nothing to do, say nothing.
 
 For each extension the verb lists, in order:
 
-1. `Read` its `path` and follow the body inside the PR's checkout, stating the
+1. Follow its `instructions` — exactly those, never the file in a working tree —
+   inside the PR's ISOLATED checkout (`gitkit worktree ensure`'s `path`), stating the
    context first: `extension <name> @ <stage> — PR <N> <url>, <head> → <base>,
-   checkout <path>`. The body decides what to write, label or comment.
+   checkout <path>`. The instructions decide what to write, label or comment.
 2. **What it writes is committed and pushed on the PR branch** — its files only
    (`push-all`'s surgical doctrine), a commit message naming the extension:
    - `ensure-pr`: a follow-up commit, pushed before the initial round starts;

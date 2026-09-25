@@ -79,9 +79,12 @@ Per selected PR (`round.md` owns the round contract):
    on the default branch. An explicit selector with no PR is a hard error, never an
    auto-create.
 2. **`ensure-pr` extensions** — every selector (created, found or adopted) and every
-   merge policy, in this session, before the initial round: `vybava gitkit
-   pr-extensions --stage ensure-pr --repo <ABS checkout path>`; follow each per
-   `extensions.md`. None listed → skip silently.
+   merge policy, before the initial round. Isolate FIRST — `vybava gitkit worktree
+   ensure <headRef> <pr>` → `path` (the initial round reuses it; the current checkout
+   is not necessarily this PR's branch) — then `vybava gitkit pr-extensions --stage
+   ensure-pr --repo <path>` and follow each inside `path` per `extensions.md`. None
+   listed → skip silently. Under `--bg`/`all` the `pr-<N>-r1` agent does this before
+   its round body.
 3. **Initial round** — INLINE (default): run the round body now (backlog;
    initializes the state file). Bots often comment within seconds of opening, so on a
    fresh PR this round can carry non-thread findings before any review exists; those

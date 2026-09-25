@@ -56,7 +56,7 @@ go test ./internal/gitkit/...
 | `synccontext` | local-vs-remote DB url detection, globs, `--freeze`, the verb end to end |
 | `classifypaths` · `tddclassify` | commit bundling and TDD classification |
 | `worktree` · `reporoot` · `listprs` · `beforereview` | path, listing and hook helpers |
-| `prextensions` | extensions come only from the main clone's tracked tree (never a PR branch or an untracked draft), `--stage` filtering, `.local` switch-off, every malformed file refused |
+| `prextensions` | extensions come only from `origin/<default>` (never a PR branch, an uncommitted edit, an untracked draft or an unpushed commit), `--stage` filtering, `.local` switch-off, every malformed file and symlink refused |
 | `native` | `execFile`'s Node failure modes, `Number()` parsing |
 
 Mutating `github-io` subcommands are tested on argv construction only; never
@@ -77,10 +77,11 @@ placeholders and RFC 5737 IPs, never a real repo or host.
 flow (`ensure-pr`, `round`, `merge`) — the hook for a project step that needs the
 model, which the shell hooks cannot carry. `pr-extensions` lists and validates them;
 a glob matching nothing or a malformed file exits 1, because a repo that ships an
-extension expects it to run. The files are matched against the main clone's tracked
-tree only: prm executes an extension with full tool access, so reading a PR
-branch's copy would let any PR write the steps prm then runs on it. Contract:
-`skills/prm/references/extensions.md`.
+extension expects it to run. The key and the files are read as git blobs at
+`origin/<default branch>` and the instructions travel in the output: prm executes
+an extension with full tool access, so a working-tree copy — a PR branch checked
+out, an uncommitted edit, a symlink (refused) — would let any PR write the steps prm
+then runs on it. Contract: `skills/prm/references/extensions.md`.
 
 ### The merge method is read, never assumed
 
