@@ -32,9 +32,21 @@ jobs:
   suite restarted because `eve-ignore` landed on an already-tested SHA). The
   label must sit on the PR before the push it covers; what already started is
   cancelled by the caller, not by the workflow.
-- **Job-level, on every job.** A gating job that others `needs:` would also
-  work, but a workflow's job graph is not the standard's business; one line
-  per job is greppable, driftable and survives a refactor.
+- **Job-level, on every job that would run.** A dependant of guarded jobs is
+  skipped with them and counts as guarded (`via: needs`) — unless its own
+  condition uses `always()`, `cancelled()` or `failure()`, which is exactly how
+  a job opts back in; such a job needs the guard itself. A condition that pins
+  the job to another event (`github.event_name == 'push'`) counts as guarded
+  (`via: event`).
+- **Provably false, never a substring.** `check` evaluates the condition for a
+  pull_request run carrying the label with a three-valued evaluator: event
+  comparisons and the label test are known, everything else (an input, a
+  `needs` output, `always()`) is unknown, and only a definite false is
+  `guarded` — `!contains(…'skip-ci') || always()` is drift.
+- **`pull_request` only.** `pull_request_target` runs carry the base branch's
+  permissions for automation (labelers, assignment); the guard would let them
+  through (`event_name != 'pull_request'`), and skipping privileged automation
+  is not what the label asks for. They are outside the standard.
 
 ## The three tools
 
@@ -51,11 +63,12 @@ exactly `github.event_name != 'pull_request'`, is `guarded` as it stands.
 
 **`vybava repolicy audit|apply <owner…>`** — the labels. The default policy
 carries both labels (`docs/repolicy.md`); a repo without one drifts and
-`apply` creates it with `gh label create --force`.
+`apply` creates it with `gh label create` — never `--force`, an existing label is
+a human's.
 
 **`vybava gitkit admin-labels <pr> --repo <path>`** — `prm --admin`'s
-deterministic half. Creates both labels in the repo (idempotent), adds the
-missing ones to the PR, then cancels every queued or running workflow run on
+deterministic half. Creates whichever label the REPO lacks (never rewriting an
+existing one), adds the missing ones to the PR, then cancels every queued or running workflow run on
 the head SHA — the push that opened the PR queued its runs with an event
 payload that predates the label. Output: `labels`, `labelsAdded`,
 `runsCancelled`, `runsLeft` (a run gh could not cancel — reported, never

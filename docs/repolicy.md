@@ -72,8 +72,8 @@ labels:
 
 **Presence is the policy.** A repository drifts when a declared label is
 absent (`label:<name>` in the drift rows); `apply` creates it with the declared
-colour and description through `gh label create --force`, one call per missing
-label. A label that already exists keeps whatever colour and text a human gave
+colour and description through `gh label create`, one call per missing label
+(never `--force`). A label that already exists keeps whatever colour and text a human gave
 it — repolicy never rewrites one. The default policy (no `--policy` file)
 carries the two labels above: they are the org skip standard `prm --admin`
 applies and every pull_request workflow guards on (`docs/skip-ci.md`). A

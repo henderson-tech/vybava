@@ -75,6 +75,12 @@ func runAdminLabels(args []string, stdout, stderr io.Writer) int {
 	prArg := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--repo" {
+			// A bare --repo must never fall through to the cwd: this verb
+			// labels a PR and cancels its runs, so the anchor is explicit or
+			// the call is refused.
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				return fail(stderr, fmt.Errorf("--repo needs a path\n%s", adminLabelsUsage))
+			}
 			i++
 			continue
 		}
@@ -122,7 +128,9 @@ func runAdminLabels(args []string, stdout, stderr io.Writer) int {
 		present = append(present, l.Name)
 	}
 
-	runsOut, err := gh("run", "list", "--repo", slug, "--commit", pr.HeadRefOid, "--limit", "50", "--json", "databaseId,status,workflowName")
+	// Newest first; a head SHA with more than 200 runs is not a PR anyone is
+	// reviewing, and gh has no live-only filter that covers every status.
+	runsOut, err := gh("run", "list", "--repo", slug, "--commit", pr.HeadRefOid, "--limit", "200", "--json", "databaseId,status,workflowName")
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -130,10 +138,17 @@ func runAdminLabels(args []string, stdout, stderr io.Writer) int {
 	if err := json.Unmarshal([]byte(runsOut), &runs); err != nil {
 		return fail(stderr, err)
 	}
+	repoLabelsOut, err := gh("label", "list", "--repo", slug, "--limit", "200", "--json", "name", "--jq", ".[].name")
+	if err != nil {
+		return fail(stderr, err)
+	}
+	repoLabels := strings.Fields(repoLabelsOut)
 
 	toAdd, toCancel := planAdminLabels(present, runs)
+	// Create only what the REPO lacks — a label a human recoloured or
+	// re-described is theirs; the PR-side gap alone never rewrites it.
 	for _, l := range skipci.Labels() {
-		if slices.Contains(toAdd, l.Name) {
+		if slices.Contains(toAdd, l.Name) && !slices.Contains(repoLabels, l.Name) {
 			if _, err := gh(skipci.LabelArgs(l, slug)...); err != nil {
 				return fail(stderr, err)
 			}

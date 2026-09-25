@@ -157,7 +157,9 @@ the injecting wrapper and consuming process own those boundaries. See
 carries — job-level because a workflow-level skip leaves required checks
 pending forever, and without a `labeled` trigger because that re-runs CI on
 every unrelated label. `skipci check|apply` holds a repo's workflows to it by
-line edits (multi-line conditions are `manual`, never rewritten); repolicy's
-default policy carries the labels; `gitkit admin-labels` puts them on a PR and
+line edits (multi-line conditions are `manual`, never rewritten; guarded means
+PROVABLY false under a labelled pull_request run — a three-valued evaluator,
+never a substring; `always()`-style dependants are drift; `pull_request_target`
+is outside the standard); repolicy's default policy carries the labels; `gitkit admin-labels` puts them on a PR and
 cancels the runs the push already queued; `merge-precheck` waives only the CI
 gate (`ciWaived`) for a `skip-ci` PR, which still needs `--admin` to land.

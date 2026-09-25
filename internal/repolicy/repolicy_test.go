@@ -194,11 +194,12 @@ func TestLabelsAreAuditedByPresenceAndCreatedOneByOne(t *testing.T) {
 	if got := strings.Join(settings, ", "); got != want {
 		t.Fatalf("drift = %q, want %q", got, want)
 	}
-	// One PATCH for the setting, one `label create --force` per missing label.
+	// One PATCH for the setting, one `label create` per missing label (no --force:
+	// an existing label is never rewritten).
 	wantCalls := []string{
 		"gh api -X PATCH repos/acme/bare --silent -F delete_branch_on_merge=true",
-		"gh label create skip-ci --color ededed --description skip CI on this PR — every pull_request job guards on it; merge is --admin --force --repo acme/bare",
-		"gh label create eve-ignore --color ededed --description skip eve's automatic PR review --force --repo acme/bare",
+		"gh label create skip-ci --color ededed --description skip CI on this PR — every pull_request job guards on it; merge is --admin --repo acme/bare",
+		"gh label create eve-ignore --color ededed --description skip eve's automatic PR review --repo acme/bare",
 	}
 	if got := f.calls[1:]; strings.Join(got, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(wantCalls, "\n"))

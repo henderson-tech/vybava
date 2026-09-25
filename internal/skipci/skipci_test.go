@@ -85,10 +85,11 @@ func TestCheckClassifiesJobs(t *testing.T) {
 	if r.Workflows[1].PullRequest || len(r.Workflows[1].Jobs) != 0 {
 		t.Errorf("push-only workflow must carry no jobs: %+v", r.Workflows[1])
 	}
-	if !r.Workflows[2].PullRequest || states(r.Workflows[2])["a"] != Missing {
-		t.Errorf("sequence trigger with pull_request_target: %+v", r.Workflows[2])
+	// pull_request_target is privileged automation, not CI: outside the standard.
+	if r.Workflows[2].PullRequest || len(r.Workflows[2].Jobs) != 0 {
+		t.Errorf("pull_request_target must not count as a pull_request workflow: %+v", r.Workflows[2])
 	}
-	if r.Guarded != 2 || r.Missing != 2 || r.Wrap != 2 || r.Manual != 1 || r.Clean() {
+	if r.Guarded != 2 || r.Missing != 1 || r.Wrap != 2 || r.Manual != 1 || r.Clean() {
 		t.Errorf("totals: %+v", r)
 	}
 }
@@ -177,7 +178,7 @@ func TestNoWorkflowsAndBadYAML(t *testing.T) {
 
 func TestLabelArgs(t *testing.T) {
 	got := strings.Join(LabelArgs(Labels()[1], "henderson-tech/vybava"), " ")
-	want := "label create eve-ignore --color ededed --description skip eve's automatic PR review --force --repo henderson-tech/vybava"
+	want := "label create eve-ignore --color ededed --description skip eve's automatic PR review --repo henderson-tech/vybava"
 	if got != want {
 		t.Errorf("got %q", got)
 	}
@@ -213,6 +214,16 @@ jobs:
   loose:
     needs: [gate, mixed]
     runs-on: x
+  substring:
+    if: "!contains(github.event.pull_request.labels.*.name, 'skip-ci') || always()"
+    runs-on: x
+  pr-only:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: x
+  after:
+    needs: gate
+    if: '!cancelled() && needs.gate.result == "success"'
+    runs-on: x
 `)
 	r, err := Check(dir)
 	if err != nil {
@@ -223,9 +234,11 @@ jobs:
 		via[j.Name] = string(j.State) + "/" + j.Via
 	}
 	want := map[string]string{
-		"gate": "guarded/", "unit": "guarded/needs", "summary": "guarded/needs",
+		"gate": "guarded/", "unit": "guarded/needs",
+		// always()/cancelled() opt a dependant back in: its steps run, so it is drift.
+		"summary": "wrap/", "after": "wrap/",
 		"image": "guarded/event", "reconcile": "guarded/event", "bench": "guarded/event",
-		"mixed": "wrap/", "loose": "missing/",
+		"mixed": "wrap/", "loose": "missing/", "substring": "wrap/", "pr-only": "wrap/",
 	}
 	for k, v := range want {
 		if via[k] != v {
@@ -234,5 +247,18 @@ jobs:
 	}
 	if r.Clean() {
 		t.Error("mixed and loose must still count as drift")
+	}
+}
+
+func TestWrapKeepsTrailingComment(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "ci.yml", "on: pull_request\njobs:\n  a:\n    if: github.actor != 'dependabot[bot]'  # bots have their own lane\n    runs-on: x\n")
+	if _, err := Apply(dir); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
+	want := "    if: (github.actor != 'dependabot[bot]') && (" + Guard + ") # bots have their own lane\n"
+	if !strings.Contains(string(out), want) {
+		t.Errorf("trailing comment lost:\n%s", out)
 	}
 }

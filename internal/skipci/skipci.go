@@ -60,9 +60,11 @@ func Labels() []Label {
 	}
 }
 
-// LabelArgs is the `gh label create` argv for one label, idempotent via --force.
+// LabelArgs is the `gh label create` argv for one label. Never --force: a
+// label a human recoloured or re-described is theirs — callers create only
+// what a repo lacks (repolicy audits presence, admin-labels lists first).
 func LabelArgs(l Label, repo string) []string {
-	argv := []string{"label", "create", l.Name, "--color", l.Color, "--description", l.Description, "--force"}
+	argv := []string{"label", "create", l.Name, "--color", l.Color, "--description", l.Description}
 	if repo != "" {
 		argv = append(argv, "--repo", repo)
 	}
@@ -228,10 +230,11 @@ func inspect(src []byte) Workflow {
 		switch {
 		case cond == nil:
 			job.State = Missing
-		case strings.Contains(cond.Value, guardCore):
+		case skipsLabelledPR(cond.Value):
 			job.State, job.If = Guarded, cond.Value
-		case neverOnPullRequest(cond.Value):
-			job.State, job.If, job.Via = Guarded, cond.Value, "event"
+			if !strings.Contains(cond.Value, guardCore) {
+				job.Via = "event"
+			}
 		case singleLine(lines, cond):
 			job.State, job.If = Wrap, cond.Value
 		default:
@@ -244,9 +247,10 @@ func inspect(src []byte) Workflow {
 }
 
 // guardThroughNeeds marks a job guarded when every job it needs is: a
-// skipped dependency skips its dependants, and an always() aggregate behind
-// guarded jobs runs as a no-op — FixIt's gates are built exactly so. Runs to
-// a fixpoint, so a chain resolves in any order.
+// skipped dependency skips its dependants — UNLESS the dependant's own
+// condition uses a status function (always(), cancelled(), failure()),
+// which is exactly how a job opts back in and runs its steps anyway. Runs
+// to a fixpoint, so a chain resolves in any order.
 func guardThroughNeeds(jobs []Job) {
 	guarded := map[string]bool{}
 	for _, j := range jobs {
@@ -256,7 +260,7 @@ func guardThroughNeeds(jobs []Job) {
 		changed = false
 		for i := range jobs {
 			j := &jobs[i]
-			if j.State == Guarded || len(j.needs) == 0 {
+			if j.State == Guarded || len(j.needs) == 0 || runsAfterSkip(j.If) {
 				continue
 			}
 			all := true
@@ -290,34 +294,128 @@ func needsOf(n *yaml.Node) []string {
 	return nil
 }
 
-// neverOnPullRequest: the condition pins the job to other events, so no
-// pull_request run ever reaches its steps. Every top-level `||` alternative
-// must carry a conjunct that excludes pull_request — `github.event_name !=
-// 'pull_request'` or `github.event_name == '<other>'` — anything else
-// (a `needs` output, an input, always()) is opaque and reads as "may run".
-func neverOnPullRequest(cond string) bool {
+// runsAfterSkip: a status function in the condition opts the job back in
+// when its needs were skipped, so `needs` no longer implies skipped.
+func runsAfterSkip(cond string) bool {
+	for _, fn := range []string{"always()", "cancelled()", "failure()"} {
+		if strings.Contains(cond, fn) {
+			return true
+		}
+	}
+	return false
+}
+
+// skipsLabelledPR evaluates the condition for a pull_request run whose PR
+// carries `skip-ci` and reports whether it is provably false. The evaluator
+// is three-valued: `github.event_name` comparisons and the label test are
+// known, everything else (an input, a needs output, always()) is unknown,
+// and only a definite false counts — a substring is never proof.
+func skipsLabelledPR(cond string) bool {
 	c := strings.TrimSpace(cond)
 	if inner, ok := strings.CutPrefix(c, "${{"); ok {
-		c = strings.TrimSpace(strings.TrimSuffix(inner, "}}"))
+		c = strings.TrimSuffix(inner, "}}")
 	}
-	for _, alt := range splitTop(c, "||") {
-		pinned := false
-		for _, term := range splitTop(alt, "&&") {
-			term = strings.TrimSpace(term)
-			for strings.HasPrefix(term, "(") && strings.HasSuffix(term, ")") {
-				term = strings.TrimSpace(term[1 : len(term)-1])
-			}
-			if term == "github.event_name != 'pull_request'" ||
-				(strings.HasPrefix(term, "github.event_name == '") && !strings.Contains(term, "'pull_request")) {
-				pinned = true
-				break
+	return evalOr(c) == tvFalse
+}
+
+type tv int
+
+const (
+	tvUnknown tv = iota
+	tvTrue
+	tvFalse
+)
+
+func evalOr(s string) tv {
+	parts := splitTop(s, "||")
+	if len(parts) == 1 {
+		return evalAnd(s)
+	}
+	out := tvFalse
+	for _, p := range parts {
+		switch evalAnd(p) {
+		case tvTrue:
+			return tvTrue
+		case tvUnknown:
+			out = tvUnknown
+		}
+	}
+	return out
+}
+
+func evalAnd(s string) tv {
+	parts := splitTop(s, "&&")
+	if len(parts) == 1 {
+		return evalUnary(s)
+	}
+	out := tvTrue
+	for _, p := range parts {
+		switch evalUnary(p) {
+		case tvFalse:
+			return tvFalse
+		case tvUnknown:
+			out = tvUnknown
+		}
+	}
+	return out
+}
+
+func evalUnary(s string) tv {
+	s = strings.TrimSpace(s)
+	if rest, ok := strings.CutPrefix(s, "!"); ok {
+		switch evalUnary(rest) {
+		case tvTrue:
+			return tvFalse
+		case tvFalse:
+			return tvTrue
+		}
+		return tvUnknown
+	}
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") && balanced(s[1:len(s)-1]) {
+		return evalOr(s[1 : len(s)-1])
+	}
+	return evalAtom(s)
+}
+
+// evalAtom knows the two facts about the run: the event is pull_request
+// and the label is present. Whitespace inside the atom is normalized.
+func evalAtom(s string) tv {
+	a := strings.Join(strings.Fields(s), " ")
+	switch {
+	case a == "github.event_name != 'pull_request'", a == "github.event_name == 'pull_request'":
+		if strings.Contains(a, "!=") {
+			return tvFalse
+		}
+		return tvTrue
+	case strings.HasPrefix(a, "github.event_name == '"):
+		return tvFalse
+	case strings.HasPrefix(a, "github.event_name != '"):
+		return tvTrue
+	case a == strings.Join(strings.Fields(guardCore[1:]), " "):
+		return tvTrue // contains(labels, 'skip-ci')
+	}
+	return tvUnknown
+}
+
+// balanced: the parentheses of s close inside s (so `(a) || (b)` is not one
+// parenthesised group).
+func balanced(s string) bool {
+	depth, quoted := 0, false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\'':
+			quoted = !quoted
+		case quoted:
+		case s[i] == '(':
+			depth++
+		case s[i] == ')':
+			depth--
+			if depth < 0 {
+				return false
 			}
 		}
-		if !pinned {
-			return false
-		}
 	}
-	return true
+	return depth == 0
 }
 
 // splitTop splits on op outside parentheses and single quotes.
@@ -364,7 +462,12 @@ func triggersPullRequest(on *yaml.Node) bool {
 	if on == nil {
 		return false
 	}
-	is := func(s string) bool { return s == "pull_request" || s == "pull_request_target" }
+	// pull_request_target is deliberately NOT a pull_request workflow here:
+	// its runs carry the base branch's permissions for automation (labelers,
+	// assignment), the guard's `github.event_name != 'pull_request'` would
+	// let them through, and skipping privileged automation is not what a
+	// `skip-ci` label asks for.
+	is := func(s string) bool { return s == "pull_request" }
 	switch on.Kind {
 	case yaml.ScalarNode:
 		return is(on.Value)
@@ -425,7 +528,7 @@ func rewrite(src []byte, jobs []Job) ([]byte, map[string]bool) {
 			if idx < 0 {
 				continue
 			}
-			lines[idx] = indent + "if: " + renderIf(wrap(j.If))
+			lines[idx] = indent + "if: " + renderIf(wrap(j.If)) + trailingComment(lines[idx])
 			applied[j.Name] = true
 		}
 	}
@@ -464,6 +567,26 @@ func findIfLine(lines []string, keyLine int, indent string) int {
 		}
 	}
 	return -1
+}
+
+// trailingComment returns the ` # note` that ends an `if:` line, outside
+// quotes, so a wrap keeps it; "" when there is none.
+func trailingComment(line string) string {
+	quote := byte(0)
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && i > 0 && (line[i-1] == ' ' || line[i-1] == '\t'):
+			return " " + line[i:]
+		}
+	}
+	return ""
 }
 
 // wrap ANDs the guard onto an existing expression, keeping a `${{ }}` shell
