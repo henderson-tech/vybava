@@ -9,7 +9,7 @@ import (
 func TestScriptsListEveryVerbSkillsCall(t *testing.T) {
 	want := []string{
 		"before-review", "classify-paths", "github-io", "list-prs", "merge-precheck", "pr-events",
-		"resolve-fetch", "sync-context", "tdd-classify", "worktree",
+		"pr-extensions", "resolve-fetch", "sync-context", "tdd-classify", "worktree",
 	}
 	if got := Scripts(); !slices.Equal(got, want) {
 		t.Fatalf("Scripts() = %v, want %v", got, want)

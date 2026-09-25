@@ -53,3 +53,6 @@ Steps:
    · PR #N"), the final artifact's § Delivery and the run door all read `pr`
    refs. Re-attaching the same (kind, ref) only updates meta, so re-running is
    safe. No `vt-<id>` or no binding → skip silently, never ask.
+
+With the PR in hand, the orchestrator runs the repo's `ensure-pr` extensions before
+the initial round (`extensions.md`).
