@@ -228,6 +228,41 @@ func TestATranscriptLostBeforeItsBacklogMovesCoveragePastIt(t *testing.T) {
 	}
 }
 
+// A transcript rewritten shorter than its backlog lost what it owed with its
+// old content: the backlog ends where the new content does, and coverage
+// moves past its last write as it does for a deleted one.
+func TestATranscriptShrunkUnderItsBacklogEndsItAndMovesCoverage(t *testing.T) {
+	f := beatsFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	if _, err := s.db.Exec(dropBeats + "DELETE FROM meta WHERE key LIKE 'beats_%'; PRAGMA user_version=3"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	prompt := lines(mustJSON(map[string]any{"type": "user", "sessionId": "s2", "cwd": f.worktree, "timestamp": "2026-09-23T09:00:00Z",
+		"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": "again"}}))
+	written := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	for name, content := range map[string]string{
+		"s2.jsonl": prompt,
+		"s1.jsonl": prompt + `{"type":"user"`, // ends in a record its writer never finished
+	} {
+		shrunk := filepath.Join(f.claude, "-work-app", name)
+		put(t, shrunk, content)
+		if err := os.Chtimes(shrunk, written, written); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s = f.open(t)
+	for pass := range 2 {
+		if r := f.index(t, s); r.BeatsPendingBytes != 0 {
+			t.Fatalf("pass %d left %d bytes owed by a shrunk transcript, want its backlog ended", pass, r.BeatsPendingBytes)
+		}
+	}
+	if got := beatsOf(t, s, "2026-09-22", "2026-09-23").Coverage; got.From == nil || *got.From != "2026-09-24" || !got.Complete {
+		t.Fatalf("coverage after a transcript written 23.09 shrank = %+v, want complete from 2026-09-24", got)
+	}
+}
+
 // Live reads record an AI minute only for a response the rollup charges: a
 // copy of a charged response — another file, another cwd, another time —
 // adds none, just as it adds no tokens.

@@ -229,8 +229,8 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   complete: the day after the oldest Claude transcript still on disk when
   beats began (sessions that ended before it were deleted unread), never
   before the first beat. Rollouts are not cleaned up, so they never move it.
-  A file that vanishes before its backlog is paid takes its unread beats
-  with it: coverage moves to the day after its last write rather than
+  A file that vanishes, or shrinks below what it owes, before its backlog is
+  paid takes its unread beats with it: coverage moves to the day after its last write rather than
   claiming days it cannot vouch for. A store without beats has `null`. `pendingBytes` is what the index still
   owes beats: unread records plus the backlog below; `complete` is false
   while any is.
@@ -244,7 +244,7 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   read re-reads a file that still owes (replaced, or re-read after its
   cursor was lost): its responses are seen, so the debt grows to cover what
   that read covered, and a backlog that finds the file replaced reads the
-  new content from byte 0. `index --json` reports what is left as
+  new content from byte 0 and ends where that content does. `index --json` reports what is left as
   `beatsPendingBytes`.
 - **Migrations** add one column each, and only when it is missing: a pass
   killed between a migration and the version bump leaves the column behind,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -199,6 +200,12 @@ type indexer struct {
 	sessions map[string]int64
 	dirty    int64
 	seenStmt *sql.Stmt
+
+	// lost is every row whose backlog outran its shrunk file this pass, and
+	// lostSince the latest last write among them. Only the final commit writes
+	// them, with the coverage move: a pass killed before it pays nothing.
+	lost      map[string]fileRow
+	lostSince int64
 }
 
 // Index reads everything written since the last pass into the buckets.
@@ -313,6 +320,9 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		// kept, so they never bound it.
 		beatsSince = oldestClaude(targets)
 	}
+	// A file that shrank under its backlog lost beats like a vanished one.
+	beatsSince = max(beatsSince, ix.lostSince)
+	maps.Copy(ix.files, ix.lost)
 	if walked {
 		// Cursors of vanished files go; their buckets and beats stay forever.
 		present := make(map[string]bool, len(targets))
@@ -412,7 +422,7 @@ func (s *Store) loadFiles() (map[string]fileRow, error) {
 
 func (s *Store) newIndexer() (*indexer, error) {
 	ix := &indexer{
-		s: s, rootMemo: map[string]string{}, projects: map[string]int64{}, sessions: map[string]int64{}, read: map[string]fileRow{},
+		s: s, rootMemo: map[string]string{}, projects: map[string]int64{}, sessions: map[string]int64{}, read: map[string]fileRow{}, lost: map[string]fileRow{},
 	}
 	ix.reset()
 	rows, err := s.db.Query("SELECT cwd, root FROM roots")
@@ -790,10 +800,10 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 		if row.beats == beatsDone {
 			continue
 		}
-		lag := lagOf(row.beats, row.cur)
+		lag, lost := lagOf(row.beats, row.cur), false
 		if !lag.done() && ix.ctx.Err() == nil && (budget <= 0 || ix.report.ReadBytes < budget) {
 			var err error
-			if lag, err = ix.catchUp(t, &row, lag, budget); err != nil {
+			if lag, lost, err = ix.catchUp(t, &row, lag, budget); err != nil {
 				return err
 			}
 		}
@@ -802,8 +812,13 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 		}
 		if beats := lag.encode(); beats != row.beats {
 			row.beats = beats
-			ix.files[t.path] = row
-			sinceCommit++
+			if lost {
+				ix.lost[t.path] = row
+				ix.lostSince = max(ix.lostSince, lag.Cursor.Modified/int64(time.Second))
+			} else {
+				ix.files[t.path] = row
+				sinceCommit++
+			}
 		}
 		if (sinceCommit > 0 || ix.dirty > 0) && (ix.dirty >= commitBytes || sinceCommit >= perCommit || time.Since(lastCommit) >= commitEvery) {
 			if err := ix.flush(); err != nil {
@@ -826,7 +841,9 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 // history and a receipt already charged through its token_count count
 // nothing — and records the rest. A copy keeping its record's time and cwd
 // lands on the original's minute; one that changed them adds its own.
-func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (beatsLag, error) {
+//
+// lost reports a backlog that ended short of Until because its file did.
+func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (_ beatsLag, lost bool, _ error) {
 	var cs codexState
 	if lag.State != nil {
 		cs = *lag.State
@@ -836,6 +853,12 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 		parse = ix.codexLine(&cs, false)
 	}
 	for !lag.done() && ix.ctx.Err() == nil {
+		if lag.Cursor.Unchanged(t.info) {
+			// Read to its end and still short of Until: the file shrank under
+			// its debt, and what it owed went with its old content.
+			lag.Until, lost = lag.Cursor.Offset, true
+			break
+		}
 		sweep := min(int64(sweepBytes), lag.Until-lag.Cursor.Offset)
 		if budget > 0 {
 			if sweep = min(sweep, budget-ix.report.ReadBytes); sweep <= 0 {
@@ -856,7 +879,9 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 		ix.report.ReadBytes += res.Read
 		ix.dirty += res.Read
 		if res.Read == 0 {
-			break // only an unterminated record left
+			// Only an unterminated record short of Until: shrunk the same way.
+			lag.Until, lost = lag.Cursor.Offset, true
+			break
 		}
 	}
 	if t.codex {
@@ -868,7 +893,7 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 			row.state = string(raw)
 		}
 	}
-	return lag, nil
+	return lag, lost, nil
 }
 
 // oldestClaude is the modification time (unix seconds) of the oldest Claude
