@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -23,27 +24,31 @@ import (
 
 const devboxOnlyEscape = "A hand test the user asked for on this Mac: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1 <command>"
 
-// devboxHit is the local segment a devbox rule matched, and where it runs.
+// devboxHit is the local segment a devbox rule matched, and where it may run.
 type devboxHit struct {
-	seg  string // the command, assignments and subshell stripped (shown, matched)
-	full string // the same with its leading VAR=value assignments (rerun payload)
-	dir  string // where the segment starts: the hook cwd moved by each `cd <dir>` before it
-	run  string // where it runs: dir moved by the segment's own bun `--cwd <dir>`
+	seg  string   // the command, assignments and subshell stripped (shown, matched)
+	full string   // the same with its leading VAR=value assignments (rerun payload)
+	runs []string // every directory it may run in, the likeliest first (see devboxMatch)
 }
 
-// devboxMatch returns the first local segment matching one of patterns. It
-// follows `cd <dir>` segments from cwd, so `(cd .worktrees/x && tsc)` is judged
-// in .worktrees/x, never in the session's checkout. Subshell scope is not
-// modelled: a `cd` inside `( … )` also moves the segments after it.
+// devboxMatch returns the first local segment matching one of patterns and
+// the directories it may run in. When the text before it is a pure `&&`
+// chain (`(cd .worktrees/x && tsc)`, `cd apps/api && lint && tsc`) each `cd`
+// provably applies, so the one tracked directory is the answer. Any other shape
+// (`;`, `||`, a closing subshell, a pipe) leaves it open where the command runs
+// - `(cd x && echo); tsc` runs in the session's checkout, `cd x || tsc` runs
+// where the cd failed - so the session cwd and every cd target are candidates.
+// A bun `--cwd <dir>` on the segment moves each candidate.
 func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
 	if len(patterns) == 0 {
 		return devboxHit{}, false
 	}
 	home, _ := os.UserHomeDir()
-	dir := cwd
+	dir, targets := cwd, []string{cwd}
 	for _, raw := range localSegments(cmd) {
 		if f := shellFields(strings.TrimSpace(trimSubshell(raw))); len(f) > 1 && f[0] == "cd" {
 			dir = resolveDir(f[1], dir, home)
+			targets = append(targets, dir)
 			continue
 		}
 		if textOnly(raw) {
@@ -54,14 +59,36 @@ func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
 			continue
 		}
 		for _, re := range patterns {
-			if re.MatchString(s) || re.MatchString(unwrapRunners(s)) {
-				full := leadingAssignments(cmd, s) + s
-				return devboxHit{seg: s, full: full, dir: dir, run: bunCwd(s, dir, home)}, true
+			if !re.MatchString(s) && !re.MatchString(unwrapRunners(s)) {
+				continue
 			}
+			full := leadingAssignments(cmd, s) + s
+			candidates := []string{dir}
+			if at := strings.Index(cmd, full); at < 0 || !pureAndChain(cmd[:at]) {
+				candidates = append(candidates, targets...)
+			}
+			hit := devboxHit{seg: s, full: full}
+			for _, c := range candidates {
+				if r := bunCwd(s, c, home); !slices.Contains(hit.runs, r) {
+					hit.runs = append(hit.runs, r)
+				}
+			}
+			return hit, true
 		}
 	}
 	return devboxHit{}, false
 }
+
+// pureAndChain reports whether the text before a command is empty or only
+// `&&`-joined commands, optionally opened by one `(`: then every `cd` in it
+// runs, in order, in the command's own shell. Anything with `;`, `|`, `||`,
+// `&`, a parenthesis, a backquote or a newline is not.
+func pureAndChain(prefix string) bool {
+	p := strings.TrimSpace(prefix)
+	return p == "" || andChain.MatchString(p)
+}
+
+var andChain = regexp.MustCompile("^\\(?\\s*([^;&|()`\\n]+&&\\s*)+$")
 
 // leadingAssignments is the `VAR=value ` run written right before seg in cmd
 // (localSegments strips it), so a rerun keeps NODE_OPTIONS=… and the like.
@@ -90,21 +117,36 @@ func bunCwd(seg, dir, home string) string {
 	return dir
 }
 
-// devboxRerun is the `devbox run` line for a hit. devbox run starts at the
-// synced checkout's root, so a segment that began below it gets its `cd`
-// back, and its leading assignments (NODE_OPTIONS=…) ride along.
-func devboxRerun(h devboxHit, flags string) string {
+// devboxRerun is the `devbox run` line for a command that runs in dir. devbox
+// run starts at the root of the checkout it is invoked from, so the payload
+// gets `cd <dir relative to that root>` - with a bun `--cwd` folded into it and
+// dropped from the command - and keeps its leading assignments (NODE_OPTIONS=…).
+// A checkout other than the session's is entered first.
+func devboxRerun(h devboxHit, dir, sessionCwd, flags string) string {
 	payload := h.full
-	if root := checkoutRoot(h.dir); root != "" {
-		if rel, err := filepath.Rel(root, h.dir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-			if plainWord.MatchString(rel) {
-				payload = "cd " + rel + " && " + payload
-			} else {
-				payload = "cd " + shellSingleQuote(rel) + " && " + payload
-			}
+	dest := checkoutRoot(dir)
+	if dest != "" {
+		payload = bunCwdFlag.ReplaceAllString(payload, "")
+		if rel, err := filepath.Rel(dest, dir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			payload = "cd " + shellArg(rel) + " && " + payload
 		}
 	}
-	return "devbox run" + flags + " -- " + shellSingleQuote(payload)
+	line := "devbox run" + flags + " -- " + shellSingleQuote(payload)
+	if dest != "" && dest != checkoutRoot(sessionCwd) {
+		line = "(cd " + shellArg(dest) + " && " + line + ")"
+	}
+	return line
+}
+
+// bunCwdFlag is a bun `--cwd <dir>` / `--cwd=<dir>`, folded into the rerun's cd.
+var bunCwdFlag = regexp.MustCompile(`\s--cwd(=|\s+)\S+`)
+
+// shellArg is s as one shell argument: verbatim when the shell reads it so.
+func shellArg(s string) string {
+	if plainWord.MatchString(s) {
+		return s
+	}
+	return shellSingleQuote(s)
 }
 
 // plainWord is a path the shell reads verbatim, needing no quotes.
@@ -144,5 +186,5 @@ runs on this Mac; this repo's guards.devboxOnly routes it to the Devbox:
     %s
 From a worktree without a workspace, /devbox resolves-or-creates one. The
 Mac keeps simulators, Appium specs and native builds; everything else that
-serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, hit.seg, devboxRerun(hit, "")), devboxOnlyEscape)
+serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, hit.seg, devboxRerun(hit, hit.runs[0], in.CWD, "")), devboxOnlyEscape)
 }

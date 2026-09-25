@@ -11,7 +11,7 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfg := `{"guards":{"devboxWhenWorkspace":["^bun run typecheck(\\s|$)","^(bunx )?tsc(\\s|$)"]}}`
+	cfg := `{"guards":{"devboxWhenWorkspace":["^bun\\s(.*\\s)?typecheck(\\s|$)","^(bunx )?tsc(\\s|$)"]}}`
 	if err := os.WriteFile(filepath.Join(root, "vybava.config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +129,24 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 			t.Errorf("%q from the main clone runs in a bare worktree, should pass:\n%s", c, d.Text())
 		}
 	}
+	// Only a pure && chain carries a cd to the command. After a closed
+	// subshell, or behind `||`, the command may run in the session's own
+	// synced checkout: refused.
+	for _, c := range []string{
+		"(cd .worktrees/bare && echo ok); bun run typecheck",
+		"cd .worktrees/bare || bun run typecheck",
+		"cd .worktrees/bare; bun run typecheck",
+	} {
+		if d := guardDevboxWhenWorkspace(hook(c)); d == nil || !strings.Contains(d.Text(), "fixit-work-x") {
+			t.Errorf("%q may run in the synced main clone, should block: %v", c, d)
+		}
+	}
+	// A command that runs outside every checkout has no workspace, whatever
+	// the session's checkout has.
+	outside := t.TempDir()
+	if d := guardDevboxWhenWorkspace(hook("cd " + outside + " && bun run typecheck")); d != nil {
+		t.Errorf("a typecheck outside any checkout should pass:\n%s", d.Text())
+	}
 	// ...until it has one of its own.
 	register("fixit-bare", nested)
 	if d := guardDevboxWhenWorkspace(hookAt(nested, "bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
@@ -150,6 +168,15 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	}
 	if d := guardDevboxWhenWorkspace(hookAt(bare2, "(cd ../bare && bun run typecheck)")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
 		t.Errorf("cd into a synced worktree should block naming fixit-bare: %v", d)
+	}
+	// The rerun enters the destination checkout and folds bun's --cwd into its
+	// cd: devbox run starts at that checkout's root, where ../bare is wrong.
+	if err := os.MkdirAll(filepath.Join(nested, "apps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d = guardDevboxWhenWorkspace(hookAt(bare2, "bun --cwd ../bare/apps run typecheck"))
+	if want := "(cd " + nested + " && devbox run --no-up -- 'cd apps && bun run typecheck')"; d == nil || !strings.Contains(d.Text(), want) {
+		t.Errorf("rerun for --cwd into another checkout, want %s in:\n%v", want, d)
 	}
 
 	// The registry may hold a symlinked spelling of the checkout.
