@@ -33,9 +33,14 @@ jobs:
   label must sit on the PR before the push it covers; what already started is
   cancelled by the caller, not by the workflow.
 - **Job-level, on every job that would run.** A dependant of guarded jobs is
-  skipped with them and counts as guarded (`via: needs`) — unless its own
-  condition uses `always()`, `cancelled()` or `failure()`, which is exactly how
-  a job opts back in; such a job needs the guard itself. A condition that pins
+  skipped with them and counts as guarded (`via: needs`). One whose own
+  condition uses `always()`, `cancelled()`, `failure()` or `success()` opts
+  back in and runs: behind guarded needs it is an **aggregate** — a gate that
+  must run after skipped lanes. FixIt pins its required gates to
+  `${{ always() }}` by harness test (a gate cancellation can skip is no gate)
+  and passes them as a no-op under the label via `SKIP_CI`. Aggregates are
+  reported (`~`), counted apart, never rewritten and not drift: their STEPS,
+  not their condition, must read the label. A condition that pins
   the job to another event (`github.event_name == 'push'`) counts as guarded
   (`via: event`).
 - **Provably false, never a substring.** `check` evaluates the condition for a

@@ -84,6 +84,12 @@ const (
 	Wrap State = "wrap"
 	// Manual: a multi-line or otherwise unrewritable `if:` — a human edits it.
 	Manual State = "manual"
+	// Aggregate: an always()/cancelled()/failure()/success() job whose needs
+	// are all guarded — a gate that must run after skipped lanes (FixIt pins
+	// its required gates to `always()` so cancellation can never skip them,
+	// and they pass as a no-op under the label). Reported, never rewritten,
+	// not drift: its steps, not its condition, must read the label.
+	Aggregate State = "aggregate"
 )
 
 // Job is one job of a pull_request-triggered workflow.
@@ -121,6 +127,7 @@ type Report struct {
 	Missing   int        `json:"missing"`
 	Wrap      int        `json:"wrap"`
 	Manual    int        `json:"manual"`
+	Aggregate int        `json:"aggregate"`
 	Applied   int        `json:"applied"`
 }
 
@@ -188,6 +195,8 @@ func run(repo string, write bool) (Report, error) {
 				report.Wrap++
 			case Manual:
 				report.Manual++
+			case Aggregate:
+				report.Aggregate++
 			}
 		}
 		report.Workflows = append(report.Workflows, wf)
@@ -250,9 +259,10 @@ func inspect(src []byte) Workflow {
 
 // guardThroughNeeds marks a job guarded when every job it needs is: a
 // skipped dependency skips its dependants — UNLESS the dependant's own
-// condition uses a status function (always(), cancelled(), failure()),
-// which is exactly how a job opts back in and runs its steps anyway. Runs
-// to a fixpoint, so a chain resolves in any order.
+// condition uses a status function (always(), cancelled(), failure(),
+// success()), which is exactly how a job opts back in; such a job behind
+// guarded needs is an Aggregate. Runs to a fixpoint, so a chain resolves
+// in any order.
 func guardThroughNeeds(jobs []Job) {
 	guarded := map[string]bool{}
 	for _, j := range jobs {
@@ -262,7 +272,7 @@ func guardThroughNeeds(jobs []Job) {
 		changed = false
 		for i := range jobs {
 			j := &jobs[i]
-			if j.State == Guarded || len(j.needs) == 0 || runsAfterSkip(j.If) {
+			if j.State == Guarded || j.State == Aggregate || len(j.needs) == 0 {
 				continue
 			}
 			all := true
@@ -272,7 +282,9 @@ func guardThroughNeeds(jobs []Job) {
 					break
 				}
 			}
-			if all {
+			if all && runsAfterSkip(j.If) {
+				j.State, j.Via, guarded[j.Name], changed = Aggregate, "needs", true, true
+			} else if all {
 				j.State, j.Via, guarded[j.Name], changed = Guarded, "needs", true, true
 			}
 		}

@@ -235,8 +235,9 @@ jobs:
 	}
 	want := map[string]string{
 		"gate": "guarded/", "unit": "guarded/needs",
-		// always()/cancelled() opt a dependant back in: its steps run, so it is drift.
-		"summary": "wrap/", "after": "wrap/",
+		// always()/cancelled() opt a dependant back in behind guarded needs: an
+		// aggregate gate — reported, never rewritten, not drift.
+		"summary": "aggregate/needs", "after": "aggregate/needs",
 		"image": "guarded/event", "reconcile": "guarded/event", "bench": "guarded/event",
 		"mixed": "wrap/", "loose": "missing/", "substring": "wrap/", "pr-only": "wrap/",
 	}

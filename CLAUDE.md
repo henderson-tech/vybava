@@ -159,7 +159,8 @@ pending forever, and without a `labeled` trigger because that re-runs CI on
 every unrelated label. `skipci check|apply` holds a repo's workflows to it by
 line edits (multi-line conditions are `manual`, never rewritten; guarded means
 PROVABLY false under a labelled pull_request run — a three-valued evaluator,
-never a substring; `always()`-style dependants are drift; `pull_request_target`
-is outside the standard); repolicy's default policy carries the labels; `gitkit admin-labels` puts them on a PR and
+never a substring; an `always()`-style job behind guarded needs is an
+`aggregate` — reported, never rewritten, FixIt's harness-pinned gates are the
+precedent; `pull_request_target` is outside the standard); repolicy's default policy carries the labels; `gitkit admin-labels` puts them on a PR and
 cancels the runs the push already queued; `merge-precheck` waives only the CI
 gate (`ciWaived`) for a `skip-ci` PR, which still needs `--admin` to land.

@@ -108,8 +108,8 @@ repolicy's (its default policy carries skip-ci and eve-ignore).`,
 }
 
 func (rt *runtime) skipCIReport(report skipci.Report) {
-	fmt.Fprintf(rt.stdout, "SKIPCI  %s  ·  guarded %d · missing %d · wrap %d · manual %d",
-		report.Repo, report.Guarded, report.Missing, report.Wrap, report.Manual)
+	fmt.Fprintf(rt.stdout, "SKIPCI  %s  ·  guarded %d · missing %d · wrap %d · manual %d · aggregate %d",
+		report.Repo, report.Guarded, report.Missing, report.Wrap, report.Manual, report.Aggregate)
 	if report.Applied > 0 {
 		fmt.Fprintf(rt.stdout, " · applied %d", report.Applied)
 	}
@@ -130,6 +130,8 @@ func (rt *runtime) skipCIReport(report skipci.Report) {
 				mark = "✗"
 			case skipci.Manual:
 				mark = "!"
+			case skipci.Aggregate:
+				mark = "~"
 			}
 			note := string(job.State)
 			if job.Applied {
@@ -137,6 +139,9 @@ func (rt *runtime) skipCIReport(report skipci.Report) {
 			}
 			fmt.Fprintf(rt.stdout, "  %s %-28s %-8s L%d\n", mark, job.Name, note, job.Line)
 		}
+	}
+	if report.Aggregate > 0 {
+		fmt.Fprintf(rt.stdout, "\n%d aggregate job(s) run after skipped needs by design; their STEPS must read the label\n", report.Aggregate)
 	}
 	if report.Manual > 0 {
 		fmt.Fprintf(rt.stdout, "\n%d manual job(s): AND `%s` into the multi-line if: by hand\n", report.Manual, skipci.Guard)
