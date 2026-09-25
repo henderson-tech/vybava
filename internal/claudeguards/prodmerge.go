@@ -352,11 +352,23 @@ func prodMergeGitPush(args []string, dir, home string) *Denial {
 	}
 	for _, dst := range dests {
 		dst = strings.TrimPrefix(dst, "refs/heads/")
-		if slices.Contains(branches, dst) {
-			return prodMergeDeny("git push to "+dst, dst, source)
+		for _, b := range branches {
+			if globHits(dst, b) {
+				return prodMergeDeny("git push to "+dst, b, source)
+			}
 		}
 	}
 	return nil
+}
+
+// globHits reports whether a push destination names branch: exactly, or as a
+// refspec glob whose one `*` covers it ('refs/heads/*:refs/heads/*' → canary).
+func globHits(dst, branch string) bool {
+	pre, suf, glob := strings.Cut(dst, "*")
+	if !glob {
+		return dst == branch
+	}
+	return len(branch) >= len(pre)+len(suf) && strings.HasPrefix(branch, pre) && strings.HasSuffix(branch, suf)
 }
 
 func prodMergeDeny(what, base, source string) *Denial {
@@ -472,21 +484,36 @@ func gitPushDest(dir string) []string {
 	// push.default=matching pushes every local branch its remote also has;
 	// a wildcard remote.<name>.push refspec (refs/heads/*:refs/heads/*) does
 	// the same. Other remote.<name>.push refspecs name their destination.
-	everyBranch := git(dir, "config", "--get", "push.default") == "matching"
+	locals := splitLines(git(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads"))
+	if git(dir, "config", "--get", "push.default") == "matching" {
+		dests = append(dests, locals...)
+	}
 	for _, l := range splitLines(git(dir, "config", "--get-regexp", `^remote\..*\.push$`)) {
 		_, spec, _ := strings.Cut(l, " ")
-		dst := strings.TrimPrefix(spec, "+")
-		if _, after, ok := strings.Cut(dst, ":"); ok {
-			dst = after
+		src, dst, mapped := strings.Cut(strings.TrimPrefix(spec, "+"), ":")
+		if !mapped {
+			dst = src
 		}
-		if strings.Contains(dst, "*") {
-			everyBranch = true
+		if !strings.Contains(dst, "*") {
+			dests = append(dests, dst)
 			continue
 		}
-		dests = append(dests, dst)
-	}
-	if everyBranch {
-		dests = append(dests, splitLines(git(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads"))...)
+		// A glob refspec maps each matching local branch through its one
+		// `*`: refs/heads/feat/*:refs/heads/* sends feat/canary to canary.
+		// A source outside refs/heads (refs/remotes/up/*) is a set we don't
+		// list: keep the destination glob, which the caller matches.
+		src = strings.TrimPrefix(src, "refs/heads/")
+		if strings.HasPrefix(src, "refs/") {
+			dests = append(dests, dst)
+			continue
+		}
+		srcPre, srcSuf, _ := strings.Cut(src, "*")
+		dstPre, dstSuf, _ := strings.Cut(strings.TrimPrefix(dst, "refs/heads/"), "*")
+		for _, b := range locals {
+			if globHits(src, b) {
+				dests = append(dests, dstPre+b[len(srcPre):len(b)-len(srcSuf)]+dstSuf)
+			}
+		}
 	}
 	return dests
 }

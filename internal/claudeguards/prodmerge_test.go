@@ -117,6 +117,7 @@ func TestProdMerge(t *testing.T) {
 		{"bare push from canary", "git push", wt, "canary", true},
 		{"push HEAD from master", "git -C " + be + " push origin HEAD", other, "master", true},
 		{"push --all", "git push --all origin", wt, "promote/x", true},
+		{"push a wildcard refspec", "git push origin 'refs/heads/*:refs/heads/*'", wt, "feat/x", true},
 		{"push the feature branch", "git push -u origin promote/canary-20260925", wt, "promote/canary-20260925", false},
 		{"push option value is not the remote", "git push -o ci.skip origin feat/x", wt, "feat/x", false},
 		{"push in a repo without PROD_BRANCHES", "git push origin master", other, "master", false},
@@ -219,6 +220,18 @@ func TestGitPushDestRealRepo(t *testing.T) {
 	run("config", "remote.origin.push", "refs/heads/*:refs/heads/*")
 	if got := gitPushDest(dir); !slices.Contains(got, "canary") {
 		t.Fatalf("wildcard push refspec: %v", got)
+	}
+	// A remapping glob: local feat/canary lands on the remote's canary.
+	run("branch", "-m", "canary", "feat/canary")
+	run("config", "remote.origin.push", "refs/heads/feat/*:refs/heads/*")
+	if got := gitPushDest(dir); !slices.Contains(got, "canary") || slices.Contains(got, "feat/canary") {
+		t.Fatalf("remapping push refspec: %v", got)
+	}
+	run("branch", "-m", "feat/canary", "canary")
+	// A source outside refs/heads is a set we cannot list: the glob stays.
+	run("config", "remote.origin.push", "refs/remotes/up/*:refs/heads/*")
+	if got := gitPushDest(dir); !slices.Contains(got, "refs/heads/*") {
+		t.Fatalf("remote-tracking source glob: %v", got)
 	}
 	run("config", "--unset", "remote.origin.push")
 	run("config", "push.default", "matching")
