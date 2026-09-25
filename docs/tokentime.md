@@ -228,7 +228,7 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
 - **Coverage.** `coverage.from` is the first local day whose beats are
   complete: the day after the oldest Claude transcript still on disk when
   beats began (sessions that ended before it were deleted unread), never
-  before the first beat. Rollouts are not cleaned up, so they never move it.
+  before the first beat. Rollouts are not cleaned up, so they do not bound it.
   A file that vanishes, or shrinks below what it owes, before its backlog is
   paid takes its unread beats with it: coverage moves to the day after its last write rather than
   claiming days it cannot vouch for. A store without beats has `null`. `pendingBytes` is what the index still
