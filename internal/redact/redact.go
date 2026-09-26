@@ -74,16 +74,19 @@ type File struct {
 
 // Report is one run.
 type Report struct {
-	Mode     string         `json:"mode"`
-	Files    int            `json:"files"`
-	Skipped  int            `json:"skipped"`
-	Known    int            `json:"known"`
-	Spans    int            `json:"spans"`
-	Redacted int            `json:"redacted"`
-	Changed  int            `json:"changed"`
-	Errors   int            `json:"errors"`
-	Counts   map[string]int `json:"counts"`
-	Leaky    []File         `json:"leaky"`
+	Mode    string `json:"mode"`
+	Files   int    `json:"files"`
+	Skipped int    `json:"skipped"`
+	// Unreadable is filled by the caller from Roots.Files: entries the
+	// listing could not read, so a clean report over them is not clean.
+	Unreadable int            `json:"unreadable"`
+	Known      int            `json:"known"`
+	Spans      int            `json:"spans"`
+	Redacted   int            `json:"redacted"`
+	Changed    int            `json:"changed"`
+	Errors     int            `json:"errors"`
+	Counts     map[string]int `json:"counts"`
+	Leaky      []File         `json:"leaky"`
 }
 
 // Options tune one run.
@@ -323,9 +326,8 @@ func scanJSON(res *scanned, doc []byte, offset int64, line int, d detect) {
 		// A pretty-printed .json spans lines; a JSONL record is one.
 		newlines += bytes.Count(doc[counted:start], []byte{'\n'})
 		counted = start
-		for _, s := range spans {
-			rs, re := rawAt(raw, s.Start, false), rawAt(raw, s.End, true)
-			record(res, doc, start+rs, start+re, offset, line+newlines, s.Detector, secretscan.Shape(value, s))
+		for i, rr := range rawSpans(raw, spans) {
+			record(res, doc, start+rr[0], start+rr[1], offset, line+newlines, spans[i].Detector, secretscan.Shape(value, spans[i]))
 		}
 	})
 }

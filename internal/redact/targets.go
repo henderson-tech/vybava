@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -80,7 +81,14 @@ var reSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{6,}$`)
 func (r Roots) Files(t Target) (files []string, unreadable int, err error) {
 	set := map[string]bool{}
 	add := func(p string) {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() && !info.ModTime().Before(t.Since) {
+		info, err := os.Stat(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			// vanished, or a dangling link (tasks/*.output after a subagent's
+			// transcript was deleted): nothing there to scan
+		case err != nil:
+			unreadable++ // counted, never dropped: a clean report means every file was read
+		case !info.IsDir() && !info.ModTime().Before(t.Since):
 			set[p] = true
 		}
 	}

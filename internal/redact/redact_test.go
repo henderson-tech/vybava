@@ -261,6 +261,15 @@ func TestTargetsResolveProjectsCodexAndRefuseAnUnknownSession(t *testing.T) {
 	if _, _, err := f.roots.Files(Target{Sessions: []string{"0000000000"}}); err == nil {
 		t.Error("an unknown session read as clean")
 	}
+	// A file the walk lists but cannot stat (a symlink loop) is counted, never
+	// silently dropped: a clean report must mean every file was read.
+	loop := filepath.Join(f.roots.ClaudeProjects, "-Users-someone-app", f.session, "loop.jsonl")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, unreadable, err := f.roots.Files(Target{Sessions: []string{f.session}}); err != nil || unreadable != 1 {
+		t.Errorf("unreadable = %d (%v), want the looping link counted", unreadable, err)
+	}
 	files, _, err = f.roots.Files(Target{Sessions: []string{f.session}, Since: time.Now().Add(time.Hour)})
 	if err != nil || len(files) != 0 {
 		t.Errorf("--since in the future: %d files, %v", len(files), err)

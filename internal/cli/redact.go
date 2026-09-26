@@ -118,7 +118,7 @@ pattern recognises; values never leave the process.`,
 				opts.Audit = audit
 			}
 			report := redact.Run(files, opts)
-			report.Skipped += unreadable
+			report.Unreadable = unreadable
 			if rt.json {
 				if err := writeJSON(rt.stdout, report); err != nil {
 					return err
@@ -127,8 +127,8 @@ pattern recognises; values never leave the process.`,
 				rt.redactReport(report)
 			}
 			switch {
-			case report.Errors > 0:
-				return fmt.Errorf("%d file(s) could not be scanned or written", report.Errors)
+			case report.Errors > 0 || report.Unreadable > 0:
+				return fmt.Errorf("%d file(s) could not be scanned or written, %d unreadable — the report is incomplete", report.Errors, report.Unreadable)
 			case !apply && report.Spans > 0, apply && report.Changed > 0:
 				return ErrFindings
 			}
@@ -179,8 +179,8 @@ func (rt *runtime) redactReport(r redact.Report) {
 	if r.Known > 0 {
 		fmt.Fprintf(rt.stdout, " · %d known values", r.Known)
 	}
-	if r.Skipped > 0 {
-		fmt.Fprintf(rt.stdout, " · %d unreadable", r.Skipped)
+	if r.Unreadable > 0 {
+		fmt.Fprintf(rt.stdout, " · %d unreadable", r.Unreadable)
 	}
 	fmt.Fprintln(rt.stdout)
 	if len(counts) > 0 {
@@ -220,7 +220,7 @@ func redactSession(session string, apply bool) (redact.Report, error) {
 	if err != nil {
 		return redact.Report{}, err
 	}
-	files, _, err := roots.Files(redact.Target{Sessions: []string{session}})
+	files, unreadable, err := roots.Files(redact.Target{Sessions: []string{session}})
 	if err != nil {
 		return redact.Report{}, err
 	}
@@ -233,7 +233,9 @@ func redactSession(session string, apply bool) (redact.Report, error) {
 		defer audit.Close()
 		opts.Audit = audit
 	}
-	return redact.Run(files, opts), nil
+	report := redact.Run(files, opts)
+	report.Unreadable = unreadable
+	return report, nil
 }
 
 // sessionLeaks scans one Claude session for `claude-guards ctx`. A session it
@@ -245,7 +247,7 @@ func sessionLeaks(session string, stderr io.Writer) *claudeguards.Leaks {
 		fmt.Fprintf(stderr, "claude-guards ctx: leak scan skipped: %v\n", err)
 		return nil
 	}
-	return &claudeguards.Leaks{Spans: report.Spans, Files: len(report.Leaky), Counts: report.Counts, Session: session}
+	return &claudeguards.Leaks{Spans: report.Spans, Files: len(report.Leaky), Unscanned: report.Errors + report.Unreadable, Counts: report.Counts, Session: session}
 }
 
 // redactClasses maps --only names onto secretscan classes; none means All.

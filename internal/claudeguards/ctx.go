@@ -62,10 +62,13 @@ type ContextReport struct {
 // Leaks summarises secret material found in a session's files — counts and
 // detectors only, never a value.
 type Leaks struct {
-	Spans   int            `json:"spans"`
-	Files   int            `json:"files"`
-	Counts  map[string]int `json:"counts"`
-	Session string         `json:"session"`
+	Spans int `json:"spans"`
+	Files int `json:"files"`
+	// Unscanned counts files the scan could not read: zero spans from a
+	// partial scan is not "no leaks".
+	Unscanned int            `json:"unscanned"`
+	Counts    map[string]int `json:"counts"`
+	Session   string         `json:"session"`
 }
 
 type transcriptBlock struct {
@@ -431,6 +434,12 @@ func (r ContextReport) Render(w io.Writer) error {
 		sort.Strings(detectors)
 		if _, err = fmt.Fprintf(w, "⚠️ secret leaks: %d spans in %d files (%s) — vybava redact --session %s --apply\n",
 			r.Leaks.Spans, r.Leaks.Files, strings.Join(detectors, " · "), r.Leaks.Session); err != nil {
+			return err
+		}
+	}
+	if r.Leaks != nil && r.Leaks.Unscanned > 0 {
+		if _, err = fmt.Fprintf(w, "⚠️ leak scan incomplete: %d files not scanned — vybava redact --session %s names them\n",
+			r.Leaks.Unscanned, r.Leaks.Session); err != nil {
 			return err
 		}
 	}
