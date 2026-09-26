@@ -1,7 +1,6 @@
 package claudeguards
 
 import (
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -190,7 +189,8 @@ func fragmentOfSecret(code string, secretNamed bool) bool {
 // still ends in the transcript.
 var printerCommands = map[string]bool{"cat": true, "bat": true, "less": true, "more": true, "head": true,
 	"tail": true, "sed": true, "awk": true, "grep": true, "egrep": true, "rg": true, "strings": true,
-	"xxd": true, "od": true, "cut": true, "wc": true, "tee": true, "base64": true, "tr": true, "rev": true, "fold": true}
+	"xxd": true, "od": true, "cut": true, "wc": true, "tee": true, "base64": true, "tr": true, "rev": true, "fold": true,
+	"echo": true, "printf": true}
 
 // consumed reports whether the output leaving a command — rest starts at
 // the operator after it — is taken away from the transcript: redirected to a
@@ -207,16 +207,28 @@ func consumed(rest string) bool {
 	case !strings.HasPrefix(rest, "|") || strings.HasPrefix(rest, "||"):
 		return false
 	}
-	pipeline := rest[1:]
-	for _, stop := range []string{"||", "&&", ";", "\n", ")"} {
-		if i := strings.Index(pipeline, stop); i >= 0 {
-			pipeline = pipeline[:i]
+	// The pipeline's stages through the shared quote-aware splitter — a `|`
+	// inside `cat 'a|b'` is an argument, not a stage.
+	last := ""
+	for _, p := range splitShell(rest[1:]) {
+		last = p.text
+		if p.sep != "|" {
+			break
 		}
 	}
-	stages := strings.Split(pipeline, "|")
-	last := strings.TrimSpace(stages[len(stages)-1])
-	fields := strings.Fields(last)
-	return len(fields) > 0 && (!printerCommands[filepath.Base(fields[0])] || reStdoutRedirect.MatchString(last))
+	last = strings.TrimSpace(last)
+	switch {
+	case last == "":
+		return false
+	case reStdoutRedirect.MatchString(last):
+		return true
+	}
+	for name := range printerCommands {
+		if commandChainHas(last, name) { // through sudo, xargs, env, …
+			return false
+		}
+	}
+	return true
 }
 
 // groupConsumed reports that the echo at pos sits in a { …; } group or a
