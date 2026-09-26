@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // ---------------------------------------------------------------------------
@@ -254,7 +256,7 @@ func devboxRerun(h devboxHit, dir, sessionCwd, flags string) string {
 			payload = "cd " + shellArg(rel) + " && " + payload
 		}
 	}
-	line := "devbox run" + flags + " -- " + shellSingleQuote(payload)
+	line := "devbox run" + flags + " -- " + shellword.Quote(payload)
 	if dest != "" && dest != checkoutRoot(sessionCwd) {
 		line = "(cd " + shellArg(dest) + " && " + line + ")"
 	}
@@ -269,7 +271,7 @@ func shellArg(s string) string {
 	if plainWord.MatchString(s) {
 		return s
 	}
-	return shellSingleQuote(s)
+	return shellword.Quote(s)
 }
 
 // plainWord is a path the shell reads verbatim, needing no quotes.

@@ -66,6 +66,11 @@ const (
 	// LEDGER.md), where a first render would replace the index. Fix: convert
 	// it with `memo migrate` + `memo import`.
 	DiagLegacyHome = "LEGACY_HOME"
+	// DiagMainCheckout: `memo add`/`import` of a team row into a repository's
+	// MAIN checkout, where it would sit as uncommitted dirt on the default
+	// branch. Fix: add a worktree and re-run there. Silenced by
+	// WORKTREE_POLICY=never in the repo's .claude/.claude.git.config.
+	DiagMainCheckout = "MAIN_CHECKOUT"
 	// DiagImportInvalid: an import file line is not in the id-less grammar.
 	DiagImportInvalid = "IMPORT_INVALID"
 	// DiagRegistryInvalid: homes.json does not parse or carries unknown

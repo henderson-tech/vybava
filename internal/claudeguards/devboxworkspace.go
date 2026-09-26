@@ -42,12 +42,6 @@ func compileDevboxPatterns(list []string) []*regexp.Regexp {
 	return patterns
 }
 
-// shellSingleQuote renders s as one POSIX shell word, so a suggested rerun
-// command survives an apostrophe inside the original.
-func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // checkoutRoot is the nearest ancestor of dir (dir included) holding a .git
 // entry - a worktree's .git FILE counts, so a nested worktree is its own
 // checkout, never its main clone. "" when dir is outside any checkout.

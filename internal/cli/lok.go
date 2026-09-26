@@ -8,6 +8,7 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/lok"
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/shellword"
 	"github.com/spf13/cobra"
 )
 
@@ -118,7 +119,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			v, err := t.Get(catalog, args[0])
 			var next []string
 			if err == nil && len(v.Missing) > 0 {
-				next = []string{"lok set " + quoteArg(args[0]) + " --tr " + v.Missing[0] + "=<value>"}
+				next = []string{"lok set " + shellword.Quote(args[0]) + " --tr " + v.Missing[0] + "=<value>"}
 			}
 			return finish(s, v, next, err)
 		},
@@ -136,7 +137,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			res, err := t.Grep(catalog, args[0], locales, limit)
 			var next []string
 			if res.Truncated {
-				next = []string{fmt.Sprintf("lok grep %s --limit %d  # or narrow the pattern", quoteArg(args[0]), res.Total)}
+				next = []string{fmt.Sprintf("lok grep %s --limit %d  # or narrow the pattern", shellword.Quote(args[0]), res.Total)}
 			}
 			return finish(s, res, next, err)
 		},
@@ -159,7 +160,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, err)
 			}
 			res, err := t.Add(catalog, args[0], m)
-			return finish(s, res, []string{"lok get " + quoteArg(args[0]) + " --json"}, err)
+			return finish(s, res, []string{"lok get " + shellword.Quote(args[0]) + " --json"}, err)
 		},
 	}
 	add.Flags().StringArrayVar(&tr, "tr", nil, "<locale>=<value>, repeatable")
@@ -179,7 +180,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, err)
 			}
 			res, err := t.Set(catalog, args[0], m)
-			return finish(s, res, []string{"lok get " + quoteArg(args[0]) + " --json"}, err)
+			return finish(s, res, []string{"lok get " + shellword.Quote(args[0]) + " --json"}, err)
 		},
 	}
 	set.Flags().StringArrayVar(&trSet, "tr", nil, "<locale>=<value>, repeatable")
@@ -218,7 +219,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			gaps, total, err := t.Missing(catalog, missLocales, !all, missLimit)
 			var next []string
 			if total > 0 {
-				next = []string{"lok set " + quoteArg(gaps[0].Key) + " --catalog=" + gaps[0].Catalog + " --tr " + gaps[0].Locale + "=<value>"}
+				next = []string{"lok set " + shellword.Quote(gaps[0].Key) + " --catalog=" + gaps[0].Catalog + " --tr " + gaps[0].Locale + "=<value>"}
 			}
 			return finish(s, map[string]any{"gaps": gaps, "total": total, "truncated": total > len(gaps)}, next, err)
 		},
@@ -318,13 +319,6 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 	merge.Flags().StringVar(&prefer, "prefer", "", "settle clashing keys toward ours or theirs")
 	root.AddCommand(merge)
 	return root
-}
-
-func quoteArg(s string) string {
-	if !strings.ContainsAny(s, " '\"$`\\{};&|<>()!#*?[]~") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // workingDir is the directory the verb resolves the repo config from.

@@ -151,7 +151,11 @@ home; `--home` or an alias overrides that.
 `memo add` refuses `LEGACY_HOME` in a v2 home, meaning a hand-written
 `MEMORY.md` and no `LEDGER.md`: a first render would replace that index, and
 nothing snapshots a personal home before its ledger exists. `memo migrate`
-+ `memo import` convert the home first. Elsewhere,
++ `memo import` convert the home first. `memo add` and `memo import` also
+refuse `MAIN_CHECKOUT`: a team row whose home is in a repository's main
+checkout would sit there as uncommitted dirt on the default branch, so it is
+written from a worktree and lands through a PR; `WORKTREE_POLICY=never` in
+the repo's `.claude/.claude.git.config` opts a repo out. Elsewhere,
 `memo add` creates the ledger on first use: the row's type decides the kind
 (`user`/`feedback` personal, else team), the alias is the repo basename
 lowercased (`-team` suffix for the team home), and a personal ledger records
@@ -294,6 +298,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `REF_AMBIGUOUS` | 2 | bare id exists in more than one session home |
 | `RENDER_DRIFT` | 2 | `render --check`: MEMORY.md differs |
 | `LEGACY_HOME` | 2 | `add` into a v2 home (hand-written `MEMORY.md`, no `LEDGER.md`); the row is not written; fix `memo migrate <home>`, then `memo import` |
+| `MAIN_CHECKOUT` | 2 | `add`/`import` of a team row into a repo's main checkout; the row is not written; fix adds a worktree to re-run from; `WORKTREE_POLICY=never` opts out |
 | `SURFACE_TRACKED` | 0 | warning, a team `MEMORY.md` is tracked by git and was left as committed; fix untracks a render or migrates a hand-written index |
 | `IMPORT_INVALID` | 2 | import file line outside the id-less grammar |
 | `REGISTRY_INVALID` | 2 | homes.json malformed or with unknown fields |

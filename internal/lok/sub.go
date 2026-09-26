@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // ---------------------------------------------------------------------------
@@ -484,7 +486,7 @@ func (t *Tool) subValues(res SubResult, p *subPlan, cats []*Catalog, o SubOption
 				if after == l.Value {
 					continue
 				}
-				where := fmt.Sprintf("%s %s %s", c.ID, code, shellQuote(key))
+				where := fmt.Sprintf("%s %s %s", c.ID, code, shellword.Quote(key))
 				if !samePlaceholders(l.Value, after) {
 					placeholderBreaks = append(placeholderBreaks, fmt.Sprintf("%s %v -> %v", where, placeholderTokens(l.Value), placeholderTokens(after)))
 				}
