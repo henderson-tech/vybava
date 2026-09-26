@@ -62,18 +62,26 @@ func Quote(line string) string {
 	return strings.TrimRight(line[:cut], " ") + " [withheld: " + strings.Join(detectors, ", ") + "]"
 }
 
-// reWordy is a digit-bearing run — possibly key material a
-// detector missed; Shape masks it too, so context never carries a value.
-var reWordy = regexp.MustCompile(`[A-Za-z0-9+/_=.-]*[0-9][A-Za-z0-9+/_=.-]*`)
+var (
+	// reWord is a run that could be key material a detector missed — an
+	// alphabetic password beside a known value included.
+	reWord = regexp.MustCompile(`[A-Za-z0-9+/_.-]+`)
+	// reVarName is what Shape keeps: an env-style name (MAIL_PASSWORD).
+	reVarName = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$`)
+)
 
 // Shape renders a finding for a human without its value: a few bytes of
-// context either side, the span as ‹detector›, any other digit-bearing run of
-// 8+ — or one the window cuts, whatever its length — as <w>, control
-// characters flattened. The names around a leak (MAIL_PASSWORD=) stay
-// readable; nothing that could be a value does.
+// context either side, the span as ‹detector›, every other word of 3+ as <w>
+// unless it is a SCREAMING_SNAKE variable name, control characters
+// flattened. The name a leak sits under (MAIL_PASSWORD=) stays readable;
+// nothing that could be a value does.
 func Shape(text string, s Span) string {
 	const before, after = 24, 12
 	from, to := max(0, s.Start-before), min(len(text), s.End+after)
+	// Never start mid-word: a name cut to `SSWORD=` would read as a value.
+	for from > 0 && s.Start-from < before+64 && isIdent(text[from-1]) {
+		from--
+	}
 	// Never cut a UTF-8 sequence.
 	for from > 0 && from < len(text) && text[from]&0xC0 == 0x80 {
 		from--
@@ -81,11 +89,11 @@ func Shape(text string, s Span) string {
 	for to < len(text) && text[to]&0xC0 == 0x80 {
 		to++
 	}
-	mask := func(v string, cutLeft, cutRight bool) string {
+	mask := func(v string) string {
 		var b strings.Builder
 		last := 0
-		for _, w := range reWordy.FindAllStringIndex(v, -1) {
-			if w[1]-w[0] >= 8 || cutLeft && w[0] == 0 || cutRight && w[1] == len(v) {
+		for _, w := range reWord.FindAllStringIndex(v, -1) {
+			if w[1]-w[0] >= 3 && !reVarName.MatchString(v[w[0]:w[1]]) {
 				b.WriteString(v[last:w[0]])
 				b.WriteString("<w>")
 				last = w[1]
@@ -99,7 +107,7 @@ func Shape(text string, s Span) string {
 			return r
 		}, b.String())
 	}
-	out := mask(text[from:s.Start], from > 0, false) + "‹" + s.Detector + "›" + mask(text[s.End:to], false, to < len(text))
+	out := mask(text[from:s.Start]) + "‹" + s.Detector + "›" + mask(text[s.End:to])
 	if from > 0 {
 		out = "…" + out
 	}

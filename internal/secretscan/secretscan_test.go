@@ -136,7 +136,7 @@ func TestFillIsSameLengthAndASecondPassFindsNothing(t *testing.T) {
 func TestKnownValuesAndDotenv(t *testing.T) {
 	secret := fake("", 24)
 	var k Known
-	if n := k.AddDotenv([]byte("APP_URL=https://app.example.org\n# MAIL_PASSWORD=old\nexport MAIL_PASSWORD=\"" + secret + "\"\nSHORT_TOKEN=abc\n")); n != 1 {
+	if n, err := k.AddDotenv([]byte("APP_URL=https://app.example.org\n# MAIL_PASSWORD=old\nexport MAIL_PASSWORD=\"" + secret + "\"\nSHORT_TOKEN=abc\n")); n != 1 || err != nil {
 		t.Fatalf("AddDotenv took %d, want 1", n)
 	}
 	text := "log: connecting with " + secret + " to https://app.example.org"
@@ -174,5 +174,32 @@ func TestQuoteWithholdsEverythingAfterTheFirstSecret(t *testing.T) {
 	}
 	if q := Quote("+token " + fake("gh"+"p_", 36)); !strings.Contains(q, "github-token") {
 		t.Errorf("Quote must name the detector: %q", q)
+	}
+}
+
+func TestShapeMasksEveryNeighbourButVariableNames(t *testing.T) {
+	var k Known
+	k.Add("knownpart")
+	text := "MAIL_PASSWORD=knownpartsecretrest other words"
+	spans := Find(text, All, &k)
+	if len(spans) == 0 {
+		t.Fatal("no span")
+	}
+	shape := Shape(text, spans[0])
+	for _, leak := range []string{"secretrest", "knownpart", "other", "words"} {
+		if strings.Contains(shape, leak) {
+			t.Errorf("Shape = %q shows %q", shape, leak)
+		}
+	}
+	if !strings.Contains(shape, "MAIL_PASSWORD=") {
+		t.Errorf("Shape = %q lost the variable name", shape)
+	}
+}
+
+func TestAddDotenvReportsALineItCannotRead(t *testing.T) {
+	var k Known
+	long := "HUGE_TOKEN=" + strings.Repeat("x", 2<<20) + "\nMAIL_PASSWORD=" + fake("", 20) + "\n"
+	if _, err := k.AddDotenv([]byte(long)); err == nil {
+		t.Error("an over-long line silently ended the load")
 	}
 }

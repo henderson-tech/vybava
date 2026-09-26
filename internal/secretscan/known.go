@@ -36,8 +36,9 @@ func (k *Known) Add(v string) bool {
 
 // AddDotenv registers the value of every secret-named assignment in a .env
 // file (SecretName decides, so APP_URL and MAIL_HOST stay out) and returns
-// how many it took.
-func (k *Known) AddDotenv(data []byte) int {
+// how many it took. A line it cannot read (over 1 MiB) is an error: every
+// value after it would be silently missing from the search.
+func (k *Known) AddDotenv(data []byte) (int, error) {
 	taken := 0
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -56,7 +57,7 @@ func (k *Known) AddDotenv(data []byte) int {
 			taken++
 		}
 	}
-	return taken
+	return taken, sc.Err()
 }
 
 // Len is the number of values held.
