@@ -180,6 +180,31 @@ func TestGuardDevboxWhenWorkspace(t *testing.T) {
 	if d := guardDevboxWhenWorkspace(hookAt(bare2, "(cd /tmp && echo ok); cd ../bare && bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
 		t.Errorf("relative cd after a closed subshell should block naming fixit-bare: %v", d)
 	}
+	// cd's options and `--` are not its destination; every matching command
+	// is judged, not only the first; a runner payload's cd reaches its own
+	// commands only.
+	for _, c := range []string{
+		"cd -- ../bare && bun run typecheck",
+		"cd -P ../bare && bun run typecheck",
+		"bun run typecheck; bun --cwd ../bare run typecheck",
+		"bash -c 'cd ../bare && bun run typecheck'",
+	} {
+		if d := guardDevboxWhenWorkspace(hookAt(bare2, c)); d == nil || !strings.Contains(d.Text(), "fixit-bare") {
+			t.Errorf("%q runs in the synced worktree, should block naming fixit-bare: %v", c, d)
+		}
+	}
+	for _, c := range []string{
+		"bash -c 'cd ../bare && echo ok'; bun run typecheck",
+		"cd ../bare && cd && bun run typecheck", // bare cd: HOME, outside every checkout
+	} {
+		if d := guardDevboxWhenWorkspace(hookAt(bare2, c)); d != nil {
+			t.Errorf("%q runs outside the synced worktree, should pass:\n%s", c, d.Text())
+		}
+	}
+	// `cd -` is not tracked: the command may be back in the synced main clone.
+	if d := guardDevboxWhenWorkspace(hook("cd .worktrees/bare2 && cd - && bun run typecheck")); d == nil || !strings.Contains(d.Text(), "fixit-work-x") {
+		t.Errorf("cd - may return to the synced main clone, should block: %v", d)
+	}
 	// The rerun enters the destination checkout and folds bun's --cwd into its
 	// cd: devbox run starts at that checkout's root, where ../bare is wrong.
 	if err := os.MkdirAll(filepath.Join(nested, "apps"), 0o755); err != nil {
@@ -251,6 +276,8 @@ func TestCdsCertain(t *testing.T) {
 		"cd x; ":                        false, // the cd may have failed
 		"cd x || ":                      false,
 		"cd x | ":                       false,
+		"cd -P x && ":                   true,
+		"cd - && ":                      false, // not tracked
 		"(cd x && echo ok); ":           false, // its subshell closed
 		"(cd x && echo ok) && ":         false,
 		"cd $(pwd) && ":                 false,

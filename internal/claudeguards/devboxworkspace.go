@@ -170,32 +170,30 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 	if len(cfg.DevboxWhenWorkspace) == 0 {
 		return nil
 	}
-	hit, ok := devboxMatch(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxWhenWorkspace))
-	if !ok {
-		return nil
-	}
-	// Judged by the checkout the command RUNS in (after its cd / --cwd), never
-	// the session's: from the main clone, `(cd .worktrees/x && tsc)` is judged
-	// by .worktrees/x, which may have no workspace. Where that is open (see
-	// devboxMatch), any candidate with a workspace refuses. A directory outside
-	// every checkout has none; only an unknown hook cwd falls back to the
-	// config's checkout.
-	for _, run := range hit.runs {
-		root := checkoutRoot(run)
-		if run == "" {
-			root = cfg.root
-		}
-		ws := devboxWorkspaceFor(root)
-		if ws == "" {
-			continue
-		}
-		return deny("machine:devbox-workspace", fmt.Sprintf(`%s
+	// Every matching command is judged by the checkout it RUNS in (after its
+	// cd / --cwd), never the session's: from the main clone, `(cd
+	// .worktrees/x && tsc)` is judged by .worktrees/x, which may have no
+	// workspace. Where that is open (see devboxMatches), any candidate with a
+	// workspace refuses. A directory outside every checkout has none; only an
+	// unknown hook cwd falls back to the config's checkout.
+	for _, hit := range devboxMatches(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxWhenWorkspace)) {
+		for _, run := range hit.runs {
+			root := checkoutRoot(run)
+			if run == "" {
+				root = cfg.root
+			}
+			ws := devboxWorkspaceFor(root)
+			if ws == "" {
+				continue
+			}
+			return deny("machine:devbox-workspace", fmt.Sprintf(`%s
 
 runs on this Mac, and its checkout is synced to the Devbox workspace %s; this
 repo's guards.devboxWhenWorkspace routes it there:
     %s
 (drop --no-up when the command needs the app services). A checkout without a
 workspace may run the same command here; the registry is ~/.devbox/workspaces.`, hit.seg, ws, devboxRerun(hit, run, in.CWD, " --no-up")), devboxOnlyEscape)
+		}
 	}
 	return nil
 }

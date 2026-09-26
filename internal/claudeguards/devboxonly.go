@@ -28,36 +28,60 @@ const devboxOnlyEscape = "A hand test the user asked for on this Mac: CLAUDE_GUA
 type devboxHit struct {
 	seg  string   // the command, assignments and subshell stripped (shown, matched)
 	full string   // the same with its leading VAR=value assignments (rerun payload)
-	runs []string // every directory it may run in, the likeliest first (see devboxMatch)
+	runs []string // every directory it may run in, the likeliest first (see devboxMatches)
 }
 
-// devboxMatch returns the first local segment matching one of patterns and
-// the directories it may run in. When every `cd` before it provably applies
-// (cdsCertain: `(cd .worktrees/x && tsc)`, `echo; cd x && lint && tsc`) the one
-// tracked directory is the answer. Otherwise it is open where the command runs
-// - `(cd x && echo); tsc` runs in the session's checkout, `cd x || tsc` runs
-// where the cd failed - so every directory the command could be in is a
-// candidate: each `cd` may or may not have applied, and a relative one is
-// resolved against every directory possible at that point (capped at
-// maxDevboxCandidates). A bun `--cwd <dir>` on the segment moves each.
-func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
+// devboxMatches returns every local segment matching one of patterns, in
+// order, with the directories each may run in. When every `cd` before it
+// provably applies (cdsCertain: `(cd .worktrees/x && tsc)`, `echo; cd x &&
+// lint && tsc`) the one tracked directory is the answer. Otherwise it is open
+// where the command runs - `(cd x && echo); tsc` runs in the session's
+// checkout, `cd x || tsc` runs where the cd failed - so every directory the
+// command could be in is a candidate: each `cd` may or may not have applied,
+// and a relative one is resolved against every directory possible at that
+// point (capped at maxDevboxCandidates). A bun `--cwd <dir>` on the segment
+// moves each.
+func devboxMatches(cmd, cwd string, patterns []*regexp.Regexp) []devboxHit {
 	if len(patterns) == 0 {
-		return devboxHit{}, false
+		return nil
 	}
-	home, _ := os.UserHomeDir()
-	dir, possible := cwd, []string{cwd}
+	w := devboxWalk{patterns: patterns}
+	w.home, _ = os.UserHomeDir()
+	w.scan(cmd, cwd, []string{cwd}, true, 0)
+	return w.hits
+}
+
+// devboxWalk is one devboxMatches pass: the hits found so far.
+type devboxWalk struct {
+	home     string
+	patterns []*regexp.Regexp
+	hits     []devboxHit
+}
+
+// scan walks one shell level, starting in dir. certain is whether dir is
+// provably where the level starts. A runner's payload (`bash -c '…'`) is its
+// own level: it starts where its runner runs, and a cd inside it never moves
+// the commands after the runner.
+func (w *devboxWalk) scan(cmd, dir string, possible []string, certain bool, depth int) {
 	cursor := 0 // segments come in order: each is located after the previous one
-	for _, raw := range localSegments(cmd) {
+	for _, p := range shellSegments(cmd) {
+		raw := trimAssignments(trimSubshell(strings.Trim(p.text, " \t\r")))
+		if raw == "" || remoteRunners[commandWord(raw)] {
+			continue
+		}
 		text := strings.TrimSpace(trimAssignments(trimSubshell(raw)))
 		pos := -1
 		if at := strings.Index(cmd[cursor:], text); text != "" && at >= 0 {
 			pos = cursor + at
 			cursor = pos + len(text)
 		}
-		if f := shellFields(text); len(f) > 1 && f[0] == "cd" {
-			dir = resolveDir(f[1], dir, home)
+		if target, ok := cdTarget(shellFields(text)); ok {
+			if target == "-" {
+				continue // the previous directory: already possible, and cdsCertain gives up
+			}
+			dir = resolveDir(target, dir, w.home)
 			for _, d := range possible {
-				if next := resolveDir(f[1], d, home); !slices.Contains(possible, next) && len(possible) < maxDevboxCandidates {
+				if next := resolveDir(target, d, w.home); !slices.Contains(possible, next) && len(possible) < maxDevboxCandidates {
 					possible = append(possible, next)
 				}
 			}
@@ -66,31 +90,57 @@ func devboxMatch(cmd, cwd string, patterns []*regexp.Regexp) (devboxHit, bool) {
 		if textOnly(raw) || text == "" {
 			continue
 		}
-		for _, re := range patterns {
+		prefix, assigns := "", ""
+		if pos >= 0 {
+			prefix = cmd[:pos]
+			if m := assignmentTail.FindString(prefix); m != "" {
+				assigns, prefix = m, prefix[:len(prefix)-len(m)]
+			}
+		}
+		here := certain && pos >= 0 && cdsCertain(prefix)
+		for _, re := range w.patterns {
 			if !re.MatchString(text) && !re.MatchString(unwrapRunners(text)) {
 				continue
 			}
-			prefix, assigns := "", ""
-			if pos >= 0 {
-				prefix = cmd[:pos]
-				if m := assignmentTail.FindString(prefix); m != "" {
-					assigns, prefix = m, prefix[:len(prefix)-len(m)]
-				}
-			}
 			candidates := []string{dir}
-			if pos < 0 || !cdsCertain(prefix) {
+			if !here {
 				candidates = append(candidates, possible...)
 			}
 			hit := devboxHit{seg: text, full: assigns + text}
 			for _, c := range candidates {
-				if r := bunCwd(text, c, home); !slices.Contains(hit.runs, r) {
+				if r := bunCwd(text, c, w.home); !slices.Contains(hit.runs, r) {
 					hit.runs = append(hit.runs, r)
 				}
 			}
-			return hit, true
+			w.hits = append(w.hits, hit)
+			break
+		}
+		if depth < maxRunnerDepth {
+			for _, payload := range runnerPayloads(raw) {
+				w.scan(payload, dir, slices.Clone(possible), here, depth+1)
+			}
 		}
 	}
-	return devboxHit{}, false
+}
+
+// cdTarget is the directory a `cd` names: its operand after the builtin's
+// options (-L, -P, -e, -@) and an optional `--`, or ~ when it has none. ok is
+// false when fields are not a cd.
+func cdTarget(fields []string) (target string, ok bool) {
+	if len(fields) == 0 || fields[0] != "cd" {
+		return "", false
+	}
+	args := fields[1:]
+	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' && strings.Trim(args[0][1:], "LPe@") == "" {
+		args = args[1:]
+	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return "~", true
+	}
+	return args[0], true
 }
 
 // maxDevboxCandidates bounds the directories one command is judged in.
@@ -103,9 +153,9 @@ var assignmentTail = regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[
 // cdsCertain reports whether every `cd` in the text before a command provably
 // moved it: each cd is followed by `&&` (so the command runs only if the cd
 // succeeded) and sits in no subshell that closes before the command. `echo;
-// cd x && tsc` is certain; `cd x; tsc`, `cd x || tsc`, `(cd x && a); tsc` are
-// not. Quotes are respected; a command substitution or backquote is never
-// certain.
+// cd x && tsc` is certain; `cd x; tsc`, `cd x || tsc`, `(cd x && a); tsc` and
+// `cd -` (a destination the walk does not track) are not. Quotes are
+// respected; a command substitution or backquote is never certain.
 func cdsCertain(prefix string) bool {
 	depth := 0
 	var cdDepths []int
@@ -114,8 +164,8 @@ func cdsCertain(prefix string) bool {
 	endSegment := func(sep string) bool {
 		s := strings.TrimSpace(trimAssignments(seg.String()))
 		seg.Reset()
-		if f := strings.Fields(s); len(f) > 0 && f[0] == "cd" {
-			if sep != "&&" {
+		if target, ok := cdTarget(strings.Fields(s)); ok {
+			if sep != "&&" || target == "-" {
 				return false
 			}
 			cdDepths = append(cdDepths, depth)
@@ -249,10 +299,11 @@ func guardDevboxOnly(in *HookInput) *Denial {
 	if len(cfg.DevboxOnly) == 0 {
 		return nil
 	}
-	hit, ok := devboxMatch(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxOnly))
-	if !ok {
+	hits := devboxMatches(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxOnly))
+	if len(hits) == 0 {
 		return nil
 	}
+	hit := hits[0]
 	return deny("machine:devbox-only", fmt.Sprintf(`%s
 
 runs on this Mac; this repo's guards.devboxOnly routes it to the Devbox:
