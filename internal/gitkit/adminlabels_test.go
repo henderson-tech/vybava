@@ -40,7 +40,7 @@ func TestAdminLabelsRefusesBadArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	for _, argv := range [][]string{{}, {"--repo", "."}, {"abc"}, {"12", "13"}, {"12", "--bogus"}, {"12", "--repo", ""}, {"12", "--repo", ".", "--repo=."}} {
+	for _, argv := range [][]string{{}, {"--repo", "."}, {"12"}, {"abc"}, {"12", "13"}, {"12", "--bogus"}, {"12", "--repo", ""}, {"12", "--repo", ".", "--repo=."}} {
 		var stderr bytes.Buffer
 		if code := runAdminLabels(argv, &bytes.Buffer{}, &stderr); code == 0 {
 			t.Errorf("%v: exit 0, want a usage error", argv)

@@ -70,6 +70,10 @@ func TestParseFlags(t *testing.T) {
 	if err == nil || !regexp.MustCompile(`ONE argument with embedded spaces[\s\S]*does NOT word-split`).MatchString(err.Error()) {
 		t.Errorf("glued flags: %v", err)
 	}
+	// only the NAME is checked: an inline value may hold spaces
+	if o, err := parseFlags("create-pr", []string{"--title=Fix the bug", "--body=Two words"}); err != nil || o["title"] != "Fix the bug" || o["body"] != "Two words" {
+		t.Errorf("inline values with spaces = %v, %v", o, err)
+	}
 	// Refused, never dropped: each of these once did the wrong thing quietly.
 	for _, tc := range []struct {
 		sub  string
@@ -81,6 +85,8 @@ func TestParseFlags(t *testing.T) {
 		{"create-pr", []string{"--head", "b", "--base", "main", "--fill"}, "unknown argument --fill"},
 		{"reply", []string{"--owner", "o", "--repo", "r", "--pr", "5", "--commentId", "1", "--bdy", "x"}, "unknown argument --bdy"},
 		{"resolve-thread", []string{"--threadId", "RT", "--pr", "5"}, "unknown argument --pr"},
+		{"detect-workflows", []string{"--repo", "r"}, "unknown argument --repo"},
+		{"detect-workflows", []string{"stray"}, `unexpected argument "stray"`},
 	} {
 		_, err := parseFlags(tc.sub, tc.argv)
 		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "usage: vybava gitkit github-io "+tc.sub) {

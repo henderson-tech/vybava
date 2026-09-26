@@ -75,11 +75,15 @@ func planAdminLabels(present []string, runs []ghRun) (toAdd []string, toCancel [
 }
 
 func runAdminLabels(args []string, stdout, stderr io.Writer) int {
-	// A bare or empty --repo must never fall through to the cwd: this verb
-	// labels a PR and cancels its runs. parse refuses both, and a second PR.
+	// An absent, bare or empty --repo must never fall through to the cwd or
+	// GIT_SKILL_REPO: this verb labels a PR and cancels its runs. parse
+	// refuses bare and empty, and a second PR; absent is refused here.
 	flags, pos, err := adminLabelsArgs.parse("admin-labels", args)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if _, ok := flags["repo"]; !ok {
+		return fail(stderr, fmt.Errorf("admin-labels: --repo <path> is required\n%s", adminLabelsUsage))
 	}
 	prArg := ""
 	if len(pos) == 1 {

@@ -208,16 +208,17 @@ var whitespace = regexp.MustCompile(`\s`)
 // consumer); anything else is refused. --body-file is resolved into --body
 // before the build, so the build never sees it.
 var githubIOArgs = map[string]verbArgs{
-	"find-run":       {values: []string{"sha"}},
-	"watch-run":      {values: []string{"runId"}},
-	"failed-logs":    {values: []string{"runId"}},
-	"rerun-failed":   {values: []string{"runId"}},
-	"reply":          {values: []string{"owner", "repo", "pr", "commentId", "body", "body-file"}},
-	"resolve-thread": {values: []string{"threadId"}},
-	"comment":        {values: []string{"owner", "repo", "pr", "body", "body-file"}},
-	"react":          {values: []string{"owner", "repo", "commentId", "content"}},
-	"review":         {values: []string{"owner", "repo", "pr", "event", "body", "body-file"}},
-	"create-pr":      {values: []string{"head", "base", "title", "body", "body-file", "label"}, bools: []string{"draft"}},
+	"detect-workflows": {},
+	"find-run":         {values: []string{"sha"}},
+	"watch-run":        {values: []string{"runId"}},
+	"failed-logs":      {values: []string{"runId"}},
+	"rerun-failed":     {values: []string{"runId"}},
+	"reply":            {values: []string{"owner", "repo", "pr", "commentId", "body", "body-file"}},
+	"resolve-thread":   {values: []string{"threadId"}},
+	"comment":          {values: []string{"owner", "repo", "pr", "body", "body-file"}},
+	"react":            {values: []string{"owner", "repo", "commentId", "content"}},
+	"review":           {values: []string{"owner", "repo", "pr", "event", "body", "body-file"}},
+	"create-pr":        {values: []string{"head", "base", "title", "body", "body-file", "label"}, bools: []string{"draft"}},
 }
 
 // githubIOUsageFor is the usage line of one subcommand, for its refusals.
@@ -235,11 +236,13 @@ func githubIOUsageFor(sub string) string {
 // dropped (a dropped --repo sent a PR to the cwd's repository, a dropped
 // --body-file gave another the commit log as its body).
 func parseFlags(sub string, argv []string) (flags, error) {
-	// Whitespace in a flag means several flags arrived glued into ONE argv
-	// token — zsh not word-splitting an unquoted $VAR. Name the real cause
-	// instead of a baffling `unknown argument` or `missing required field`.
+	// Whitespace in a flag NAME means several flags arrived glued into ONE
+	// argv token — zsh not word-splitting an unquoted $VAR. Name the real
+	// cause instead of a baffling `unknown argument` or `missing required
+	// field`. An inline value (`--title=Fix the bug`) may hold spaces.
 	for _, a := range argv {
-		if key, ok := strings.CutPrefix(a, "--"); ok && whitespace.MatchString(key) {
+		key, ok := strings.CutPrefix(a, "--")
+		if name, _, _ := strings.Cut(key, "="); ok && whitespace.MatchString(name) {
 			return nil, fmt.Errorf("flag arrived as ONE argument with embedded spaces: \"--%s\"\n"+
 				"  The harness shell is zsh, which does NOT word-split unquoted $VAR.\n"+
 				"  Pass the flags literally, or use an array:\n"+
@@ -294,6 +297,9 @@ func runGitHubIO(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, githubIOUsage)
 		return 0
 	case "detect-workflows":
+		if _, err := parseFlags(sub, rest); err != nil {
+			return fail(stderr, err)
+		}
 		cwd, err := syscall.Getwd()
 		if err != nil {
 			return fail(stderr, err)
