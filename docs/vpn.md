@@ -66,8 +66,14 @@ they report `Disconnected` for a tunnel that wg-quick carries. Status
 therefore checks, per tunnel:
 
 - the kernel route to the tunnel's DNS server (or first probe);
-- whether that interface is wg-quick's (`/var/run/wireguard/<utun>.sock` beside
-  `<name>.name`);
+- whether that interface is this tunnel's wg-quick utun, by wg-quick's own
+  `get_real_interface` rule: `/var/run/wireguard/<name>.name` and
+  `<utun>.sock` exist and were written within 2 s of each other, so a stale
+  marker never claims another tunnel's utun. wireguard-go writes the marker
+  root-only; the supervisor makes it world-readable after `up`, and a
+  readable marker must also name the routed utun. A foreign wg-quick run
+  keeps its marker unreadable, so two such tunnels started within the same
+  2 s cannot be told apart without root;
 - the launchd job holding `com.vybava.vpn.<name>`:
   - `persistent`: our plist;
   - `transient`: a `submit` job that is gone at reboot;

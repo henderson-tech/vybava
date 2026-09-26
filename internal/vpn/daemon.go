@@ -20,7 +20,8 @@ const (
 	LogDir    = "/var/log/vybava-vpn"
 	// runDir is wg-quick's macOS state: <name>.name holds the utun, <utun>.sock
 	// is wireguard-go's control socket. Both are root-only files in a
-	// world-listable dir, so existence is observable without root.
+	// world-listable dir, so their existence and mtimes are observable
+	// without root; the supervisor makes its marker readable.
 	runDir = "/var/run/wireguard"
 )
 
@@ -130,6 +131,8 @@ if ! wg-quick up "$conf"; then
 	exit 1
 fi
 iface=$(< "$marker")
+# wireguard-go writes the marker root-only; status compares it to the route
+/bin/chmod 0444 "$marker" || true
 echo "$(now) up on $iface"
 while [[ -S $run/$iface.sock ]] && ifconfig "$iface" >/dev/null 2>&1; do
 	sleep 5 &

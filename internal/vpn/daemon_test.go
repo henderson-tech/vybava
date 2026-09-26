@@ -158,6 +158,9 @@ esac`,
 					case <-time.After(20 * time.Millisecond):
 					}
 				}
+				if info, err := os.Stat(filepath.Join(run, "lovinka-admin.name")); err != nil || info.Mode().Perm() != 0o444 {
+					t.Fatalf("status must be able to read the marker once up: %v %v", info, err)
+				}
 				if c.then == "vanish" {
 					os.Remove(filepath.Join(fake, "alive"))
 				} else {

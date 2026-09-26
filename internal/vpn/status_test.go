@@ -3,28 +3,47 @@ package vpn
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"testing"
+	"time"
 )
+
+// file is one path on the fake Mac: its mtime in seconds, and its content
+// when readable ("" = root-only, as wireguard-go writes a marker).
+type file struct {
+	at   int64
+	body string
+}
 
 type fakeMac struct {
 	app    string
 	svc    Service
-	files  map[string]bool
+	files  map[string]file
 	route  string
 	dnsErr error
 }
 
 func (f fakeMac) AppState(context.Context, string) string          { return f.app }
 func (f fakeMac) Service(context.Context, string) (Service, error) { return f.svc, nil }
-func (f fakeMac) Exists(path string) bool                          { return f.files[path] }
-func (f fakeMac) RouteInterface(context.Context, string) string    { return f.route }
-func (f fakeMac) AskDNS(context.Context, string) error             { return f.dnsErr }
-func (f fakeMac) Dial(_ context.Context, addr string) error        { return nil }
+func (f fakeMac) Stat(path string) (time.Time, bool) {
+	file, ok := f.files[path]
+	return time.Unix(file.at, 0), ok
+}
+func (f fakeMac) ReadFile(path string) (string, error) {
+	if file, ok := f.files[path]; ok && file.body != "" {
+		return file.body, nil
+	}
+	return "", os.ErrPermission
+}
+func (f fakeMac) RouteInterface(context.Context, string) string { return f.route }
+func (f fakeMac) AskDNS(context.Context, string) error          { return f.dnsErr }
+func (f fakeMac) Dial(_ context.Context, addr string) error     { return nil }
 
 func TestInspectClassifiesByRouteNotByAppState(t *testing.T) {
-	wgUp := map[string]bool{"/var/run/wireguard/lovinka-admin.name": true, "/var/run/wireguard/utun11.sock": true}
-	installed := map[string]bool{"/var/run/wireguard/lovinka-admin.name": true, "/var/run/wireguard/utun11.sock": true, PlistPath("lovinka-admin"): true}
+	const marker, sock11, sock12 = "/var/run/wireguard/lovinka-admin.name", "/var/run/wireguard/utun11.sock", "/var/run/wireguard/utun12.sock"
+	wgUp := map[string]file{marker: {at: 1000}, sock11: {at: 1000}}
+	installed := map[string]file{marker: {at: 1000, body: "utun11\n"}, sock11: {at: 1001}, PlistPath("lovinka-admin"): {}}
 	cases := []struct {
 		name, state, summary string
 		mac                  fakeMac
@@ -52,6 +71,18 @@ func TestInspectClassifiesByRouteNotByAppState(t *testing.T) {
 			name:  "after a reboot: nothing up, 10.8.1.1 leaves via en0",
 			mac:   fakeMac{app: "Disconnected", route: "en0", dnsErr: errors.New("no answer within 2s")},
 			state: "down", summary: "down",
+			codes: []string{"VPN_DOWN"},
+		},
+		{
+			name:  "crossed tunnels: a stale marker, the route through another tunnel's utun",
+			mac:   fakeMac{app: "Disconnected", svc: Service{Loaded: true, Type: "Submitted", Running: true}, files: map[string]file{marker: {at: 1000}, sock11: {at: 1000}, sock12: {at: 5000}}, route: "utun12"},
+			state: "down", summary: "down: a wg-quick lovinka-admin marker exists, but its interface does not carry 10.8.1.1 (routed via utun12)",
+			codes: []string{"VPN_DOWN"},
+		},
+		{
+			name:  "crossed tunnels started together: the readable marker names another utun",
+			mac:   fakeMac{svc: Service{Loaded: true, Type: "LaunchDaemon", Path: PlistPath("lovinka-admin"), Running: true}, files: map[string]file{marker: {at: 1000, body: "utun11\n"}, sock11: {at: 1000}, sock12: {at: 1001}, PlistPath("lovinka-admin"): {}}, route: "utun12"},
+			state: "down", summary: "down: a wg-quick lovinka-admin marker exists, but its interface does not carry 10.8.1.1 (routed via utun12)",
 			codes: []string{"VPN_DOWN"},
 		},
 		{

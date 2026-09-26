@@ -24,7 +24,9 @@ type Machine interface {
 	AppState(ctx context.Context, name string) string
 	// Service is launchd's system-domain job holding label.
 	Service(ctx context.Context, label string) (Service, error)
-	Exists(path string) bool
+	// Stat is a file's mtime, false when it does not exist; it never reads it.
+	Stat(path string) (time.Time, bool)
+	ReadFile(path string) (string, error)
 	// RouteInterface is the interface the kernel routes host through.
 	RouteInterface(ctx context.Context, host string) string
 	// AskDNS returns nil when the server answers a query at all.
@@ -83,7 +85,8 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 	if err != nil {
 		return s, err
 	}
-	s.Daemon = Daemon{Kind: "none", Installed: m.Exists(PlistPath(name)), Running: svc.Running, PID: svc.PID}
+	_, installed := m.Stat(PlistPath(name))
+	s.Daemon = Daemon{Kind: "none", Installed: installed, Running: svc.Running, PID: svc.PID}
 	switch {
 	case !svc.Loaded:
 	case svc.Type == "Submitted":
@@ -99,8 +102,7 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 		host, _, _ = net.SplitHostPort(p.Probes[0])
 	}
 	route := m.RouteInterface(ctx, host)
-	marker := m.Exists(filepath.Join(runDir, name+".name"))
-	wg := marker && route != "" && m.Exists(filepath.Join(runDir, route+".sock"))
+	marker, wg := wgQuickOwns(m, name, route)
 
 	var wait sync.WaitGroup
 	check := func(c *Check, probe func(context.Context, string) error) {
@@ -143,7 +145,7 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 	carrier := map[string]string{"wg-quick": "wg-quick (" + s.Interface + ")", "app": "WireGuard.app"}[s.Via]
 	switch {
 	case s.Via == "none" && marker:
-		s.State, s.Summary = "down", "down: a wg-quick "+name+" interface exists, but "+host+" routes via "+orUnknown(route)
+		s.State, s.Summary = "down", "down: a wg-quick "+name+" marker exists, but its interface does not carry "+host+" (routed via "+orUnknown(route)+")"
 	case s.Via == "none":
 		s.State, s.Summary = "down", "down"
 	case len(failed) > 0:
@@ -152,6 +154,28 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 		s.State, s.Summary = "up", "up via "+carrier
 	}
 	return s, nil
+}
+
+// wgQuickOwns applies wg-quick's own get_real_interface rule to the routed
+// interface: <name>.name and <iface>.sock exist and were written within 2 s
+// of each other — one wireguard-go start writes both, so a marker older or
+// newer than the socket is another run's. wireguard-go writes the marker
+// root-only; the vybava supervisor makes it world-readable, and a readable
+// marker must also name iface.
+func wgQuickOwns(m Machine, name, iface string) (marker, owns bool) {
+	path := filepath.Join(runDir, name+".name")
+	written, marker := m.Stat(path)
+	if !marker || iface == "" {
+		return marker, false
+	}
+	sock, ok := m.Stat(filepath.Join(runDir, iface+".sock"))
+	if d := sock.Unix() - written.Unix(); !ok || d >= 2 || d <= -2 {
+		return true, false
+	}
+	if recorded, err := m.ReadFile(path); err == nil && strings.TrimSpace(recorded) != iface {
+		return true, false
+	}
+	return true, true
 }
 
 func orUnknown(s string) string {
@@ -264,9 +288,17 @@ func ParseService(out string) Service {
 	return s
 }
 
-func (System) Exists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
+func (System) Stat(path string) (time.Time, bool) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+func (System) ReadFile(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	return string(b), err
 }
 
 func (System) RouteInterface(ctx context.Context, host string) string {
