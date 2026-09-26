@@ -31,6 +31,10 @@ func TestSummarizeChecks(t *testing.T) {
 		`[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SKIPPED"},{"state":"SUCCESS"}]`: "SUCCESS",
 		`[{"state":"PENDING"}]`: "PENDING", `[{"state":"EXPECTED"}]`: "PENDING",
 		`[{"state":"FAILURE"}]`: "FAILURE", `[{"state":"ERROR"}]`: "FAILURE",
+		// A run cancelled by its replacement's concurrency group no longer
+		// counts; the newest run of each check decides (voke-platform#178).
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "SUCCESS",
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "FAILURE",
 	} {
 		if got := checks(t, rollup); got != want {
 			t.Errorf("summarizeChecks(%s) = %s, want %s", rollup, got, want)
