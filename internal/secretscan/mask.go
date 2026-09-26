@@ -72,9 +72,9 @@ var (
 
 // Shape renders a finding for a human without its value: a few bytes of
 // context either side, the span as ‹detector›, every other word of 3+ as <w>
-// unless it is a SCREAMING_SNAKE variable name, control characters
-// flattened. The name a leak sits under (MAIL_PASSWORD=) stays readable;
-// nothing that could be a value does.
+// unless it is a SCREAMING_SNAKE name in name position (NAME=, "NAME":),
+// control characters flattened. The name a leak sits under (MAIL_PASSWORD=)
+// stays readable; nothing that could be a value does.
 func Shape(text string, s Span) string {
 	const before, after = 24, 12
 	from, to := max(0, s.Start-before), min(len(text), s.End+after)
@@ -93,7 +93,11 @@ func Shape(text string, s Span) string {
 		var b strings.Builder
 		last := 0
 		for _, w := range reWord.FindAllStringIndex(v, -1) {
-			if w[1]-w[0] >= 3 && !reVarName.MatchString(v[w[0]:w[1]]) {
+			// A name only in name position — `=` or `:` next, through a
+			// closing quote — else it is an uppercase value.
+			named := reVarName.MatchString(v[w[0]:w[1]]) &&
+				strings.IndexAny(strings.TrimLeft(v[w[1]:], `"' `), "=:") == 0
+			if w[1]-w[0] >= 3 && !named {
 				b.WriteString(v[last:w[0]])
 				b.WriteString("<w>")
 				last = w[1]

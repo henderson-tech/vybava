@@ -194,6 +194,11 @@ func TestShapeMasksEveryNeighbourButVariableNames(t *testing.T) {
 	if !strings.Contains(shape, "MAIL_PASSWORD=") {
 		t.Errorf("Shape = %q lost the variable name", shape)
 	}
+	// SCREAMING_SNAKE in value position is a value, not a name.
+	text = "MAIL_PASSWORD=knownpart TOP_SECRET"
+	if shape = Shape(text, Find(text, All, &k)[0]); strings.Contains(shape, "TOP_SECRET") {
+		t.Errorf("Shape = %q shows an uppercase value", shape)
+	}
 }
 
 func TestAddDotenvReportsALineItCannotRead(t *testing.T) {
