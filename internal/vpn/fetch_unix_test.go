@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -68,5 +70,66 @@ func TestFetchTakesTheProfileThroughThePipeAndNeverHangs(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(plain); len(b) != 0 {
 		t.Fatal("the profile reached a regular file")
+	}
+}
+
+// Deliver's FIFO argument comes from whoever asked Onyx to run `_apply`: it
+// opens nothing but a real FIFO with a reader, and never blocks on one.
+func TestDeliverOpensOnlyAFIFOItsReaderHolds(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, "admin", Profile{Ref: "onyx://WireGuard/x/Configuration", Probes: []string{"10.8.1.1:443"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(SecretEnv, fixture())
+	grace := pipeGrace
+	pipeGrace = 100 * time.Millisecond
+	t.Cleanup(func() { pipeGrace = grace })
+	deliver := func(path string) error {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- Deliver(dir, "admin", path) }()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(10 * time.Second):
+			t.Fatalf("Deliver blocked on %s", path)
+			return nil
+		}
+	}
+
+	lonely := filepath.Join(dir, "lonely.fifo")
+	if err := syscall.Mkfifo(lonely, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(lonely); err == nil {
+		t.Fatal("a pipe nobody reads must fail, not swallow the profile")
+	}
+
+	fifo, link := filepath.Join(dir, "real.fifo"), filepath.Join(dir, "link.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fifo, link); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan []byte, 1)
+	go func() {
+		f, err := os.Open(fifo)
+		if err != nil {
+			got <- nil
+			return
+		}
+		defer f.Close()
+		b, _ := io.ReadAll(f)
+		got <- b
+	}()
+	if err := deliver(link); err == nil {
+		t.Fatal("a symlink must be refused, even to a FIFO")
+	}
+	if fd, err := syscall.Open(fifo, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		syscall.Close(fd) // release the reader
+	}
+	if b := <-got; len(b) != 0 {
+		t.Fatal("the profile went through a symlink")
 	}
 }

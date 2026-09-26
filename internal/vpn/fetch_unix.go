@@ -68,3 +68,36 @@ func Fetch(ctx context.Context, exe, dir, name string, p Profile) (string, error
 	}
 	return string(r.b), nil
 }
+
+// pipeGrace is how long a readerless pipe gets to gain its reader: Fetch
+// opens its end concurrently with asking Onyx.
+var pipeGrace = 5 * time.Second
+
+// openPipe opens path for writing only when it is a FIFO whose reader holds
+// it open: a symlink, regular file or device is refused before any open, and
+// a pipe nobody reads fails after pipeGrace instead of blocking forever.
+func openPipe(path string) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode().Type() != os.ModeNamedPipe {
+		return nil, errPipeOnly
+	}
+	deadline := time.Now().Add(pipeGrace)
+	for {
+		fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if err == nil {
+			f := os.NewFile(uintptr(fd), path)
+			if after, err := f.Stat(); err != nil || !os.SameFile(before, after) {
+				f.Close()
+				return nil, errPipeOnly
+			}
+			return f, nil
+		}
+		if (err != syscall.ENXIO && err != syscall.EINTR) || time.Now().After(deadline) {
+			return nil, fmt.Errorf("open the installer's pipe: %w", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

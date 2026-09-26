@@ -37,6 +37,8 @@ func ApplyArgv(exe, name, dir, fifo string) []string {
 	return []string{exe, "vpn", "_apply", name, dir, fifo}
 }
 
+var errPipeOnly = errors.New("refusing to write the profile anywhere but the installer's pipe")
+
 // Deliver is the Onyx-injected child: it validates the injected profile and
 // writes it into the parent's FIFO, refusing any other kind of file.
 func Deliver(dir, name, fifo string) error {
@@ -49,18 +51,11 @@ func Deliver(dir, name, fifo string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+	f, err := openPipe(fifo)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeNamedPipe == 0 {
-		return errors.New("refusing to write the profile anywhere but the installer's pipe")
-	}
 	_, err = f.WriteString(config)
 	return err
 }

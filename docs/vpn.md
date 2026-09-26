@@ -34,7 +34,8 @@ key. On an existing registration, `add` changes only the flags you pass.
    let any Onyx MCP client read the private key without a prompt. The child
    rejects everything wg-quick would execute (hooks, `SaveConfig`, `Table`),
    drops the `excludePeers`, and writes the result into a private FIFO. It
-   refuses to write to any regular file.
+   opens nothing else: a symlink, regular file or device is refused before
+   any open, and a pipe with no reader fails within 5 s instead of blocking.
 2. The CLI runs each privileged step as `sudo <argv>` from your terminal
    (`--dry-run` prints them). It writes three root-owned files:
    - `/usr/local/etc/vybava/wireguard/<name>.conf`: 0600, in a 0700
