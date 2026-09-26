@@ -1,9 +1,9 @@
 package gitkit
 
 import (
+	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 )
@@ -31,16 +31,25 @@ type BeforeReview struct {
 	IsWorktree              bool    `json:"isWorktree"`
 }
 
+// beforeReviewArgs: --pr fills the hook's {pr} token; there are no
+// positionals (the create path quiesces before a PR exists).
+var beforeReviewArgs = verbArgs{values: []string{"pr", "repo"}, usage: "usage: vybava gitkit before-review [--pr <N>] [--repo <abs>]"}
+
 func runBeforeReview(args []string, stdout, stderr io.Writer) int {
-	pr := 0
-	if i := slices.Index(args, "--pr"); i != -1 {
-		next := ""
-		if i+1 < len(args) {
-			next = args[i+1]
-		}
-		pr, _ = jsParseInt(next)
+	flags, _, err := beforeReviewArgs.parse("before-review", args)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	root, err := repoRoot(args)
+	pr := 0
+	if raw, given := flags["pr"]; given {
+		// A bad --pr used to run the hook against PR 0; refuse it instead.
+		n, ok := positiveInt(raw)
+		if !ok {
+			return fail(stderr, fmt.Errorf("before-review: --pr needs a PR number, got %q\n%s", raw, beforeReviewArgs.usage))
+		}
+		pr = n
+	}
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

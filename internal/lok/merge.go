@@ -31,11 +31,14 @@ const (
 
 // Clash is one key both sides changed to different values (or one side
 // deleted while the other changed it). Values are compact JSON; "" = absent.
+// Key is the canonical key of the catalog's style (pastes into `lok set`);
+// Path is its raw segments.
 type Clash struct {
-	Key    string `json:"key"`
-	Base   string `json:"base"`
-	Ours   string `json:"ours"`
-	Theirs string `json:"theirs"`
+	Key    string   `json:"key"`
+	Path   []string `json:"path"`
+	Base   string   `json:"base"`
+	Ours   string   `json:"ours"`
+	Theirs string   `json:"theirs"`
 }
 
 // ErrNotCanonical — theirs does not round-trip byte-for-byte through lok's
@@ -50,7 +53,8 @@ var ErrDuplicateKey = errors.New("duplicate key")
 // MergeCatalog merges three versions of one catalog file. An empty base is
 // an empty catalog (git passes an empty file when both sides added it).
 // With PreferNone and clashes present, Data is nil: the file is a conflict.
-func MergeCatalog(base, ours, theirs []byte, prefer Prefer) (data []byte, clashes []Clash, err error) {
+// The style only labels keys (clashes, duplicates); the merge is structural.
+func MergeCatalog(style Style, base, ours, theirs []byte, prefer Prefer) (data []byte, clashes []Clash, err error) {
 	parse := func(side string, b []byte) (*Object, error) {
 		if len(bytes.TrimSpace(b)) == 0 {
 			return &Object{}, nil
@@ -62,8 +66,8 @@ func MergeCatalog(base, ours, theirs []byte, prefer Prefer) (data []byte, clashe
 		// A key merge over duplicates would see only the first copy (Get)
 		// while writing both back; the earlier merge that made them is the
 		// conflict to settle first.
-		if dup := duplicateKey(o, ""); dup != "" {
-			return nil, fmt.Errorf("%s: %w %q", side, ErrDuplicateKey, dup)
+		if dup := duplicateKey(o, nil); dup != nil {
+			return nil, fmt.Errorf("%s: %w %s", side, ErrDuplicateKey, quoteKey(FormatKey(style, dup)))
 		}
 		return o, nil
 	}
@@ -90,7 +94,10 @@ func MergeCatalog(base, ours, theirs []byte, prefer Prefer) (data []byte, clashe
 	if len(theirs) > 0 && !bytes.Equal(render(t), theirs) {
 		return nil, nil, ErrNotCanonical
 	}
-	merged := mergeObjects("", b, o, t, prefer, &clashes)
+	merged := mergeObjects(nil, b, o, t, prefer, &clashes)
+	for i := range clashes {
+		clashes[i].Key = FormatKey(style, clashes[i].Path)
+	}
 	if len(clashes) > 0 && prefer == PreferNone {
 		return nil, clashes, nil
 	}
@@ -98,15 +105,16 @@ func MergeCatalog(base, ours, theirs []byte, prefer Prefer) (data []byte, clashe
 }
 
 // mergeObjects merges one object level; base may be nil (absent).
-func mergeObjects(path string, base, ours, theirs *Object, prefer Prefer, clashes *[]Clash) *Object {
+func mergeObjects(path []string, base, ours, theirs *Object, prefer Prefer, clashes *[]Clash) *Object {
 	if base == nil {
 		base = &Object{}
 	}
+	at := func(key string) []string { return append(path[:len(path):len(path)], key) }
 	out := &Object{}
 	for _, e := range theirs.Entries {
 		bv, bok := base.Get(e.Key)
 		ov, ook := ours.Get(e.Key)
-		if v, keep := mergeValue(joinPath(path, e.Key), bv, bok, ov, ook, e.Value, true, prefer, clashes); keep {
+		if v, keep := mergeValue(at(e.Key), bv, bok, ov, ook, e.Value, true, prefer, clashes); keep {
 			out.Entries = append(out.Entries, Entry{Key: e.Key, Value: v})
 		}
 	}
@@ -115,7 +123,7 @@ func mergeObjects(path string, base, ours, theirs *Object, prefer Prefer, clashe
 			continue
 		}
 		bv, bok := base.Get(e.Key)
-		if v, keep := mergeValue(joinPath(path, e.Key), bv, bok, e.Value, true, nil, false, prefer, clashes); keep {
+		if v, keep := mergeValue(at(e.Key), bv, bok, e.Value, true, nil, false, prefer, clashes); keep {
 			out.Set(e.Key, v)
 		}
 	}
@@ -124,7 +132,7 @@ func mergeObjects(path string, base, ours, theirs *Object, prefer Prefer, clashe
 
 // mergeValue decides one key: equal sides agree, an unchanged side yields to
 // the changed one, two objects recurse, anything else is a clash.
-func mergeValue(path string, b any, bok bool, o any, ook bool, t any, tok bool, prefer Prefer, clashes *[]Clash) (any, bool) {
+func mergeValue(path []string, b any, bok bool, o any, ook bool, t any, tok bool, prefer Prefer, clashes *[]Clash) (any, bool) {
 	same := func(x any, xok bool, y any, yok bool) bool {
 		return xok == yok && (!xok || equalValue(x, y))
 	}
@@ -145,7 +153,7 @@ func mergeValue(path string, b any, bok bool, o any, ook bool, t any, tok bool, 
 		}
 		return mergeObjects(path, bo, oo, to, prefer, clashes), true
 	}
-	*clashes = append(*clashes, Clash{Key: path, Base: compact(b, bok), Ours: compact(o, ook), Theirs: compact(t, tok)})
+	*clashes = append(*clashes, Clash{Path: path, Base: compact(b, bok), Ours: compact(o, ook), Theirs: compact(t, tok)})
 	if prefer == PreferTheirs {
 		return t, tok
 	}
@@ -199,20 +207,21 @@ func compact(v any, ok bool) string {
 	return out.String()
 }
 
-// duplicateKey returns the dotted path of the first key an object level
-// holds twice, "" when every level is unique.
-func duplicateKey(o *Object, path string) string {
+// duplicateKey returns the path of the first key an object level holds
+// twice, nil when every level is unique.
+func duplicateKey(o *Object, path []string) []string {
 	seen := map[string]bool{}
 	for _, e := range o.Entries {
+		at := append(path[:len(path):len(path)], e.Key)
 		if seen[e.Key] {
-			return joinPath(path, e.Key)
+			return at
 		}
 		seen[e.Key] = true
 		if child, ok := e.Value.(*Object); ok {
-			if dup := duplicateKey(child, joinPath(path, e.Key)); dup != "" {
+			if dup := duplicateKey(child, at); dup != nil {
 				return dup
 			}
 		}
 	}
-	return ""
+	return nil
 }

@@ -52,9 +52,40 @@ func resolveDefaultBranch(cfg gitConfig, githubDefault string) string {
 // checkNode is one statusCheckRollup entry: a CheckRun (status/conclusion)
 // or a commit StatusContext (state only).
 type checkNode struct {
-	State      *string `json:"state"`
-	Conclusion *string `json:"conclusion"`
-	Status     *string `json:"status"`
+	State        *string `json:"state"`
+	Conclusion   *string `json:"conclusion"`
+	Status       *string `json:"status"`
+	Name         string  `json:"name"`
+	WorkflowName string  `json:"workflowName"`
+	Context      string  `json:"context"`
+	StartedAt    string  `json:"startedAt"`
+}
+
+// latestChecks keeps the newest run of each named check. The rollup lists a
+// run the next push or a label-triggered rerun superseded (cancelled by the
+// workflow's concurrency group) beside its replacement; GitHub's own rollup
+// state ignores it, so counting it would hold a green PR red.
+func latestChecks(rollup []checkNode) []checkNode {
+	latest := map[string]int{}
+	var out []checkNode
+	for _, n := range rollup {
+		key := n.WorkflowName + "/" + n.Name + "/" + n.Context
+		if key == "//" {
+			out = append(out, n)
+			continue
+		}
+		if i, ok := latest[key]; ok {
+			// A queued run has no startedAt yet and is always the newest;
+			// otherwise RFC 3339 UTC compares as a string.
+			if old := out[i].StartedAt; old != "" && (n.StartedAt == "" || n.StartedAt > old) {
+				out[i] = n
+			}
+			continue
+		}
+		latest[key] = len(out)
+		out = append(out, n)
+	}
+	return out
 }
 
 func upper(s *string) string {
@@ -70,7 +101,7 @@ func summarizeChecks(rollup []checkNode) string {
 		return "NONE"
 	}
 	pending := false
-	for _, n := range rollup {
+	for _, n := range latestChecks(rollup) {
 		// A StatusContext (e.g. a review bot's "Review completed") has no
 		// CheckRun lifecycle: its state IS the terminal result. Through the
 		// CheckRun logic a green one (state=SUCCESS ≠ COMPLETED) reads PENDING.
@@ -774,15 +805,24 @@ func rawString(m json.RawMessage) string {
 	return s
 }
 
+// mergePrecheckArgs: the PR (anything `gh pr view` takes; none = this
+// checkout's branch) and the repo anchor. The first bare token used to be the
+// PR, so `--repo <path> 104` read the path as the PR.
+var mergePrecheckArgs = verbArgs{values: []string{"repo"}, positionals: 1,
+	usage: "usage: vybava gitkit merge-precheck [<pr>] [--repo <path>]"}
+
 func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
-	prArg := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "--") {
-			prArg = a
-			break
-		}
+	flags, pos, err := mergePrecheckArgs.parse("merge-precheck", args)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	root, err := repoRoot(args)
+	prArg := ""
+	if len(pos) == 1 {
+		prArg = pos[0]
+	}
+	// --repo=<v>, never --repo <v>: an empty value must fail resolution,
+	// not fall back to the cwd's repository.
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

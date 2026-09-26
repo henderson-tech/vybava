@@ -68,6 +68,10 @@ guards: {
   // it runs through `devbox run -- '<cmd>'` (machine:devbox-only). A hand
   // test on this Mac sets CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1.
   devboxOnly: ['^bun run (dev|run):(api|web|admin)\\b', '^bun run test(:|$)'],
+  // Same matching, refused only in a checkout that has a Devbox workspace
+  // (a `sync:` path under ~/.devbox/workspaces; machine:devbox-workspace).
+  // A bare worktree runs these on the Mac.
+  devboxWhenWorkspace: ['^bun run typecheck(\\s|$)', '^(bunx )?tsc(\\s|$)'],
   // Most booted simulators (machine:sim-cap, default 2) and Metro/next/API
   // dev servers (machine:dev-server-cap, default 3) this Mac may hold before
   // another start is refused. Escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1.

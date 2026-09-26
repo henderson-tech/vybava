@@ -67,6 +67,7 @@ var Rules = []Rule{
 	{"e2e:screencapture", "e2e", eventBash, "screencapture inside /e2e; use snap", escapeNone},
 	{"machine:dev-server-cap", "machine", eventBash, "a Metro/next/API dev server start while guards.devServerCap already run", escapeMachineCap},
 	{"machine:devbox-only", "machine", eventBash, "a command a repo's guards.devboxOnly routes to the Devbox ran locally", escapeLocalStack},
+	{"machine:devbox-workspace", "machine", eventBash, "a command a repo's guards.devboxWhenWorkspace routes to the Devbox ran locally in a checkout that has a workspace", escapeLocalStack},
 	{"machine:sim-cap", "machine", eventBash, "a simulator boot while guards.simCap simulators are already booted", escapeMachineCap},
 	{"machine:test-worker-cap", "machine", eventBash, "playwright/vitest/jest on this Mac with no worker cap or one above guards.testWorkerCap", escapeWorkers},
 	{"plugincache:package-install", "plugincache", eventBash, "a package install targeting ~/.claude/plugins/cache", escapeNone},

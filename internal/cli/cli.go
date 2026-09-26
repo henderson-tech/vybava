@@ -122,6 +122,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "redact" {
 		return rt.redactApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "tsgate" {
+		return rt.tsgateApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "handoffs" {
 		return rt.handoffsApplet(), nil
 	}
@@ -200,6 +203,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.pluginGCCommand("plugin-gc"),
 		rt.skipCICommand("skipci"),
 		rt.redactCommand("redact"),
+		rt.tsgateCommand("tsgate"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
 		rt.plaudCommand("plaud"),

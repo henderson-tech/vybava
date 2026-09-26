@@ -14,14 +14,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 	"unicode/utf16"
 )
 
 // Verb is a script ported to Go: it receives the arguments after the verb
 // and the process's stdio, and returns the exit code the script would have.
-// A native verb keeps its TypeScript twin's argv grammar, stdout, stderr
-// notes and exit codes exactly — skills cannot tell which one ran.
+// A native verb keeps its TypeScript twin's stdout, stderr notes and exit
+// codes for every documented invocation; its argv is declared (verbArgs) and
+// anything else is refused, where the twin silently ignored it.
 type Verb func(args []string, stdout, stderr io.Writer) int
 
 // native is the registry of ported verbs. A verb listed here runs in-process;
@@ -199,19 +199,6 @@ func positiveInt(s string) (int, bool) {
 		return 0, false
 	}
 	return int(n), true
-}
-
-var jsIntPrefix = regexp.MustCompile(`^[+-]?\d+`)
-
-// jsParseInt is Number.parseInt(s, 10): leading whitespace skipped, the
-// longest signed digit prefix parsed; ok is false where it returns NaN.
-func jsParseInt(s string) (int, bool) {
-	m := jsIntPrefix.FindString(strings.TrimLeftFunc(s, unicode.IsSpace))
-	if m == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(m)
-	return n, err == nil
 }
 
 // jsString is free text (a comment body, a title) encoded exactly as

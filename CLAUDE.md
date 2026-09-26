@@ -127,9 +127,11 @@ when git's line merge is clean (it keeps duplicate keys); a migration the base
 has is never renamed. Docs: `docs/merge-assist.md`.
 
 `internal/gitkit` is the git family's deterministic layer: skills call
-`vybava gitkit <script>`, never a file path; a verb's argv, stdout (JSON key
+`vybava gitkit <script>`, never a file path; a verb's stdout (JSON key
 order), stderr and exit code are the contract, byte-identical to the Node
-scripts it replaced. Shell out, emit JSON and parse numbers only through
+scripts it replaced for every documented invocation, and its argv is declared
+in a `verbArgs` (`args.go`) that refuses anything else - never a hand scan of
+argv that ignores what it does not know. Shell out, emit JSON and parse numbers only through
 `native.go`'s Node-compatible helpers (`execFile`, `writeJSON`, `jsString`,
 `jsNumber`) — `docs/gitkit.md`. The git-family skills are canonical HERE; a
 personal `~/.claude` copy is a symlink, never a fork.

@@ -1,12 +1,46 @@
 package gitkit
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+// A pinned owner/name needs no checkout: every poll names owner and repo.
+// Started outside any git repository the watch used to fail repository
+// resolution on every poll and never exit.
+func TestPREventsPinnedRepoRunsOutsideGit(t *testing.T) {
+	bin := t.TempDir()
+	shim := `#!/bin/sh
+case "$*" in
+  "api graphql"*) echo '{"data":{"viewer":{"login":"me"},"repository":{"pullRequest":{"state":"MERGED","commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"latestReviews":{"nodes":[]},"headRefOid":"abc","mergeable":"MERGEABLE","isDraft":false,"comments":{"nodes":[]}}}}}' ;;
+  *) echo "unexpected: gh $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_SKILL_REPO", "")
+	t.Chdir(t.TempDir()) // not inside any git checkout
+	var stdout, stderr bytes.Buffer
+	polls := 0
+	orig := sleep
+	sleep = func(time.Duration) {
+		if polls++; polls > 2 {
+			t.Fatalf("pr-events kept retrying outside git:\n%s", stderr.String())
+		}
+	}
+	t.Cleanup(func() { sleep = orig })
+	if code := runPREvents([]string{"7", "--repo", "acme/widgets"}, &stdout, &stderr); code != 0 || strings.TrimSpace(stdout.String()) != "merged" {
+		t.Fatalf("exit %d, stdout %q, stderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}
 
 func reviewsOf(pairs ...string) *reviewStates {
 	r := &reviewStates{}
@@ -109,22 +143,50 @@ func TestShapeSnapshot(t *testing.T) {
 }
 
 func TestPollInterval(t *testing.T) {
-	for args, want := range map[string]time.Duration{
-		"":                     30 * time.Second,
-		"--every-seconds 60":   60 * time.Second,
-		"--every-seconds 5":    30 * time.Second, // 30 s floor
-		"--every-seconds abc":  30 * time.Second, // never a millisecond spin
-		"--every-seconds 1e12": 30 * time.Second,
+	for value, want := range map[string]time.Duration{
+		"":     30 * time.Second,
+		"60":   60 * time.Second,
+		"5":    30 * time.Second, // 30 s floor
+		"abc":  30 * time.Second, // never a millisecond spin
+		"1e12": 30 * time.Second,
 	} {
-		if got := pollInterval(strings.Fields(args)); got != want {
-			t.Errorf("pollInterval(%q) = %s, want %s", args, got, want)
+		if got := pollInterval(value); got != want {
+			t.Errorf("pollInterval(%q) = %s, want %s", value, got, want)
+		}
+	}
+}
+
+// The PR is found wherever it sits (the hand scan watched PR #60 for
+// `--every-seconds 60 42`); anything pr-events does not take is refused
+// before a single gh call.
+func TestPREventsArgs(t *testing.T) {
+	for _, argv := range []string{
+		"42 --every-seconds 60 --repo /abs/repo", // prm SKILL.md, docs/gitkit.md
+		"--every-seconds 60 --repo /abs/repo 42",
+		"--repo=acme/app --every-seconds=60 42",
+		"--json 42 --every-seconds 60 --repo /abs/repo", // gitkit's persistent --json
+	} {
+		flags, pos, err := prEventsArgs.parse("pr-events", strings.Fields(argv))
+		if err != nil || !slices.Equal(pos, []string{"42"}) || flags["every-seconds"] != "60" || flags["repo"] == "" {
+			t.Errorf("%q: %v %v %v", argv, flags, pos, err)
+		}
+	}
+	for argv, want := range map[string]string{
+		"42 --every 60": "unknown argument --every",
+		"42 43":         `unexpected argument "43"`,
+		"--repo= 42":    "--repo needs a value", // never the cwd's repository
+		"42 --help":     "unknown argument --help",
+	} {
+		var stderr strings.Builder
+		if code := runPREvents(strings.Fields(argv), &strings.Builder{}, &stderr); code != 1 || !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), prEventsArgs.usage) {
+			t.Errorf("%q: %d %q, want %q + usage", argv, code, stderr.String(), want)
 		}
 	}
 }
 
 func TestPREventsUsage(t *testing.T) {
 	var stderr strings.Builder
-	if code := runPREvents([]string{"--repo=/nowhere"}, &strings.Builder{}, &stderr); code != 1 || !strings.HasPrefix(stderr.String(), "error: usage: pr-events.ts <pr>") {
+	if code := runPREvents([]string{"--repo=/nowhere"}, &strings.Builder{}, &stderr); code != 1 || !strings.HasPrefix(stderr.String(), "error: usage: vybava gitkit pr-events <pr>") {
 		t.Errorf("usage: %d %q", code, stderr.String())
 	}
 }

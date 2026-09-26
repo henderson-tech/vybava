@@ -23,6 +23,9 @@ type Config struct {
 	// DevboxOnly lists RE2 patterns; a local command segment matching one
 	// must run through `devbox run` (machine:devbox-only).
 	DevboxOnly []string `json:"devboxOnly,omitempty"`
+	// DevboxWhenWorkspace lists RE2 patterns matched the same way, refused
+	// only when the checkout has a Devbox workspace (machine:devbox-workspace).
+	DevboxWhenWorkspace []string `json:"devboxWhenWorkspace,omitempty"`
 	// SimCap is the most booted simulators this Mac may hold before a boot
 	// is refused (machine:sim-cap); DevServerCap the same for Metro/next/
 	// API dev servers (machine:dev-server-cap).
@@ -30,6 +33,7 @@ type Config struct {
 	DevServerCap int `json:"devServerCap,omitempty"`
 	root         string
 	lokFiles     []string // the lok section's catalog files, from the same load
+	unknownKeys  []string // guards keys newer than this binary, skipped
 }
 
 // defaultGuardConfig is what every rule reads when the repo sets nothing, or
@@ -53,13 +57,19 @@ func loadGuardConfig(cwd string) (Config, error) {
 	return result, err
 }
 
+// guardSection decodes the guards section. A key this binary does not know
+// (a config written for a newer claude-guards) is skipped and reported, never
+// a reason to drop the keys it does know: failing the whole section switched
+// every repo guard off, silently, on each machine still running an older build.
 func guardSection(cfg *vconfig.Config) (Config, error) {
 	result := defaultGuardConfig()
-	if err := cfg.Section("guards", &result); errors.Is(err, vconfig.ErrNoSection) {
+	unknown, err := cfg.SectionAllowUnknown("guards", &result)
+	if errors.Is(err, vconfig.ErrNoSection) {
 		return result, nil
 	} else if err != nil {
 		return defaultGuardConfig(), err
 	}
+	result.unknownKeys = unknown
 	result.root = cfg.Root
 	if result.MaxDumpLines <= 0 {
 		return defaultGuardConfig(), errors.New("guards.maxDumpLines must be positive")
@@ -73,9 +83,11 @@ func guardSection(cfg *vconfig.Config) (Config, error) {
 	if result.DevServerCap < 1 {
 		return defaultGuardConfig(), errors.New("guards.devServerCap must be at least 1")
 	}
-	for _, pattern := range result.DevboxOnly {
-		if _, err := regexp.Compile(pattern); err != nil {
-			return defaultGuardConfig(), fmt.Errorf("guards.devboxOnly %q: %w", pattern, err)
+	for name, patterns := range map[string][]string{"devboxOnly": result.DevboxOnly, "devboxWhenWorkspace": result.DevboxWhenWorkspace} {
+		for _, pattern := range patterns {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return defaultGuardConfig(), fmt.Errorf("guards.%s %q: %w", name, pattern, err)
+			}
 		}
 	}
 	for name, patterns := range map[string][]string{"noRead": result.NoRead, "appiumSessionDirs": result.AppiumSessionDirs} {
@@ -94,6 +106,9 @@ func guardConfig(cwd string) Config {
 	cfg, err := loadGuardConfig(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claude-guards: guards config unavailable; using defaults: %v\n", err)
+	}
+	for _, key := range cfg.unknownKeys {
+		fmt.Fprintf(os.Stderr, "claude-guards: guards.%s is unknown to this binary and ignored; every other guard still applies (update: vybava install claude-guards)\n", key)
 	}
 	return cfg
 }

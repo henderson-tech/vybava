@@ -39,13 +39,26 @@ func TestBeforeReviewResolvesHookForLinkedWorktree(t *testing.T) {
 	}
 }
 
-func TestJSParseInt(t *testing.T) {
-	for s, want := range map[string]int{"12": 12, " 7x": 7, "-3": -3} {
-		if got, ok := jsParseInt(s); !ok || got != want {
-			t.Errorf("jsParseInt(%q) = %d, %v", s, got, ok)
+// prm's shapes parse (ensure-pr.md passes --repo, round.md `[--pr <N>]` from
+// the worktree, merge.md a bare call); an unknown flag or a PR given as a
+// positional is refused, never dropped.
+func TestBeforeReviewArgs(t *testing.T) {
+	for _, argv := range [][]string{nil, {"--repo", "/r"}, {"--pr", "12"}, {"--pr=12", "--repo=/r"}} {
+		if _, _, err := beforeReviewArgs.parse("before-review", argv); err != nil {
+			t.Errorf("%q refused: %v", argv, err)
 		}
 	}
-	if _, ok := jsParseInt("x7"); ok {
-		t.Error("jsParseInt(x7) must be NaN")
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--repo", "/r", "--base", "main"}, "before-review: unknown argument --base"},
+		{[]string{"--repo", "/r", "12"}, `before-review: unexpected argument "12"`},
+		{[]string{"--pr", "abc"}, `before-review: --pr needs a PR number, got "abc"`},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runBeforeReview(tc.args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) || !strings.Contains(stderr.String(), beforeReviewArgs.usage) {
+			t.Errorf("%v → %d %q, want %q + usage", tc.args, code, stderr.String(), tc.want)
+		}
 	}
 }

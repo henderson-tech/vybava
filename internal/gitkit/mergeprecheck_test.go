@@ -31,6 +31,11 @@ func TestSummarizeChecks(t *testing.T) {
 		`[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SKIPPED"},{"state":"SUCCESS"}]`: "SUCCESS",
 		`[{"state":"PENDING"}]`: "PENDING", `[{"state":"EXPECTED"}]`: "PENDING",
 		`[{"state":"FAILURE"}]`: "FAILURE", `[{"state":"ERROR"}]`: "FAILURE",
+		// A run cancelled by its replacement's concurrency group no longer
+		// counts; the newest run of each check decides (voke-platform#178).
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "SUCCESS",
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "FAILURE",
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"SUCCESS"},{"workflowName":"CI","name":"ci-ok","status":"QUEUED"}]`:                                                              "PENDING",
 	} {
 		if got := checks(t, rollup); got != want {
 			t.Errorf("summarizeChecks(%s) = %s, want %s", rollup, got, want)
@@ -398,5 +403,39 @@ func TestSkipCILabelWaivesTheCIGateOnly(t *testing.T) {
 	g.mergeStateStatus, g.mergeable = "DIRTY", "CONFLICTING"
 	if s := summarizeGates(g); s.AllPass || !slices.Contains(s.Failed, "conflict") {
 		t.Errorf("waiver must not reach other gates: %+v", s)
+	}
+}
+
+// `--repo <path> 104` once read the path as the PR; the PR is the positional
+// whatever the order, and anything else is refused before a gh call.
+func TestMergePrecheckArgs(t *testing.T) {
+	for _, tc := range []struct {
+		argv, pos []string
+		repo      string
+	}{
+		{[]string{"104", "--repo", "/abs"}, []string{"104"}, "/abs"},
+		{[]string{"--repo", "/abs", "104"}, []string{"104"}, "/abs"},
+		{[]string{"--repo=/abs"}, nil, "/abs"},
+		{[]string{"104", "--json"}, []string{"104"}, ""}, // gitkit's persistent --json
+		{nil, nil, ""},
+	} {
+		flags, pos, err := mergePrecheckArgs.parse("merge-precheck", tc.argv)
+		if err != nil || flags["repo"] != tc.repo || !slices.Equal(pos, tc.pos) {
+			t.Errorf("parse(%q) = %v %v %v", tc.argv, flags, pos, err)
+		}
+	}
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"104", "105", "--repo", "/abs"}, `unexpected argument "105"`},
+		{[]string{"104", "--help"}, "unknown argument --help"},
+		{[]string{"--repo"}, "--repo needs a value"},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runMergePrecheck(tc.argv, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) ||
+			!strings.Contains(stderr.String(), mergePrecheckArgs.usage) || stdout.Len() != 0 {
+			t.Errorf("merge-precheck %q: exit %d, stderr %q, want %q + usage", tc.argv, code, stderr.String(), tc.want)
+		}
 	}
 }

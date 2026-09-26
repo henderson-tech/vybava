@@ -158,16 +158,24 @@ func refreshWorktree(git gitRunner, path string, pr int) (bool, error) {
 	return alignToPrHead(git, path, prHead)
 }
 
+// worktreeArgs: `ensure` is the one sub-subcommand; it and its <headRef> and
+// <pr> are the three positionals.
+var worktreeArgs = verbArgs{values: []string{"repo"}, positionals: 3, usage: "usage: vybava gitkit worktree ensure <headRef> <pr> [--repo <abs>]"}
+
 func runWorktree(args []string, stdout, stderr io.Writer) int {
-	if len(args) < 3 || args[0] != "ensure" || args[1] == "" || args[2] == "" {
-		return fail(stderr, errors.New("usage: worktree.ts ensure <headRef> <pr>"))
+	flags, pos, err := worktreeArgs.parse("worktree", args)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	headRef, prRaw := args[1], args[2]
+	if len(pos) < 3 || pos[0] != "ensure" || pos[1] == "" || pos[2] == "" {
+		return fail(stderr, errors.New(worktreeArgs.usage))
+	}
+	headRef, prRaw := pos[1], pos[2]
 	pr, ok := positiveInt(prRaw)
 	if !ok {
 		return fail(stderr, fmt.Errorf("bad pr number: \"%s\"", prRaw))
 	}
-	root, err := repoRoot(args)
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

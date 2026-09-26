@@ -23,6 +23,22 @@ export interface ScanConfig {
   extensions?: string[];
 }
 
+/**
+ * Source literals an english-as-key catalog's keys copy (API error sentences
+ * a client translates). `lok mv` / `lok sub --keys` refuse a rename of such a
+ * key (MIRROR_SOURCE) unless `--with-mirrors` rewrites the literal too.
+ */
+export interface MirrorConfig {
+  /** Directories holding the source literals, relative to the repo root (spec files are listed, never rewritten). */
+  roots: string[];
+  /**
+   * The catalog ships inside a store app binary while the mirror source
+   * deploys on its own: a store-live app keeps the old keys after the source
+   * text changes, so every rename warns (retire in three steps).
+   */
+  bundledInStoreApp?: boolean;
+}
+
 export interface CatalogConfig {
   style: CatalogStyle;
   /** File pattern with a `{locale}` placeholder, relative to the repo root. */
@@ -39,6 +55,8 @@ export interface CatalogConfig {
   exempt?: string[];
   /** Source scan for english-as-key catalogs. */
   scan?: ScanConfig;
+  /** Source literals the keys mirror (english-as-key only); see MirrorConfig. */
+  mirrors?: MirrorConfig;
 }
 
 export interface LokConfig {
@@ -159,6 +177,8 @@ export interface VybavaConfig {
     testWorkerCap?: number;
     /** RE2 patterns over one local command segment; a match must run through `devbox run -- '<cmd>'` (machine:devbox-only). Escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1. */
     devboxOnly?: string[];
+    /** RE2 patterns matched like devboxOnly, refused only when the checkout the command runs in (after its own cd / bun --cwd) has a Devbox workspace in the local registry ($DEVBOX_WORKSPACES_DIR or ~/.devbox/workspaces, parked or not) - machine:devbox-workspace; elsewhere the command may run here. Escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1. */
+    devboxWhenWorkspace?: string[];
     /** Most booted simulators before a boot is refused (machine:sim-cap); at least 1, default 2. */
     simCap?: number;
     /** Most Metro/next/API dev servers before a start is refused (machine:dev-server-cap); at least 1, default 3. */

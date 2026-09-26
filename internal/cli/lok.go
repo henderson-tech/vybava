@@ -29,8 +29,11 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 		Long: "lok never shows a whole catalog. Configure catalogs in the `lok` section of\n" +
 			"vybava.config.ts (see `vybava config init`), then:\n" +
 			"  lok catalogs · lok get <key> · lok grep <pattern> · lok missing · lok check\n" +
-			"  lok add <key> --tr cs=… · lok set <key> --tr cs=… · lok rm <key> · lok scan [--write]\n" +
-			"  lok merge <path> [--prefer ours|theirs] — settle a catalog merge conflict by key",
+			"  lok add <key> --tr cs=… · lok set <key> --tr cs=… · lok rm <key> [--locale en] · lok scan [--write]\n" +
+			"  lok sub <re> <rep> [--write --expect n] - regex over values (--keys: rename english-as-key keys)\n" +
+			"  lok mv <old> <new> [--write] - rename one english-as-key family and its t() call sites\n" +
+			"  lok merge <path> [--prefer ours|theirs] - settle a catalog merge conflict by key\n" +
+			"Path keys escape a dot inside a segment as \\. (single-quote them): 'codes.bankid\\.x.title'.",
 	}
 	var catalog string
 	root.PersistentFlags().StringVar(&catalog, "catalog", "", "catalog id (only when inference is ambiguous; use --catalog=<id>)")
@@ -38,10 +41,13 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 	session := func(cmd *cobra.Command) *runx.Session {
 		return &runx.Session{Tool: "lok", JSON: rt.json, Verb: cmd.Name(), Stdout: rt.stdout, Stderr: rt.stderr}
 	}
-	finish := func(s *runx.Session, data any, next []string, err error) error {
+	finishWarn := func(s *runx.Session, data any, next []string, warnings []*lok.Diag, err error) error {
 		env := runx.Envelope{OK: err == nil, Verb: s.Verb, Data: data, Diagnostics: []runx.Diagnostic{}, Next: next}
 		if env.Next == nil {
 			env.Next = []string{}
+		}
+		for _, w := range warnings {
+			env.Diagnostics = append(env.Diagnostics, runx.Diagnostic{Code: w.Code, Severity: "warning", Detail: w.Detail, Fix: w.Fix})
 		}
 		var d *lok.Diag
 		if errors.As(err, &d) {
@@ -49,7 +55,7 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			if d.Fix != "" {
 				env.Next = append(env.Next, d.Fix)
 			}
-			err = &runx.DiagError{Diag: env.Diagnostics[0]}
+			err = &runx.DiagError{Diag: env.Diagnostics[len(env.Diagnostics)-1]}
 		} else if err != nil {
 			env.Diagnostics = append(env.Diagnostics, runx.Diagnostic{Code: runx.DiagInfraError, Severity: "error", Detail: err.Error()})
 		}
@@ -60,6 +66,21 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 			return runx.ExitError{Code: code}
 		}
 		return nil
+	}
+	finish := func(s *runx.Session, data any, next []string, err error) error {
+		return finishWarn(s, data, next, nil, err)
+	}
+	// finishSub prints a sub/mv run: in text mode the readable diff (invisible
+	// runes as \x{...}) replaces the JSON dump; --json keeps raw strings.
+	finishSub := func(s *runx.Session, res lok.SubResult, next []string, err error) error {
+		var data any = res
+		if !rt.json {
+			data = nil
+			if err == nil || res.Total.Values > 0 || res.Total.Renames > 0 {
+				fmt.Fprint(rt.stdout, res.Text())
+			}
+		}
+		return finishWarn(s, data, next, res.Warnings, err)
 	}
 	open := func() (*lok.Tool, error) { return lok.Open(workingDir()) }
 	parseTr := func(tr []string) (map[string]string, error) {
@@ -164,18 +185,24 @@ func (rt *runtime) lokCommand(use string) *cobra.Command {
 	set.Flags().StringArrayVar(&trSet, "tr", nil, "<locale>=<value>, repeatable")
 	root.AddCommand(set)
 
-	root.AddCommand(&cobra.Command{
-		Use: "rm <key>", Short: "Delete a key (and its plural variants) from every locale", Args: cobra.ExactArgs(1),
+	var rmLocales []string
+	rm := &cobra.Command{
+		Use: "rm <key>", Short: "Delete a key (and its plural variants) from every locale, or only --locale ones", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := session(cmd)
 			t, err := open()
 			if err != nil {
 				return finish(s, nil, nil, err)
 			}
-			res, err := t.Rm(catalog, args[0])
+			res, err := t.Rm(catalog, args[0], rmLocales)
 			return finish(s, res, []string{"lok check --json"}, err)
 		},
-	})
+	}
+	rm.Flags().StringSliceVar(&rmLocales, "locale", nil, "only these locales (e.g. drop an inert en _few variant, keep the cs plurals)")
+	root.AddCommand(rm)
+
+	rewrite := lokRewrite{catalog: &catalog, session: session, open: open, finish: finishSub}
+	root.AddCommand(rewrite.subCommand(), rewrite.mvCommand())
 
 	var missLocales []string
 	var missLimit int

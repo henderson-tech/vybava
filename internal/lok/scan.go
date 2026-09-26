@@ -59,6 +59,124 @@ func unescape(s string) string {
 	return strings.NewReplacer(`\'`, `'`, `\"`, `"`, `\\`, `\`, `\n`, "\n").Replace(s)
 }
 
+// escapeLiteral is unescape's inverse for one quote style: the body of a
+// '…' or "…" literal that reads back as s.
+func escapeLiteral(s string, quote byte) string {
+	r := strings.NewReplacer(`\`, `\\`, "\n", `\n`, string(quote), `\`+string(quote))
+	return r.Replace(s)
+}
+
+// sourceFile is one file a source walk visits.
+type sourceFile struct {
+	rel  string // repo-relative, slash-separated
+	path string
+	data []byte
+	test bool // a test source: isTestSource, or under __tests__/ or testdata/
+}
+
+// walkTree visits every file with one of exts under roots (repo-relative),
+// skipping vendored and build trees. Test sources are visited only with
+// tests (Scan never reads them; a rename rewrites and reports them).
+func (t *Tool) walkTree(roots, exts []string, tests bool, fn func(sourceFile) error) error {
+	for _, root := range roots {
+		abs := filepath.Join(t.Root, root)
+		err := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				switch d.Name() {
+				// .worktrees: other checkouts of the repo; a rename under a
+				// root of "." must never rewrite a sibling worktree's files.
+				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo", ".worktrees":
+					return filepath.SkipDir
+				case "__tests__", "testdata":
+					if !tests {
+						return filepath.SkipDir
+					}
+				}
+				return nil
+			}
+			// A declaration file holds types, never a call or a runtime
+			// lookup; a generated one (translation-keys.d.ts) quotes every
+			// key, which hid every orphan and read as leftover literals.
+			if !contains(exts, filepath.Ext(p)) || strings.HasSuffix(p, ".d.ts") {
+				return nil
+			}
+			relPath, rerr := filepath.Rel(t.Root, p)
+			if rerr != nil {
+				relPath = p
+			}
+			relPath = filepath.ToSlash(relPath)
+			test := isTestSource(d.Name()) || strings.Contains("/"+relPath, "/__tests__/") || strings.Contains("/"+relPath, "/testdata/")
+			if test && !tests {
+				return nil
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return nil
+			}
+			return fn(sourceFile{rel: relPath, path: p, data: data, test: test})
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) scanExtensions() []string {
+	if c.Config.Scan != nil && len(c.Config.Scan.Extensions) > 0 {
+		return c.Config.Scan.Extensions
+	}
+	return defaultExtensions
+}
+
+// walkSources is the source walk behind `scan` and key renames: the
+// catalog's scan roots and extensions, the same skipped directories.
+func (t *Tool) walkSources(c *Catalog, tests bool, fn func(sourceFile) error) error {
+	return t.walkTree(c.Config.Scan.Roots, c.scanExtensions(), tests, fn)
+}
+
+func (c *Catalog) callRegex() *regexp.Regexp {
+	calls := c.Config.Scan.Call
+	if len(calls) == 0 {
+		calls = Calls{"t"}
+	}
+	return callRegex(calls)
+}
+
+// literalSite is one key literal passed to a translation call: its body's
+// byte span in the file (quotes excluded), the quote and the decoded key.
+type literalSite struct {
+	start, end int
+	quote      byte
+	key        string
+}
+
+// callSites finds every literal translation call in one file. Comments are
+// blanked first (offsets preserved), so the spans index the original bytes.
+func callSites(re *regexp.Regexp, data []byte, goSource bool) []literalSite {
+	var out []literalSite
+	for _, m := range re.FindAllSubmatchIndex(blankComments(data, goSource), -1) {
+		start, end := m[2], m[3]
+		if start < 0 {
+			start, end = m[4], m[5]
+		}
+		key := unescape(string(data[start:end]))
+		if key == "" {
+			continue
+		}
+		out = append(out, literalSite{start: start, end: end, quote: data[start-1], key: key})
+	}
+	return out
+}
+
+// lineAt is the 1-based line of byte offset i.
+func lineAt(data []byte, i int) int {
+	return bytes.Count(data[:i], []byte("\n")) + 1
+}
+
 // isTestSource reports test code by file name: Go `_test.go`, JS/TS with a
 // `.test.` / `.spec.` segment anywhere (`a.test.ts`, `a.spec.gen.ts`);
 // `__tests__` and `testdata` dirs are skipped by the walk. Test keys are
@@ -271,58 +389,22 @@ func (t *Tool) Scan(catalogID string, write bool, orphanLimit int) (ScanResult, 
 	if c.Config.Scan == nil {
 		return ScanResult{}, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("catalog %s has no scan config", c.ID), Fix: "add scan: { roots: [...] } to the catalog in vybava.config.ts"}
 	}
-	calls := c.Config.Scan.Call
-	if len(calls) == 0 {
-		calls = Calls{"t"}
-	}
-	exts := c.Config.Scan.Extensions
-	if len(exts) == 0 {
-		exts = defaultExtensions
-	}
-	re := callRegex(calls)
+	re := c.callRegex()
 	res := ScanResult{Catalog: c.ID, Missing: []string{}, Added: []string{}, Orphans: []string{}, Written: []string{}}
 	seen := map[string]bool{}
 	var corpus strings.Builder
-	for _, root := range c.Config.Scan.Roots {
-		abs := filepath.Join(t.Root, root)
-		err := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() {
-				switch d.Name() {
-				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo", "__tests__", "testdata":
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !contains(exts, filepath.Ext(p)) || isTestSource(d.Name()) {
-				return nil
-			}
-			data, err := os.ReadFile(p)
-			if err != nil {
-				return nil
-			}
-			res.FilesScanned++
-			corpus.Write(data)
-			corpus.WriteByte('\n')
-			for _, m := range re.FindAllSubmatch(blankComments(data, filepath.Ext(p) == ".go"), -1) {
-				lit := m[1]
-				if len(lit) == 0 {
-					lit = m[2]
-				}
-				key := unescape(string(lit))
-				if key == "" {
-					continue
-				}
-				res.Calls++
-				seen[key] = true
-			}
-			return nil
-		})
-		if err != nil {
-			return res, err
+	err = t.walkSources(c, false, func(f sourceFile) error {
+		res.FilesScanned++
+		corpus.Write(f.data)
+		corpus.WriteByte('\n')
+		for _, s := range callSites(re, f.data, filepath.Ext(f.path) == ".go") {
+			res.Calls++
+			seen[s.key] = true
 		}
+		return nil
+	})
+	if err != nil {
+		return res, err
 	}
 	for key := range seen {
 		if !c.has(key) {
