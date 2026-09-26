@@ -1,6 +1,8 @@
 package vconfig
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +75,37 @@ func TestFindAndLoadJSON(t *testing.T) {
 	}
 	if _, err := Load(t.TempDir()); err != ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestSectionAllowUnknown(t *testing.T) {
+	cfg := &Config{Sections: map[string]json.RawMessage{
+		"g":      json.RawMessage(`{"a":["x"],"later":{"z":1},"future":1}`),
+		"typed":  json.RawMessage(`{"a":5}`),
+		"nested": json.RawMessage(`{"b":{"c":1,"d":2}}`),
+	}}
+	type section struct {
+		A []string `json:"a"`
+		B struct {
+			C int `json:"c"`
+		} `json:"b"`
+	}
+	var s section
+	unknown, err := cfg.SectionAllowUnknown("g", &s)
+	if err != nil || strings.Join(unknown, ",") != "future,later" || strings.Join(s.A, ",") != "x" {
+		t.Fatalf("unknown %v, decoded %+v, err %v", unknown, s, err)
+	}
+	if err := cfg.Section("g", &section{}); err == nil {
+		t.Fatal("Section must stay strict about unknown keys")
+	}
+	if _, err := cfg.SectionAllowUnknown("typed", &section{}); err == nil {
+		t.Fatal("a wrong type on a known key must still error")
+	}
+	if _, err := cfg.SectionAllowUnknown("nested", &section{}); err == nil || !strings.Contains(err.Error(), `"d"`) {
+		t.Fatalf("a nested unknown key must still error: %v", err)
+	}
+	if _, err := cfg.SectionAllowUnknown("nope", &section{}); !errors.Is(err, ErrNoSection) {
+		t.Fatalf("missing section: %v", err)
 	}
 }
 

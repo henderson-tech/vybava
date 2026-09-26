@@ -35,6 +35,25 @@ func TestGuardConfigPerCall(t *testing.T) {
 	if d := contextReadMatch(big, 80, root); d == nil {
 		t.Fatal("Read limit bypassed configured budget")
 	}
+	// A key from a newer claude-guards is skipped; every known guard applies.
+	write(`{"guards":{"noRead":["**/big.ts"],"devboxOnly":["^bun run test(:|$)"],"fromTheFuture":["x"]}}`)
+	cfg, err := loadGuardConfig(root)
+	if err != nil || strings.Join(cfg.unknownKeys, ",") != "fromTheFuture" {
+		t.Fatalf("unknown key: %v, %v", cfg.unknownKeys, err)
+	}
+	if d := contextBashMatch("sed -n '1,10p' "+big, root); d == nil || d.Rule != "context:no-read" {
+		t.Fatalf("noRead dropped beside an unknown key: %v", d)
+	}
+	in := &HookInput{CWD: root}
+	in.ToolInput.Command = "bun run test"
+	if d := guardDevboxOnly(in); d == nil {
+		t.Fatal("devboxOnly dropped beside an unknown key")
+	}
+	// A wrong TYPE on a known key still voids the section, loudly.
+	write(`{"guards":{"devboxOnly":"^bun run test"}}`)
+	if _, err := loadGuardConfig(root); err == nil {
+		t.Fatal("a mistyped known key must still error")
+	}
 	for _, tc := range []struct {
 		pattern, name string
 		want          bool

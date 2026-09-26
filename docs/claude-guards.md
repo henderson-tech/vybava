@@ -122,6 +122,8 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1) ·
                   a command matching a repo's guards.devboxOnly run outside
                   devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
+                  a command matching guards.devboxWhenWorkspace run locally in
+                  a checkout that has a Devbox workspace (same escape) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
                   (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
@@ -190,6 +192,44 @@ and on 2026-09-19/20 three Metro bundlers, four API servers and two
 next-servers ran on the Mac anyway. The message prints the exact `devbox run
 -- '<cmd>'` form; a hand test the user asked for here sets
 `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+
+`machine:devbox-workspace` is its conditional sibling for work that is fine
+on the Mac in a bare worktree but belongs on the box once the checkout is
+synced to a workspace: `guards.devboxWhenWorkspace` takes the same RE2
+patterns, and a match is refused only when the devbox CLI's local registry
+names exactly the checkout the command RUNS in. That checkout is the git root
+above the session cwd moved by the command's own `cd <dir>` segments and a bun
+`--cwd <dir>` on the matched segment (a worktree's `.git` file counts), so
+`(cd .worktrees/x && tsc)` from a synced main clone is judged by `.worktrees/x`.
+A `cd` is certain when it is followed by `&&` and sits in no subshell that
+closes before the command (`echo; cd x && tsc` is; `cd x; tsc`, `cd x || tsc`
+and `(cd x && a); tsc` are not). When one is not, every directory the shell may
+be in is a candidate, each later relative `cd` resolved from all of them, and
+any synced candidate refuses. A command that runs outside every checkout has no
+workspace.
+The registry is `$DEVBOX_WORKSPACES_DIR`, else `~/.devbox/workspaces/`, read
+as the CLI writes it: each entry's `workspace.yaml` (`apps.<app>.sync`) and
+`rendered/mutagen.yaml` (each session's `alpha`; a third of real entries carry
+only this file). A parked workspace keeps its record; `devbox down` and gc drop
+it. Paths compare for equality with symlinks resolved on both sides, never as
+a parent match: worktrees nest inside their main clone and the main clone's
+workspace must not route a bare worktree. No network and no subprocess: the
+lookup reads that directory once per matching command. FixIt put its
+typechecks there on 2026-09-25 (the api spec check alone is 3 GB and 60 s;
+several at once froze the Mac at 50 GB of swap the day before, but a worktree
+without a workspace still typechecks locally). The message names the workspace
+and prints the `devbox run --no-up -- '<cmd>'` rerun. Because `devbox run`
+starts at the synced checkout's root, the rerun carries the command's `cd` back
+and keeps its leading assignments (`NODE_OPTIONS=…`); `machine:devbox-only`
+prints its rerun the same way. The escape is the same
+`CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+
+A `guards` key this binary does not know (a config written for a newer
+claude-guards) is skipped with one stderr line naming it; every key it does
+know still applies, and a wrong type on a known key still voids the section.
+Before 2026-09-25 the section was decoded strictly, so the first new key a
+repo adopted switched ALL of that repo's guards off on every machine still
+running an older build: keep that in mind for binaries older than this.
 
 `machine:sim-cap` and `machine:dev-server-cap` count what already runs before
 a boot or a start. A simulator boot (`xcrun simctl boot`, `expo run:ios`,
