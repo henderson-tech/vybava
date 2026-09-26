@@ -34,7 +34,7 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			"  PreToolUse Bash → claude-guards bash · PreToolUse Read → claude-guards read\n" +
 			"  PreToolUse mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.* → claude-guards browser\n" +
 			"  SessionStart → claude-guards doctor --fix · claude-guards weather --reap · claude-guards swarm-teardown --dead-only\n" +
-			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap\n" +
+			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap · claude-guards redact-session\n" +
 			"`claude-guards hooks` prints this wiring as JSON; `doctor` checks the live file against it.\n" +
 			"A block prints its reason and the sanctioned alternative on stderr and exits 2.",
 	}
@@ -111,6 +111,9 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			report, err := claudeguards.DiagnoseContext(path)
 			if err != nil {
 				return finishGuardCheck(s, nil, &runx.DiagError{Diag: runx.Diagnostic{Code: "TRANSCRIPT_UNAVAILABLE", Severity: "error", Detail: err.Error()}})
+			}
+			if report.Kind == "session" {
+				report.Leaks = sessionLeaks(strings.TrimSuffix(filepath.Base(path), ".jsonl"), rt.stderr)
 			}
 			if !rt.json {
 				return report.Render(rt.stdout)
@@ -220,6 +223,42 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 	}
 	browserTeardown.Flags().StringVar(&session, "session", "", "session id to stop (default: the hook payload's, else CLAUDE_CODE_SESSION_ID)")
 	root.AddCommand(browserTeardown)
+
+	var redactTarget string
+	redactSessionCmd := &cobra.Command{
+		Use:   "redact-session",
+		Short: "Redact secrets from the ending session's files in place (SessionEnd; stdin: hook JSON) — docs/redact.md",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			// The flag before stdin, as for browser-teardown: a hand-run at a
+			// terminal never sends EOF. A hook never fails the exit — every
+			// problem is a line on stderr.
+			id := strings.TrimSpace(redactTarget)
+			if id == "" {
+				if in, err := claudeguards.ReadInput(rt.stdin); err == nil {
+					id = in.SessionID
+				}
+			}
+			if id == "" {
+				id = os.Getenv("CLAUDE_CODE_SESSION_ID")
+			}
+			if id == "" {
+				fmt.Fprintln(rt.stderr, "claude-guards redact-session: no session id (payload, --session or CLAUDE_CODE_SESSION_ID)")
+				return nil
+			}
+			report, err := redactSession(id, true)
+			switch {
+			case err != nil:
+				fmt.Fprintf(rt.stderr, "claude-guards redact-session: %v\n", err)
+			case report.Redacted > 0 || report.Errors > 0 || report.Changed > 0 || report.Unreadable > 0:
+				fmt.Fprintf(rt.stderr, "claude-guards redact-session: %d secret spans redacted in %d files of session %s (%d errors, %d unreadable — not scanned, %d changed underneath) — audit: ~/.config/vybava/redact-audit.jsonl\n",
+					report.Redacted, len(report.Leaky), id, report.Errors, report.Unreadable, report.Changed)
+			}
+			return nil
+		},
+	}
+	redactSessionCmd.Flags().StringVar(&redactTarget, "session", "", "session id to redact (default: the hook payload's, else CLAUDE_CODE_SESSION_ID)")
+	root.AddCommand(redactSessionCmd)
 
 	root.AddCommand(&cobra.Command{
 		Use:    "refresh-visibility <repo-dir> <cache-file>",

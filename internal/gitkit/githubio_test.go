@@ -59,16 +59,70 @@ func TestBuildGitHubCommandRefusals(t *testing.T) {
 }
 
 func TestParseFlags(t *testing.T) {
-	// a valueless flag is boolean wherever it sits
+	// a declared boolean is boolean wherever it sits
 	for _, argv := range [][]string{{"--draft", "--title", "T"}, {"--title", "T", "--draft"}} {
-		if o, err := parseFlags(argv); err != nil || !maps.Equal(o, flags{"draft": "", "title": "T"}) {
+		if o, err := parseFlags("create-pr", argv); err != nil || !maps.Equal(o, flags{"draft": "", "title": "T"}) {
 			t.Errorf("parseFlags(%q) = %v, %v", argv, o, err)
 		}
 	}
 	// zsh does not split an unquoted $VAR: name that, not a missing field
-	_, err := parseFlags([]string{"--owner acme --repo app --pr 1066", "--commentId", "11"})
+	_, err := parseFlags("reply", []string{"--owner acme --repo app --pr 1066", "--commentId", "11"})
 	if err == nil || !regexp.MustCompile(`ONE argument with embedded spaces[\s\S]*does NOT word-split`).MatchString(err.Error()) {
 		t.Errorf("glued flags: %v", err)
+	}
+	// only the NAME is checked: an inline value may hold spaces
+	if o, err := parseFlags("create-pr", []string{"--title=Fix the bug", "--body=Two words"}); err != nil || o["title"] != "Fix the bug" || o["body"] != "Two words" {
+		t.Errorf("inline values with spaces = %v, %v", o, err)
+	}
+	// Refused, never dropped: each of these once did the wrong thing quietly.
+	for _, tc := range []struct {
+		sub  string
+		argv []string
+		want string
+	}{
+		{"create-pr", []string{"--repo", "/some/checkout", "--head", "b", "--base", "main"}, "unknown argument --repo"},
+		{"create-pr", []string{"--head", "b", "--base", "main", "--draft", "stray"}, `unexpected argument "stray"`},
+		{"create-pr", []string{"--head", "b", "--base", "main", "--fill"}, "unknown argument --fill"},
+		{"reply", []string{"--owner", "o", "--repo", "r", "--pr", "5", "--commentId", "1", "--bdy", "x"}, "unknown argument --bdy"},
+		{"resolve-thread", []string{"--threadId", "RT", "--pr", "5"}, "unknown argument --pr"},
+		{"detect-workflows", []string{"--repo", "r"}, "unknown argument --repo"},
+		{"detect-workflows", []string{"stray"}, `unexpected argument "stray"`},
+	} {
+		_, err := parseFlags(tc.sub, tc.argv)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "usage: vybava gitkit github-io "+tc.sub) {
+			t.Errorf("%s %q: err = %v, want %q + the usage line", tc.sub, tc.argv, err, tc.want)
+		}
+	}
+}
+
+func TestResolveBodyFile(t *testing.T) {
+	dir := t.TempDir()
+	body := filepath.Join(dir, "body.md")
+	if err := os.WriteFile(body, []byte("## Why this exists\nBecause.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o := flags{"head": "b", "base": "main", "body-file": body}
+	if err := resolveBodyFile(o); err != nil || o["body"] != "## Why this exists\nBecause.\n" || o["body-file"] != "" {
+		t.Fatalf("resolve: %v %v", o, err)
+	}
+	if argv, err := buildGitHubCommand("create-pr", o); err != nil || !slices.Contains(argv, "## Why this exists\nBecause.\n") {
+		t.Fatalf("create-pr did not carry the file's body: %q %v", argv, err)
+	}
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(empty, []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		o    flags
+		want string
+	}{
+		{flags{"body-file": empty}, "is empty"},
+		{flags{"body-file": filepath.Join(dir, "missing.md")}, "--body-file"},
+		{flags{"body-file": body, "body": "inline"}, "not both"},
+	} {
+		if err := resolveBodyFile(tc.o); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: err = %v, want %q", tc.o, err, tc.want)
+		}
 	}
 }
 

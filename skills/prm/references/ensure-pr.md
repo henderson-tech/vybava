@@ -12,8 +12,10 @@ GitHub's default branch) ·
 **Always author the body yourself** per `pr-body.md` (sibling file) —
 `--fill` restates the commit log and is a fallback for a single self-explanatory commit
 only. **Never type a multi-line body inline on the command line** (zsh mangles it):
-write it to a scratchpad file and pass `--body "$(cat <file>)"` (double-quoted), or
-`gh pr edit <N> --body-file <file>`.
+write it to a scratchpad file and pass `--body-file <file>` (`gh pr edit <N>
+--body-file <file>` for an existing PR). create-pr acts on the repository of the
+CURRENT DIRECTORY: `cd` into the checkout first; it takes no `--repo` and refuses
+any flag it does not list.
 
 Steps:
 
@@ -36,7 +38,7 @@ Steps:
      tell the user to create/switch to a feature branch.
    - otherwise: `git push -u origin HEAD`, then
      `vybava gitkit github-io create-pr --head <branch> --base <base>`
-     with `--title <text>` and `--body "$(cat <file>)"` (caller's values win when
+     with `--title <text>` and `--body-file <file>` (caller's values win when
      supplied) and `--draft` when passed. **`MERGE_POLICY=self`** in
      `<mainClone>/.claude/.claude.git.config` → add `--label eve-ignore` (create the
      label first if missing: `gh label create eve-ignore --color ededed --description

@@ -155,14 +155,41 @@ func TestWorktreeVerbArgv(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"ensure", "feat"}, "error: usage: worktree.ts ensure <headRef> <pr>\n"},
-		{[]string{"list", "feat", "7"}, "error: usage: worktree.ts ensure <headRef> <pr>\n"},
+		{[]string{"ensure", "feat"}, "error: " + worktreeArgs.usage + "\n"},
+		{[]string{"list", "feat", "7"}, "error: " + worktreeArgs.usage + "\n"},
 		{[]string{"ensure", "feat", "7.5"}, "error: bad pr number: \"7.5\"\n"},
-		{[]string{"ensure", "feat", "-3"}, "error: bad pr number: \"-3\"\n"},
+		{[]string{"ensure", "feat", "-3"}, "error: worktree: unknown argument -3 (flags are spelled --name)\n" + worktreeArgs.usage + "\n"},
 	} {
 		var stdout, stderr strings.Builder
 		if code := runWorktree(tc.args, &stdout, &stderr); code != 1 || stderr.String() != tc.want {
 			t.Errorf("%v → %d %q, want %q", tc.args, code, stderr.String(), tc.want)
+		}
+	}
+}
+
+// prm's `worktree ensure <headRef> <pr>` parses with or without --repo, the
+// flag anywhere; an unknown flag or a stray positional is refused before any
+// git runs, never dropped.
+func TestWorktreeArgs(t *testing.T) {
+	for _, argv := range [][]string{
+		{"ensure", "feat/x", "104"},
+		{"ensure", "feat/x", "104", "--repo", "/r"},
+		{"--repo=/r", "ensure", "feat/x", "104"},
+	} {
+		if _, pos, err := worktreeArgs.parse("worktree", argv); err != nil || strings.Join(pos, " ") != "ensure feat/x 104" {
+			t.Errorf("%q → %q %v", argv, pos, err)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"ensure", "feat/x", "104", "--base", "main"}, "worktree: unknown argument --base"},
+		{[]string{"ensure", "feat/x", "104", "105"}, `worktree: unexpected argument "105"`},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runWorktree(tc.args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) || !strings.Contains(stderr.String(), worktreeArgs.usage) {
+			t.Errorf("%v → %d %q, want %q + usage", tc.args, code, stderr.String(), tc.want)
 		}
 	}
 }

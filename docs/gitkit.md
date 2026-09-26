@@ -29,19 +29,25 @@ vybava gitkit admin-labels 42 --repo "$PWD"                   # prm --admin: ski
     `maxBuffer` (Node's 1 MiB unless the verb set more).
   - `writeJSON` is `JSON.stringify(v, null, 2)`; `jsString`/`jsSlice` carry
     free text (comment bodies) cut at UTF-16 units and escaped as JS does.
-  - `jsNumber` / `positiveInt` / `jsParseInt` read argv as `Number()` /
-    `Number.parseInt()` did, so `0x7` and ` 7 ` still select PR 7.
+  - `jsNumber` / `positiveInt` read argv as `Number()` did, so `0x7` and
+    ` 7 ` still select PR 7.
   - `repoRoot` resolves the `--repo` / `GIT_SKILL_REPO` anchor once per
     invocation; a bad anchor fails loudly, never falls back to cwd.
 - Script verbs never parse flags — every argument belongs to the verb — and
   run in-process; the verb's return value is the exit code.
-- ⚠️ The ported verbs keep their Node grammar: they look up the flags they know
-  and IGNORE the rest, `--help` included, so a mistyped flag runs the default.
-  That leniency is frozen by the byte-for-byte contract, not endorsed. A verb
-  born in Go (`pr-extensions`) validates its argv instead: an unknown argument
-  or a bad value is `GITKIT_BAD_ARGS` (exit 2, a runx envelope under `--json`,
-  `✗ CODE: detail — fix` otherwise) and `--help` prints real help. New verbs
-  follow that, never the ported pattern.
+- Every verb declares its argv (`verbArgs` in `args.go`: value flags,
+  boolean flags, how many positionals) and refuses the rest with its usage
+  line, exit 1: an unknown flag, a stray positional, a flag given twice, a
+  value flag with no or an empty value. `--json` (gitkit's persistent flag,
+  delivered in the verb's own argv) is accepted everywhere; `repoAnchor` turns
+  a parsed `--repo` into the `repoRoot` anchor. Until 2026-09-25 the ported
+  verbs kept their Node grammar and IGNORED what they did not know: that
+  day `github-io create-pr` dropped `--repo <path>` (the PR went to the cwd's
+  repository) and `--body-file` (the PR got the commit log as its body), and
+  `merge-precheck --repo <path> 104` read the path as the PR. Stdout, JSON and
+  exit codes stay byte-compatible for every documented invocation. The verbs
+  born in Go (`pr-extensions`: `GITKIT_BAD_ARGS`, exit 2, a runx envelope under
+  `--json`, real `--help`; `admin-labels`) keep their own validation.
 
 ## Tests
 

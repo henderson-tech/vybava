@@ -219,6 +219,29 @@ func TestSyncContextVerb(t *testing.T) {
 	}
 }
 
+// /sync's and /dirty's shapes parse (`--repo <ABS>`, `--repo <ABS> --freeze`);
+// an unknown flag or a stray positional is refused before anything is read
+// or frozen, never dropped.
+func TestSyncContextArgs(t *testing.T) {
+	for _, argv := range [][]string{nil, {"--repo", "/r"}, {"--repo", "/r", "--freeze"}, {"--freeze", "--repo=/r"}} {
+		if _, _, err := syncContextArgs.parse("sync-context", argv); err != nil {
+			t.Errorf("%q refused: %v", argv, err)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--repo", "/r", "--frozen"}, "sync-context: unknown argument --frozen"},
+		{[]string{"--repo", "/r", "main"}, `sync-context: unexpected argument "main"`},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runSyncContext(tc.args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) || !strings.Contains(stderr.String(), syncContextArgs.usage) {
+			t.Errorf("%v → %d %q, want %q + usage", tc.args, code, stderr.String(), tc.want)
+		}
+	}
+}
+
 // Unreadable is never absent: a package.json that cannot be read warns as a
 // malformed one does; a config behind an untraversable directory, or an
 // .env that cannot be read, fails.

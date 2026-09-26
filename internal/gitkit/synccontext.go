@@ -363,10 +363,17 @@ func exists(path string) bool {
 	return err == nil
 }
 
+// syncContextArgs: --freeze writes the resolved keys back; no positionals.
+var syncContextArgs = verbArgs{values: []string{"repo"}, bools: []string{"freeze"}, usage: "usage: vybava gitkit sync-context [--repo <abs>] [--freeze]"}
+
 func runSyncContext(args []string, stdout, stderr io.Writer) int {
+	flags, _, err := syncContextArgs.parse("sync-context", args)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	// Anchored: a drifted shell cwd must not resolve (and then migrate or
 	// install against) a DIFFERENT repo.
-	root, err := repoRoot(args)
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -522,7 +529,7 @@ func runSyncContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if slices.Contains(args, "--freeze") {
+	if _, freeze := flags["freeze"]; freeze {
 		before := ""
 		if configFound {
 			data, err := os.ReadFile(configPath)

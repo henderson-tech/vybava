@@ -92,7 +92,7 @@ func TestAddSetRmPreserveOrder(t *testing.T) {
 	if v, _ := tool.Get("", "Cancel"); v.Values["cs"] != "Storno" || v.Values["en"] != "Cancel" {
 		t.Fatalf("set: %+v", v)
 	}
-	if _, err := tool.Rm("", "{{count}} hour"); err != nil {
+	if _, err := tool.Rm("", "{{count}} hour", nil); err != nil {
 		t.Fatal(err)
 	}
 	cs, _ := os.ReadFile(filepath.Join(tool.Root, "locales/cs.json"))
@@ -244,13 +244,17 @@ func TestScanSkipsTestSources(t *testing.T) {
 		"src/__tests__/c.ts": "t('From __tests__');\n",
 		"src/i18n_test.go":   "l.T(\"Hello {{name}}\")\n",
 		"src/testdata/d.go":  "l.T(\"From testdata\")\n",
+		// a generated key union quotes every key; declarations are never usage
+		"src/translation-keys.d.ts": "export type Key = 'Save' | 'Real key';\n",
+		// another checkout of the repo: never read, so never rewritten by a rename
+		"src/.worktrees/wt/a.ts": "t('Save'); t('From a worktree');\n",
 	})
 	res, err := tool.Scan("m", false, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.FilesScanned != 1 || strings.Join(res.Missing, "|") != "Real key" || res.OrphanTotal != 1 {
-		t.Fatalf("test sources are neither extracted nor counted as usage (Save stays an orphan): %+v", res)
+		t.Fatalf("test sources and .d.ts files are neither extracted nor counted as usage (Save stays an orphan): %+v", res)
 	}
 }
 
@@ -497,5 +501,101 @@ func TestWriteReceiptReportsAfterWrite(t *testing.T) {
 	res, err = tool.Set("dict", "meta.title", map[string]string{"cs": "FixIt CZ3"})
 	if d, ok := err.(*Diag); !ok || d.Code != DiagAfterWriteFailed || res.AfterWrite == nil || res.AfterWrite.OK {
 		t.Fatalf("failed afterWrite must still return the receipt: %v %+v", err, res)
+	}
+}
+
+// A JSON key holding a dot (an API failure code such as `bankid.x`) is one
+// segment; before the escaped grammar grep printed it as two, and get, set,
+// rm and check all walked a path that does not exist (vt-2931).
+func TestDottedSegmentKeys(t *testing.T) {
+	tool := fixture(t)
+	for _, l := range []string{"en", "cs"} {
+		body := "{\n  \"codes\": {\n    \"bankid.x\": {\n      \"title\": \"T-" + l + "\"\n    }\n  },\n  \"meta\": {\n    \"title\": \"FixIt\"\n  }\n}\n"
+		if err := os.WriteFile(filepath.Join(tool.Root, "dict", l+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, err := tool.Grep("dict", "T-cs", nil, 10)
+	if err != nil || g.Total != 1 || g.Hits[0].Key != `codes.bankid\.x.title` {
+		t.Fatalf("grep prints the escaped key: %v %+v", err, g)
+	}
+	if v, err := tool.Get("dict", g.Hits[0].Key); err != nil || v.Values["cs"] != "T-cs" || v.Key != `codes.bankid\.x.title` {
+		t.Fatalf("the printed key pastes into get: %v %+v", err, v)
+	}
+	if problems, err := tool.Check("dict"); err != nil || len(problems) != 0 {
+		t.Fatalf("no false missing for a dotted segment: %v %+v", err, problems)
+	}
+	_, err = tool.Get("dict", "codes.bankid.x.title") // the shell ate the backslash
+	if d, ok := err.(*Diag); !ok || d.Code != DiagKeyMissing || d.Fix != `lok get 'codes.bankid\.x.title' --catalog=dict` {
+		t.Fatalf("did-you-mean names the exact escaped command, never resolves: %v", err)
+	}
+	if _, err := tool.Get("dict", `codes.bankid\x.title`); err == nil || err.(*Diag).Code != DiagConfigInvalid {
+		t.Fatalf("an unknown escape is refused: %v", err)
+	}
+	_, err = tool.Add("dict", "codes.bankid.y.title", map[string]string{"en": "Y", "cs": "Y"})
+	if d, ok := err.(*Diag); !ok || d.Code != DiagConfigInvalid || !strings.Contains(d.Detail, `'codes.bankid\.y.title'`) {
+		t.Fatalf("a new `bankid` object beside dotted siblings is refused, naming the escaped key: %v", err)
+	}
+	if _, err := tool.Add("dict", `codes.bankid\.y.title`, map[string]string{"en": "Y", "cs": "Y"}); err != nil {
+		t.Fatal(err)
+	}
+	if cs, _ := os.ReadFile(filepath.Join(tool.Root, "dict/cs.json")); !strings.Contains(string(cs), `"bankid.y": {`) {
+		t.Fatalf("the escaped add writes one dotted segment:\n%s", cs)
+	}
+	if _, err := tool.Set("dict", `codes.bankid\.x.title`, map[string]string{"cs": "T2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Rm("dict", `codes.bankid\.x`, nil); code(err) != DiagKeyMissing {
+		t.Fatalf("a container is no key: rm never drops a subtree: %v", err)
+	}
+	if res, err := tool.Rm("dict", `codes.bankid\.x.title`, nil); err != nil || strings.Join(res.Locales, ",") != "en,cs" {
+		t.Fatalf("rm: %v %+v", err, res)
+	}
+	// english-as-key keys are verbatim: a trailing dot is text, never an escape.
+	if _, err := tool.Add("mobile", "Save.", map[string]string{"cs": "Uložit."}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := tool.Grep("mobile", `Uložit\.`, nil, 10); g.Total != 1 || g.Hits[0].Key != "Save." {
+		t.Fatalf("english-as-key keys are never escaped: %+v", g)
+	}
+}
+
+// vt-2931 symptom 2: an inert en `_few` variant can go without the cs plurals.
+func TestRmLocaleScope(t *testing.T) {
+	tool := fixture(t)
+	c, _ := LoadCatalog(tool.Root, "mobile", tool.Config.Catalogs["mobile"])
+	if err := c.Put("en", "{{count}} hour_few", "{{count}} hour_few"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Rm("mobile", "{{count}} hour_few", []string{"en"})
+	if err != nil || strings.Join(res.Locales, ",") != "en" || strings.Join(res.Written, ",") != "locales/en.json" {
+		t.Fatalf("rm --locale en touches en only: %v %+v", err, res)
+	}
+	v, _ := tool.Get("mobile", "{{count}} hour")
+	if _, ok := v.Values["en_few"]; ok || v.Values["cs_few"] != "{{count}} hodiny" {
+		t.Fatalf("en _few gone, cs _few kept: %+v", v)
+	}
+	if _, err := tool.Rm("mobile", "{{count}} hour_few", []string{"en"}); err == nil || err.(*Diag).Code != DiagKeyMissing {
+		t.Fatalf("absent in the scoped locale is KEY_MISSING: %v", err)
+	}
+	if _, err := tool.Rm("mobile", "Save", []string{"de"}); err == nil || err.(*Diag).Code != DiagLocaleUnknown {
+		t.Fatalf("an unknown locale is refused: %v", err)
+	}
+	// A key held only outside the scope is no misspelling: the fix must not
+	// be the unscoped rm that deletes it there; a real one keeps the scope.
+	for _, l := range []string{"en", "cs"} {
+		body := "{\n  \"codes\": {\n    \"bankid.x\": \"X\"" + map[string]string{"en": "", "cs": ",\n    \"only\": \"cs\""}[l] + "\n  }\n}\n"
+		if err := os.WriteFile(filepath.Join(tool.Root, "dict", l+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tool.Rm("dict", "codes.only", []string{"en"}); err == nil || err.(*Diag).Fix != "lok grep codes.only" {
+		t.Fatalf("no did-you-mean for the key itself: %v", err)
+	}
+	if _, err := tool.Rm("dict", "codes.bankid.x", []string{"en"}); err == nil || err.(*Diag).Fix != `lok rm 'codes.bankid\.x' --catalog=dict --locale en` {
+		t.Fatalf("the did-you-mean keeps --locale: %v", err)
 	}
 }

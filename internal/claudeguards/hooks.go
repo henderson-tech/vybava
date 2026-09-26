@@ -54,6 +54,8 @@ var Hooks = []HookWiring{
 	{Event: "SessionEnd", Command: hookBin + " swarm-teardown", Timeout: 20},
 	{Event: "SessionEnd", Command: hookBin + " browser-teardown", Timeout: 10},
 	{Event: "SessionEnd", Command: hookBin + " reap", Timeout: 20},
+	// Last, and the longest budget: a multi-hundred-MB session takes seconds.
+	{Event: "SessionEnd", Command: hookBin + " redact-session", Timeout: 60},
 }
 
 // retiredHook is a wiring an older manifest installed and the verb of the

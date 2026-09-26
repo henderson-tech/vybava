@@ -3,6 +3,7 @@ package gitkit
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -37,5 +38,27 @@ func TestSelectPRs(t *testing.T) {
 	want := []SelectedPR{{1, "feat-a", "CHANGES_REQUESTED"}, {2, "feat-b", "1 unresolved thread"}}
 	if got := selectPRs(nodes, "me"); !slices.Equal(got, want) {
 		t.Fatalf("selectPRs = %+v", got)
+	}
+}
+
+// list-prs takes the repo anchor only; anything else is refused before a gh call.
+func TestListPRsArgs(t *testing.T) {
+	for _, argv := range [][]string{{"--repo", "/abs"}, {"--repo=/abs"}, nil} {
+		if _, _, err := listPRsArgs.parse("list-prs", argv); err != nil {
+			t.Errorf("parse(%q): %v", argv, err)
+		}
+	}
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"all", "--repo", "/abs"}, `unexpected argument "all"`},
+		{[]string{"--author", "me"}, "unknown argument --author"},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runListPRs(tc.argv, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) ||
+			!strings.Contains(stderr.String(), listPRsArgs.usage) || stdout.Len() != 0 {
+			t.Errorf("list-prs %q: exit %d, stderr %q, want %q + usage", tc.argv, code, stderr.String(), tc.want)
+		}
 	}
 }

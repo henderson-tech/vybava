@@ -47,6 +47,13 @@ func sourceRuleIDs(t *testing.T) map[string]bool {
 		}
 		ids["secrets:"+name] = true
 	}
+	for _, cmd := range []string{"printenv MAIL_PASSWORD", "echo ${#MAIL_PASSWORD}", `echo "$API_TOKEN"`} {
+		name := secretPrintMatch(cmd)
+		if name == "" {
+			t.Fatalf("secretPrintMatch(%q) matched nothing; the secrets table changed shape", cmd)
+		}
+		ids["secrets:"+name] = true
+	}
 	return ids
 }
 

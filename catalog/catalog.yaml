@@ -157,6 +157,18 @@ items:
     description: Hold a repo's pull_request workflows to the org skip-ci standard — every job carries the job-level `skip-ci` label guard (a labelled PR runs nothing, its checks read as skipped); check reports guarded/missing/wrap/manual per job, apply inserts and AND-wraps by line edits and never touches a multi-line condition. The labels themselves are repolicy's default policy; prm --admin applies them.
     applet: skipci
 
+  - id: redact
+    kind: applet
+    status: experimental
+    description: Find and redact secrets leaked into agent conversation history — Claude Code sessions with their subagents, workflow journals, persisted tool results and task output, Codex rollouts, prompt history. Reports file · line · detector · masked shape, never a value; --apply overwrites each span in place with a same-length [REDACTED:<detector>] so JSONL stays valid, cursors hold and a live session keeps appending. --known-env / --known-dotenv add exact values no pattern would catch.
+    applet: redact
+
+  - id: tsgate
+    kind: applet
+    status: experimental
+    description: Typecheck on the TypeScript 7 native compiler while `typescript` stays 6 or 5.9 for the tools that import the compiler API TS 7 does not ship — finds the TS 7 alias devDependency by version and execs its native binary (its bin is also named tsc), flattens a tsconfig chain TS 7 refuses (baseUrl, moduleResolution node10, outDir without rootDir) into a derived config on every run, and `parity` compares both compilers' diagnostics with wall times.
+    applet: tsgate
+
   - id: handoffs
     kind: applet
     status: experimental
@@ -397,6 +409,8 @@ groups:
       - tokentime
       - repolicy
       - skipci
+      - redact
+      - tsgate
       - hotfix
       - hotfix-lane
       - readiness
@@ -494,6 +508,8 @@ groups:
       - tokentime
       - repolicy
       - skipci
+      - redact
+      - tsgate
       - hotfix
       - hotfix-lane
       - readiness

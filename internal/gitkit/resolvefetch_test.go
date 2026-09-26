@@ -2,6 +2,7 @@ package gitkit
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -17,19 +18,60 @@ func TestParsePrArgs(t *testing.T) {
 		{[]string{"142", "in", "acme/app"}, Selector{Kind: "numberInRepo", PR: 142, Owner: "acme", Repo: "app"}},
 		{[]string{"https://github.com/acme/app/pull/142"}, Selector{Kind: "url", Owner: "acme", Repo: "app", PR: 142}},
 		{[]string{"latest", "by", "@alice"}, Selector{Kind: "latestByAuthor", Author: "alice"}},
-		// --repo never leaks into the selector
-		{[]string{"142", "--repo", "/abs/app", "--repo=/abs/app"}, Selector{Kind: "number", PR: 142}},
+		// --repo never leaks into the selector, in either spelling
+		{[]string{"142", "--repo", "/abs/app"}, Selector{Kind: "number", PR: 142}},
+		{[]string{"142", "--repo=/abs/app"}, Selector{Kind: "number", PR: 142}},
 	} {
-		if got, _, err := parsePrArgs(tc.argv); err != nil || got != tc.want {
+		if got, _, _, err := parsePrArgs(tc.argv); err != nil || got != tc.want {
 			t.Errorf("parsePrArgs(%q) = %+v, %v", tc.argv, got, err)
 		}
 	}
-	sel, flags, _ := parsePrArgs([]string{"142", "--once", "--every", "5m", "--include-resolved", "--no-conversation"})
+	sel, flags, _, _ := parsePrArgs([]string{"142", "--once", "--every", "5m", "--include-resolved", "--no-conversation"})
 	if sel.PR != 142 || flags != (FetchFlags{Once: true, IncludeResolved: true, NoConversation: true, Every: "5m"}) {
 		t.Errorf("flags = %+v", flags)
 	}
-	if _, _, err := parsePrArgs([]string{"garble", "garble"}); err == nil || err.Error() != `Unrecognized PR selector: "garble garble"` {
+	if _, _, _, err := parsePrArgs([]string{"garble", "garble"}); err == nil || !strings.HasPrefix(err.Error(), `Unrecognized PR selector: "garble garble"`) {
 		t.Errorf("garble: %v", err)
+	}
+}
+
+// resolve-fetch takes the documented shapes and refuses what it does not
+// take, instead of reading it into the selector or dropping it.
+func TestResolveFetchRefusesWhatItDoesNotTake(t *testing.T) {
+	for _, tc := range []struct {
+		argv   []string
+		pr     int
+		anchor []string
+	}{
+		{[]string{"42", "--repo", "/abs"}, 42, []string{"--repo", "/abs"}},
+		{[]string{"--repo", "/abs", "42", "--include-resolved", "--no-conversation"}, 42, []string{"--repo", "/abs"}},
+		{[]string{"https://github.com/acme/app/pull/42/files", "--every=5m", "--once"}, 42, nil},
+		{[]string{"https://github.com/acme/app/pull/42."}, 42, nil}, // pasted from a sentence
+		{[]string{"https://github.com/acme/app/pull/42)"}, 42, nil},
+		{nil, 0, nil},
+	} {
+		sel, _, anchor, err := parsePrArgs(tc.argv)
+		if err != nil || sel.PR != tc.pr || !slices.Equal(anchor, tc.anchor) {
+			t.Errorf("parsePrArgs(%q) = %+v %q %v", tc.argv, sel, anchor, err)
+		}
+	}
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"42", "--no-cr"}, "unknown argument --no-cr"},
+		{[]string{"42", "--repo", "/a", "--repo=/b"}, "--repo is given twice"},
+		{[]string{"42", "--auto"}, "unknown argument --auto"},
+		{[]string{"42", "43"}, `Unrecognized PR selector: "42 43"`},
+		{[]string{"https://github.com/acme/app/pull/42", "43"}, "Unrecognized PR selector"},
+		{[]string{"https://github.com/acme/app/pull/42abc"}, "Unrecognized PR selector"},
+		{[]string{"42", "in", "acme/app", "43"}, `unexpected argument "43"`},
+	} {
+		var out, errb strings.Builder
+		if code := runResolveFetch(tc.argv, &out, &errb); code != 1 || !strings.Contains(errb.String(), tc.want) ||
+			!strings.Contains(errb.String(), resolveFetchArgs.usage) || out.Len() != 0 {
+			t.Errorf("resolve-fetch %q: exit %d, stderr %q, want %q + usage", tc.argv, code, errb.String(), tc.want)
+		}
 	}
 }
 

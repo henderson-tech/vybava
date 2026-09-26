@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // TestMain keeps every test from spawning the detached visibility refresh: it
@@ -49,12 +51,12 @@ func TestSecretPatterns(t *testing.T) {
 	}
 	pass := []string{"+const skill = 'sk-illful'", "+// mention AKIA keys in docs", "+x = 1"}
 	for _, l := range block {
-		if !reSecret.MatchString(l) {
+		if !secretscan.ContainsToken(l) {
 			t.Errorf("should flag %q", l)
 		}
 	}
 	for _, l := range pass {
-		if reSecret.MatchString(l) {
+		if secretscan.ContainsToken(l) {
 			t.Errorf("should pass %q", l)
 		}
 	}

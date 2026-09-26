@@ -35,8 +35,11 @@ func TestTDDClassifyVerb(t *testing.T) {
 		stdout, stderr string
 	}{
 		{[]string{"--json", "go.sum"}, 0, "deps\n", ""},
-		{[]string{"src/a.ts"}, 0, "null\n", ""},
-		{nil, 1, "", "error: usage: tdd-classify.ts <path>\n"},
+		{[]string{"src/a.ts"}, 0, "null\n", ""}, // prm references/verdicts.md
+		{nil, 1, "", "error: usage: vybava gitkit tdd-classify <path>\n"},
+		// a second path or an unknown flag is refused, never dropped
+		{[]string{"go.sum", "src/a.ts"}, 1, "", "error: tdd-classify: unexpected argument \"src/a.ts\"\nusage: vybava gitkit tdd-classify <path>\n"},
+		{[]string{"--repo", "/abs", "go.sum"}, 1, "", "error: tdd-classify: unknown argument --repo\nusage: vybava gitkit tdd-classify <path>\n"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := runTDDClassify(tc.args, &stdout, &stderr); code != tc.code || stdout.String() != tc.stdout || stderr.String() != tc.stderr {

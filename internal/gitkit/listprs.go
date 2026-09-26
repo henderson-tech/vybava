@@ -104,8 +104,18 @@ func ghRepo(opts execOpts) (owner, name string, err error) {
 	return owner, name, nil
 }
 
+// listPRsArgs: the repo anchor and nothing else - the viewer and the filter
+// are fixed, so a stray `all` or `--author` is refused, never ignored.
+var listPRsArgs = verbArgs{values: []string{"repo"}, usage: "usage: vybava gitkit list-prs [--repo <path>]"}
+
 func runListPRs(args []string, stdout, stderr io.Writer) int {
-	root, err := repoRoot(args)
+	flags, _, err := listPRsArgs.parse("list-prs", args)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	// --repo=<v>, never --repo <v>: an empty value must fail resolution,
+	// not fall back to the cwd's repository.
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}

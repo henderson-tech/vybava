@@ -127,9 +127,11 @@ when git's line merge is clean (it keeps duplicate keys); a migration the base
 has is never renamed. Docs: `docs/merge-assist.md`.
 
 `internal/gitkit` is the git family's deterministic layer: skills call
-`vybava gitkit <script>`, never a file path; a verb's argv, stdout (JSON key
+`vybava gitkit <script>`, never a file path; a verb's stdout (JSON key
 order), stderr and exit code are the contract, byte-identical to the Node
-scripts it replaced. Shell out, emit JSON and parse numbers only through
+scripts it replaced for every documented invocation, and its argv is declared
+in a `verbArgs` (`args.go`) that refuses anything else - never a hand scan of
+argv that ignores what it does not know. Shell out, emit JSON and parse numbers only through
 `native.go`'s Node-compatible helpers (`execFile`, `writeJSON`, `jsString`,
 `jsNumber`) — `docs/gitkit.md`. The git-family skills are canonical HERE; a
 personal `~/.claude` copy is a symlink, never a fork.
@@ -158,6 +160,18 @@ classifies by the kernel route to the tunnel's DNS, never by WireGuard.app or
 profile reaches root only through the `_apply` child's FIFO and `sudo` stdin:
 never argv, never a user-side file. Privileged work is a `[]Step` plan
 (`--dry-run` prints it), so tests render plans and never need root.
+
+`internal/secretscan` is the ONE catalogue of secret shapes — claude-guards'
+commit scan, memorylint and `redact` all read it; a new shape is a row there.
+A finding is rendered through `Quote`/`Shape`/`Fill`, never with its value or
+a prefix of it: a lint or guard message is tool output, and tool output is the
+transcript. `internal/redact` rewrites agent history SAME-LENGTH IN PLACE,
+compare-before-write, inside JSON strings only — a temp file + rename would
+drop a live session's appends and shift every `internal/transcripts` cursor.
+`claudeguards/secretprint.go` is the prevention half; replay real transcripts
+before widening one of its rules (the first cut blocked 2,000+ benign commands
+in 14 days). `claude-guards redact-session` (SessionEnd) applies it to every
+ending session. Docs: `docs/redact.md`.
 
 `internal/skipci` is the org skip standard (`docs/skip-ci.md`): two labels
 (`skip-ci`, `eve-ignore`) and ONE job-level guard every `pull_request` job

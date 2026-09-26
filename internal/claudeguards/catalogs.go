@@ -60,6 +60,7 @@ and editing it by hand desynchronises the other locales.
 
 Query:  lok get '<key>' --json   ·   lok grep '<pattern>' --json   ·   lok missing --json
 Write:  lok add '<key>' --tr cs='…' --json   ·   lok set … · lok rm …
+Bulk:   lok sub '<re>' '<replacement>' --json (dry run; next = the exact write)   ·   lok mv '<old>' '<new>' (key + call sites)
 Source: lok scan --json   (missing literal keys + probable orphans)`
 
 func catalogDenial(abs string) *Denial {

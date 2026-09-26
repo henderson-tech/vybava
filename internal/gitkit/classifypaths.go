@@ -100,8 +100,22 @@ func parsePorcelain(out string) []string {
 	return paths
 }
 
+// classifyPathsArgs is classify-paths' argv: the repo anchor and nothing
+// else — the paths come from `git status --porcelain`, never argv, so a path
+// passed here is refused rather than silently not classified. --json is
+// accepted because the output always is JSON.
+var classifyPathsArgs = verbArgs{
+	values: []string{"repo"},
+	bools:  []string{"json"},
+	usage:  "usage: vybava gitkit classify-paths [--repo <abs repo path>]",
+}
+
 func runClassifyPaths(args []string, stdout, stderr io.Writer) int {
-	root, err := repoRoot(args)
+	flags, _, err := classifyPathsArgs.parse("classify-paths", args)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	root, err := repoRoot(repoAnchor(flags))
 	if err != nil {
 		return fail(stderr, err)
 	}
