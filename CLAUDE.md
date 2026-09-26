@@ -154,6 +154,13 @@ private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
 `docs/envbridge.md` before using its sensitive read output.
 
+`internal/vpn` runs WireGuard tunnels as LaunchDaemons (`docs/vpn.md`). Status
+classifies by the kernel route to the tunnel's DNS, never by WireGuard.app or
+`scutil --nc`, which say Disconnected for every wg-quick tunnel. The vault
+profile reaches root only through the `_apply` child's FIFO and `sudo` stdin:
+never argv, never a user-side file. Privileged work is a `[]Step` plan
+(`--dry-run` prints it), so tests render plans and never need root.
+
 `internal/secretscan` is the ONE catalogue of secret shapes — claude-guards'
 commit scan, memorylint and `redact` all read it; a new shape is a row there.
 A finding is rendered through `Quote`/`Shape`/`Fill`, never with its value or

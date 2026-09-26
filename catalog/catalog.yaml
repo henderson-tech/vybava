@@ -1,6 +1,12 @@
 schema_version: 1
 
 items:
+  - id: vpn
+    kind: applet
+    status: experimental
+    description: Persistent macOS WireGuard tunnels as LaunchDaemons from Onyx profiles, with a status that reports the route truth beside WireGuard.app's view.
+    applet: vpn
+
   - id: worktime
     kind: applet
     status: experimental
@@ -392,6 +398,7 @@ groups:
     description: Early packages that are useful but still evolving.
     items:
       - worktime
+      - vpn
       - lok
       - menubar-doctor
       - claude-guards
@@ -489,6 +496,7 @@ groups:
       - pultik
       - devbox
       - worktime
+      - vpn
       - lok
       - merge-assist
       - menubar-doctor
