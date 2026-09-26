@@ -199,6 +199,14 @@ func TestShapeMasksEveryNeighbourButVariableNames(t *testing.T) {
 	if shape = Shape(text, Find(text, All, &k)[0]); strings.Contains(shape, "TOP_SECRET") {
 		t.Errorf("Shape = %q shows an uppercase value", shape)
 	}
+	text = `echo "TOP_SECRET" = knownpart`
+	if shape = Shape(text, Find(text, All, &k)[0]); strings.Contains(shape, "TOP_SECRET") {
+		t.Errorf("Shape = %q shows a quoted uppercase argument", shape)
+	}
+	text = `{"MAIL_PASSWORD": "knownpart"}`
+	if shape = Shape(text, Find(text, All, &k)[0]); !strings.Contains(shape, `"MAIL_PASSWORD":`) {
+		t.Errorf("Shape = %q lost a JSON key", shape)
+	}
 }
 
 func TestAddDotenvReportsALineItCannotRead(t *testing.T) {

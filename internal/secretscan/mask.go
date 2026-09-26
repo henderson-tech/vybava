@@ -93,10 +93,13 @@ func Shape(text string, s Span) string {
 		var b strings.Builder
 		last := 0
 		for _, w := range reWord.FindAllStringIndex(v, -1) {
-			// A name only in name position — `=` or `:` next, through a
-			// closing quote — else it is an uppercase value.
+			// A name only in name position — NAME= · NAME: · NAME = (bare)
+			// · "NAME": (a quoted key, colon right after) — else it is an
+			// uppercase value; `"TOP_SECRET" = x` quotes an argument.
+			rest := v[w[1]:]
 			named := reVarName.MatchString(v[w[0]:w[1]]) &&
-				strings.IndexAny(strings.TrimLeft(v[w[1]:], `"' `), "=:") == 0
+				(strings.IndexAny(strings.TrimLeft(rest, " \t"), "=:") == 0 ||
+					len(rest) > 1 && (rest[0] == '"' || rest[0] == '\'') && rest[1] == ':')
 			if w[1]-w[0] >= 3 && !named {
 				b.WriteString(v[last:w[0]])
 				b.WriteString("<w>")
