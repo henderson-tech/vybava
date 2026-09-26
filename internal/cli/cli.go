@@ -146,6 +146,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "posta" {
 		return rt.postaApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "vpn" {
+		return rt.vpnApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "repolicy" {
 		return rt.repolicyApplet(), nil
 	}
@@ -206,6 +209,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.memoCommand("memo"),
 		rt.postaCommand("posta"),
 		rt.repolicyCommand("repolicy"),
+		rt.vpnCommand(),
 		rt.configCommand(),
 		rt.browseCommand(),
 	)

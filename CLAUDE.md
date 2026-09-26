@@ -152,6 +152,13 @@ private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
 `docs/envbridge.md` before using its sensitive read output.
 
+`internal/vpn` runs WireGuard tunnels as LaunchDaemons (`docs/vpn.md`). Status
+classifies by the kernel route to the tunnel's DNS, never by WireGuard.app or
+`scutil --nc`, which say Disconnected for every wg-quick tunnel. The vault
+profile reaches root only through the `_apply` child's FIFO and `sudo` stdin:
+never argv, never a user-side file. Privileged work is a `[]Step` plan
+(`--dry-run` prints it), so tests render plans and never need root.
+
 `internal/skipci` is the org skip standard (`docs/skip-ci.md`): two labels
 (`skip-ci`, `eve-ignore`) and ONE job-level guard every `pull_request` job
 carries — job-level because a workflow-level skip leaves required checks
