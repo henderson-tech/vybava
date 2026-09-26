@@ -45,7 +45,8 @@ var (
 	reUpperWord = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,}\b`)
 	// Ways to read an env value by a name held elsewhere in the command.
 	reEnvAccessor = regexp.MustCompile(`\bprintenv\b|\\?\$\{!|process\.env|os\.environ|\bgetenv\b|os\.Getenv|System\.getenv|Deno\.env|\bENV\[`)
-	rePrintenvArg = regexp.MustCompile(`\bprintenv[ \t]+((?:-[0-9A-Za-z]+[ \t]+)*)([^ \t;|&)<>]+)`)
+	// printenv and its operands, up to the next control operator or redirect.
+	rePrintenvArgs = regexp.MustCompile(`\bprintenv((?:[ \t]+[^ \t;|&)<>\n]+)+)`)
 	// NAME=… — the value is read up to the command's end to see its source.
 	reAssign = regexp.MustCompile(`(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=`)
 	// A fragment taken by shell expansion: ${#x}, ${x:0:8}, ${x: -4}.
@@ -111,10 +112,16 @@ func secretPrintMatch(cmd string) string {
 		if !p.prints {
 			continue
 		}
-		for _, m := range rePrintenvArg.FindAllStringSubmatchIndex(p.text, -1) {
-			arg := strings.Trim(p.text[m[4]:m[5]], `"'\`)
-			if (secretscan.SecretName(arg) || strings.HasPrefix(arg, "$") && secretNamed) && !consumedInPayload(p.text, m[0], m[1]) {
-				return "printenv-secret"
+		for _, m := range rePrintenvArgs.FindAllStringSubmatchIndex(p.text, -1) {
+			// Every operand prints: `printenv APP_URL MAIL_PASSWORD`, `-- X`.
+			for _, arg := range strings.Fields(p.text[m[2]:m[3]]) {
+				arg = strings.Trim(arg, `"'\`)
+				if strings.HasPrefix(arg, "-") {
+					continue // a flag, or the -- that ends them
+				}
+				if (secretscan.SecretName(arg) || strings.HasPrefix(arg, "$") && secretNamed) && !consumedInPayload(p.text, m[0], m[1]) {
+					return "printenv-secret"
+				}
 			}
 		}
 	}
@@ -190,13 +197,18 @@ func fragmentOfSecret(code string, secretNamed bool) bool {
 var printerCommands = map[string]bool{"cat": true, "bat": true, "less": true, "more": true, "head": true,
 	"tail": true, "sed": true, "awk": true, "grep": true, "egrep": true, "rg": true, "strings": true,
 	"xxd": true, "od": true, "cut": true, "wc": true, "tee": true, "base64": true, "tr": true, "rev": true, "fold": true,
+	"sort": true, "uniq": true, "tac": true, "nl": true, "paste": true, "column": true, "fmt": true, "pr": true,
+	"expand": true, "iconv": true, "jq": true, "yq": true, "hexdump": true, "openssl": true, "perl": true, "sd": true,
 	"echo": true, "printf": true}
 
 // consumed reports whether the output leaving a command — rest starts at
 // the operator after it — is taken away from the transcript: redirected to a
 // file, or piped into a pipeline whose LAST stage is not itself a printer
 // (`| tr -d '\n' | docker login --password-stdin` consumes; `| cat`,
-// `| tee f` print).
+// `| tee f` print). printerCommands is a denylist on purpose: an allowlist of
+// consumers would refuse every legitimate pipe into a tool it does not know.
+// An unknown last stage is assumed to consume; what slips through is scrubbed
+// by redact-session at SessionEnd.
 func consumed(rest string) bool {
 	rest = strings.TrimLeft(rest, " \t")
 	switch {

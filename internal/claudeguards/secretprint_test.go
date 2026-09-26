@@ -21,6 +21,10 @@ func TestSecretPrintMatch(t *testing.T) {
 		{"printenv secret through docker", "docker exec app printenv STRIPE_SECRET", "printenv-secret"},
 		{"printenv dynamic with secret list", `for v in APP_URL DB_PASSWORD; do printenv "$v"; done`, "printenv-secret"},
 		{"printenv non-secret", "printenv APP_URL MAIL_HOST", ""},
+		{"printenv secret as a later operand", "printenv APP_URL MAIL_PASSWORD", "printenv-secret"},
+		{"printenv secret after --", "printenv -- MAIL_PASSWORD", "printenv-secret"},
+		{"printenv secret through sort", "printenv MAIL_PASSWORD | sort", "printenv-secret"},
+		{"echo secret through sort", `echo "$API_TOKEN" | sort`, "secret-echo"},
 		{"printenv dynamic, no secret named", `for v in APP_URL MAIL_HOST; do printenv "$v"; done`, ""},
 
 		// --- fragments ---
