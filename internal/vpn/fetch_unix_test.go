@@ -126,10 +126,20 @@ func TestDeliverOpensOnlyAFIFOItsReaderHolds(t *testing.T) {
 	if err := deliver(link); err == nil {
 		t.Fatal("a symlink must be refused, even to a FIFO")
 	}
-	if fd, err := syscall.Open(fifo, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-		syscall.Close(fd) // release the reader
+	// Release the reader with an empty writer, retried: it may not be in its
+	// open yet (the same dance Fetch does).
+	var b []byte
+	for waiting := true; waiting; {
+		if fd, err := syscall.Open(fifo, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			syscall.Close(fd)
+		}
+		select {
+		case b = <-got:
+			waiting = false
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
-	if b := <-got; len(b) != 0 {
+	if len(b) != 0 {
 		t.Fatal("the profile went through a symlink")
 	}
 }
