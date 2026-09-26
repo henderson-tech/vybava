@@ -37,54 +37,58 @@ type FetchFlags struct {
 }
 
 var (
-	selectorURL    = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+	// Anchored like the other forms, with room for a /files, ?query or
+	// #fragment tail: a word after the URL used to be dropped silently.
+	// Anchored so a trailing word is refused (`.../pull/42 43` once fetched
+	// 42), with sentence punctuation from a pasted URL (`.../pull/42.`) allowed.
+	selectorURL    = regexp.MustCompile(`^https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)(?:[/?#]\S*)?[.,;:!?)\]}>'"]*$`)
 	selectorInRepo = regexp.MustCompile(`^#?(\d+)\s+in\s+([^/\s]+)/([^/\s]+)$`)
 	selectorLatest = regexp.MustCompile(`(?i)^latest\s+by\s+@?(\S+)$`)
 	selectorNumber = regexp.MustCompile(`^#?(\d+)$`)
 )
 
-func parsePrArgs(argv []string) (Selector, FetchFlags, error) {
-	var flags FetchFlags
-	positional := []string{}
-	for i := 0; i < len(argv); i++ {
-		switch a := argv[i]; {
-		case a == "--once":
-			flags.Once = true
-		case a == "--include-resolved":
-			flags.IncludeResolved = true
-		case a == "--no-conversation":
-			flags.NoConversation = true
-		case a == "--every":
-			i++
-			if i < len(argv) {
-				flags.Every = argv[i]
-			}
-		// --repo belongs to the repo anchor; never let the path leak into
-		// the PR selector.
-		case a == "--repo":
-			i++
-		case strings.HasPrefix(a, "--repo="):
-		default:
-			positional = append(positional, a)
-		}
+// resolveFetchArgs: a selector spans at most three words (`<N> in
+// <owner>/<repo>`, `latest by @<user>`); the selector grammar refuses every
+// other combination.
+var resolveFetchArgs = verbArgs{
+	values:      []string{"repo", "every"},
+	bools:       []string{"once", "include-resolved", "no-conversation"},
+	positionals: 3,
+	usage: "usage: vybava gitkit resolve-fetch [<N> | #<N> | <N> in <owner>/<repo> | <PR url> | latest by @<user>]" +
+		" [--include-resolved] [--no-conversation] [--once] [--every <dur>] [--repo <path>]",
+}
+
+// parsePrArgs reads resolve-fetch's argv into the selector, the verb's flags
+// and the anchor handed to repoRoot (nil = GIT_SKILL_REPO / cwd). A flag's
+// value never leaks into the selector.
+func parsePrArgs(argv []string) (Selector, FetchFlags, []string, error) {
+	parsed, positional, err := resolveFetchArgs.parse("resolve-fetch", argv)
+	if err != nil {
+		return Selector{}, FetchFlags{}, nil, err
 	}
+	has := func(name string) bool { _, ok := parsed[name]; return ok }
+	flags := FetchFlags{
+		Once: has("once"), IncludeResolved: has("include-resolved"),
+		NoConversation: has("no-conversation"), Every: parsed["every"],
+	}
+	anchor := repoAnchor(parsed)
 	joined := strings.TrimSpace(strings.Join(positional, " "))
 	num := func(s string) int { n, _ := strconv.Atoi(s); return n }
 	switch {
 	case joined == "":
-		return Selector{Kind: "current"}, flags, nil
+		return Selector{Kind: "current"}, flags, anchor, nil
 	case selectorURL.MatchString(joined):
 		m := selectorURL.FindStringSubmatch(joined)
-		return Selector{Kind: "url", Owner: m[1], Repo: m[2], PR: num(m[3])}, flags, nil
+		return Selector{Kind: "url", Owner: m[1], Repo: m[2], PR: num(m[3])}, flags, anchor, nil
 	case selectorInRepo.MatchString(joined):
 		m := selectorInRepo.FindStringSubmatch(joined)
-		return Selector{Kind: "numberInRepo", PR: num(m[1]), Owner: m[2], Repo: m[3]}, flags, nil
+		return Selector{Kind: "numberInRepo", PR: num(m[1]), Owner: m[2], Repo: m[3]}, flags, anchor, nil
 	case selectorLatest.MatchString(joined):
-		return Selector{Kind: "latestByAuthor", Author: selectorLatest.FindStringSubmatch(joined)[1]}, flags, nil
+		return Selector{Kind: "latestByAuthor", Author: selectorLatest.FindStringSubmatch(joined)[1]}, flags, anchor, nil
 	case selectorNumber.MatchString(joined):
-		return Selector{Kind: "number", PR: num(selectorNumber.FindStringSubmatch(joined)[1])}, flags, nil
+		return Selector{Kind: "number", PR: num(selectorNumber.FindStringSubmatch(joined)[1])}, flags, anchor, nil
 	}
-	return Selector{}, flags, fmt.Errorf("Unrecognized PR selector: \"%s\"", joined)
+	return Selector{}, flags, anchor, fmt.Errorf("Unrecognized PR selector: \"%s\"\n%s", joined, resolveFetchArgs.usage)
 }
 
 var filteredBots = []string{"dependabot", "renovate", "codecov", "vercel", "netlify", "github-actions"}
@@ -640,11 +644,11 @@ type FetchCounts struct {
 }
 
 func runResolveFetch(args []string, stdout, stderr io.Writer) int {
-	sel, flags, err := parsePrArgs(args)
+	sel, flags, anchor, err := parsePrArgs(args)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	root, err := repoRoot(args)
+	root, err := repoRoot(anchor)
 	if err != nil {
 		return fail(stderr, err)
 	}

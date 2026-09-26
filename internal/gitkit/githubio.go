@@ -24,20 +24,23 @@ const githubIOUsage = `github-io — mechanical GitHub I/O for the git skills.
 
 Usage: node github-io.ts <subcommand> --key value ...
 
-  reply             --owner O --repo R --pr N --commentId ID --body TEXT
-  comment           --owner O --repo R --pr N --body TEXT
+  reply             --owner O --repo R --pr N --commentId ID --body TEXT|--body-file F
+  comment           --owner O --repo R --pr N --body TEXT|--body-file F
   react             --owner O --repo R --commentId ID [--content +1]
-  review            --owner O --repo R --pr N --event request-changes|comment --body TEXT
+  review            --owner O --repo R --pr N --event request-changes|comment --body TEXT|--body-file F
   resolve-thread    --threadId PRRT_...
-  create-pr         --head BRANCH --base BRANCH [--title T] [--body B] [--draft] [--label L]
+  create-pr         --head BRANCH --base BRANCH [--title T] [--body B|--body-file F] [--draft] [--label L]
   find-run          --sha SHA
   watch-run         --runId ID
   failed-logs       --runId ID
   rerun-failed      --runId ID
   detect-workflows  (no flags — scans ./.github/workflows)
 
-Flags are camelCase (--commentId, --threadId, --runId); owner/repo are never
-inferred from the cwd. ` + "`review`" + ` cannot approve, by design.
+Flags are camelCase (--commentId, --threadId, --runId). The API verbs (reply,
+comment, react, review) name the repository with --owner/--repo; create-pr and
+the run verbs act on the repository of the CURRENT DIRECTORY (cd into its
+checkout, or set GIT_SKILL_REPO) and take no --repo. Any flag a subcommand does
+not list is refused. ` + "`review`" + ` cannot approve, by design.
 
 The harness shell is zsh, which does NOT word-split unquoted $VAR — packing
 flags into one variable sends them as a SINGLE argument. Use an array:
@@ -201,32 +204,84 @@ func nodeFSError(err error, syscallName, path string) error {
 
 var whitespace = regexp.MustCompile(`\s`)
 
-// parseFlags reads `--key value` pairs; a valueless flag (next token is a
-// flag, or none) records "", so --draft can sit anywhere.
-func parseFlags(argv []string) (flags, error) {
-	o := flags{}
-	for i := 0; i < len(argv); i++ {
-		key, ok := strings.CutPrefix(argv[i], "--")
-		if !ok {
-			continue
+// githubIOArgs is every flag each subcommand reads (buildGitHubCommand is the
+// consumer); anything else is refused. --body-file is resolved into --body
+// before the build, so the build never sees it.
+var githubIOArgs = map[string]verbArgs{
+	"detect-workflows": {},
+	"find-run":         {values: []string{"sha"}},
+	"watch-run":        {values: []string{"runId"}},
+	"failed-logs":      {values: []string{"runId"}},
+	"rerun-failed":     {values: []string{"runId"}},
+	"reply":            {values: []string{"owner", "repo", "pr", "commentId", "body", "body-file"}},
+	"resolve-thread":   {values: []string{"threadId"}},
+	"comment":          {values: []string{"owner", "repo", "pr", "body", "body-file"}},
+	"react":            {values: []string{"owner", "repo", "commentId", "content"}},
+	"review":           {values: []string{"owner", "repo", "pr", "event", "body", "body-file"}},
+	"create-pr":        {values: []string{"head", "base", "title", "body", "body-file", "label"}, bools: []string{"draft"}},
+}
+
+// githubIOUsageFor is the usage line of one subcommand, for its refusals.
+func githubIOUsageFor(sub string) string {
+	for _, line := range strings.Split(githubIOUsage, "\n") {
+		if strings.HasPrefix(line, "  "+sub+" ") {
+			return "usage: vybava gitkit github-io " + strings.Join(strings.Fields(line), " ")
 		}
-		// Whitespace in a key means several flags arrived glued into ONE argv
-		// token — zsh not word-splitting an unquoted $VAR. Name the real
-		// cause instead of a baffling `missing required field: owner`.
-		if whitespace.MatchString(key) {
+	}
+	return githubIOUsage
+}
+
+// parseFlags reads one subcommand's argv against its declaration: an unknown
+// flag, a stray positional or a --draft given a value is refused, never
+// dropped (a dropped --repo sent a PR to the cwd's repository, a dropped
+// --body-file gave another the commit log as its body).
+func parseFlags(sub string, argv []string) (flags, error) {
+	// Whitespace in a flag NAME means several flags arrived glued into ONE
+	// argv token — zsh not word-splitting an unquoted $VAR. Name the real
+	// cause instead of a baffling `unknown argument` or `missing required
+	// field`. An inline value (`--title=Fix the bug`) may hold spaces.
+	for _, a := range argv {
+		key, ok := strings.CutPrefix(a, "--")
+		if name, _, _ := strings.Cut(key, "="); ok && whitespace.MatchString(name) {
 			return nil, fmt.Errorf("flag arrived as ONE argument with embedded spaces: \"--%s\"\n"+
 				"  The harness shell is zsh, which does NOT word-split unquoted $VAR.\n"+
 				"  Pass the flags literally, or use an array:\n"+
 				"    FLAGS=(--owner o --repo r --pr 1); node github-io.ts <sub> \"${FLAGS[@]}\"", key)
 		}
-		if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
-			i++
-			o[key] = argv[i]
-		} else {
-			o[key] = ""
-		}
 	}
-	return o, nil
+	spec, ok := githubIOArgs[sub]
+	if !ok {
+		return nil, fmt.Errorf("Unknown github-io subcommand: %s", sub)
+	}
+	spec.usage = githubIOUsageFor(sub)
+	parsed, _, err := spec.parse("github-io "+sub, argv)
+	if err != nil {
+		return nil, err
+	}
+	return flags(parsed), nil
+}
+
+// resolveBodyFile turns --body-file into --body: the multi-line body lives in
+// a file, never on a command line zsh may mangle. An empty file is refused -
+// create-pr would otherwise fall back to the commit log without a word.
+func resolveBodyFile(o flags) error {
+	path, ok := o["body-file"]
+	if !ok {
+		return nil
+	}
+	if _, both := o["body"]; both {
+		return errors.New("pass --body or --body-file, not both")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("--body-file: %w", err)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return fmt.Errorf("--body-file %s is empty", path)
+	}
+	delete(o, "body-file")
+	o["body"] = string(raw)
+	return nil
 }
 
 func runGitHubIO(args []string, stdout, stderr io.Writer) int {
@@ -242,6 +297,9 @@ func runGitHubIO(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, githubIOUsage)
 		return 0
 	case "detect-workflows":
+		if _, err := parseFlags(sub, rest); err != nil {
+			return fail(stderr, err)
+		}
 		cwd, err := syscall.Getwd()
 		if err != nil {
 			return fail(stderr, err)
@@ -255,8 +313,11 @@ func runGitHubIO(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	o, err := parseFlags(rest)
+	o, err := parseFlags(sub, rest)
 	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := resolveBodyFile(o); err != nil {
 		return fail(stderr, err)
 	}
 	argv, err := buildGitHubCommand(sub, o)

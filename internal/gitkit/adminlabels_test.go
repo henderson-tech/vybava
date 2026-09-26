@@ -2,6 +2,8 @@ package gitkit
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -30,7 +32,15 @@ func TestPlanAdminLabelsAddsOnlyMissingAndCancelsOnlyLive(t *testing.T) {
 }
 
 func TestAdminLabelsRefusesBadArgv(t *testing.T) {
-	for _, argv := range [][]string{{}, {"--repo", "."}, {"abc"}, {"12", "13"}, {"12", "--bogus"}} {
+	// A row that unexpectedly passes validation must never reach the real gh:
+	// this verb labels PRs and cancels runs (a stray row once labelled a
+	// merged vybava PR). The shim fails loudly instead.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho 'test reached gh' >&2\nexit 97\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, argv := range [][]string{{}, {"--repo", "."}, {"12"}, {"abc"}, {"12", "13"}, {"12", "--bogus"}, {"12", "--repo", ""}, {"12", "--repo", ".", "--repo=."}} {
 		var stderr bytes.Buffer
 		if code := runAdminLabels(argv, &bytes.Buffer{}, &stderr); code == 0 {
 			t.Errorf("%v: exit 0, want a usage error", argv)

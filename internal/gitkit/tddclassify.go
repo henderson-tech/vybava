@@ -47,17 +47,24 @@ func SkipCategory(path string) string {
 	return ""
 }
 
+// tddClassifyArgs is tdd-classify's argv: ONE path. A second path used to be
+// dropped unclassified; --json is accepted (gitkit's own --json lands in a
+// verb's argv) and changes nothing — the answer is one bare word.
+var tddClassifyArgs = verbArgs{
+	bools:       []string{"json"},
+	positionals: 1,
+	usage:       "usage: vybava gitkit tdd-classify <path>",
+}
+
 func runTDDClassify(args []string, stdout, stderr io.Writer) int {
-	path := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "--") {
-			path = a
-			break
-		}
+	_, pos, err := tddClassifyArgs.parse("tdd-classify", args)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	if path == "" {
-		return fail(stderr, errors.New("usage: tdd-classify.ts <path>"))
+	if len(pos) == 0 || pos[0] == "" {
+		return fail(stderr, errors.New(tddClassifyArgs.usage))
 	}
+	path := pos[0]
 	category := SkipCategory(path)
 	if category == "" {
 		category = "null"

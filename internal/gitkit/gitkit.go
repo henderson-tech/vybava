@@ -14,10 +14,9 @@ import "sort"
 // DiagUnknownScript is the closed diagnostic for a verb gitkit lacks.
 const DiagUnknownScript = "GITKIT_UNKNOWN_SCRIPT"
 
-// DiagBadArgs fires when a verb that validates its argv (pr-extensions —
-// the ported verbs keep their Node scripts' lenient grammar) gets an
-// argument it does not take or a value outside its set; fix is the verb's
-// usage line. Exit 2.
+// DiagBadArgs fires when pr-extensions gets an argument it does not take or
+// a value outside its set; fix is the verb's usage line. Exit 2. The other
+// verbs refuse bad argv through verbArgs (args.go): the usage line, exit 1.
 const DiagBadArgs = "GITKIT_BAD_ARGS"
 
 // Scripts lists the runnable verbs, sorted.
