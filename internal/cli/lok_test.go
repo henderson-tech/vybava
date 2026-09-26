@@ -75,4 +75,24 @@ func TestLokSubNextIsTheReviewedWrite(t *testing.T) {
 	if err != nil || !env.OK {
 		t.Fatalf("rm --locale: %v %+v", err, env)
 	}
+
+	// A rename whose write must refuse (a leftover literal) offers no write.
+	keys := t.TempDir()
+	for rel, body := range map[string]string{
+		"vybava.config.json": `{"lok":{"catalogs":{"m":{"style":"english-as-key","files":"l/{locale}.json","locales":["en","cs"],"scan":{"roots":["src"]}}}}}`,
+		"l/en.json":          "{\n  \"Wait...\": \"Wait...\"\n}\n",
+		"l/cs.json":          "{\n  \"Wait...\": \"Moment...\"\n}\n",
+		"src/a.ts":           "t('Wait...');\nconst LABEL = 'Wait...';\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(keys, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(keys, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env, _, err = runLok(t, keys, "mv", "Wait...", "Wait…", "--json")
+	if err != nil || !env.OK || len(env.Next) != 0 || len(env.Diagnostics) != 1 || env.Diagnostics[0].Code != "CALL_SITES_UNRESOLVED" {
+		t.Fatalf("leftover literal: a warning, and no --write next: %v %+v", err, env)
+	}
 }

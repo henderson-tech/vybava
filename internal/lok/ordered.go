@@ -438,30 +438,32 @@ func (c *Catalog) putSegs(locale string, parts []string, value string) error {
 			}
 			next = &Object{}
 			if err := setChild(cur, p, next); err != nil {
-				return fmt.Errorf("%s %q: %w", locale, key, err)
+				return fmt.Errorf("%s %s: %w", locale, quoteKey(key), err)
 			}
 		}
 		switch next.(type) {
 		case *Object, *Array:
 		default:
-			return fmt.Errorf("%s: %q is a leaf, cannot nest %q under it", locale, p, key)
+			return fmt.Errorf("%s: %q is a leaf, cannot nest %s under it", locale, p, quoteKey(key))
 		}
 		cur = next
 	}
 	if existing, ok := child(cur, parts[len(parts)-1]); ok {
 		switch existing.(type) {
 		case *Object, *Array:
-			return fmt.Errorf("%s: %q is a container, not a string leaf", locale, key)
+			return fmt.Errorf("%s: %s is a container, not a string leaf", locale, quoteKey(key))
 		}
 	}
 	if err := setChild(cur, parts[len(parts)-1], value); err != nil {
-		return fmt.Errorf("%s %q: %w", locale, key, err)
+		return fmt.Errorf("%s %s: %w", locale, quoteKey(key), err)
 	}
 	loc.Exists = true
 	return nil
 }
 
-// Remove deletes key from one locale; reports whether it existed.
+// Remove deletes the leaf key from one locale; reports whether it existed.
+// A container is no key (get says KEY_MISSING), so `rm codes` never drops
+// the whole `codes` subtree.
 func (c *Catalog) Remove(locale, key string) bool {
 	loc, ok := c.Locales[locale]
 	if !ok {
@@ -478,6 +480,10 @@ func (c *Catalog) Remove(locale, key string) bool {
 			return false
 		}
 		cur = next
+	}
+	switch leaf, _ := child(cur, parts[len(parts)-1]); leaf.(type) {
+	case *Object, *Array:
+		return false
 	}
 	return deleteChild(cur, parts[len(parts)-1])
 }

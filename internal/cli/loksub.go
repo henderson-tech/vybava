@@ -106,9 +106,13 @@ func (f *rewriteFlags) next(verb string, args []string, catalog string, res lok.
 		if count == 0 {
 			return nil
 		}
-		if verb == "sub" {
+		// Leftover literals make that write refuse (CALL_SITES_UNRESOLVED),
+		// so it is no next step; the warning names how to resolve them.
+		switch {
+		case len(res.Literals) > 0 && !f.allowLiterals:
+		case verb == "sub":
 			out = append(out, fmt.Sprintf("%s --write --expect %d --json", cmd, count))
-		} else {
+		default:
 			out = append(out, cmd+" --write --json")
 		}
 		if res.Truncated {

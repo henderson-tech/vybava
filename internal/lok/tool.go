@@ -146,13 +146,13 @@ func (t *Tool) CatalogFor(id, key string) (*Catalog, error) {
 		if key == "" {
 			return nil, ambiguous("several catalogs are configured", t.CatalogIDs())
 		}
-		d := keyMissing(quoteKey(key)+" is in no catalog", key, all, "get", "")
+		d := keyMissing(quoteKey(key)+" is in no catalog", key, all, "get", "", nil)
 		if _, err := SplitKey(StylePath, key); err != nil {
 			d.Detail += " (" + err.(*Diag).Detail + ")"
 		}
 		return nil, d
 	default:
-		return nil, ambiguous(fmt.Sprintf("%q exists in %s", key, strings.Join(catalogIDs(hits), " and ")), catalogIDs(hits))
+		return nil, ambiguous(fmt.Sprintf("%s exists in %s", quoteKey(key), strings.Join(catalogIDs(hits), " and ")), catalogIDs(hits))
 	}
 }
 
@@ -187,7 +187,7 @@ func (t *Tool) catalogForNew(id, key string) (*Catalog, error) {
 		return exists[0], nil
 	}
 	if len(exists) > 1 {
-		return nil, ambiguous(fmt.Sprintf("%q exists in %s", key, strings.Join(catalogIDs(exists), " and ")), catalogIDs(exists))
+		return nil, ambiguous(fmt.Sprintf("%s exists in %s", quoteKey(key), strings.Join(catalogIDs(exists), " and ")), catalogIDs(exists))
 	}
 	if len(parents) == 1 {
 		return parents[0], nil
@@ -195,7 +195,7 @@ func (t *Tool) catalogForNew(id, key string) (*Catalog, error) {
 	if len(parents) > 1 {
 		segs, _ := SplitKey(StylePath, key) // parentDepth > 0 only for a key that parsed
 		parent := FormatKey(StylePath, segs[:depth])
-		return nil, ambiguous(fmt.Sprintf("parent %q exists in %s", parent, strings.Join(catalogIDs(parents), " and ")), catalogIDs(parents))
+		return nil, ambiguous(fmt.Sprintf("parent %s exists in %s", quoteKey(parent), strings.Join(catalogIDs(parents), " and ")), catalogIDs(parents))
 	}
 	if strings.Contains(key, " ") {
 		var english []*Catalog
@@ -275,12 +275,17 @@ func (c *Catalog) has(key string) bool {
 // keyMissing is KEY_MISSING for key. When exactly one path leaf across cats
 // matches it loosely (a shell-eaten `\.`, an old unescaped spelling), the
 // Fix is that leaf's exact escaped command: a diagnostic, never a resolver.
-func keyMissing(detail, key string, cats []*Catalog, verb, tail string) *Diag {
+// only scopes the search to those locales (`rm --locale`); tail carries the
+// rest of the command, the scope included, so a fix never widens it.
+func keyMissing(detail, key string, cats []*Catalog, verb, tail string, only []string) *Diag {
 	d := &Diag{Code: DiagKeyMissing, Detail: detail, Fix: "lok grep " + shellQuote(key)}
 	var hits []string
 	hitCatalog := ""
 	for _, c := range cats {
-		for _, k := range c.resolveLoose(key) {
+		for _, k := range c.resolveLoose(key, only) {
+			if k == key {
+				continue // held outside the scope: not a spelling to correct
+			}
 			hits = append(hits, k)
 			hitCatalog = c.ID
 		}
@@ -401,7 +406,7 @@ func (t *Tool) Get(catalogID, key string) (Values, error) {
 		return Values{}, err
 	}
 	if !c.has(key) {
-		return Values{}, keyMissing(quoteKey(key)+" is not in catalog "+c.ID, key, []*Catalog{c}, "get", "")
+		return Values{}, keyMissing(quoteKey(key)+" is not in catalog "+c.ID, key, []*Catalog{c}, "get", "", nil)
 	}
 	return t.values(c, key), nil
 }
@@ -486,7 +491,7 @@ func (t *Tool) Add(catalogID, key string, tr map[string]string) (WriteResult, er
 		return WriteResult{}, err
 	}
 	if c.has(key) {
-		return WriteResult{}, &Diag{Code: DiagKeyExists, Detail: fmt.Sprintf("%q already exists in %s", key, c.ID), Fix: "lok set " + shellQuote(key) + " --tr <locale>=<value>"}
+		return WriteResult{}, &Diag{Code: DiagKeyExists, Detail: fmt.Sprintf("%s already exists in %s", quoteKey(key), c.ID), Fix: "lok set " + shellQuote(key) + " --tr <locale>=<value>"}
 	}
 	return t.write(c, key, tr, true)
 }
@@ -501,7 +506,7 @@ func (t *Tool) Set(catalogID, key string, tr map[string]string) (WriteResult, er
 		return WriteResult{}, err
 	}
 	if !c.has(key) {
-		d := keyMissing(quoteKey(key)+" is not in "+c.ID, key, []*Catalog{c}, "set", " --tr <locale>=<value>")
+		d := keyMissing(quoteKey(key)+" is not in "+c.ID, key, []*Catalog{c}, "set", " --tr <locale>=<value>", nil)
 		if d.Fix == "lok grep "+shellQuote(key) {
 			d.Fix = "lok add " + shellQuote(key) + " --tr <locale>=<value>"
 		}
@@ -595,11 +600,12 @@ func (t *Tool) Rm(catalogID, key string, only []string) (WriteResult, error) {
 		}
 	}
 	if len(locales) == 0 {
-		where := c.ID
+		where, tail := c.ID, ""
 		if len(only) > 0 {
 			where += " " + strings.Join(only, ",")
+			tail = " --locale " + strings.Join(only, ",")
 		}
-		return WriteResult{}, keyMissing(quoteKey(key)+" is not in "+where, key, []*Catalog{c}, "rm", "")
+		return WriteResult{}, keyMissing(quoteKey(key)+" is not in "+where, key, []*Catalog{c}, "rm", tail, only)
 	}
 	return t.commit(c, key, locales)
 }
@@ -825,8 +831,11 @@ func lastLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// shellQuote renders s as one shell word for a Fix line: an english-as-key
+// key such as `Delete?` or `Done!` is a glob or history word unquoted (zsh:
+// "no matches found"), so every metacharacter forces quoting.
 func shellQuote(s string) string {
-	if !strings.ContainsAny(s, " '\"$`\\{}") {
+	if s != "" && !strings.ContainsAny(s, " \t\n'\"$`\\{};&|<>()!#*?[]~") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

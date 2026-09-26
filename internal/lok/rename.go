@@ -84,7 +84,7 @@ func (t *Tool) Mv(catalogID, oldKey, newKey string, o SubOptions) (SubResult, er
 			}
 		}
 		if len(cats) == 0 {
-			return res, keyMissing(quoteKey(from)+" is in no catalog", from, all, "get", "")
+			return res, keyMissing(quoteKey(from)+" is in no catalog", from, all, "get", "", nil)
 		}
 	}
 	for _, c := range cats {
@@ -559,20 +559,27 @@ func (t *Tool) renameCallSites(res *SubResult, plans []*renamePlan, o SubOptions
 			data := files.data(f)
 			goSource := filepath.Ext(f.path) == ".go"
 			var spans []span
+			rewritten := map[int]bool{}
 			for _, s := range callSites(re, data, goSource) {
 				to, ok := fromTo[s.key]
 				if !ok {
 					continue
 				}
 				spans = append(spans, span{start: s.start, end: s.end, text: requote(to, s.quote)})
+				rewritten[s.start] = true
 				res.CallSites = append(res.CallSites, SourceEdit{File: f.rel, Line: lineAt(data, s.start), From: s.key, To: to, Test: f.test})
 			}
-			if len(spans) > 0 {
-				data = splice(data, spans)
-				files.set(f, data)
-			}
+			// Leftovers are swept in the text before the rewrite, minus the
+			// call sites it rewrites: sweeping after would flag a new key
+			// that is another rename's old key (a chain `ax`->`axx`,
+			// `axx`->`axxxx`). requote never adds a newline, so lines hold.
 			for _, h := range literalHits(blankComments(data, goSource), froms) {
-				res.Literals = append(res.Literals, SourceLine{File: f.rel, Line: lineAt(data, h.start), Text: h.text[1:]})
+				if !rewritten[h.start] {
+					res.Literals = append(res.Literals, SourceLine{File: f.rel, Line: lineAt(data, h.start), Text: h.text[1:]})
+				}
+			}
+			if len(spans) > 0 {
+				files.set(f, splice(data, spans))
 			}
 			return nil
 		})

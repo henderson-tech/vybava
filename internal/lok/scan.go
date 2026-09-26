@@ -86,7 +86,9 @@ func (t *Tool) walkTree(roots, exts []string, tests bool, fn func(sourceFile) er
 			}
 			if d.IsDir() {
 				switch d.Name() {
-				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo":
+				// .worktrees: other checkouts of the repo; a rename under a
+				// root of "." must never rewrite a sibling worktree's files.
+				case "node_modules", ".git", "ios", "android", ".next", "dist", "build", ".expo", ".worktrees":
 					return filepath.SkipDir
 				case "__tests__", "testdata":
 					if !tests {

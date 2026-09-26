@@ -430,7 +430,7 @@ func regressions(c *Catalog, before map[string]bool) []string {
 	var out []string
 	for _, p := range checkCatalog(c) {
 		if p.Severity == "" && !before[p.Kind+"\x00"+p.Key+"\x00"+p.Locale] {
-			out = append(out, fmt.Sprintf("%s %s %s %q: %s", c.ID, p.Locale, p.Kind, p.Key, p.Detail))
+			out = append(out, fmt.Sprintf("%s %s %s %s: %s", c.ID, p.Locale, p.Kind, quoteKey(p.Key), p.Detail))
 		}
 	}
 	return out

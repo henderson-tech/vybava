@@ -105,6 +105,8 @@ func TestSubRefusesInvariantBreaks(t *testing.T) {
 		want string
 	}{
 		{"{{x}} renamed", SubOptions{Pattern: `\{\{name\}\}`, Replacement: "{{jmeno}}"}, DiagPlaceholderChanged},
+		// dict's rewrite is clean; mobile's break must keep dict unwritten too.
+		{"one catalog breaks", SubOptions{Pattern: `\.\.\.|\{\{name\}\}`, Replacement: "…"}, DiagPlaceholderChanged},
 		{"{x} dropped", SubOptions{Pattern: `\{n\} `, Replacement: "5 ", Catalogs: []string{"dict"}}, DiagPlaceholderChanged},
 		{"value emptied", SubOptions{Pattern: `^Wait\.\.\.$`, Replacement: " "}, DiagValueEmptied},
 		{"$1a reads as group 1a", SubOptions{Pattern: `(Wait)\.\.\.`, Replacement: "$1a"}, DiagBadReplacement},
@@ -207,6 +209,24 @@ func TestSubKeysRenamesFamilyAndCallSites(t *testing.T) {
 	}
 	if scan, _ := tool.Scan("mobile", false, 10); len(scan.Missing) != 0 {
 		t.Fatalf("after the rename scan finds no missing key: %+v", scan.Missing)
+	}
+}
+
+// A chain (`ax`->`axx`, `axx`->`axxxx`) writes t('axx') where t('axx') was:
+// the literal a rename just wrote is never a leftover of the next one.
+func TestSubKeysChainLeavesNoFalseLeftover(t *testing.T) {
+	tool := repo(t, map[string]string{
+		"vybava.config.json": `{"lok":{"catalogs":{"m":{"style":"english-as-key","files":"l/{locale}.json","locales":["en","cs"],"scan":{"roots":["src"]}}}}}`,
+		"l/en.json":          "{\n  \"ax\": \"ax\",\n  \"axx\": \"axx\"\n}\n",
+		"l/cs.json":          "{\n  \"ax\": \"A\",\n  \"axx\": \"B\"\n}\n",
+		"src/a.tsx":          "t('ax');\nt('axx');\n",
+	})
+	res, err := tool.Sub(SubOptions{Pattern: "x", Replacement: "xx", Keys: true, Write: true, Expect: 2, Limit: 20})
+	if err != nil || len(res.Literals) != 0 {
+		t.Fatalf("no leftover literal in a chain: %v %+v", err, res.Literals)
+	}
+	if src := read(t, tool, "src/a.tsx"); src != "t('axx');\nt('axxxx');\n" {
+		t.Fatalf("each call site moves one step: %q", src)
 	}
 }
 

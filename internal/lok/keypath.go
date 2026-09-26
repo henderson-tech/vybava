@@ -40,7 +40,7 @@ func SplitKey(style Style, key string) ([]string, error) {
 				i++
 				continue
 			}
-			return nil, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf(`bad key escape in %q at byte %d: a path key knows only \. (a literal dot) and \\ (a literal backslash)`, key, i)}
+			return nil, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf(`bad key escape in %s at byte %d: a path key knows only \. (a literal dot) and \\ (a literal backslash)`, quoteKey(key), i)}
 		default:
 			cur.WriteByte(c)
 		}
@@ -76,7 +76,8 @@ func quoteKey(k string) string {
 // backslash the shell ate (`codes.bankid.x.title`) or one escaped where the
 // tree nests finds its leaf. It only ever feeds a diagnostic's Fix; lookups
 // never resolve through it, so meaning never depends on tree contents.
-func (c *Catalog) resolveLoose(key string) []string {
+// only limits the walk to those locales (nil: every locale).
+func (c *Catalog) resolveLoose(key string, only []string) []string {
 	if c.Config.Style != StylePath {
 		return nil
 	}
@@ -117,7 +118,9 @@ func (c *Catalog) resolveLoose(key string) []string {
 		}
 	}
 	for _, code := range c.Config.Locales {
-		walk(c.Locales[code].Object, 0, nil)
+		if len(only) == 0 || contains(only, code) {
+			walk(c.Locales[code].Object, 0, nil)
+		}
 	}
 	sort.Strings(out)
 	return out

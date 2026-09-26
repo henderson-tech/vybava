@@ -246,6 +246,8 @@ func TestScanSkipsTestSources(t *testing.T) {
 		"src/testdata/d.go":  "l.T(\"From testdata\")\n",
 		// a generated key union quotes every key; declarations are never usage
 		"src/translation-keys.d.ts": "export type Key = 'Save' | 'Real key';\n",
+		// another checkout of the repo: never read, so never rewritten by a rename
+		"src/.worktrees/wt/a.ts": "t('Save'); t('From a worktree');\n",
 	})
 	res, err := tool.Scan("m", false, 10)
 	if err != nil {
@@ -543,6 +545,9 @@ func TestDottedSegmentKeys(t *testing.T) {
 	if _, err := tool.Set("dict", `codes.bankid\.x.title`, map[string]string{"cs": "T2"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := tool.Rm("dict", `codes.bankid\.x`, nil); code(err) != DiagKeyMissing {
+		t.Fatalf("a container is no key: rm never drops a subtree: %v", err)
+	}
 	if res, err := tool.Rm("dict", `codes.bankid\.x.title`, nil); err != nil || strings.Join(res.Locales, ",") != "en,cs" {
 		t.Fatalf("rm: %v %+v", err, res)
 	}
@@ -578,5 +583,19 @@ func TestRmLocaleScope(t *testing.T) {
 	}
 	if _, err := tool.Rm("mobile", "Save", []string{"de"}); err == nil || err.(*Diag).Code != DiagLocaleUnknown {
 		t.Fatalf("an unknown locale is refused: %v", err)
+	}
+	// A key held only outside the scope is no misspelling: the fix must not
+	// be the unscoped rm that deletes it there; a real one keeps the scope.
+	for _, l := range []string{"en", "cs"} {
+		body := "{\n  \"codes\": {\n    \"bankid.x\": \"X\"" + map[string]string{"en": "", "cs": ",\n    \"only\": \"cs\""}[l] + "\n  }\n}\n"
+		if err := os.WriteFile(filepath.Join(tool.Root, "dict", l+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tool.Rm("dict", "codes.only", []string{"en"}); err == nil || err.(*Diag).Fix != "lok grep codes.only" {
+		t.Fatalf("no did-you-mean for the key itself: %v", err)
+	}
+	if _, err := tool.Rm("dict", "codes.bankid.x", []string{"en"}); err == nil || err.(*Diag).Fix != `lok rm 'codes.bankid\.x' --catalog=dict --locale en` {
+		t.Fatalf("the did-you-mean keeps --locale: %v", err)
 	}
 }
