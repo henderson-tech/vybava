@@ -250,9 +250,9 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			switch {
 			case err != nil:
 				fmt.Fprintf(rt.stderr, "claude-guards redact-session: %v\n", err)
-			case report.Redacted > 0 || report.Errors > 0 || report.Changed > 0:
-				fmt.Fprintf(rt.stderr, "claude-guards redact-session: %d secret spans redacted in %d files of session %s (%d errors, %d changed underneath) — audit: ~/.config/vybava/redact-audit.jsonl\n",
-					report.Redacted, len(report.Leaky), id, report.Errors, report.Changed)
+			case report.Redacted > 0 || report.Errors > 0 || report.Changed > 0 || report.Unreadable > 0:
+				fmt.Fprintf(rt.stderr, "claude-guards redact-session: %d secret spans redacted in %d files of session %s (%d errors, %d unreadable — not scanned, %d changed underneath) — audit: ~/.config/vybava/redact-audit.jsonl\n",
+					report.Redacted, len(report.Leaky), id, report.Errors, report.Unreadable, report.Changed)
 			}
 			return nil
 		},

@@ -133,4 +133,17 @@ func TestClaudeGuardsRedactSessionScrubsThePayloadSession(t *testing.T) {
 	if !strings.Contains(errOut.String(), "1 secret spans redacted") {
 		t.Errorf("stderr = %q", errOut.String())
 	}
+	// A file it cannot read is said, never a silent partial scrub.
+	loop := filepath.Join(filepath.Dir(transcript), "sess-end", "loop.jsonl")
+	if err := os.MkdirAll(filepath.Dir(loop), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	errOut.Reset()
+	cmd.SetArgs([]string{"redact-session", "--session", "sess-end"})
+	if err := cmd.Execute(); err != nil || !strings.Contains(errOut.String(), "1 unreadable") {
+		t.Errorf("unreadable not reported: %v, %q", err, errOut.String())
+	}
 }
