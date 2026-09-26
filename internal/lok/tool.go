@@ -35,7 +35,37 @@ const (
 	DiagCheckFailed = "CHECK_FAILED"
 	// DiagAfterWriteFailed — the catalog's afterWrite command exited non-zero.
 	DiagAfterWriteFailed = "AFTER_WRITE_FAILED"
+	// DiagCatalogChanged - a file changed on disk between load and save; nothing was written.
+	DiagCatalogChanged = "CATALOG_CHANGED"
+
+	// sub / mv (values and key renames).
+
+	// DiagBadPattern - the sub pattern (or --key / --exclude-key) is not valid RE2.
+	DiagBadPattern = "BAD_PATTERN"
+	// DiagBadReplacement - the replacement names a group the pattern lacks ($1a), or a bad \x{...}.
+	DiagBadReplacement = "BAD_REPLACEMENT"
+	// DiagPlaceholderChanged - a rewrite adds, drops or renames a {{x}} / {x} placeholder.
+	DiagPlaceholderChanged = "PLACEHOLDER_CHANGED"
+	// DiagValueEmptied - a rewrite leaves a non-empty value empty or whitespace-only.
+	DiagValueEmptied = "VALUE_EMPTIED"
+	// DiagCheckRegressed - the rewritten catalog fails a `check` rule it passed before.
+	DiagCheckRegressed = "CHECK_REGRESSED"
+	// DiagSubDrift - --expect names a different count than the run would change.
+	DiagSubDrift = "SUB_DRIFT"
+	// DiagCallSitesUnresolved - a quoted old key is left in source after the call-site rewrite.
+	DiagCallSitesUnresolved = "CALL_SITES_UNRESOLVED"
+	// DiagNoScan - a key rename in a catalog with neither scan nor mirrors cannot find its call sites.
+	DiagNoScan = "NO_SCAN"
+	// DiagMirrorSource - the key is a literal in the catalog's mirror roots; rename it with --with-mirrors.
+	DiagMirrorSource = "MIRROR_SOURCE"
+	// DiagKeysUnsupported - key renames are english-as-key only (path keys are typed through generated code).
+	DiagKeysUnsupported = "KEYS_UNSUPPORTED"
 )
+
+// Warnings reuse the code of the refusal they are the soft form of:
+// BAD_REPLACEMENT (groups but no `$` - eaten by the shell?), MIRROR_SOURCE
+// (the catalog ships in a store app), NO_SCAN (--no-source skipped call
+// sites), CALL_SITES_UNRESOLVED (a dry run's leftover literals).
 
 // Diag is one diagnostic; Fix is the exact next command when one exists.
 type Diag struct {
@@ -98,12 +128,13 @@ func (t *Tool) CatalogFor(id, key string) (*Catalog, error) {
 			return LoadCatalog(t.Root, id, cfg)
 		}
 	}
-	var hits []*Catalog
+	var hits, all []*Catalog
 	for _, cid := range t.CatalogIDs() {
 		c, err := LoadCatalog(t.Root, cid, t.Config.Catalogs[cid])
 		if err != nil {
 			return nil, err
 		}
+		all = append(all, c)
 		if key != "" && c.has(key) {
 			hits = append(hits, c)
 		}
@@ -115,7 +146,11 @@ func (t *Tool) CatalogFor(id, key string) (*Catalog, error) {
 		if key == "" {
 			return nil, ambiguous("several catalogs are configured", t.CatalogIDs())
 		}
-		return nil, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is in no catalog", key), Fix: "lok grep " + shellQuote(key)}
+		d := keyMissing(quoteKey(key)+" is in no catalog", key, all, "get", "")
+		if _, err := SplitKey(StylePath, key); err != nil {
+			d.Detail += " (" + err.(*Diag).Detail + ")"
+		}
+		return nil, d
 	default:
 		return nil, ambiguous(fmt.Sprintf("%q exists in %s", key, strings.Join(catalogIDs(hits), " and ")), catalogIDs(hits))
 	}
@@ -158,7 +193,8 @@ func (t *Tool) catalogForNew(id, key string) (*Catalog, error) {
 		return parents[0], nil
 	}
 	if len(parents) > 1 {
-		parent := strings.Join(strings.Split(key, ".")[:depth], ".")
+		segs, _ := SplitKey(StylePath, key) // parentDepth > 0 only for a key that parsed
+		parent := FormatKey(StylePath, segs[:depth])
 		return nil, ambiguous(fmt.Sprintf("parent %q exists in %s", parent, strings.Join(catalogIDs(parents), " and ")), catalogIDs(parents))
 	}
 	if strings.Contains(key, " ") {
@@ -184,7 +220,10 @@ func (c *Catalog) parentDepth(key string) int {
 	if c.Config.Style != StylePath {
 		return 0
 	}
-	segs := strings.Split(key, ".")
+	segs, err := SplitKey(StylePath, key)
+	if err != nil {
+		return 0
+	}
 	best := 0
 	for _, loc := range c.Locales {
 		var cur any = loc.Object
@@ -231,6 +270,32 @@ func (c *Catalog) has(key string) bool {
 		}
 	}
 	return false
+}
+
+// keyMissing is KEY_MISSING for key. When exactly one path leaf across cats
+// matches it loosely (a shell-eaten `\.`, an old unescaped spelling), the
+// Fix is that leaf's exact escaped command: a diagnostic, never a resolver.
+func keyMissing(detail, key string, cats []*Catalog, verb, tail string) *Diag {
+	d := &Diag{Code: DiagKeyMissing, Detail: detail, Fix: "lok grep " + shellQuote(key)}
+	var hits []string
+	hitCatalog := ""
+	for _, c := range cats {
+		for _, k := range c.resolveLoose(key) {
+			hits = append(hits, k)
+			hitCatalog = c.ID
+		}
+	}
+	if len(hits) == 1 {
+		d.Detail += fmt.Sprintf(`; did you mean %s? A dot inside a path segment is escaped as \. - single-quote the key so the shell keeps the backslash`, shellQuote(hits[0]))
+		d.Fix = "lok " + verb + " " + shellQuote(hits[0]) + " --catalog=" + hitCatalog + tail
+	}
+	return d
+}
+
+// validKey refuses a key the catalog's grammar cannot parse (a bad escape).
+func (c *Catalog) validKey(key string) error {
+	_, err := c.splitPath(key)
+	return err
 }
 
 // CatalogInfo is one row of `lok catalogs`.
@@ -332,8 +397,11 @@ func (t *Tool) Get(catalogID, key string) (Values, error) {
 	if err != nil {
 		return Values{}, err
 	}
+	if err := c.validKey(key); err != nil {
+		return Values{}, err
+	}
 	if !c.has(key) {
-		return Values{}, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is not in catalog %s", key, c.ID), Fix: "lok grep " + shellQuote(key)}
+		return Values{}, keyMissing(quoteKey(key)+" is not in catalog "+c.ID, key, []*Catalog{c}, "get", "")
 	}
 	return t.values(c, key), nil
 }
@@ -376,12 +444,14 @@ func (t *Tool) Grep(catalogID, pattern string, locales []string, limit int) (Gre
 			if len(locales) > 0 && !contains(locales, code) {
 				continue
 			}
-			for _, e := range c.Locales[code].Object.Leaves() {
-				val := e.Value.(string)
-				if re.MatchString(e.Key) || re.MatchString(val) {
+			for _, l := range c.Locales[code].Object.LeafPaths() {
+				key := FormatKey(c.Config.Style, l.Path)
+				// Discovery favours recall: `bankid.user` finds the escaped
+				// `bankid\.user` segment through its raw spelling too.
+				if re.MatchString(key) || re.MatchString(strings.Join(l.Path, ".")) || re.MatchString(l.Value) {
 					res.Total++
 					if len(res.Hits) < limit {
-						res.Hits = append(res.Hits, Hit{Catalog: id, Key: e.Key, Locale: code, Value: val})
+						res.Hits = append(res.Hits, Hit{Catalog: id, Key: key, Locale: code, Value: l.Value})
 					}
 				}
 			}
@@ -427,8 +497,15 @@ func (t *Tool) Set(catalogID, key string, tr map[string]string) (WriteResult, er
 	if err != nil {
 		return WriteResult{}, err
 	}
+	if err := c.validKey(key); err != nil {
+		return WriteResult{}, err
+	}
 	if !c.has(key) {
-		return WriteResult{}, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is not in %s", key, c.ID), Fix: "lok add " + shellQuote(key) + " --tr <locale>=<value>"}
+		d := keyMissing(quoteKey(key)+" is not in "+c.ID, key, []*Catalog{c}, "set", " --tr <locale>=<value>")
+		if d.Fix == "lok grep "+shellQuote(key) {
+			d.Fix = "lok add " + shellQuote(key) + " --tr <locale>=<value>"
+		}
+		return WriteResult{}, d
 	}
 	return t.write(c, key, tr, false)
 }
@@ -475,6 +552,10 @@ func (t *Tool) write(c *Catalog, key string, tr map[string]string, requireAll bo
 			continue
 		}
 		if err := c.Put(code, key, val); err != nil {
+			var d *Diag
+			if errors.As(err, &d) {
+				return WriteResult{}, d
+			}
 			return WriteResult{}, &Diag{Code: DiagConfigInvalid, Detail: err.Error()}
 		}
 		locales = append(locales, code)
@@ -482,14 +563,27 @@ func (t *Tool) write(c *Catalog, key string, tr map[string]string, requireAll bo
 	return t.commit(c, key, locales)
 }
 
-// Rm deletes a key (and, for english-as-key, its plural variants) everywhere.
-func (t *Tool) Rm(catalogID, key string) (WriteResult, error) {
+// Rm deletes a key and its plural variants from every locale, or only from
+// the given locales (`--locale en` drops an inert en `_few` variant without
+// touching the Czech plurals).
+func (t *Tool) Rm(catalogID, key string, only []string) (WriteResult, error) {
 	c, err := t.CatalogFor(catalogID, key)
 	if err != nil {
 		return WriteResult{}, err
 	}
+	if err := c.validKey(key); err != nil {
+		return WriteResult{}, err
+	}
+	for _, code := range only {
+		if !contains(c.Config.Locales, code) {
+			return WriteResult{}, &Diag{Code: DiagLocaleUnknown, Detail: fmt.Sprintf("catalog %s has no locale %q (have %s)", c.ID, code, strings.Join(c.Config.Locales, ", ")), Fix: "lok catalogs"}
+		}
+	}
 	var locales []string
 	for _, code := range c.Config.Locales {
+		if len(only) > 0 && !contains(only, code) {
+			continue
+		}
 		removed := c.Remove(code, key)
 		for _, s := range c.Config.PluralSuffixes() {
 			if c.Remove(code, key+s) {
@@ -501,7 +595,11 @@ func (t *Tool) Rm(catalogID, key string) (WriteResult, error) {
 		}
 	}
 	if len(locales) == 0 {
-		return WriteResult{}, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is not in %s", key, c.ID), Fix: "lok grep " + shellQuote(key)}
+		where := c.ID
+		if len(only) > 0 {
+			where += " " + strings.Join(only, ",")
+		}
+		return WriteResult{}, keyMissing(quoteKey(key)+" is not in "+where, key, []*Catalog{c}, "rm", "")
 	}
 	return t.commit(c, key, locales)
 }
@@ -517,16 +615,25 @@ func (t *Tool) commit(c *Catalog, key string, locales []string) (WriteResult, er
 		locales = []string{}
 	}
 	res := WriteResult{Catalog: c.ID, Key: key, Locales: locales, Written: rel(t.Root, written)}
-	if c.Config.AfterWrite != "" && len(written) > 0 {
-		res.AfterWrite = &AfterWrite{Cmd: c.Config.AfterWrite}
-		cmd := exec.Command("sh", "-c", c.Config.AfterWrite)
-		cmd.Dir = t.Root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return res, &Diag{Code: DiagAfterWriteFailed, Detail: fmt.Sprintf("%s: %s", c.Config.AfterWrite, lastLines(string(out), 5)), Fix: "(cd " + t.Root + " && " + c.Config.AfterWrite + ")"}
-		}
-		res.AfterWrite.OK = true
+	aw, err := t.afterWrite(c, written)
+	res.AfterWrite = aw
+	return res, err
+}
+
+// afterWrite runs the catalog's afterWrite command once, from the repo
+// root, when a save wrote anything; nil when there is nothing to run.
+func (t *Tool) afterWrite(c *Catalog, written []string) (*AfterWrite, error) {
+	if c.Config.AfterWrite == "" || len(written) == 0 {
+		return nil, nil
 	}
-	return res, nil
+	aw := &AfterWrite{Cmd: c.Config.AfterWrite}
+	cmd := exec.Command("sh", "-c", c.Config.AfterWrite)
+	cmd.Dir = t.Root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return aw, &Diag{Code: DiagAfterWriteFailed, Detail: fmt.Sprintf("%s: %s", c.Config.AfterWrite, lastLines(string(out), 5)), Fix: "(cd " + t.Root + " && " + c.Config.AfterWrite + ")"}
+	}
+	aw.OK = true
+	return aw, nil
 }
 
 // Gap is one missing translation.
@@ -628,44 +735,53 @@ func (t *Tool) Check(catalogID string) ([]Problem, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, code := range c.Config.Locales {
-			if !c.Locales[code].Exists {
-				problems = append(problems, Problem{Catalog: id, Kind: "file-missing", Locale: code, Detail: c.Locales[code].Path})
+		problems = append(problems, checkCatalog(c)...)
+	}
+	return problems, nil
+}
+
+// checkCatalog runs the `check` rules over one in-memory catalog, so `sub`
+// can compare a rewrite against the catalog it started from.
+func checkCatalog(c *Catalog) []Problem {
+	var problems []Problem
+	id := c.ID
+	for _, code := range c.Config.Locales {
+		if !c.Locales[code].Exists {
+			problems = append(problems, Problem{Catalog: id, Kind: "file-missing", Locale: code, Detail: c.Locales[code].Path})
+		}
+	}
+	for _, k := range c.Keys() {
+		for _, code := range c.Config.RequiredLocales() {
+			if _, ok := c.Lookup(code, k); !ok && c.expectedIn(code, k) {
+				problems = append(problems, Problem{Catalog: id, Kind: "missing", Key: k, Locale: code, Detail: "required locale has no value"})
 			}
 		}
-		for _, k := range c.Keys() {
-			for _, code := range c.Config.RequiredLocales() {
-				if _, ok := c.Lookup(code, k); !ok && c.expectedIn(code, k) {
-					problems = append(problems, Problem{Catalog: id, Kind: "missing", Key: k, Locale: code, Detail: "required locale has no value"})
-				}
+		if _, plural := c.Config.BaseKey(k); c.Config.Style == StyleEnglishAsKey && !plural && !c.Config.Exempted(k) {
+			if v, ok := c.Lookup("en", k); ok && v != k {
+				problems = append(problems, Problem{Catalog: id, Kind: "english-as-key", Key: k, Locale: "en", Detail: fmt.Sprintf("en value %q must equal the key", v)})
 			}
-			if _, plural := c.Config.BaseKey(k); c.Config.Style == StyleEnglishAsKey && !plural && !c.Config.Exempted(k) {
-				if v, ok := c.Lookup("en", k); ok && v != k {
-					problems = append(problems, Problem{Catalog: id, Kind: "english-as-key", Key: k, Locale: "en", Detail: fmt.Sprintf("en value %q must equal the key", v)})
-				}
+		}
+		if c.unwordedPlural(k) {
+			problems = append(problems, Problem{Catalog: id, Kind: "en-unworded", Key: k, Locale: "en", Severity: "warning", Detail: "en plural variant carries the literal key; word it with `lok set` --tr en=…"})
+		}
+		var ref []string
+		refLocale := ""
+		for _, code := range c.Config.Locales {
+			v, ok := c.Lookup(code, k)
+			if !ok {
+				continue
 			}
-			if c.unwordedPlural(k) {
-				problems = append(problems, Problem{Catalog: id, Kind: "en-unworded", Key: k, Locale: "en", Severity: "warning", Detail: "en plural variant carries the literal key; word it with `lok set` --tr en=…"})
+			ph := placeholders(v)
+			if refLocale == "" {
+				ref, refLocale = ph, code
+				continue
 			}
-			var ref []string
-			refLocale := ""
-			for _, code := range c.Config.Locales {
-				v, ok := c.Lookup(code, k)
-				if !ok {
-					continue
-				}
-				ph := placeholders(v)
-				if refLocale == "" {
-					ref, refLocale = ph, code
-					continue
-				}
-				if strings.Join(ph, ",") != strings.Join(ref, ",") {
-					problems = append(problems, Problem{Catalog: id, Kind: "placeholders", Key: k, Locale: code, Detail: fmt.Sprintf("{{…}} set %v differs from %s %v", ph, refLocale, ref)})
-				}
+			if strings.Join(ph, ",") != strings.Join(ref, ",") {
+				problems = append(problems, Problem{Catalog: id, Kind: "placeholders", Key: k, Locale: code, Detail: fmt.Sprintf("{{…}} set %v differs from %s %v", ph, refLocale, ref)})
 			}
 		}
 	}
-	return problems, nil
+	return problems
 }
 
 func placeholders(s string) []string {
