@@ -113,7 +113,7 @@ func TestSubRefusesInvariantBreaks(t *testing.T) {
 		{"unknown named group", SubOptions{Pattern: `(?P<w>Wait)`, Replacement: "${word}"}, DiagBadReplacement},
 		{"bad RE2", SubOptions{Pattern: `(?<=a)b`, Replacement: "x"}, DiagBadPattern},
 	} {
-		c.o.Write, c.o.Expect, c.o.Limit = true, -1, 20
+		c.o.Write, c.o.Expect, c.o.Limit = true, 0, 20 // an invariant refusal comes before the --expect count
 		_, err := tool.Sub(c.o)
 		if code(err) != c.want {
 			t.Fatalf("%s: want %s, got %v", c.name, c.want, err)
@@ -144,6 +144,18 @@ func TestSubRefusesInvariantBreaks(t *testing.T) {
 	}
 	if _, err := c.Save(); code(err) != DiagCatalogChanged || read(t, tool, "dict/cs.json") != "{}\n" {
 		t.Fatalf("CATALOG_CHANGED, and the other writer's content stays: %v", err)
+	}
+	// A rewrite judged its check against every locale, so a change to one it
+	// does not write stales that judgement too.
+	c, _ = LoadCatalog(tool.Root, "dict", tool.Config.Catalogs["dict"])
+	if err := c.Put("cs", "hero.wait", "Moment"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tool.Root, "dict/en.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.verifyFresh(); err != nil || code(c.verifyFreshAll()) != DiagCatalogChanged {
+		t.Fatalf("an untouched locale changed on disk: plain saves go ahead, sub/mv refuse: %v", err)
 	}
 }
 
@@ -176,6 +188,10 @@ func TestSubKeysRenamesFamilyAndCallSites(t *testing.T) {
 		t.Fatalf("a dry run warns about the leftover: %+v", dry.Warnings)
 	}
 	o.Write = true
+	if _, err := tool.Sub(o); code(err) != DiagExpectRequired || !strings.Contains(read(t, tool, "src/a.tsx"), "t('Loading...')") {
+		t.Fatalf("sub --write without --expect refuses before anything is read: %v", err)
+	}
+	o.Expect = 3
 	if _, err := tool.Sub(o); code(err) != DiagCallSitesUnresolved || !strings.Contains(read(t, tool, "src/a.tsx"), "t('Loading...')") {
 		t.Fatalf("--write refuses a leftover literal and writes nothing: %v", err)
 	}
@@ -227,6 +243,31 @@ func TestSubKeysChainLeavesNoFalseLeftover(t *testing.T) {
 	}
 	if src := read(t, tool, "src/a.tsx"); src != "t('axx');\nt('axxxx');\n" {
 		t.Fatalf("each call site moves one step: %q", src)
+	}
+}
+
+func TestSubKeysGuardsEnWording(t *testing.T) {
+	tool := keysRepo(t)
+	// The key keeps its {{count}}, but the worded en `_one` ("One offer...")
+	// would be emptied by the same regex.
+	_, err := tool.Sub(SubOptions{Pattern: `(One )?offers?\.\.\.`, Replacement: "offers", Keys: true, Catalogs: []string{"mobile"}, Limit: 20})
+	if err != nil {
+		t.Fatalf("a rename that keeps the wording is fine: %v", err)
+	}
+	_, err = tool.Sub(SubOptions{Pattern: `(One )?offers?\.\.\.`, Replacement: "", Keys: true, Catalogs: []string{"mobile"}, Limit: 20})
+	if code(err) != DiagValueEmptied || !strings.Contains(err.Error(), "offers..._one") {
+		t.Fatalf("an emptied en wording refuses like an emptied value: %v", err)
+	}
+}
+
+func TestSubKeysListingHonoursLimit(t *testing.T) {
+	tool := keysRepo(t)
+	res, err := tool.Sub(SubOptions{Pattern: `\.\.\.`, Replacement: "…", Keys: true, Merge: true, Limit: 1})
+	if err != nil || res.Total.Renames != 3 || len(res.Renames) != 1 || res.Total.CallSites != 4 || len(res.CallSites) != 1 || !res.Truncated {
+		t.Fatalf("--limit caps the listed renames and call sites, totals stay complete: %v %+v %d %d", err, res.Total, len(res.Renames), len(res.CallSites))
+	}
+	if !strings.Contains(res.Text(), "4 call sites (1 in tests)") {
+		t.Fatalf("the summary line counts every call site: %s", res.Text())
 	}
 }
 

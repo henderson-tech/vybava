@@ -52,6 +52,8 @@ const (
 	DiagCheckRegressed = "CHECK_REGRESSED"
 	// DiagSubDrift - --expect names a different count than the run would change.
 	DiagSubDrift = "SUB_DRIFT"
+	// DiagExpectRequired - `sub --write` without --expect: the write must name the count the dry run showed.
+	DiagExpectRequired = "EXPECT_REQUIRED"
 	// DiagCallSitesUnresolved - a quoted old key is left in source after the call-site rewrite.
 	DiagCallSitesUnresolved = "CALL_SITES_UNRESOLVED"
 	// DiagNoScan - a key rename in a catalog with neither scan nor mirrors cannot find its call sites.

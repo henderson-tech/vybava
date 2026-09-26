@@ -51,6 +51,12 @@ type SubTotal struct {
 	Occurrences int `json:"occurrences"`
 	Skipped     int `json:"skipped"`
 	Renames     int `json:"renames"`
+	// Key renames: what the listed callSites / literals / mirrors add up to
+	// before --limit cuts the lists.
+	CallSites     int `json:"callSites"`
+	TestCallSites int `json:"testCallSites"`
+	Literals      int `json:"literals"`
+	Mirrors       int `json:"mirrors"`
 }
 
 // SubChange is one rewritten value.
@@ -366,6 +372,9 @@ func (t *Tool) Sub(o SubOptions) (SubResult, error) {
 		mode = "keys"
 	}
 	res := newSubResult(o, mode)
+	if o.Write && o.Expect < 0 {
+		return res, &Diag{Code: DiagExpectRequired, Detail: "sub --write needs --expect <n>, the count the dry run showed; nothing was written", Fix: "rerun without --write: its next line is the exact --write --expect <n> command"}
+	}
 	plan, warns, err := compileSub(o)
 	res.Warnings = warns
 	if err != nil {
@@ -551,7 +560,7 @@ func summarize(items []string, what string) string {
 // catalogs this is best effort; the receipt names what landed.
 func (t *Tool) commitSub(res SubResult, files []fileEdit) (SubResult, error) {
 	for _, sc := range res.ByCatalog {
-		if err := sc.cat.verifyFresh(); err != nil {
+		if err := sc.cat.verifyFreshAll(); err != nil {
 			return res, err
 		}
 	}
@@ -757,14 +766,8 @@ func (r SubResult) Text() string {
 		for _, l := range r.Literals {
 			fmt.Fprintf(&b, "leftover   %s:%d  %s\n", l.File, l.Line, Visible(l.Text))
 		}
-		tests := 0
-		for _, e := range r.CallSites {
-			if e.Test {
-				tests++
-			}
-		}
 		fmt.Fprintf(&b, "%d renames%s · %d entries moved · %d call sites (%d in tests) · %d mirror literals · %d leftover literals · %s\n",
-			r.Total.Renames, r.catalogCounts(), r.Total.Values, len(r.CallSites), tests, len(r.Mirrors), len(r.Literals), state)
+			r.Total.Renames, r.catalogCounts(), r.Total.Values, r.Total.CallSites, r.Total.TestCallSites, r.Total.Mirrors, r.Total.Literals, state)
 		return b.String()
 	}
 	for _, c := range r.Changes {

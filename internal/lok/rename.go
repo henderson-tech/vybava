@@ -126,6 +126,43 @@ func (pl *renamePlan) baseline() map[string]bool {
 }
 
 func (t *Tool) subKeys(res SubResult, p *subPlan, cats []*Catalog, o SubOptions, ks keySub) (SubResult, error) {
+	res, err := t.renameKeys(res, p, cats, o, ks)
+	return capRenameListing(res, o.Limit), err
+}
+
+// capRenameListing bounds the listed renames, call sites, leftovers and
+// mirror literals at --limit, like values mode caps its changes: totals
+// stay complete and Truncated says a list was cut.
+func capRenameListing(res SubResult, limit int) SubResult {
+	res.Total.CallSites, res.Total.Literals, res.Total.Mirrors = len(res.CallSites), len(res.Literals), len(res.Mirrors)
+	res.Total.TestCallSites = 0
+	for _, e := range res.CallSites {
+		if e.Test {
+			res.Total.TestCallSites++
+		}
+	}
+	if limit < 0 {
+		return res
+	}
+	var cut [4]bool
+	res.Renames, cut[0] = capped(res.Renames, limit)
+	res.CallSites, cut[1] = capped(res.CallSites, limit)
+	res.Literals, cut[2] = capped(res.Literals, limit)
+	res.Mirrors, cut[3] = capped(res.Mirrors, limit)
+	res.Truncated = res.Truncated || cut[0] || cut[1] || cut[2] || cut[3]
+	return res
+}
+
+func capped[T any](list []T, n int) ([]T, bool) {
+	if len(list) <= n {
+		return list, false
+	}
+	return list[:n], true
+}
+
+// renameKeys plans, validates and (with --write) applies the renames,
+// listing every rename, call site and leftover; subKeys caps the lists.
+func (t *Tool) renameKeys(res SubResult, p *subPlan, cats []*Catalog, o SubOptions, ks keySub) (SubResult, error) {
 	if len(o.Locales) > 0 {
 		return res, &Diag{Code: DiagConfigInvalid, Detail: "a key rename moves the key in every locale; --locale does not apply to --keys or mv", Fix: "drop --locale"}
 	}
@@ -329,6 +366,20 @@ func (c *Catalog) movedFamily(locale string, r *Rename, ks keySub) map[string]st
 	return out
 }
 
+// enWording is every en variant of r.From that carries real wording (the
+// values movedFamily passes through ks.worded): suffix -> current value.
+func (c *Catalog) enWording(r *Rename) map[string]string {
+	out := map[string]string{}
+	for _, sfx := range c.suffixOrder() {
+		v, ok := c.lookupSegs("en", []string{r.From + sfx})
+		if !ok || v == r.From+sfx || (sfx == "" && !c.Config.Exempted(r.From)) {
+			continue
+		}
+		out[sfx] = v
+	}
+	return out
+}
+
 // validateRenames refuses before anything moves: a new key that is empty or
 // a plural variant, a placeholder set that changes (call sites pass values
 // by name), two keys landing on one, and a new key that already exists
@@ -354,6 +405,18 @@ func validateRenames(plans []*renamePlan, o SubOptions, ks keySub) error {
 			}
 			if !sameTokenSet(r.From, r.To) {
 				placeholdersBroken = append(placeholdersBroken, fmt.Sprintf("%s %v -> %v", where, placeholderTokens(r.From), placeholderTokens(r.To)))
+			}
+			// Worded en variants take the regex too: the same value
+			// invariants as values mode hold for them.
+			for sfx, v := range c.enWording(r) {
+				w := ks.worded(v)
+				at := fmt.Sprintf("%s en %q", c.ID, r.From+sfx)
+				if strings.TrimSpace(w) == "" && strings.TrimSpace(v) != "" {
+					emptied = append(emptied, at)
+				}
+				if !samePlaceholders(v, w) {
+					placeholdersBroken = append(placeholdersBroken, fmt.Sprintf("%s %v -> %v", at, placeholderTokens(v), placeholderTokens(w)))
+				}
 			}
 			if prev, dup := tos[r.To]; dup {
 				clashes = append(clashes, fmt.Sprintf("%s: %q and %q both become %q", c.ID, prev, r.From, r.To))

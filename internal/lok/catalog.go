@@ -282,6 +282,20 @@ func (c *Catalog) verifyFresh() error {
 	return nil
 }
 
+// verifyFreshAll is verifyFresh over every locale file, written or not: a
+// sub or rename judged its check baseline (parity, placeholders) against
+// all of them, so a change to a locale it leaves alone stales that judgement.
+func (c *Catalog) verifyFreshAll() error {
+	for _, code := range c.Config.Locales {
+		if loc := c.Locales[code]; loc != nil {
+			if err := fresh(loc.Path, loc.orig); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // fresh checks one file against its loaded content (nil: it did not exist).
 func fresh(path string, orig []byte) error {
 	cur, err := os.ReadFile(path)

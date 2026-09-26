@@ -152,7 +152,9 @@ items included; the pattern never sees the key). It is a dry run by default:
 the output is the review, one `-`/`+` block per change with 30 runes of
 context, and its `next` is the exact `--write --expect <n>` command. The
 write refuses `SUB_DRIFT` unless exactly n values change, so the count
-written is the count reviewed. `--limit` caps the listed changes (totals
+written is the count reviewed (`--write` without `--expect` refuses
+`EXPECT_REQUIRED`). `--limit` caps the listed changes, and in a key rename
+the listed renames, call sites and leftovers (totals
 stay complete; 0 lists none); `--refs` lists test sources (the scan roots,
 or the catalog's app directory, plus `e2e/` and `appium/`) that hold an old
 value verbatim, the tests a copy change breaks.
@@ -189,7 +191,8 @@ before a byte is written, and any refusal writes nothing anywhere.
 PLACEHOLDER_CHANGED  a changed value's {{x}} / {x} multiset differs
 VALUE_EMPTIED        a non-empty value would become empty or whitespace
 CHECK_REGRESSED      the rewritten catalog fails a `lok check` rule it passed
-CATALOG_CHANGED      a file changed on disk since load
+CATALOG_CHANGED      a locale file of a catalog in scope changed on disk since load
+EXPECT_REQUIRED      sub --write without --expect (mv takes no count)
 SUB_DRIFT            --expect differs from the count that would change now
 BAD_PATTERN          not RE2 (or a bad --key / --exclude-key)
 BAD_REPLACEMENT      a template names no group, or a bad \x{...}
