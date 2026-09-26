@@ -140,7 +140,7 @@ machine:*         playwright test / vitest / jest started on this Mac with no
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
-                  (the block quotes each line with its value [REDACTED])
+                  (the block quotes each line only up to its first secret or assignment)
 prod-merge:*      landing on a production branch the repo names in
                   .claude/.claude.git.config PROD_BRANCHES (main clone; unset →
                   none): gh pr merge (--auto/--admin, prm's terminus), gh api

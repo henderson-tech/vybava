@@ -2,6 +2,7 @@ package secretscan
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -32,18 +33,33 @@ func Redact(text string, spans []Span) string {
 	return b.String()
 }
 
-// Quote renders a line some rule flagged, for a message: Find's spans as
-// [REDACTED:<detector>]. When Find sees nothing there — the caller's rule is
-// broader, the commit guard's line check takes a bare key header — everything
-// after the first ':' or '=' is withheld, so a message never carries a value.
+// Quote renders a line some rule flagged, for a message: only what precedes
+// its first detected secret or first ':'/'=', then `[withheld: <detectors>]`.
+// The caller's rule may be broader than Find, and a line holding one secret
+// may hold another no detector recognises — so nothing after either cut is
+// ever quoted. The kept prefix (`+aws_key =`) is what locates the line.
 func Quote(line string) string {
-	if spans := Find(line, All, nil); len(spans) > 0 {
-		return Redact(line, spans)
-	}
+	spans := Find(line, All, nil)
+	cut := len(line)
 	if i := strings.IndexAny(line, ":="); i >= 0 {
-		return line[:i+1] + " [withheld]"
+		cut = i + 1
 	}
-	return line
+	if len(spans) > 0 {
+		cut = min(cut, spans[0].Start)
+	}
+	if cut == len(line) {
+		return line
+	}
+	var detectors []string
+	for _, s := range spans {
+		if !slices.Contains(detectors, s.Detector) {
+			detectors = append(detectors, s.Detector)
+		}
+	}
+	if len(detectors) == 0 {
+		return strings.TrimRight(line[:cut], " ") + " [withheld]"
+	}
+	return strings.TrimRight(line[:cut], " ") + " [withheld: " + strings.Join(detectors, ", ") + "]"
 }
 
 // reWordy is a digit-bearing run — possibly key material a

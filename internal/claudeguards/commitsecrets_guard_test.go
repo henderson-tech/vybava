@@ -39,7 +39,7 @@ func TestGuardCommitSecrets(t *testing.T) {
 	secret := tempRepo(t, "config.ts", "export const key = 'AKIAIOSFODNN7EXAMPLE';\n")
 	if d := guardCommitSecrets(in(secret, `git commit -m "add config"`)); d == nil || d.Rule != "commit-secrets" {
 		t.Fatalf("staged AWS key must block, got %v", d)
-	} else if strings.Contains(d.Message, "AKIAIOSFODNN7EXAMPLE") || !strings.Contains(d.Message, "[REDACTED:aws-key]") {
+	} else if strings.Contains(d.Message, "AKIAIOSFODNN7EXAMPLE") || !strings.Contains(d.Message, "[withheld: aws-key]") {
 		t.Fatalf("the denial must quote the line without the key (it lands in the transcript):\n%s", d.Message)
 	}
 	if d := guardCommitSecrets(in(secret, `COMMIT_GUARD_ALLOW=1 git commit -m "add config"`)); d != nil {

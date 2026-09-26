@@ -158,3 +158,21 @@ func TestShapeNeverCarriesTheValue(t *testing.T) {
 		t.Errorf("Shape = %q", shape)
 	}
 }
+
+// Quote serves messages about a line some rule already flagged: nothing
+// after the first secret or assignment may reach them, recognised or not.
+func TestQuoteWithholdsEverythingAfterTheFirstSecret(t *testing.T) {
+	unrecognised := "abcdefghijk"
+	for _, line := range []string{
+		"+creds " + "AKIA" + strings.ToUpper(fake("", 16)) + " otherCredential=" + unrecognised,
+		"+otherCredential=" + unrecognised,
+	} {
+		q := Quote(line)
+		if strings.Contains(q, unrecognised) || strings.Contains(q, "AKIA") && strings.Contains(q, strings.ToUpper(fake("", 16))) {
+			t.Errorf("Quote(%q) = %q carries a value", line, q)
+		}
+	}
+	if q := Quote("+token " + fake("gh"+"p_", 36)); !strings.Contains(q, "github-token") {
+		t.Errorf("Quote must name the detector: %q", q)
+	}
+}
