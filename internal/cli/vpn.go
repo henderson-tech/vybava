@@ -143,7 +143,8 @@ reading Disconnected while wg-quick carries the tunnel is normal.`,
 		Long: `Pulls the profile from Onyx, writes it root-only to ` + vpn.ConfigDir + `/NAME.conf,
 installs ` + vpn.DaemonDir + `/com.vybava.vpn.NAME.plist and (re)starts it. Any job
 already holding the label — the transient recovery job included — is stopped
-first, so re-running install is a restart with the vault's current profile.`,
+once the new files are in place, so re-running install is a restart with the
+vault's current profile.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, name, ctx := session(cmd), args[0], cmd.Context()

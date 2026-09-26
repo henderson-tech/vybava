@@ -44,9 +44,15 @@ key. On an existing registration, `add` changes only the flags you pass.
    - `/usr/local/etc/vybava/wireguard/<name>.sh`: the supervisor.
    - `/Library/LaunchDaemons/com.vybava.vpn.<name>.plist`: `RunAtLoad`, plus
      `KeepAlive {SuccessfulExit: false}` with a 30 s throttle.
-3. Any job that already holds the label is booted out first. That includes
-   the transient `launchctl submit` recovery job from 2026-09-22. So running
-   `install` again restarts the tunnel with the vault's current profile.
+3. Once every file is in place, any job that already holds the label is
+   booted out, and the new daemon bootstraps. That includes the transient
+   `launchctl submit` recovery job from 2026-09-22. So running `install`
+   again restarts the tunnel with the vault's current profile. Writing first
+   is deliberate: a failed write leaves the running tunnel, and the DNS it
+   carries, up. The old supervisor keeps reading its own script, because the
+   writes are renames. On macOS, its `wg-quick down` takes nothing from the
+   new conf: routes and DNS are undone by wg-quick's route monitor from the
+   state it kept at `up`, and the conf holds no hooks.
 
 The supervisor clears any interface left behind by an earlier run and runs
 `wg-quick up`. It then lives exactly as long as the utun and its

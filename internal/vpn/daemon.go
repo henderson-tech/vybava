@@ -179,8 +179,9 @@ func writeFile(path, mode, why, stdin, input string) Step {
 
 // InstallPlan is every privileged step that makes the tunnel persistent.
 // loaded says a job already holds the label — the transient `launchctl
-// submit` recovery or an earlier install — which is booted out first, so a
-// re-install is a restart with the vault's current profile.
+// submit` recovery or an earlier install — which is booted out once every
+// file is written, so a re-install is a restart with the vault's current
+// profile and a failed write leaves the running tunnel up (docs/vpn.md).
 func InstallPlan(name, bin, config string, loaded bool) []Step {
 	target := "system/" + Label(name)
 	steps := []Step{
