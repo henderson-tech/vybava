@@ -248,11 +248,17 @@ type System struct{}
 
 func (System) AppState(ctx context.Context, name string) (string, string) {
 	out, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--nc", "status", name).CombinedOutput()
-	state, iface := ParseAppStatus(string(out))
-	if err != nil && state != "" {
+	return appState(string(out), err)
+}
+
+// appState classifies one `scutil --nc status` run: "No service" is the only
+// answer meaning the app has no such profile; any other failure is unknown,
+// even one that printed nothing.
+func appState(out string, err error) (string, string) {
+	if err != nil && !strings.HasPrefix(strings.TrimSpace(out), "No service") {
 		return "unknown (" + err.Error() + ")", ""
 	}
-	return state, iface
+	return ParseAppStatus(out)
 }
 
 // ParseAppStatus reads `scutil --nc status`: the first line is the state

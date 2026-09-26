@@ -133,6 +133,21 @@ func TestParseAppStatusNamesTheConnectedUtun(t *testing.T) {
 	}
 }
 
+// Only "No service" means the app has no profile; any other failed scutil
+// run is unknown, even one that printed nothing.
+func TestAppStateIsUnknownWhenScutilFailsSilently(t *testing.T) {
+	failed := errors.New("exit status 1")
+	if state, _ := appState("", failed); state != "unknown (exit status 1)" {
+		t.Fatalf("silent failure read as %q", state)
+	}
+	if state, _ := appState("No service\n", failed); state != "" {
+		t.Fatalf("No service read as %q", state)
+	}
+	if state, iface := appState("Connected\n  InterfaceName : utun7\n", nil); state != "Connected" || iface != "utun7" {
+		t.Fatalf("got %q/%q", state, iface)
+	}
+}
+
 func TestParseServiceReadsTheJobNotItsSections(t *testing.T) {
 	out := "system/com.vybava.vpn.lovinka-admin = {\n\tactive count = 1\n\tpath = (submitted by launchctl[48754])\n\ttype = Submitted\n\tstate = running\n\n\tsockets = {\n\t\t\ttype = stream\n\t\tstate = active\n\t}\n\tpid = 48756\n}\n"
 	got := ParseService(out)
