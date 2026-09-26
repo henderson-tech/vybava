@@ -9,7 +9,7 @@ apps:
     ports: [repo]
     cmd: sleep infinity
     sync: .
-    sync_ignores: [".env", ".env.*", "dist", "coverage.out", "/vybava"]
+    sync_ignores: [".env", ".env.*", "dist", "coverage.out", "/vybava", "/bin"]
 
 scripts:
   test: go test -race ./...
