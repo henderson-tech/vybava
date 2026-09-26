@@ -94,18 +94,23 @@ func Plist(name, bin string) string {
 // launchd's state IS the tunnel's state. A stop (bootout) runs wg-quick down.
 // Liveness is the utun itself (wg-quick's own monitor test), not only the
 // socket file: a killed wireguard-go leaves its .sock behind.
-func Supervisor(name, bin string) string {
+func Supervisor(name, bin string) string { return supervisor(name, bin, runDir) }
+
+// supervisor renders the script against wg-quick's state dir run; the
+// lifecycle test points it at a scratch dir.
+func supervisor(name, bin, run string) string {
 	return `# vybava vpn supervisor for ` + name + ` — written by "vybava vpn install ` + name + `"; do not edit.
 set -uo pipefail
 export PATH=` + quote(bin+":/usr/bin:/bin:/usr/sbin:/sbin") + `
 conf=` + quote(ConfigPath(name)) + `
-marker=` + quote(filepath.Join(runDir, name+".name")) + `
+run=` + quote(run) + `
+marker=` + quote(filepath.Join(run, name+".name")) + `
 iface=''
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 stop() {
 	trap - TERM INT
 	[[ -n $iface || ! -f $marker ]] || iface=$(< "$marker")
-	if [[ -n $iface && -S /var/run/wireguard/$iface.sock ]]; then
+	if [[ -n $iface && -S $run/$iface.sock ]]; then
 		wg-quick down "$conf" || echo "$(now) wg-quick down failed; inspect routes" >&2
 	fi
 	echo "$(now) stopped"
@@ -115,8 +120,8 @@ trap stop TERM INT
 if [[ -f $marker ]]; then
 	stale=$(< "$marker")
 	echo "$(now) clearing $stale left by an earlier run"
-	if [[ -S /var/run/wireguard/$stale.sock ]]; then
-		wg-quick down "$conf" || /bin/rm -f "/var/run/wireguard/$stale.sock"
+	if [[ -S $run/$stale.sock ]]; then
+		wg-quick down "$conf" || /bin/rm -f "$run/$stale.sock"
 	fi
 	/bin/rm -f "$marker"
 fi
@@ -126,7 +131,7 @@ if ! wg-quick up "$conf"; then
 fi
 iface=$(< "$marker")
 echo "$(now) up on $iface"
-while [[ -S /var/run/wireguard/$iface.sock ]] && ifconfig "$iface" >/dev/null 2>&1; do
+while [[ -S $run/$iface.sock ]] && ifconfig "$iface" >/dev/null 2>&1; do
 	sleep 5 &
 	wait $!
 done
