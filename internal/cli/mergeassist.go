@@ -5,6 +5,7 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/mergeassist"
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/shellword"
 	"github.com/spf13/cobra"
 )
 
@@ -219,7 +220,7 @@ func reportNext(rep mergeassist.Report) []string {
 		if row.Class == "migration" && row.State == mergeassist.StateFailed {
 			cmd := "merge-assist migrations --apply"
 			if rep.Onto != "" { // the merge's own base, not the default ref
-				cmd += " --onto " + quoteArg(rep.Onto)
+				cmd += " --onto " + shellword.Quote(rep.Onto)
 			}
 			next = append(next, cmd+"  # reruns the failed check once fixed")
 			break
@@ -227,7 +228,7 @@ func reportNext(rep mergeassist.Report) []string {
 	}
 	switch {
 	case rep.DryRun && !rep.UpToDate:
-		next = append(next, "merge-assist merge "+quoteArg(rep.Onto))
+		next = append(next, "merge-assist merge "+shellword.Quote(rep.Onto))
 	case rep.Open > 0:
 		next = append(next, "merge-assist status")
 	case rep.Committed == "" && !rep.UpToDate && !rep.DryRun:
