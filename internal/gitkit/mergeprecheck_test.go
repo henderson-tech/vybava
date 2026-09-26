@@ -199,6 +199,9 @@ func TestEnumConfigKeys(t *testing.T) {
 		{"stop repo", parseStopServers(gitConfig{"AFTER_MERGE_STOP_SERVERS": " Repo "}), "repo", "<nil>"},
 		{"stop none", parseStopServers(gitConfig{"AFTER_MERGE_STOP_SERVERS": "none"}), "none", "<nil>"},
 		{"stop typo", parseStopServers(gitConfig{"AFTER_MERGE_STOP_SERVERS": "all"}), "worktree", "all"},
+		{"devbox absent", parseDevbox(gitConfig{}), "reap", "<nil>"},
+		{"devbox down", parseDevbox(gitConfig{"AFTER_MERGE_DEVBOX": " Down "}), "down", "<nil>"},
+		{"devbox typo", parseDevbox(gitConfig{"AFTER_MERGE_DEVBOX": "destroy"}), "reap", "destroy"},
 	} {
 		if tc.got.value != tc.value || invalid(tc.got) != tc.bad {
 			t.Errorf("%s: %s / %s", tc.name, tc.got.value, invalid(tc.got))

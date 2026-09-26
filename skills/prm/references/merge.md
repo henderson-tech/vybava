@@ -18,13 +18,15 @@ in a worktree → the anchor is wrong; re-run, never act on that envelope.
 → JSON: `{owner, repo, pr, url, title, branch, defaultBranch, onDefaultBranch,
 worktree, mainClone, isWorktree, slug, checks, gates, botApproval,
 requiredBotReviewers, mergePolicy, mergeMethod, mergeMethodSource, mergeMethodReason,
-mergeMethodsAllowed, afterMergeCmd, resolvedAfterMergeCmd, stopServers, raw}`
+mergeMethodsAllowed, afterMergeCmd, resolvedAfterMergeCmd, stopServers, devbox, raw}`
 (`mergeMethod*` are null/empty on a PR that is not OPEN — see Merge).
 `botApproval = {ok, required[], pending[]}`; `gates.botApprovalOk` mirrors it as the
 `botReview` gate. `mergePolicy` is `review` (default) or `self` — see the keys below;
 a non-null `mergePolicyInvalid` is a typo in the config: say so, run as `review`.
 `stopServers` is `worktree` (default), `repo` or `none` — step 4c; a non-null
 `stopServersInvalid` is likewise a typo: say so, run as `worktree`.
+`devbox` is `reap` (default) or `down` — step 4b; a non-null `devboxInvalid` is a
+typo: say so, run as `reap`.
 
 Hard guards — STOP immediately:
 - `onDefaultBranch` → "On the default branch — nothing to merge here." Never tell the
@@ -221,7 +223,12 @@ Two non-negotiables: (a) every git op runs from the main clone via `git -C <main
    lease** (4 h, renewed by every `devbox up`/`run`; `park`/`down` never clear it):
    `devbox unhold <workspace>` then reap again — seen 2026-09-14 on
    `fixit-work-vt-863`. A workspace with apps still ACTIVE is a different case:
-   report it, never `unhold` your way past a live session.
+   report it, never `unhold` your way past a live session — unless `devbox` is
+   `down`: the repo opted into merge = the branch's stack goes. Resolve the name
+   BEFORE the worktree is removed (`(cd <worktree> && devbox status --json)` →
+   `data.context.workspace`), then after removal `devbox down <workspace>` →
+   `devbox unhold <workspace>` → the reap above. Only that one workspace, never a
+   sibling; a `down` that fails is reported with its diagnostic, never retried.
 4c. **Main-clone dev servers** — `AFTER_MERGE_STOP_SERVERS` (after EITHER path, hook
    or generic, because a repo whose work lands from the main clone never had a
    worktree to scope step 4 to). `worktree` (default) → nothing extra; step 4 already
@@ -293,6 +300,12 @@ AFTER_MERGE_CMD=/wk:cleanup {slug} --remove --yes --delete-remote
 # nothing. Same command-line filter and never-kill list either way; never Docker,
 # never the clone itself.
 AFTER_MERGE_STOP_SERVERS=repo
+
+# What a successful merge does to the branch's devbox workspace (step 4b). reap
+# (default): retire it only when gc would — a workspace with apps still running is
+# reported and kept. down: the merge takes the stack down — stop its apps, release
+# its hold, then reap. A typo → reap.
+AFTER_MERGE_DEVBOX=down
 
 # Runs when prm ENTERS the review loop, and again at the start of each round.
 # Same tokens. Must be idempotent and cheap. Stops processes we own (dev servers,
