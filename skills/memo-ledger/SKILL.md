@@ -17,6 +17,7 @@ event `memo add` writes to `usage.jsonl`.
 ```text
 memo add <type>/<topic>[!] "<one sentence>." [--link '[[notes/<slug>]]'] [--supersedes N] [--retires N] --json
                                       # capture: user|feedback -> personal home, project|reference -> team home
+                                      # team rows are written from a worktree and land via PR; a main checkout refuses MAIN_CHECKOUT
                                       # a fact that changed -> --supersedes N; a fact that is simply gone -> --retires N
 #NN / #tNN                            # act: when a row changes what you do, write its id in your reply or tool input;
                                       # bare #NN is a personal row, #tNN a team row; the Stop hook harvests both

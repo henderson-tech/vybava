@@ -426,6 +426,29 @@ func TestTeamIDPrefix(t *testing.T) {
 	}
 }
 
+// TestMainCheckoutTeamHome: a team home in the main checkout is refused with
+// a worktree fix, a linked worktree's passes, and WORKTREE_POLICY=never opts
+// the repo out.
+func TestMainCheckoutTeamHome(t *testing.T) {
+	root := linkedWorktreeRepo(t)
+	d, err := MainCheckoutTeamHome(filepath.Join(root, ".claude", "memory"), "chore/memory-x")
+	if err != nil || d == nil || d.Code != DiagMainCheckout || !strings.Contains(d.Fix, "worktree add -b chore/memory-x") {
+		t.Fatalf("main checkout must be refused with a worktree fix: %+v %v", d, err)
+	}
+	if d, err := MainCheckoutTeamHome(filepath.Join(root, ".worktrees", "memo-ledger", ".claude", "memory"), "chore/memory-x"); d != nil || err != nil {
+		t.Errorf("a linked worktree must pass: %+v %v", d, err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", ".claude.git.config"), []byte("WORKTREE_POLICY=never\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := MainCheckoutTeamHome(filepath.Join(root, ".claude", "memory"), "chore/memory-x"); d != nil || err != nil {
+		t.Errorf("WORKTREE_POLICY=never must opt the main checkout out: %+v %v", d, err)
+	}
+}
+
 // TestWorktreeSessionSplitsPersonalAndTeam: from a linked worktree the
 // personal home is the MAIN checkout's slug, the team ledger is the
 // worktree's own, bare ids credit personal only, t-ids team only, and the

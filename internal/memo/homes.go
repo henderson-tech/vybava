@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/gitkit"
 )
 
 // Home is one ledger directory with its alias and kind.
@@ -464,6 +466,27 @@ func MainRepoRoot(dir string) string {
 		}
 	}
 	return root
+}
+
+// MainCheckoutTeamHome refuses a team home that lives in a repository's MAIN
+// checkout: a row appended there is uncommitted dirt on the default branch,
+// which changes reach only through a worktree and a PR. A home outside git,
+// in a linked worktree, or in a repo with WORKTREE_POLICY=never passes.
+// branch names the worktree the fix proposes.
+func MainCheckoutTeamHome(home, branch string) (*Diag, error) {
+	root, ok := gitToplevel(home)
+	if !ok || root != MainRepoRoot(root) {
+		return nil, nil
+	}
+	cfg, err := gitkit.ReadGitConfig(root)
+	if err != nil {
+		return nil, err
+	}
+	if cfg["WORKTREE_POLICY"] == "never" {
+		return nil, nil
+	}
+	wt := filepath.Join(root, ".worktrees", Slugify(filepath.Base(branch)))
+	return errorDiag(DiagMainCheckout, home+" is in the main checkout of "+root+", so the row was not written: a team row there is uncommitted dirt on the default branch; add it from a worktree and land it through a PR (WORKTREE_POLICY=never in .claude/.claude.git.config opts a repo out)", "git -C "+root+" worktree add -b "+branch+" "+wt+"  # then re-run from "+wt), nil
 }
 
 // SetAlias rewrites the `alias:` frontmatter line of a ledger; the one
