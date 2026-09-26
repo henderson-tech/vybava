@@ -54,6 +54,18 @@ type ContextReport struct {
 	Hours            []HourCost   `json:"hours"`
 	TodoInjections   int          `json:"sessionStartTodoInjections"`
 	MalformedRecords int          `json:"malformedRecords"`
+	// Leaks is filled by the caller from `vybava redact`'s scan of the whole
+	// session (subagents, workflows, task output); nil when not scanned.
+	Leaks *Leaks `json:"leaks,omitempty"`
+}
+
+// Leaks summarises secret material found in a session's files — counts and
+// detectors only, never a value.
+type Leaks struct {
+	Spans   int            `json:"spans"`
+	Files   int            `json:"files"`
+	Counts  map[string]int `json:"counts"`
+	Session string         `json:"session"`
 }
 
 type transcriptBlock struct {
@@ -408,6 +420,17 @@ func (r ContextReport) Render(w io.Writer) error {
 	}
 	for _, h := range r.Hours {
 		if _, err = fmt.Fprintf(w, "%s %4d responses context %d growth %+d output %d\n", h.Hour, h.Responses, h.LastContext, h.Growth, h.Output); err != nil {
+			return err
+		}
+	}
+	if r.Leaks != nil && r.Leaks.Spans > 0 {
+		detectors := make([]string, 0, len(r.Leaks.Counts))
+		for d, n := range r.Leaks.Counts {
+			detectors = append(detectors, fmt.Sprintf("%s %d", d, n))
+		}
+		sort.Strings(detectors)
+		if _, err = fmt.Fprintf(w, "⚠️ secret leaks: %d spans in %d files (%s) — vybava redact --session %s --apply\n",
+			r.Leaks.Spans, r.Leaks.Files, strings.Join(detectors, " · "), r.Leaks.Session); err != nil {
 			return err
 		}
 	}

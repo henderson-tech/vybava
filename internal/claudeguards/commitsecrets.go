@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // ---------------------------------------------------------------------------
@@ -49,38 +51,23 @@ var (
 	reBadFile    = regexp.MustCompile(`(^|/)(id_rsa|id_ed25519|id_ecdsa|id_dsa)[^/]*$|\.(pem|key|p12|pfx|crt|cer|der|jks|keystore|ppk|kubeconfig)$|(^|/)\.env(\..*)?$|(^|/)(\.netrc|known_hosts|authorized_keys)$`)
 	reEnvExample = regexp.MustCompile(`\.env\.example$`)
 
-	reSecret = regexp.MustCompile(`BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{20,}\.eyJ`)
-
-	rePassword     = regexp.MustCompile(`(?i)(password|passwd|secret|api[_-]?key|access[_-]?token)["']?[[:space:]]*[:=][[:space:]]*["'][^"']{8,}`)
-	rePasswordSkip = regexp.MustCompile(`\$\{|\$\(|process\.env|os\.Getenv|os\.environ|System\.getenv|Deno\.env\.get|secrets\.|vars\.|example|placeholder|changeme|<[^>]+>`)
-
-	// An assignment whose IDENTIFIER names an environment variable ("…env…")
-	// and whose VALUE is a bare SCREAMING_SNAKE identifier. That value is the
-	// KEY handed to os.Getenv / process.env[…], never a credential:
-	//   const EnvPassword = "POSTA_APP_PASSWORD"   → not a secret
-	//   var   password    = "ADMIN_PASSWORD"       → STILL a secret
-	// BOTH signals are required, because either one alone blinds the rule to a
-	// real leak. At least one underscore is required too, so a caps-only token
-	// with real entropy (base32 TOTP seed, uppercase hex key) keeps counting as
-	// a secret.
-	// The (?i) is scoped to the identifier on purpose: letting it reach the
-	// value would make the SCREAMING_SNAKE alternation case-insensitive, and
-	// `envKey = "sk_live_9f8a…"` would suppress a real leak.
-	reEnvNameConst = regexp.MustCompile(`\b(?i:[a-z0-9_]*env[a-z0-9_]*)[[:space:]]*:?=[[:space:]]*` +
-		`(?:"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+"|'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+')`)
-
 	reIPv4 = regexp.MustCompile(`\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b`)
 	// Also never routable: the RFC 5737 documentation nets fixtures are meant to use.
 	rePrivateIP = regexp.MustCompile(`^(0\.|10\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|255\.|169\.254\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)`)
 )
 
-// credentialAssignment reports whether one added diff line hardcodes a
-// credential. Pure — unit-testable, and the one place the three signals
-// (shape, placeholder, env-var name) are weighed together.
-func credentialAssignment(l string) bool {
-	return rePassword.MatchString(l) &&
-		!rePasswordSkip.MatchString(l) &&
-		!reEnvNameConst.MatchString(l)
+// Secret shapes and the credential-assignment rule are secretscan's — one
+// catalogue for this guard, memorylint and `vybava redact`.
+var credentialAssignment = secretscan.CredentialAssignment
+
+// quoteHits renders offending diff lines for the denial without the secret:
+// the denial is tool output, and tool output is the session transcript.
+func quoteHits(hits []string) string {
+	quoted := make([]string, len(hits))
+	for i, h := range hits {
+		quoted[i] = secretscan.Quote(h)
+	}
+	return strings.Join(quoted, "\n")
 }
 
 // The guard reads the command as text, never as a parsed shell line, and fails
@@ -225,11 +212,11 @@ func scanRepo(t repoTarget, adds bool, seen map[string]bool, findings *strings.B
 		}
 	}
 	if len(added) > 0 {
-		if hits := grepN(added, 10, func(l string) bool { return reSecret.MatchString(l) }); len(hits) > 0 {
-			fmt.Fprintf(findings, "Secret-shaped content in the changes:\n%s\n", strings.Join(hits, "\n"))
+		if hits := grepN(added, 10, secretscan.ContainsToken); len(hits) > 0 {
+			fmt.Fprintf(findings, "Secret-shaped content in the changes (values withheld):\n%s\n", quoteHits(hits))
 		}
 		if hits := grepN(added, 10, credentialAssignment); len(hits) > 0 {
-			fmt.Fprintf(findings, "Hardcoded credential assignments:\n%s\n", strings.Join(hits, "\n"))
+			fmt.Fprintf(findings, "Hardcoded credential assignments (values withheld):\n%s\n", quoteHits(hits))
 		}
 	}
 

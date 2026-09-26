@@ -93,3 +93,44 @@ func (r neverEnds) Read([]byte) (int, error) {
 	r.t.Error("browser-teardown read stdin although --session named the session")
 	return 0, io.EOF
 }
+
+// redact-session runs at every session end: it must scrub the payload's
+// session in place, audit it, and never fail the exit.
+func TestClaudeGuardsRedactSessionScrubsThePayloadSession(t *testing.T) {
+	claude, config := t.TempDir(), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claude)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	// Assembled at run time: no secret shape in the source.
+	secret := strings.Repeat("q7Zx", 8)
+	transcript := filepath.Join(claude, "projects", "-Users-someone-app", "sess-end.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","content":"MAIL_PASSWORD=`+secret+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	cmd, err := App{Stdin: strings.NewReader(`{"session_id":"sess-end"}`), Stdout: &out, Stderr: &errOut}.Command("claude-guards")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetArgs([]string{"redact-session"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("redact-session must never fail the session: %v", err)
+	}
+	data, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || !strings.Contains(string(data), "[REDACTED:env-assignment]") {
+		t.Fatalf("transcript not redacted: %s", data)
+	}
+	audit, err := os.ReadFile(filepath.Join(config, "vybava", "redact-audit.jsonl"))
+	if err != nil || !strings.Contains(string(audit), "sess-end.jsonl") || strings.Contains(string(audit), secret) {
+		t.Fatalf("audit = %q, %v", audit, err)
+	}
+	if !strings.Contains(errOut.String(), "1 secret spans redacted") {
+		t.Errorf("stderr = %q", errOut.String())
+	}
+}

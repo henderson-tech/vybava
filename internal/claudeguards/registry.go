@@ -73,7 +73,10 @@ var Rules = []Rule{
 	{"prod-merge:merge", "prod-merge", eventBash, "gh pr merge / gh api merge or ref write / git push landing on a branch the repo's PROD_BRANCHES names", escapeProdMerge},
 	{"secrets:env-dump", "secrets", eventBash, "env/printenv/export with no name-only projection", escapeDangerous},
 	{"secrets:inspect-config-env", "secrets", eventBash, "docker inspect templating .Config.Env", escapeDangerous},
+	{"secrets:printenv-secret", "secrets", eventBash, "printenv of a secret-named variable, or of $v with a secret name in the command", escapeDangerous},
 	{"secrets:proc-environ", "secrets", eventBash, "a read of /proc/*/environ", escapeDangerous},
+	{"secrets:secret-echo", "secrets", eventBash, "echo/printf expanding a secret-named variable, not piped into a consumer", escapeDangerous},
+	{"secrets:secret-fragment", "secrets", eventBash, "a secret's length, prefix or suffix (${#x}, cut -c, .slice(…) where one is read)", escapeDangerous},
 	{"simulator:appium-session-churn", "simulator", eventBash, "a script that opens and deletes a webdriverio session per look", escapeNone},
 	{"simulator:host-input", "simulator", eventBash, "cliclick/System Events driving the Simulator window", escapeNone},
 }

@@ -65,6 +65,10 @@ SessionEnd    swarm-teardown              the same, also for this session's own
                                           swarm, plus ≤8 `ps` up the ancestry
               browser-teardown            an onyx lookup (1.5 s) and stop (3 s)
               reap                        one `ps -axo`; kills as weather --reap does
+              redact-session              one secret scan of the session's files
+                                          (~1 s per 25 MB, 4 workers) and a
+                                          same-length overwrite of what it finds
+                                          — docs/redact.md
 ```
 
 At load ~400 the per-call figure rises by a quarter to a half (18–21 ms),
@@ -91,6 +95,7 @@ SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
 SessionEnd            claude-guards reap
+SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
 `claude-guards hooks` prints this wiring as JSON and `doctor` checks the live
@@ -109,7 +114,12 @@ Rule families, each with its own escape hatch named in the block message:
 ```text
 destructive:*     git stash · checkout/switch/restore . in the primary clone ·
                   compose down -v · db volume rm/prune · keychain value reads
-secrets:*         env / printenv dumps, /proc/*/environ, docker inspect .Config.Env
+secrets:*         env / printenv dumps, /proc/*/environ, docker inspect .Config.Env ·
+                  printing a secret or any part of it: printenv SECRET_NAME,
+                  ${#x} / cut -c / .slice( of a secret value, echo "$API_TOKEN"
+                  not piped into its consumer — [ -n "$X" ], x=$(printenv X)
+                  and pipes into the consumer pass; a .env print is not a
+                  rule; cleanup of what got through: docs/redact.md
 simulator:*       cliclick / AppleScript System Events against the Simulator ·
                   running a script that opens a webdriverio remote() session
                   and deleteSession()s it per look outside appium/support,
@@ -128,6 +138,7 @@ machine:*         playwright test / vitest / jest started on this Mac with no
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
+                  (the block quotes each line with its value [REDACTED])
 prod-merge:*      landing on a production branch the repo names in
                   .claude/.claude.git.config PROD_BRANCHES (main clone; unset →
                   none): gh pr merge (--auto/--admin, prm's terminus), gh api

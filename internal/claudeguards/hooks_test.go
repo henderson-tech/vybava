@@ -178,8 +178,8 @@ func TestDoctorFixRoundTrips(t *testing.T) {
 	if bashGroups != 1 || writeGroups != 1 {
 		t.Errorf("PreToolUse groups: Bash=%d Write|Edit=%d, want 1/1", bashGroups, writeGroups)
 	}
-	if len(groups["SessionEnd"]) != 1 || len(groups["SessionEnd"][0].Hooks) != 3 {
-		t.Errorf("SessionEnd should be one group of 3 hooks: %+v", groups["SessionEnd"])
+	if len(groups["SessionEnd"]) != 1 || len(groups["SessionEnd"][0].Hooks) != 4 {
+		t.Errorf("SessionEnd should be one group of 4 hooks: %+v", groups["SessionEnd"])
 	}
 	if !strings.HasSuffix(string(raw), "}\n") || !strings.Contains(string(raw), "\n  \"hooks\": {") {
 		t.Errorf("file should be 2-space indented with a trailing newline:\n%s", raw)
