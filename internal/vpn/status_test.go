@@ -18,14 +18,15 @@ type file struct {
 
 type fakeMac struct {
 	app    string
+	appIf  string // the utun scutil names for a connected profile
 	svc    Service
 	files  map[string]file
 	route  string
 	dnsErr error
 }
 
-func (f fakeMac) AppState(context.Context, string) string          { return f.app }
-func (f fakeMac) Service(context.Context, string) (Service, error) { return f.svc, nil }
+func (f fakeMac) AppState(context.Context, string) (string, string) { return f.app, f.appIf }
+func (f fakeMac) Service(context.Context, string) (Service, error)  { return f.svc, nil }
 func (f fakeMac) Stat(path string) (time.Time, bool) {
 	file, ok := f.files[path]
 	return time.Unix(file.at, 0), ok
@@ -87,8 +88,14 @@ func TestInspectClassifiesByRouteNotByAppState(t *testing.T) {
 		},
 		{
 			name:  "WireGuard.app carries it",
-			mac:   fakeMac{app: "Connected", route: "utun4"},
+			mac:   fakeMac{app: "Connected", appIf: "utun4", route: "utun4"},
 			state: "up", summary: "up via WireGuard.app",
+		},
+		{
+			name:  "WireGuard.app says Connected, but 10.8.1.1 leaves via en0",
+			mac:   fakeMac{app: "Connected", appIf: "utun4", route: "en0"},
+			state: "down", summary: "down: WireGuard.app says Connected (on utun4), but 10.8.1.1 routes via en0",
+			codes: []string{"VPN_DOWN"},
 		},
 	}
 	p := Profile{Ref: "onyx://WireGuard/x/Configuration", Probes: []string{"10.8.1.1:443"}, DNS: "10.8.1.1"}
@@ -109,6 +116,20 @@ func TestInspectClassifiesByRouteNotByAppState(t *testing.T) {
 				t.Fatalf("diagnostics %v, want %v", codes, c.codes)
 			}
 		})
+	}
+}
+
+func TestParseAppStatusNamesTheConnectedUtun(t *testing.T) {
+	connected := "Connected\nExtended Status <dictionary> {\n  DNSServers : <array> {\n    0 : 10.70.111.1\n  }\n  IPv4 : <dictionary> {\n    Addresses : <array> {\n      0 : 10.70.111.23\n    }\n    InterfaceName : utun7\n  }\n}\n"
+	disconnected := "Disconnected\nExtended Status <dictionary> {\n  IsPrimaryInterface : 0\n  Status : 0\n}\n"
+	for out, want := range map[string][2]string{
+		connected:      {"Connected", "utun7"},
+		disconnected:   {"Disconnected", ""},
+		"No service\n": {"", ""},
+	} {
+		if state, iface := ParseAppStatus(out); state != want[0] || iface != want[1] {
+			t.Errorf("got %q/%q, want %q/%q from:\n%s", state, iface, want[0], want[1], out)
+		}
 	}
 }
 

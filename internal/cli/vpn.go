@@ -163,7 +163,7 @@ first, so re-running install is a restart with the vault's current profile.`,
 				return fail(s, "VPN_PREREQ", err, "brew install bash wireguard-tools wireguard-go")
 			}
 			m := vpn.System{}
-			if m.AppState(ctx, name) == "Connected" {
+			if state, _ := m.AppState(ctx, name); state == "Connected" {
 				return fail(s, "VPN_DUPLICATE", fmt.Errorf("WireGuard.app has %s connected; one identity must not run twice", name), "turn "+name+" off in WireGuard.app")
 			}
 			svc, err := m.Service(ctx, vpn.Label(name))

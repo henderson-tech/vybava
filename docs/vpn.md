@@ -78,7 +78,8 @@ therefore checks, per tunnel:
   - `persistent`: our plist;
   - `transient`: a `submit` job that is gone at reboot;
   - `other` or `none`;
-- the app's state;
+- the app's state; a `Connected` profile carries the tunnel only when the utun
+  `scutil --nc status` names for it (`InterfaceName`) is the routed one;
 - one DNS question to the tunnel's resolver (any reply counts, 2 s budget);
 - the TCP probes.
 
@@ -87,7 +88,7 @@ A healthy line reads `up via wg-quick (utun11)`. The info diagnostic
 
 | Code | Severity | Meaning → next |
 |---|---|---|
-| `VPN_DOWN` | error | no tunnel carries it → `install`, `launchctl bootstrap` or the log |
+| `VPN_DOWN` | error | no tunnel carries it (an app profile that says Connected included) → `install`, `launchctl bootstrap`, the log, or turn the app profile off |
 | `VPN_DNS_SILENT` | error | the tunnel is up but its DNS does not answer → `kickstart -k` |
 | `VPN_PROBE_FAILED` | warning | a probe target is unreachable through the tunnel |
 | `VPN_NOT_PERSISTENT` | warning | wg-quick carries it, but not our LaunchDaemon → `install` |

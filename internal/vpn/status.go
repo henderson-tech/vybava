@@ -20,8 +20,9 @@ import (
 // Machine is the read-only view of the Mac that status needs; tests fake it.
 type Machine interface {
 	// AppState is WireGuard.app's view of the profile (`scutil --nc status`):
-	// "Connected", "Disconnected", … — "" when the app has no such profile.
-	AppState(ctx context.Context, name string) string
+	// "Connected", "Disconnected", … — "" when the app has no such profile —
+	// and the utun a connected profile runs on.
+	AppState(ctx context.Context, name string) (state, iface string)
 	// Service is launchd's system-domain job holding label.
 	Service(ctx context.Context, label string) (Service, error)
 	// Stat is a file's mtime, false when it does not exist; it never reads it.
@@ -64,7 +65,8 @@ type Status struct {
 	Name  string `json:"name"`
 	State string `json:"state"` // up | degraded | down
 	Via   string `json:"via"`   // wg-quick | app | none
-	// Interface is the wg-quick utun the tunnel's DNS (or first probe) routes through.
+	// Interface is the utun — wg-quick's or WireGuard.app's — the tunnel's DNS
+	// (or first probe) routes through.
 	Interface string  `json:"interface,omitempty"`
 	Summary   string  `json:"summary"`
 	App       string  `json:"app"` // WireGuard.app's state; absent without a profile
@@ -77,7 +79,8 @@ type Status struct {
 // Inspect observes one tunnel. The DNS question and TCP probes run in
 // parallel, each bounded by the Machine's own timeout.
 func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, error) {
-	s := Status{Name: name, App: m.AppState(ctx, name), Probes: make([]Check, len(p.Probes)), Log: LogPath(name)}
+	app, appIface := m.AppState(ctx, name)
+	s := Status{Name: name, App: app, Probes: make([]Check, len(p.Probes)), Log: LogPath(name)}
 	if s.App == "" {
 		s.App = "absent"
 	}
@@ -128,8 +131,8 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 	switch {
 	case wg:
 		s.Via, s.Interface = "wg-quick", route
-	case s.App == "Connected":
-		s.Via = "app"
+	case s.App == "Connected" && appIface != "" && appIface == route:
+		s.Via, s.Interface = "app", route
 	default:
 		s.Via = "none"
 	}
@@ -146,6 +149,8 @@ func Inspect(ctx context.Context, m Machine, name string, p Profile) (Status, er
 	switch {
 	case s.Via == "none" && marker:
 		s.State, s.Summary = "down", "down: a wg-quick "+name+" marker exists, but its interface does not carry "+host+" (routed via "+orUnknown(route)+")"
+	case s.Via == "none" && s.App == "Connected":
+		s.State, s.Summary = "down", "down: WireGuard.app says Connected (on "+orUnknown(appIface)+"), but "+host+" routes via "+orUnknown(route)
 	case s.Via == "none":
 		s.State, s.Summary = "down", "down"
 	case len(failed) > 0:
@@ -195,6 +200,8 @@ func Diagnose(s Status) []runx.Diagnostic {
 	target := "system/" + Label(s.Name)
 	switch {
 	case s.Via != "none":
+	case s.App == "Connected":
+		add("VPN_DOWN", "error", "WireGuard.app says Connected, but its interface does not carry the tunnel's route", "turn "+s.Name+" off in WireGuard.app, then: vybava vpn install "+s.Name)
 	case s.Daemon.Kind == "persistent":
 		add("VPN_DOWN", "error", "the daemon runs but the tunnel is not up", "sudo tail -n 40 "+s.Log)
 	case s.Daemon.Installed && s.Daemon.Kind == "none":
@@ -239,16 +246,29 @@ func Diagnose(s Status) []runx.Diagnostic {
 // System is the real Mac.
 type System struct{}
 
-func (System) AppState(ctx context.Context, name string) string {
+func (System) AppState(ctx context.Context, name string) (string, string) {
 	out, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--nc", "status", name).CombinedOutput()
-	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	switch {
-	case strings.HasPrefix(first, "No service"):
-		return ""
-	case err != nil:
-		return "unknown (" + err.Error() + ")"
+	state, iface := ParseAppStatus(string(out))
+	if err != nil && state != "" {
+		return "unknown (" + err.Error() + ")", ""
 	}
-	return first
+	return state, iface
+}
+
+// ParseAppStatus reads `scutil --nc status`: the first line is the state
+// ("" for "No service"); a connected profile's extended status names its
+// utun as InterfaceName.
+func ParseAppStatus(out string) (state, iface string) {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if strings.HasPrefix(lines[0], "No service") {
+		return "", ""
+	}
+	for _, line := range lines[1:] {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "InterfaceName : "); ok && iface == "" {
+			iface = value
+		}
+	}
+	return lines[0], iface
 }
 
 func (System) Service(ctx context.Context, label string) (Service, error) {
