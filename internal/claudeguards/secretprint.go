@@ -1,6 +1,7 @@
 package claudeguards
 
 import (
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -56,9 +57,6 @@ var (
 	// process.env.X.slice( · os.environ["X"][:6] · len(os.environ["X"]).
 	reAccessorFragment = regexp.MustCompile(`(?:process\.env\.|process\.env\[["']|os\.environ\[["']|os\.environ\.get\(["']|os\.getenv\(["']|getenv\(["']|os\.Getenv\(")([A-Z][A-Z0-9_]*)["']?\]?\)?[ \t]*(?:\.slice\(|\.substring\(|\.substr\(|\.length\b|\[[ \t]*-?[0-9]*[ \t]*:)` +
 		`|\blen\([ \t]*(?:os\.environ\[["']|os\.environ\.get\(["']|os\.getenv\(["'])([A-Z][A-Z0-9_]*)`)
-	// Commands that print what reaches them on stdin: a pipe into one of these
-	// still ends in the transcript.
-	reFilePrinter = regexp.MustCompile(`(?:^|[\s;&|(])(?:cat|bat|less|more|head|tail|sed|awk|grep|egrep|rg|strings|xxd|od|cut|wc|tee|base64|tr|rev|fold)\b`)
 	// echo/printf of an expansion, up to the next control operator.
 	reEchoExpansion  = regexp.MustCompile(`(?:^|[\s;&|(])(?:echo|printf)\b([^|;&\n]*)(\|\|?|;|&|\n|$)`)
 	reStdoutRedirect = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}[ \t]*[^&\s]`)
@@ -131,7 +129,7 @@ func secretPrintMatch(cmd string) string {
 	stripped := stripQuotedHeredocs(cmd)
 	for _, m := range reEchoExpansion.FindAllStringSubmatchIndex(stripped, -1) {
 		args := stripped[m[2]:m[3]]
-		if stripped[m[4]:m[5]] == "|" || reStdoutRedirect.MatchString(args) || inBraceGroup(stripped[:m[0]]) {
+		if reStdoutRedirect.MatchString(args) || consumed(stripped[m[4]:]) || groupConsumed(stripped, m[0]) {
 			continue
 		}
 		for _, e := range reExpansion.FindAllStringSubmatch(reNameCheck.ReplaceAllString(dropSingleQuoted(args), ""), -1) {
@@ -188,20 +186,85 @@ func fragmentOfSecret(code string, secretNamed bool) bool {
 	return false
 }
 
-// inBraceGroup reports an unclosed `{ ` group or function body before pos.
-func inBraceGroup(before string) bool {
-	s := dropSingleQuoted(before)
-	open := 0
-	for i := 0; i < len(s); i++ {
-		switch {
-		// `{ ` opens a group (`${` is an expansion, `{a,b}` a brace list).
-		case s[i] == '{' && (i == 0 || s[i-1] != '$') && (i+1 == len(s) || s[i+1] == ' ' || s[i+1] == '\n' || s[i+1] == '\t'):
-			open++
-		case s[i] == '}' && open > 0 && i > 0 && (s[i-1] == ' ' || s[i-1] == ';' || s[i-1] == '\n'):
-			open--
+// printerCommands print what reaches them on stdin: a pipeline ending in one
+// still ends in the transcript.
+var printerCommands = map[string]bool{"cat": true, "bat": true, "less": true, "more": true, "head": true,
+	"tail": true, "sed": true, "awk": true, "grep": true, "egrep": true, "rg": true, "strings": true,
+	"xxd": true, "od": true, "cut": true, "wc": true, "tee": true, "base64": true, "tr": true, "rev": true, "fold": true}
+
+// consumed reports whether the output leaving a command — rest starts at
+// the operator after it — is taken away from the transcript: redirected to a
+// file, or piped into a pipeline whose LAST stage is not itself a printer
+// (`| tr -d '\n' | docker login --password-stdin` consumes; `| cat`,
+// `| tee f` print).
+func consumed(rest string) bool {
+	rest = strings.TrimLeft(rest, " \t")
+	switch {
+	case strings.HasPrefix(rest, ">&"):
+		return false // onto stderr: the transcript too
+	case strings.HasPrefix(rest, ">"):
+		return true
+	case !strings.HasPrefix(rest, "|") || strings.HasPrefix(rest, "||"):
+		return false
+	}
+	pipeline := rest[1:]
+	for _, stop := range []string{"||", "&&", ";", "\n", ")"} {
+		if i := strings.Index(pipeline, stop); i >= 0 {
+			pipeline = pipeline[:i]
 		}
 	}
-	return open > 0
+	stages := strings.Split(pipeline, "|")
+	last := strings.TrimSpace(stages[len(stages)-1])
+	fields := strings.Fields(last)
+	return len(fields) > 0 && (!printerCommands[filepath.Base(fields[0])] || reStdoutRedirect.MatchString(last))
+}
+
+// groupConsumed reports that the echo at pos sits in a { …; } group or a
+// function body whose output is consumed: the group is piped or redirected
+// away after its `}`, or — a function — every call of it is. A group with no
+// such tail prints (`{ echo "$T"; }`), and so does a bare call (`H() {…}; H`).
+func groupConsumed(s string, pos int) bool {
+	var stack []int
+	open, close := -1, -1
+	inSingle := false
+	for i := 0; i < len(s) && close < 0; i++ {
+		c := s[i]
+		switch {
+		case c == '\'':
+			inSingle = !inSingle
+		case inSingle:
+		// `{ ` opens a group (`${` is an expansion, `{a,b}` a brace list).
+		case c == '{' && (i == 0 || s[i-1] != '$') && (i+1 == len(s) || strings.IndexByte(" \t\n", s[i+1]) >= 0):
+			stack = append(stack, i)
+		case c == '}' && len(stack) > 0 && i > 0 && strings.IndexByte(" ;\n", s[i-1]) >= 0:
+			if top := stack[len(stack)-1]; top == open {
+				close = i
+			}
+			stack = stack[:len(stack)-1]
+		}
+		if i == pos-1 || pos == 0 && i == 0 {
+			if len(stack) == 0 {
+				return false
+			}
+			open = stack[len(stack)-1]
+		}
+	}
+	if open < 0 || close < 0 {
+		return false
+	}
+	head := strings.TrimRight(s[:open], " \t")
+	if !strings.HasSuffix(head, "()") {
+		return consumed(s[close+1:])
+	}
+	// A function: find its calls after the definition.
+	name := head[strings.LastIndexAny(head[:len(head)-2], " \t;&|(\n")+1 : len(head)-2]
+	calls := regexp.MustCompile(`(?:^|[\s;&|(])`+regexp.QuoteMeta(name)+`\b([^|;&\n)]*)`).FindAllStringSubmatchIndex(s[close+1:], -1)
+	for _, c := range calls {
+		if !consumed(s[close+1+c[3]:]) {
+			return false
+		}
+	}
+	return true
 }
 
 // reNameCheck is an expansion that tests or substitutes a secret without
@@ -230,7 +293,15 @@ func printingSegments(cmd string) []printingSegment {
 	for i, p := range segs {
 		s := trimAssignments(trimSubshell(strings.TrimSpace(p.text)))
 		level := prints[len(prints)-1]
-		pipedAway := p.sep == "|" && i+1 < len(segs) && !reFilePrinter.MatchString(" "+strings.TrimSpace(segs[i+1].text))
+		pipedAway := false
+		if p.sep == "|" {
+			var rest strings.Builder
+			rest.WriteString(p.sep)
+			for _, q := range segs[i+1:] {
+				rest.WriteString(q.text + q.sep)
+			}
+			pipedAway = consumed(rest.String())
+		}
 		if s != "" && !envTextOnly(s) {
 			out = append(out, printingSegment{text: s, prints: level && !reStdoutRedirect.MatchString(s) && !pipedAway})
 		}
