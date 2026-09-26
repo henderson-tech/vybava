@@ -92,6 +92,8 @@ func Plist(name, bin string) string {
 // Supervisor is the daemon's program: it clears a leftover interface, brings
 // the tunnel up with wg-quick and lives exactly as long as the interface, so
 // launchd's state IS the tunnel's state. A stop (bootout) runs wg-quick down.
+// Liveness is the utun itself (wg-quick's own monitor test), not only the
+// socket file: a killed wireguard-go leaves its .sock behind.
 func Supervisor(name, bin string) string {
 	return `# vybava vpn supervisor for ` + name + ` — written by "vybava vpn install ` + name + `"; do not edit.
 set -uo pipefail
@@ -124,7 +126,7 @@ if ! wg-quick up "$conf"; then
 fi
 iface=$(< "$marker")
 echo "$(now) up on $iface"
-while [[ -S /var/run/wireguard/$iface.sock ]]; do
+while [[ -S /var/run/wireguard/$iface.sock ]] && ifconfig "$iface" >/dev/null 2>&1; do
 	sleep 5 &
 	wait $!
 done

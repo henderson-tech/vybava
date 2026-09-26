@@ -29,10 +29,12 @@ key. On an existing registration, `add` changes only the flags you pass.
 
 1. Onyx injects the profile into `<resolved exe> vpn _apply <name> <dir> <fifo>`.
    The vault item's `allowed_commands` must permit that prefix, and the item's
-   approval tier applies. The child rejects everything wg-quick would
-   execute (hooks, `SaveConfig`, `Table`), drops the `excludePeers`, and
-   writes the result into a private FIFO. It refuses to write to any regular
-   file.
+   approval tier applies. Keep the item `human_gated`: `_apply` writes the
+   profile into whatever FIFO its caller names, so an `injectable` item would
+   let any Onyx MCP client read the private key without a prompt. The child
+   rejects everything wg-quick would execute (hooks, `SaveConfig`, `Table`),
+   drops the `excludePeers`, and writes the result into a private FIFO. It
+   refuses to write to any regular file.
 2. The CLI runs each privileged step as `sudo <argv>` from your terminal
    (`--dry-run` prints them). It writes three root-owned files:
    - `/usr/local/etc/vybava/wireguard/<name>.conf`: 0600, in a 0700
@@ -46,11 +48,12 @@ key. On an existing registration, `add` changes only the flags you pass.
    `install` again restarts the tunnel with the vault's current profile.
 
 The supervisor clears any interface left behind by an earlier run and runs
-`wg-quick up`. It then lives exactly as long as the interface's socket, so
-launchd's job state is the tunnel's state. When launchd stops it (bootout or
-uninstall), it runs `wg-quick down`. If the interface vanishes, or
-`wg-quick up` fails before the network is ready at boot, the supervisor exits
-1 and launchd retries it. Logs go to `/var/log/vybava-vpn/<name>.log`.
+`wg-quick up`. It then lives exactly as long as the utun and its
+wireguard-go socket both exist, so launchd's job state is the tunnel's state.
+The utun check matters: a killed wireguard-go leaves its `.sock` file behind.
+When launchd stops it (bootout or uninstall), it runs `wg-quick down`. If the
+interface vanishes, or `wg-quick up` fails before the network is ready at
+boot, the supervisor exits 1 and launchd retries it. Logs go to `/var/log/vybava-vpn/<name>.log`.
 
 Trust boundary: the daemon runs Homebrew's `bash`/`wg-quick` as root, the same
 trust `sudo wg-quick` already implies on a Homebrew Mac. Nothing it runs lives

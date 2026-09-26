@@ -48,7 +48,11 @@ func TestSupervisorIsValidBash(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, out)
 	}
-	for _, want := range []string{"trap stop TERM INT", `wg-quick down "$conf"`, `wg-quick up "$conf"`, "conf='/usr/local/etc/vybava/wireguard/lovinka-admin.conf'"} {
+	for _, want := range []string{
+		"trap stop TERM INT", `wg-quick down "$conf"`, `wg-quick up "$conf"`, "conf='/usr/local/etc/vybava/wireguard/lovinka-admin.conf'",
+		// a SIGKILLed wireguard-go leaves its .sock behind; the utun is the liveness truth
+		`ifconfig "$iface" >/dev/null 2>&1; do`,
+	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("supervisor lacks %s", want)
 		}
