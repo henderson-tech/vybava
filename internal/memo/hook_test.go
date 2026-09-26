@@ -432,7 +432,7 @@ func TestTeamIDPrefix(t *testing.T) {
 func TestMainCheckoutTeamHome(t *testing.T) {
 	root := linkedWorktreeRepo(t)
 	d, err := MainCheckoutTeamHome(filepath.Join(root, ".claude", "memory"), "chore/memory-x")
-	if err != nil || d == nil || d.Code != DiagMainCheckout || !strings.Contains(d.Fix, "worktree add -b chore/memory-x") {
+	if err != nil || d == nil || d.Code != DiagMainCheckout || !strings.Contains(d.Fix, "worktree add -b chore/memory-x") || !strings.Contains(d.Fix, "--home "+filepath.Join(root, ".worktrees", "memory-x", ".claude", "memory")) {
 		t.Fatalf("main checkout must be refused with a worktree fix: %+v %v", d, err)
 	}
 	if d, err := MainCheckoutTeamHome(filepath.Join(root, ".worktrees", "memo-ledger", ".claude", "memory"), "chore/memory-x"); d != nil || err != nil {

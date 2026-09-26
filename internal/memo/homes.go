@@ -487,7 +487,7 @@ func MainCheckoutTeamHome(home, branch string) (*Diag, error) {
 		return nil, nil
 	}
 	wt := filepath.Join(root, ".worktrees", Slugify(filepath.Base(branch)))
-	return errorDiag(DiagMainCheckout, home+" is in the main checkout of "+root+", so the row was not written: a team row there is uncommitted dirt on the default branch; add it from a worktree and land it through a PR (WORKTREE_POLICY=never in .claude/.claude.git.config opts a repo out)", "git -C "+shellword.Quote(root)+" worktree add -b "+shellword.Quote(branch)+" "+shellword.Quote(wt)+" && cd "+shellword.Quote(wt)+"  # then re-run this memo command"), nil
+	return errorDiag(DiagMainCheckout, home+" is in the main checkout of "+root+", so the row was not written: a team row there is uncommitted dirt on the default branch; add it from a worktree and land it through a PR (WORKTREE_POLICY=never in .claude/.claude.git.config opts a repo out)", "git -C "+shellword.Quote(root)+" worktree add -b "+shellword.Quote(branch)+" "+shellword.Quote(wt)+" && cd "+shellword.Quote(wt)+"  # then re-run this memo command with --home "+shellword.Quote(filepath.Join(wt, ".claude", "memory"))+" (an explicit --home or alias would still name the main checkout)"), nil
 }
 
 // SetAlias rewrites the `alias:` frontmatter line of a ledger; the one
