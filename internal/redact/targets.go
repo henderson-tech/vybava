@@ -125,7 +125,7 @@ func (r Roots) Files(t Target) (files []string, unreadable int, err error) {
 			return nil, 0, err
 		}
 		for _, p := range rollouts {
-			if strings.Contains(filepath.Base(p), id) {
+			if strings.HasSuffix(filepath.Base(p), "-"+id+".jsonl") { // rollout-<time>-<id>.jsonl: the id exactly, never a substring of a timestamp
 				add(p)
 				found = true
 			}

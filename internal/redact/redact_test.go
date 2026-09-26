@@ -181,7 +181,7 @@ func TestScanReportsWithoutWritingOrPrintingValues(t *testing.T) {
 	var fragment bool
 	for _, file := range rep.Leaky {
 		for _, g := range file.Findings {
-			fragment = fragment || g.Detector == "fragment" && g.Line == 1 && strings.Contains(g.Shape, "prefix ‹fragment›")
+			fragment = fragment || g.Detector == "fragment" && g.Line == 1 && strings.Contains(g.Shape, "MAIL_PASSWORD=") && strings.Contains(g.Shape, "‹fragment›")
 		}
 	}
 	if !fragment {
@@ -273,5 +273,25 @@ func TestTargetsResolveProjectsCodexAndRefuseAnUnknownSession(t *testing.T) {
 	files, _, err = f.roots.Files(Target{Sessions: []string{f.session}, Since: time.Now().Add(time.Hour)})
 	if err != nil || len(files) != 0 {
 		t.Errorf("--since in the future: %d files, %v", len(files), err)
+	}
+}
+
+func TestSessionIDsMatchCodexRolloutsExactlyAndResolveFailuresCount(t *testing.T) {
+	f := newFixture(t)
+	rollout := filepath.Join(f.roots.Codex, "sessions", "2026", "09", "26", "rollout-2026-09-26T10-00-00-019c7a2e-aaaa.jsonl")
+	write(t, rollout, "{}\n")
+	if _, _, err := f.roots.Files(Target{Sessions: []string{"09-26T10"}}); err == nil {
+		t.Error("a substring of a rollout's timestamp selected it")
+	}
+	files, _, err := f.roots.Files(Target{Sessions: []string{"019c7a2e-aaaa"}})
+	if err != nil || len(files) != 1 {
+		t.Errorf("the exact thread id: %v, %v", files, err)
+	}
+	loop := filepath.Join(t.TempDir(), "loop.jsonl")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if rep := Run([]string{loop}, Options{}); rep.Unreadable != 1 {
+		t.Errorf("an unresolvable path: unreadable %d, skipped %d", rep.Unreadable, rep.Skipped)
 	}
 }

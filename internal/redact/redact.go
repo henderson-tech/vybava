@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -77,8 +78,8 @@ type Report struct {
 	Mode    string `json:"mode"`
 	Files   int    `json:"files"`
 	Skipped int    `json:"skipped"`
-	// Unreadable is filled by the caller from Roots.Files: entries the
-	// listing could not read, so a clean report over them is not clean.
+	// Unreadable counts paths Run could not resolve; the caller adds the
+	// entries Roots.Files could not read. Non-zero: a clean report is not clean.
 	Unreadable int            `json:"unreadable"`
 	Known      int            `json:"known"`
 	Spans      int            `json:"spans"`
@@ -130,8 +131,8 @@ func Run(paths []string, opts Options) Report {
 	if opts.Apply {
 		rep.Mode = "apply"
 	}
-	files, skipped := resolve(paths)
-	rep.Skipped = skipped
+	files, skipped, unreadable := resolve(paths)
+	rep.Skipped, rep.Unreadable = skipped, unreadable
 	results := make([]scanned, len(files))
 	next := make(chan int)
 	var wg sync.WaitGroup
@@ -188,19 +189,24 @@ type resolved struct {
 
 // resolve follows symlinks and folds every name for one file into one entry,
 // so a file reached twice (tasks/<id>.output → subagents/agent-<id>.jsonl) is
-// scanned and written once. Non-regular files and dangling links are skipped.
-func resolve(paths []string) ([]resolved, int) {
+// scanned and written once. Non-regular files and dangling links are skipped;
+// any other failure to resolve one is unreadable — counted, never silent.
+func resolve(paths []string) (out []resolved, skipped, unreadable int) {
 	index := map[string]int{}
-	var out []resolved
-	skipped := 0
 	for _, p := range paths {
 		real, err := filepath.EvalSymlinks(p)
-		if err != nil {
-			skipped++
-			continue
+		var info os.FileInfo
+		if err == nil {
+			info, err = os.Stat(real)
 		}
-		info, err := os.Stat(real)
-		if err != nil || !info.Mode().IsRegular() {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			skipped++ // vanished, or a dangling link
+			continue
+		case err != nil:
+			unreadable++ // a loop, a permission error: counted, never silent
+			continue
+		case !info.Mode().IsRegular():
 			skipped++
 			continue
 		}
@@ -214,7 +220,7 @@ func resolve(paths []string) ([]resolved, int) {
 			out[i].via = append(out[i].via, p)
 		}
 	}
-	return out, skipped
+	return out, skipped, unreadable
 }
 
 func slicesContains(list []string, s string) bool {

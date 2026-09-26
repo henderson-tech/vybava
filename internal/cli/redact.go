@@ -94,7 +94,9 @@ pattern recognises; values never leave the process.`,
 				if err != nil {
 					return err
 				}
-				known.AddDotenv(data)
+				if _, err := known.AddDotenv(data); err != nil {
+					return fmt.Errorf("--known-dotenv %s: %w", path, err)
+				}
 			}
 			roots, err := redact.DefaultRoots()
 			if err != nil {
@@ -118,7 +120,7 @@ pattern recognises; values never leave the process.`,
 				opts.Audit = audit
 			}
 			report := redact.Run(files, opts)
-			report.Unreadable = unreadable
+			report.Unreadable += unreadable
 			if rt.json {
 				if err := writeJSON(rt.stdout, report); err != nil {
 					return err
@@ -234,7 +236,7 @@ func redactSession(session string, apply bool) (redact.Report, error) {
 		opts.Audit = audit
 	}
 	report := redact.Run(files, opts)
-	report.Unreadable = unreadable
+	report.Unreadable += unreadable
 	return report, nil
 }
 
