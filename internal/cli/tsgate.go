@@ -58,6 +58,26 @@ tsgate.programs. Contract: docs/tsgate.md.`,
 				return err
 			}
 			code := 0
+			if rt.json {
+				results := []tsgate.Result{}
+				for _, program := range programs {
+					r, err := tsgate.Check(program, tsgate.Options{Dependencies: deps, Build: build, Args: extra})
+					if err != nil {
+						return err
+					}
+					results = append(results, r)
+					if r.Exit != 0 && code == 0 {
+						code = r.Exit
+					}
+				}
+				if err := writeJSON(rt.stdout, results); err != nil {
+					return err
+				}
+				if code != 0 {
+					return runx.ExitError{Code: code}
+				}
+				return nil
+			}
 			for _, program := range programs {
 				if len(programs) > 1 {
 					fmt.Fprintf(rt.stderr, "tsgate: %s\n", program)

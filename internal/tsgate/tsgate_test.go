@@ -142,6 +142,54 @@ func TestPlanResolvesPackagesAndConfigDir(t *testing.T) {
 	}
 }
 
+func TestPlanKeepsReferencesAndScopesRootDir(t *testing.T) {
+	root := repo(t)
+	// Derived for baseUrl/node10 only: no outDir, so no rootDir is invented,
+	// and the leaf's references ride along verbatim.
+	write(t, filepath.Join(root, "packages/refs/tsconfig.json"), `{"extends":"../../tsconfig.base.json","references":[{"path":"../lib"}]}`)
+	plan, err := PlanProgram(filepath.Join(root, "packages/refs/tsconfig.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := plan.Config.CompilerOptions["rootDir"]; !plan.Derive || ok {
+		t.Errorf("rootDir without outDir: %+v", plan.Config.CompilerOptions)
+	}
+	if string(plan.Config.References) != `[{"path":"../lib"}]` {
+		t.Errorf("references = %s", plan.Config.References)
+	}
+	// Outside every checkout, outDir without rootDir takes the volume root.
+	loose := t.TempDir()
+	write(t, filepath.Join(loose, "tsconfig.json"), `{"compilerOptions":{"moduleResolution":"bundler","outDir":"out"}}`)
+	plan, err = PlanProgram(filepath.Join(loose, "tsconfig.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rootDir string
+	if !plan.Derive || json.Unmarshal(plan.Config.CompilerOptions["rootDir"], &rootDir) != nil || filepath.Clean(filepath.Join(loose, rootDir)) != string(filepath.Separator) {
+		t.Errorf("rootDir outside a checkout = %q (%+v)", rootDir, plan)
+	}
+}
+
+func TestWriteDerivedIsSafeForConcurrentRuns(t *testing.T) {
+	root := repo(t)
+	plan, err := PlanProgram(filepath.Join(root, "apps/api/tsconfig.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() { errs <- writeDerived(plan) }()
+	}
+	for range 8 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if leftovers, _ := filepath.Glob(plan.Target + ".*.tmp"); len(leftovers) != 0 {
+		t.Errorf("temp files left: %v", leftovers)
+	}
+}
+
 func TestPlanLeavesAReadableChainAlone(t *testing.T) {
 	root := repo(t)
 	for _, p := range []string{"packages/lib/tsconfig.json", "packages/reset/tsconfig.json"} {
@@ -267,6 +315,28 @@ func TestParity(t *testing.T) {
 	}
 	if len(r.OnlyBaseline) != 1 || r.OnlyBaseline[0].Code != "TS5102" || r.Baseline.Compiler.Version != "6.0.3" || r.TS7.Compiler.Version != "7.0.2" {
 		t.Errorf("onlyBaseline = %+v", r.OnlyBaseline)
+	}
+
+	// A side that fails without a diagnostic is inconclusive, never parity.
+	lib := filepath.Join(root, "packages/lib")
+	ts7(t, lib, "echo 'Usage: tsc [options]'\nexit 1\n")
+	write(t, filepath.Join(root, "node_modules/typescript/bin/tsc"), "exit 0\n")
+	if _, err := Parity(filepath.Join(lib, "tsconfig.json"), Options{}); err == nil || !strings.Contains(err.Error(), "inconclusive") || !strings.Contains(err.Error(), "Usage: tsc") {
+		t.Errorf("crashed side: %v", err)
+	}
+}
+
+func TestCheckReturnsTheResultAsData(t *testing.T) {
+	root := repo(t)
+	lib := filepath.Join(root, "packages/lib")
+	ts7(t, lib, "echo 'src/a.ts(2,3): error TS2304: Cannot find name x.'\nexit 2\n")
+	r, err := Check(filepath.Join(lib, "tsconfig.json"), Options{})
+	if err != nil || r.Exit != 2 || r.Derive || len(r.Diagnostics) != 1 || r.Diagnostics[0].Code != "TS2304" || r.Output != "" || r.Compiler.Version != "7.0.2" {
+		t.Fatalf("check = %+v, %v", r, err)
+	}
+	ts7(t, filepath.Join(root, "packages/reset"), "echo 'panic: boom'\nexit 3\n")
+	if r, err := Check(filepath.Join(root, "packages/reset/tsconfig.json"), Options{}); err != nil || r.Exit != 3 || len(r.Diagnostics) != 0 || !strings.Contains(r.Output, "panic: boom") {
+		t.Errorf("unexplained exit keeps its output: %+v, %v", r, err)
 	}
 }
 

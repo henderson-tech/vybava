@@ -23,12 +23,13 @@ import (
 
 // layer is one tsconfig file of a chain.
 type layer struct {
-	file    string
-	dir     string
-	options map[string]json.RawMessage
-	include *[]string
-	exclude *[]string
-	files   *[]string
+	file       string
+	dir        string
+	options    map[string]json.RawMessage
+	include    *[]string
+	exclude    *[]string
+	files      *[]string
+	references json.RawMessage // never inherited: only the leaf's count
 }
 
 type rawConfig struct {
@@ -37,6 +38,7 @@ type rawConfig struct {
 	Include         *[]string                  `json:"include"`
 	Exclude         *[]string                  `json:"exclude"`
 	Files           *[]string                  `json:"files"`
+	References      json.RawMessage            `json:"references"`
 }
 
 // maxChain bounds `extends` depth, so a cycle is an error, not a hang.
@@ -82,12 +84,13 @@ func loadChainDepth(file string, depth int) ([]layer, error) {
 		chain = append(chain, up...)
 	}
 	return append(chain, layer{
-		file:    file,
-		dir:     filepath.Dir(file),
-		options: cfg.CompilerOptions,
-		include: cfg.Include,
-		exclude: cfg.Exclude,
-		files:   cfg.Files,
+		file:       file,
+		dir:        filepath.Dir(file),
+		options:    cfg.CompilerOptions,
+		include:    cfg.Include,
+		exclude:    cfg.Exclude,
+		files:      cfg.Files,
+		references: cfg.References,
 	}), nil
 }
 

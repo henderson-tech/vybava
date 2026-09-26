@@ -25,6 +25,9 @@ type Derived struct {
 	Include         *[]string                  `json:"include,omitempty"`
 	Exclude         *[]string                  `json:"exclude,omitempty"`
 	Files           *[]string                  `json:"files,omitempty"`
+	// References are the leaf's, verbatim: they are never inherited, and the
+	// derived file sits in the leaf's directory, so their paths still hold.
+	References json.RawMessage `json:"references,omitempty"`
 }
 
 // pathOptions hold one path, resolved against the config that declares them.
@@ -47,7 +50,8 @@ var droppedOptions = []string{"ignoreDeprecations", "incremental", "tsBuildInfoF
 //     deep imports into exports-mapped packages still resolve;
 //   - outDir without rootDir: TS 7 then takes rootDir as the config's own
 //     directory and refuses every file the program reaches outside it (TS6059);
-//     rootDir becomes the checkout root.
+//     rootDir becomes the checkout root (the volume root outside a checkout).
+//     A chain that sets rootDir, or no outDir, keeps what it has.
 //
 // Anything else TS 7 removed (target ES5, esModuleInterop false, module amd,
 // …) is left to TS 7's own TS5102/TS5108 message: it has no equivalent to
@@ -76,15 +80,21 @@ func PlanProgram(tsconfig string) (Plan, error) {
 	}
 	_, hasOutDir := m.paths["outDir"]
 	_, hasRootDir := m.paths["rootDir"]
+	rootDir := ""
 	if hasOutDir && !hasRootDir {
-		plan.Reasons = append(plan.Reasons, "outDir without rootDir: TS 7 takes rootDir as the config's directory; it becomes the checkout root")
+		rootDir = checkoutRoot(filepath.Dir(leaf))
+		if rootDir == "" {
+			rootDir = filepath.VolumeName(leaf) + string(filepath.Separator)
+		}
+		plan.Reasons = append(plan.Reasons, "outDir without rootDir: TS 7 takes rootDir as the config's directory; it becomes "+rootDir)
 	}
 	if len(plan.Reasons) == 0 {
 		return plan, nil
 	}
 	plan.Derive = true
 	plan.Target = derivedPath(leaf)
-	plan.Config = m.derive(leaf, node10)
+	plan.Config = m.derive(leaf, node10, rootDir)
+	plan.Config.References = chain[len(chain)-1].references
 	return plan, nil
 }
 
@@ -193,8 +203,9 @@ func mergeChain(chain []layer, leafDir string) (merged, error) {
 	return m, nil
 }
 
-// derive writes the merged chain as one config for a file beside the leaf.
-func (m merged) derive(leaf string, node10 bool) *Derived {
+// derive writes the merged chain as one config for a file beside the leaf;
+// rootDir, when set, is the one the outDir-without-rootDir rule chose.
+func (m merged) derive(leaf string, node10 bool, rootDir string) *Derived {
 	out := filepath.Dir(leaf)
 	opts := map[string]json.RawMessage{}
 	for k, v := range m.options {
@@ -223,10 +234,8 @@ func (m merged) derive(leaf string, node10 bool) *Derived {
 		opts["moduleResolution"] = str("bundler")
 		opts["resolvePackageJsonExports"] = json.RawMessage("false")
 	}
-	if _, ok := m.paths["rootDir"]; !ok {
-		if root := checkoutRoot(out); root != "" {
-			opts["rootDir"] = str(relativeTo(out, root))
-		}
+	if rootDir != "" {
+		opts["rootDir"] = str(relativeTo(out, rootDir))
 	}
 	// Targets resolve against baseUrl when one is set, else the declaring config.
 	base := m.baseURL
@@ -289,16 +298,28 @@ func relativeTo(dir, to string) string {
 	}
 }
 
-// writeDerived writes the plan's derived config whole: two runs of the same
-// program may overlap, so each writes a temp file and renames it into place.
+// writeDerived writes the plan's derived config whole: runs of the same
+// program may overlap (other processes, or goroutines of this one), so each
+// writes its own temp file beside the target and renames it into place.
 func writeDerived(plan Plan) error {
 	body, err := json.MarshalIndent(plan.Config, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", plan.Target, os.Getpid())
-	if err := os.WriteFile(tmp, append(body, '\n'), 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(plan.Target), filepath.Base(plan.Target)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, plan.Target)
+	defer os.Remove(tmp.Name()) // a no-op once renamed
+	if _, err := tmp.Write(append(body, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), plan.Target)
 }

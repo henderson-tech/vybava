@@ -23,26 +23,71 @@ type Options struct {
 	Stderr       io.Writer
 }
 
-// Run typechecks one program on TS 7 and returns the compiler's exit code.
+// Run typechecks one program on TS 7, streaming the compiler's output, and
+// returns its exit code.
 func Run(tsconfig string, opts Options) (int, error) {
-	plan, err := PlanProgram(tsconfig)
+	_, compiler, args, err := prepare(tsconfig, opts)
 	if err != nil {
 		return 0, err
+	}
+	return execCompiler(compiler, args, opts.Stdout, opts.Stderr)
+}
+
+// Result is one program's typecheck as data: `tsgate --json`.
+type Result struct {
+	Tsconfig    string       `json:"tsconfig"`
+	Target      string       `json:"target"`
+	Derive      bool         `json:"derive"`
+	Compiler    Compiler     `json:"compiler"`
+	Exit        int          `json:"exit"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+	Output      string       `json:"output,omitempty"` // only when the exit is not explained by diagnostics
+}
+
+// Check typechecks one program on TS 7 with `--pretty false` and returns the
+// parsed result instead of streaming it.
+func Check(tsconfig string, opts Options) (Result, error) {
+	opts.Args = append([]string{"--pretty", "false"}, opts.Args...)
+	plan, compiler, args, err := prepare(tsconfig, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	var out bytes.Buffer
+	exit, err := execCompiler(compiler, args, &out, &out)
+	if err != nil {
+		return Result{}, err
+	}
+	r := Result{Tsconfig: plan.Tsconfig, Target: plan.Target, Derive: plan.Derive, Compiler: compiler, Exit: exit, Diagnostics: parseDiagnostics(out.String())}
+	if r.Diagnostics == nil {
+		r.Diagnostics = []Diagnostic{}
+	}
+	if exit != 0 && len(r.Diagnostics) == 0 {
+		r.Output = out.String()
+	}
+	return r, nil
+}
+
+// prepare plans a program, resolves its TS 7, writes the derived config when
+// one is needed and returns the compiler's arguments.
+func prepare(tsconfig string, opts Options) (Plan, Compiler, []string, error) {
+	plan, err := PlanProgram(tsconfig)
+	if err != nil {
+		return Plan{}, Compiler{}, nil, err
 	}
 	compiler, err := FindTS7(filepath.Dir(plan.Tsconfig), opts.Dependencies)
 	if err != nil {
-		return 0, err
+		return Plan{}, Compiler{}, nil, err
 	}
 	args, err := compilerArgs(plan, opts)
 	if err != nil {
-		return 0, err
+		return Plan{}, Compiler{}, nil, err
 	}
 	if plan.Derive {
 		if err := writeDerived(plan); err != nil {
-			return 0, err
+			return Plan{}, Compiler{}, nil, err
 		}
 	}
-	return execCompiler(compiler, args, opts.Stdout, opts.Stderr)
+	return plan, compiler, args, nil
 }
 
 func compilerArgs(plan Plan, opts Options) ([]string, error) {
@@ -117,7 +162,10 @@ type ParityReport struct {
 	OnlyTS7      []Diagnostic `json:"onlyTs7"`
 }
 
-// Parity runs both compilers on one program, the classic one first.
+// Parity runs both compilers on one program, the classic one first. A side
+// that exits non-zero without one parseable diagnostic (a crash, a usage
+// error) makes the comparison inconclusive: an error carrying its output,
+// never a claim of parity.
 func Parity(tsconfig string, opts Options) (ParityReport, error) {
 	plan, err := PlanProgram(tsconfig)
 	if err != nil {
@@ -161,6 +209,10 @@ func paritySide(c Compiler, config string, extra []string) (Side, []Diagnostic, 
 		return Side{}, nil, err
 	}
 	diags := parseDiagnostics(out.String())
+	if code != 0 && len(diags) == 0 {
+		return Side{}, nil, fmt.Errorf("%s %s on %s exited %d without a diagnostic, so parity is inconclusive:\n%s",
+			c.Package, c.Version, config, code, strings.TrimSpace(out.String()))
+	}
 	return Side{Compiler: c, Config: config, Exit: code, WallMS: time.Since(start).Milliseconds(), Diagnostics: len(diags)}, diags, nil
 }
 
