@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // eachString calls fn with the content bounds (between the quotes) of every
@@ -29,7 +31,7 @@ func eachString(b []byte, fn func(start, end int)) {
 
 // unit reads one source unit of a string literal's raw content at r: a plain
 // byte, a two-byte escape, a \uXXXX (a surrogate pair is one unit) — and
-// returns its raw length and the bytes it decodes to. decode and rawAt both
+// returns its raw length and the bytes it decodes to. decode and rawSpans both
 // walk through here, so decoded offsets and raw offsets can never disagree.
 func unit(raw []byte, r int, scratch []byte) (rl int, dec []byte) {
 	if raw[r] != '\\' || r+1 >= len(raw) {
@@ -91,29 +93,50 @@ func decode(raw []byte) string {
 	return string(out)
 }
 
-// rawAt maps decoded offset p to its raw offset. A p inside one unit's
-// decoded bytes (a multi-byte \u escape) rounds to the unit's start, or past
-// its end with up — so a span always covers whole escapes and never splits
-// one, which keeps an overwrite JSON-valid.
-func rawAt(raw []byte, p int, up bool) int {
+// rawSpans maps decoded spans — sorted and non-overlapping, as Find returns
+// them — to raw offsets in ONE walk of the literal (a walk per span is
+// quadratic on a large escaped tool result with many findings). A start
+// inside one unit's decoded bytes (a multi-byte \u escape) rounds to the
+// unit's start, an end past the unit's end — so a span always covers whole
+// escapes and never splits one, which keeps an overwrite JSON-valid.
+func rawSpans(raw []byte, spans []secretscan.Span) [][2]int {
+	out := make([][2]int, len(spans))
 	if bytes.IndexByte(raw, '\\') < 0 {
-		return p
+		for i, s := range spans {
+			out[i] = [2]int{s.Start, s.End}
+		}
+		return out
+	}
+	// Targets in order: start0, end0, start1, end1, … — never decreasing.
+	n := 2 * len(spans)
+	target := func(k int) int {
+		if k%2 == 0 {
+			return spans[k/2].Start
+		}
+		return spans[k/2].End
 	}
 	scratch := make([]byte, 0, 4)
-	d := 0
-	for r := 0; r < len(raw); {
-		if d >= p {
-			return r
-		}
+	k, d := 0, 0
+	for r := 0; r < len(raw) && k < n; {
 		rl, dec := unit(raw, r, scratch)
-		if d+len(dec) > p {
-			if up {
-				return r + rl
+		for k < n {
+			p := target(k)
+			switch {
+			case p <= d: // on this unit's boundary
+				out[k/2][k%2] = r
+			case p < d+len(dec): // inside this unit
+				out[k/2][k%2] = r + rl*(k%2)
+			default:
+				goto next
 			}
-			return r
+			k++
 		}
+	next:
 		d += len(dec)
 		r += rl
 	}
-	return len(raw)
+	for ; k < n; k++ {
+		out[k/2][k%2] = len(raw)
+	}
+	return out
 }
