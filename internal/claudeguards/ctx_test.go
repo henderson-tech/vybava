@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +132,18 @@ func TestResolveTranscriptSkipsSubagents(t *testing.T) {
 	}
 	if got, err := ResolveTranscript(root, "latest"); err != nil || got != session {
 		t.Fatalf("latest = %q (%v), want the session transcript", got, err)
+	}
+}
+
+// A leak scan that could not read every file must say so: zero spans from a
+// partial scan is not "no leaks".
+func TestContextReportRendersAnIncompleteLeakScan(t *testing.T) {
+	var out strings.Builder
+	r := ContextReport{Leaks: &Leaks{Unscanned: 2, Counts: map[string]int{}, Session: "sess-x"}}
+	if err := r.Render(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "2 files not scanned") {
+		t.Errorf("render = %q", out.String())
 	}
 }

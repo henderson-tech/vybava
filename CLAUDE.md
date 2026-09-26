@@ -154,6 +154,18 @@ private Unix socket. It never fetches vault values or executes shell exports;
 the injecting wrapper and consuming process own those boundaries. See
 `docs/envbridge.md` before using its sensitive read output.
 
+`internal/secretscan` is the ONE catalogue of secret shapes — claude-guards'
+commit scan, memorylint and `redact` all read it; a new shape is a row there.
+A finding is rendered through `Quote`/`Shape`/`Fill`, never with its value or
+a prefix of it: a lint or guard message is tool output, and tool output is the
+transcript. `internal/redact` rewrites agent history SAME-LENGTH IN PLACE,
+compare-before-write, inside JSON strings only — a temp file + rename would
+drop a live session's appends and shift every `internal/transcripts` cursor.
+`claudeguards/secretprint.go` is the prevention half; replay real transcripts
+before widening one of its rules (the first cut blocked 2,000+ benign commands
+in 14 days). `claude-guards redact-session` (SessionEnd) applies it to every
+ending session. Docs: `docs/redact.md`.
+
 `internal/skipci` is the org skip standard (`docs/skip-ci.md`): two labels
 (`skip-ci`, `eve-ignore`) and ONE job-level guard every `pull_request` job
 carries — job-level because a workflow-level skip leaves required checks

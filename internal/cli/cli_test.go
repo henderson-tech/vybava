@@ -25,6 +25,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"merge-assist", "merge-assist"},
 		{"memo", "memo"},
 		{"tokentime", "tokentime"},
+		{"redact", "redact"},
 		{"/usr/local/bin/perfrig", "perfrig"}, // dispatch is on the basename
 		{"vybava", "vybava"},
 	}

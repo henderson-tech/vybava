@@ -55,6 +55,7 @@ func Bash(in *HookInput) *Denial {
 		guardDestructive,
 		guardPluginCache,
 		guardEnvDump,
+		guardSecretPrint,
 		guardHostInput,
 		guardRootWalk,
 		guardAppiumChurn,

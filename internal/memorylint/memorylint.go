@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/memo"
+	"github.com/henderson-tech/vybava/internal/secretscan"
 	"gopkg.in/yaml.v3"
 )
 
@@ -97,19 +98,6 @@ var (
 	emailPattern        = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
 	ipv4Pattern         = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	kebabPattern        = regexp.MustCompile(`^(?:user|feedback|project|reference)-[a-z0-9]+(?:-[a-z0-9]+)*\.md$`)
-	secretPatterns      = []struct {
-		reason  string
-		pattern *regexp.Regexp
-	}{
-		{"GitHub token", regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}`)},
-		{"GitHub token", regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`)},
-		{"provider secret key", regexp.MustCompile(`\bsk_(?:live|test)_[A-Za-z0-9]{8,}`)},
-		{"API secret key", regexp.MustCompile(`\bsk-[A-Za-z0-9-]{24,}`)},
-		{"AWS access key", regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)},
-		{"private key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
-		{"bearer token", regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`)},
-		{"credential assignment", regexp.MustCompile(`(?i)\b(?:password|passwd|api[_-]?key|client[_-]?secret)\s*[:=]\s*['"]?[A-Za-z0-9!@#%^&*_+/-]{8,}`)},
-	}
 )
 
 func DefaultConfig() Config {
@@ -654,20 +642,16 @@ func fixtureFindings(path string, data []byte, config Config) []Finding {
 
 // secretFindings is the token scan alone: handoffs are machine-local and name
 // servers and people freely, so only real credential material blocks there.
+// The finding quotes a masked shape, never the value or a prefix of it: a
+// lint message lands in the session transcript like any other output.
 func secretFindings(path string, data []byte, config Config) []Finding {
 	var findings []Finding
-	for _, secret := range secretPatterns {
-		for _, location := range secret.pattern.FindAllIndex(data, -1) {
-			value := string(data[location[0]:location[1]])
-			if allowed(value, config.AllowedValues, config.allowedRegex) {
-				continue
-			}
-			redacted := value
-			if len(redacted) > 20 {
-				redacted = redacted[:20] + "…"
-			}
-			findings = append(findings, finding("M011", SeverityError, path, lineAt(data, location[0]), "%s is not allowed in memory: %s", secret.reason, redacted))
+	text := string(data)
+	for _, span := range secretscan.Find(text, secretscan.All, nil) {
+		if allowed(text[span.Start:span.End], config.AllowedValues, config.allowedRegex) {
+			continue
 		}
+		findings = append(findings, finding("M011", SeverityError, path, lineAt(data, span.Start), "%s is not allowed in memory: %s", span.Detector, secretscan.Shape(text, span)))
 	}
 	return findings
 }
