@@ -268,8 +268,40 @@ func jsonString(s string) []byte {
 	return bytes.TrimRight(b.Bytes(), "\n")
 }
 
-// Leaves flattens to dotted-path → string value in file order; array
-// elements get numeric segments. Scalars are not leaves.
+// Leaf is one string leaf addressed by its raw path segments.
+type Leaf struct {
+	Path  []string
+	Value string
+}
+
+// LeafPaths lists every string leaf in file order with its segments, which
+// FormatKey turns into the canonical key of the catalog's style.
+func (o *Object) LeafPaths() []Leaf {
+	var out []Leaf
+	var walk func(any, []string)
+	walk = func(v any, path []string) {
+		switch x := v.(type) {
+		case string:
+			out = append(out, Leaf{Path: path, Value: x})
+		case *Object:
+			for _, e := range x.Entries {
+				walk(e.Value, append(path[:len(path):len(path)], e.Key))
+			}
+		case *Array:
+			for i, it := range x.Items {
+				walk(it, append(path[:len(path):len(path)], strconv.Itoa(i)))
+			}
+		}
+	}
+	walk(o, nil)
+	return out
+}
+
+// Leaves flattens to a raw "."-joined path → string value in file order;
+// array elements get numeric segments. Scalars are not leaves. The join is
+// NOT the key grammar (a segment holding a dot is not escaped): configdiscover
+// compares these keys to their values to detect english-as-key files. Keys a
+// human or a verb reads come from LeafPaths + FormatKey.
 func (o *Object) Leaves() []Entry {
 	var out []Entry
 	var walk func(any, string)
@@ -338,22 +370,29 @@ func deleteChild(container any, seg string) bool {
 	return false
 }
 
-// splitPath addresses nested catalogs; flat catalogs use the whole key.
-func (c *Catalog) splitPath(key string) []string {
-	if c.Config.Style == StylePath {
-		return strings.Split(key, ".")
-	}
-	return []string{key}
+// splitPath addresses nested catalogs through the key grammar (SplitKey);
+// flat catalogs use the whole key.
+func (c *Catalog) splitPath(key string) ([]string, error) {
+	return SplitKey(c.Config.Style, key)
 }
 
-// Lookup returns the string value of key in one locale.
+// Lookup returns the string value of key in one locale; a key that does
+// not parse is simply absent.
 func (c *Catalog) Lookup(locale, key string) (string, bool) {
+	parts, err := c.splitPath(key)
+	if err != nil {
+		return "", false
+	}
+	return c.lookupSegs(locale, parts)
+}
+
+func (c *Catalog) lookupSegs(locale string, parts []string) (string, bool) {
 	loc, ok := c.Locales[locale]
 	if !ok {
 		return "", false
 	}
 	var cur any = loc.Object
-	for _, p := range c.splitPath(key) {
+	for _, p := range parts {
 		next, ok := child(cur, p)
 		if !ok {
 			return "", false
@@ -366,47 +405,74 @@ func (c *Catalog) Lookup(locale, key string) (string, bool) {
 
 // Put sets key in one locale, creating intermediate objects for path style.
 func (c *Catalog) Put(locale, key, value string) error {
+	parts, err := c.splitPath(key)
+	if err != nil {
+		return err
+	}
+	return c.putSegs(locale, parts, value)
+}
+
+func (c *Catalog) putSegs(locale string, parts []string, value string) error {
 	loc, ok := c.Locales[locale]
 	if !ok {
 		return fmt.Errorf("catalog %q has no locale %q", c.ID, locale)
 	}
-	parts := c.splitPath(key)
+	key := FormatKey(c.Config.Style, parts)
 	var cur any = loc.Object
-	for _, p := range parts[:len(parts)-1] {
+	for i, p := range parts[:len(parts)-1] {
 		next, ok := child(cur, p)
 		if !ok {
+			// A new `bankid` object beside `bankid.eid_doesnt_exist` siblings
+			// is a wrong-shape write: the key meant a dotted segment.
+			if o, isObj := cur.(*Object); isObj {
+				if dotted := o.dottedSiblings(p); len(dotted) > 0 {
+					meant := append(append(append([]string{}, parts[:i]...), p+"."+parts[i+1]), parts[i+2:]...)
+					for j, d := range dotted {
+						dotted[j] = FormatKey(c.Config.Style, []string{d})
+					}
+					if len(dotted) > 3 {
+						dotted = append(dotted[:3], fmt.Sprintf("%d more", len(dotted)-3))
+					}
+					return &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%s: %s would create %q beside the dotted siblings %s under %s; a dot inside a segment is escaped as \\. - did you mean %s?", locale, shellQuote(key), p, strings.Join(dotted, ", "), shellQuote(FormatKey(c.Config.Style, parts[:i])), shellQuote(FormatKey(c.Config.Style, meant)))}
+				}
+			}
 			next = &Object{}
 			if err := setChild(cur, p, next); err != nil {
-				return fmt.Errorf("%s %q: %w", locale, key, err)
+				return fmt.Errorf("%s %s: %w", locale, quoteKey(key), err)
 			}
 		}
 		switch next.(type) {
 		case *Object, *Array:
 		default:
-			return fmt.Errorf("%s: %q is a leaf, cannot nest %q under it", locale, p, key)
+			return fmt.Errorf("%s: %q is a leaf, cannot nest %s under it", locale, p, quoteKey(key))
 		}
 		cur = next
 	}
 	if existing, ok := child(cur, parts[len(parts)-1]); ok {
 		switch existing.(type) {
 		case *Object, *Array:
-			return fmt.Errorf("%s: %q is a container, not a string leaf", locale, key)
+			return fmt.Errorf("%s: %s is a container, not a string leaf", locale, quoteKey(key))
 		}
 	}
 	if err := setChild(cur, parts[len(parts)-1], value); err != nil {
-		return fmt.Errorf("%s %q: %w", locale, key, err)
+		return fmt.Errorf("%s %s: %w", locale, quoteKey(key), err)
 	}
 	loc.Exists = true
 	return nil
 }
 
-// Remove deletes key from one locale; reports whether it existed.
+// Remove deletes the leaf key from one locale; reports whether it existed.
+// A container is no key (get says KEY_MISSING), so `rm codes` never drops
+// the whole `codes` subtree.
 func (c *Catalog) Remove(locale, key string) bool {
 	loc, ok := c.Locales[locale]
 	if !ok {
 		return false
 	}
-	parts := c.splitPath(key)
+	parts, err := c.splitPath(key)
+	if err != nil {
+		return false
+	}
 	var cur any = loc.Object
 	for _, p := range parts[:len(parts)-1] {
 		next, ok := child(cur, p)
@@ -414,6 +480,10 @@ func (c *Catalog) Remove(locale, key string) bool {
 			return false
 		}
 		cur = next
+	}
+	switch leaf, _ := child(cur, parts[len(parts)-1]); leaf.(type) {
+	case *Object, *Array:
+		return false
 	}
 	return deleteChild(cur, parts[len(parts)-1])
 }

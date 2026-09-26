@@ -64,7 +64,7 @@ func MergeDriver(dir, base, ours, theirs, rel string, stderr io.Writer) (conflic
 			return false, err
 		}
 	}
-	data, clashes, err := MergeCatalog(sides[0], sides[1], sides[2], PreferNone)
+	data, clashes, err := MergeCatalog(cfg.Style, sides[0], sides[1], sides[2], PreferNone)
 	if err != nil {
 		return textMerge(err.Error(), true, errors.Is(err, ErrDuplicateKey))
 	}
@@ -96,7 +96,7 @@ func (c Clash) String() string {
 		}
 		return v
 	}
-	return fmt.Sprintf("%q: base=%s ours=%s theirs=%s", c.Key, show(c.Base), show(c.Ours), show(c.Theirs))
+	return fmt.Sprintf("%s: base=%s ours=%s theirs=%s", quoteKey(c.Key), show(c.Base), show(c.Ours), show(c.Theirs))
 }
 
 // record journals a driver outcome; a journal failure never fails the merge
@@ -135,7 +135,7 @@ func (t *Tool) MergeIndexed(rel string, prefer Prefer) (MergeResult, error) {
 		}
 		sides[i] = out
 	}
-	data, clashes, err := MergeCatalog(sides[0], sides[1], sides[2], prefer)
+	data, clashes, err := MergeCatalog(cfg.Style, sides[0], sides[1], sides[2], prefer)
 	if err != nil {
 		return MergeResult{}, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%s: %v", rel, err)}
 	}

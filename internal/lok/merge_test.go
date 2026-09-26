@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestMergeCatalogByKey(t *testing.T) {
   }
 }
 `
-	got, clashes, err := MergeCatalog([]byte(base), []byte(ours), []byte(theirs), PreferNone)
+	got, clashes, err := MergeCatalog(StylePath, []byte(base), []byte(ours), []byte(theirs), PreferNone)
 	if err != nil || len(clashes) != 0 {
 		t.Fatalf("merge: %v %+v", err, clashes)
 	}
@@ -67,27 +68,47 @@ func TestMergeCatalogClash(t *testing.T) {
 	base := "{\n  \"Save\": \"Uložit\",\n  \"Open\": \"Otevřít\"\n}\n"
 	ours := "{\n  \"Save\": \"Uschovat\",\n  \"Open\": \"Otevřít\"\n}\n"
 	theirs := "{\n  \"Save\": \"Ulož\"\n}\n"
-	data, clashes, err := MergeCatalog([]byte(base), []byte(ours), []byte(theirs), PreferNone)
-	if err != nil || data != nil || len(clashes) != 1 || clashes[0] != (Clash{Key: "Save", Base: `"Uložit"`, Ours: `"Uschovat"`, Theirs: `"Ulož"`}) {
+	data, clashes, err := MergeCatalog(StyleEnglishAsKey, []byte(base), []byte(ours), []byte(theirs), PreferNone)
+	if err != nil || data != nil || len(clashes) != 1 || !reflect.DeepEqual(clashes[0], Clash{Key: "Save", Path: []string{"Save"}, Base: `"Uložit"`, Ours: `"Uschovat"`, Theirs: `"Ulož"`}) {
 		t.Fatalf("clash: %v %q %+v", err, data, clashes)
 	}
-	data, _, _ = MergeCatalog([]byte(base), []byte(ours), []byte(theirs), PreferTheirs)
+	data, _, _ = MergeCatalog(StyleEnglishAsKey, []byte(base), []byte(ours), []byte(theirs), PreferTheirs)
 	if string(data) != theirs {
 		t.Fatalf("prefer theirs: %s", data)
 	}
-	data, _, _ = MergeCatalog([]byte(base), []byte(ours), []byte(theirs), PreferOurs)
+	data, _, _ = MergeCatalog(StyleEnglishAsKey, []byte(base), []byte(ours), []byte(theirs), PreferOurs)
 	if string(data) != "{\n  \"Save\": \"Uschovat\"\n}\n" {
 		t.Fatalf("prefer ours keeps theirs' deletion of the untouched key: %s", data)
 	}
 }
 
+// A clash (or duplicate) inside a dotted segment is labelled with the
+// escaped key, so it pastes into `lok set`; english-as-key keys stay verbatim.
+func TestMergeClashEscapesDottedSegment(t *testing.T) {
+	side := func(v string) []byte {
+		return []byte("{\n  \"codes\": {\n    \"bankid.x\": {\n      \"title\": \"" + v + "\"\n    }\n  }\n}\n")
+	}
+	_, clashes, err := MergeCatalog(StylePath, side("A"), side("B"), side("C"), PreferNone)
+	if err != nil || len(clashes) != 1 || clashes[0].Key != `codes.bankid\.x.title` || !reflect.DeepEqual(clashes[0].Path, []string{"codes", "bankid.x", "title"}) {
+		t.Fatalf("path clash label: %v %+v", err, clashes)
+	}
+	flat := func(v string) []byte { return []byte("{\n  \"Save.\": \"" + v + "\"\n}\n") }
+	if _, clashes, _ := MergeCatalog(StyleEnglishAsKey, flat("A"), flat("B"), flat("C"), PreferNone); len(clashes) != 1 || clashes[0].Key != "Save." {
+		t.Fatalf("english-as-key clash key is verbatim: %+v", clashes)
+	}
+	dup := []byte("{\n  \"codes\": {\n    \"bankid.x\": \"1\",\n    \"bankid.x\": \"2\"\n  }\n}\n")
+	if _, _, err := MergeCatalog(StylePath, side("A"), dup, side("A"), PreferNone); !errors.Is(err, ErrDuplicateKey) || !strings.Contains(err.Error(), `'codes.bankid\.x'`) {
+		t.Fatalf("duplicate label is escaped: %v", err)
+	}
+}
+
 func TestMergeCatalogRefusesNonCanonical(t *testing.T) {
 	base := "{\n  \"a\": \"1\"\n}\n"
-	if _, _, err := MergeCatalog([]byte(base), []byte(base), []byte("{\n    \"a\": \"2\"\n}\n"), PreferNone); !errors.Is(err, ErrNotCanonical) {
+	if _, _, err := MergeCatalog(StylePath, []byte(base), []byte(base), []byte("{\n    \"a\": \"2\"\n}\n"), PreferNone); !errors.Is(err, ErrNotCanonical) {
 		t.Fatalf("4-space theirs must be refused, got %v", err)
 	}
 	dup := "{\n  \"a\": \"1\",\n  \"a\": \"2\"\n}\n"
-	if _, _, err := MergeCatalog([]byte(base), []byte(dup), []byte(base), PreferNone); !errors.Is(err, ErrDuplicateKey) {
+	if _, _, err := MergeCatalog(StylePath, []byte(base), []byte(dup), []byte(base), PreferNone); !errors.Is(err, ErrDuplicateKey) {
 		t.Fatalf("a side holding a key twice must be refused, got %v", err)
 	}
 }
