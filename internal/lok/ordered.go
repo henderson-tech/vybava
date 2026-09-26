@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // ---------------------------------------------------------------------------
@@ -433,7 +435,7 @@ func (c *Catalog) putSegs(locale string, parts []string, value string) error {
 					if len(dotted) > 3 {
 						dotted = append(dotted[:3], fmt.Sprintf("%d more", len(dotted)-3))
 					}
-					return &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%s: %s would create %q beside the dotted siblings %s under %s; a dot inside a segment is escaped as \\. - did you mean %s?", locale, shellQuote(key), p, strings.Join(dotted, ", "), shellQuote(FormatKey(c.Config.Style, parts[:i])), shellQuote(FormatKey(c.Config.Style, meant)))}
+					return &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%s: %s would create %q beside the dotted siblings %s under %s; a dot inside a segment is escaped as \\. - did you mean %s?", locale, shellword.Quote(key), p, strings.Join(dotted, ", "), shellword.Quote(FormatKey(c.Config.Style, parts[:i])), shellword.Quote(FormatKey(c.Config.Style, meant)))}
 				}
 			}
 			next = &Object{}

@@ -134,6 +134,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		if memo.TypeKind[typ] == memo.KindTeam {
+			if d, err := memo.MainCheckoutTeamHome(homes[0].Path, "chore/memory-"+topic); d != nil || err != nil {
+				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
+		}
 		if d := memo.LegacyHome(homes[0].Path); d != nil {
 			return finish(s, nil, nil, nil, d)
 		}
@@ -397,6 +402,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		homes, d, err := env.Resolve(homeSpec, rows[0].Type)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		}
+		if memo.TypeKind[rows[0].Type] == memo.KindTeam {
+			if d, err := memo.MainCheckoutTeamHome(homes[0].Path, "chore/memory-import"); d != nil || err != nil {
+				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
 		}
 		l, d, err := env.Open(homes[0], true)
 		if d != nil || err != nil {

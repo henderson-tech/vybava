@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/mergeassist/gitmerge"
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // DiagMergeClash — a catalog key both sides changed differently; rerun with --prefer.
@@ -131,7 +132,7 @@ func (t *Tool) MergeIndexed(rel string, prefer Prefer) (MergeResult, error) {
 			if i == 0 {
 				continue // no common ancestor: both sides added the file
 			}
-			return MergeResult{}, &Diag{Code: DiagMergeClash, Detail: fmt.Sprintf("%s has no stage %d (not unmerged, or deleted on one side)", rel, i+1), Fix: "git status -- " + shellQuote(rel)}
+			return MergeResult{}, &Diag{Code: DiagMergeClash, Detail: fmt.Sprintf("%s has no stage %d (not unmerged, or deleted on one side)", rel, i+1), Fix: "git status -- " + shellword.Quote(rel)}
 		}
 		sides[i] = out
 	}
@@ -148,7 +149,7 @@ func (t *Tool) MergeIndexed(rel string, prefer Prefer) (MergeResult, error) {
 		for i, c := range clashes {
 			lines[i] = c.String()
 		}
-		return res, &Diag{Code: DiagMergeClash, Detail: strings.Join(lines, "; "), Fix: "lok merge " + shellQuote(rel) + " --prefer ours|theirs, then lok set the keys that need a mix"}
+		return res, &Diag{Code: DiagMergeClash, Detail: strings.Join(lines, "; "), Fix: "lok merge " + shellword.Quote(rel) + " --prefer ours|theirs, then lok set the keys that need a mix"}
 	}
 	if err := os.WriteFile(filepath.Join(t.Root, filepath.FromSlash(rel)), data, 0o644); err != nil {
 		return res, err
