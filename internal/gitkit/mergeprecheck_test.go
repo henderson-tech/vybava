@@ -35,6 +35,7 @@ func TestSummarizeChecks(t *testing.T) {
 		// counts; the newest run of each check decides (voke-platform#178).
 		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "SUCCESS",
 		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:52Z","status":"COMPLETED","conclusion":"FAILURE"},{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"SUCCESS"}]`: "FAILURE",
+		`[{"workflowName":"CI","name":"ci-ok","startedAt":"2026-09-25T16:11:36Z","status":"COMPLETED","conclusion":"SUCCESS"},{"workflowName":"CI","name":"ci-ok","status":"QUEUED"}]`: "PENDING",
 	} {
 		if got := checks(t, rollup); got != want {
 			t.Errorf("summarizeChecks(%s) = %s, want %s", rollup, got, want)

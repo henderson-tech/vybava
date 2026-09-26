@@ -75,7 +75,9 @@ func latestChecks(rollup []checkNode) []checkNode {
 			continue
 		}
 		if i, ok := latest[key]; ok {
-			if n.StartedAt > out[i].StartedAt { // RFC 3339 UTC compares as a string
+			// A queued run has no startedAt yet and is always the newest;
+			// otherwise RFC 3339 UTC compares as a string.
+			if old := out[i].StartedAt; old != "" && (n.StartedAt == "" || n.StartedAt > old) {
 				out[i] = n
 			}
 			continue
