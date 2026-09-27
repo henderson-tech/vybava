@@ -19,6 +19,17 @@ const (
 	diagAmbiguous   = "AMBIGUOUS_SESSION"
 )
 
+// readeffFlagErr refuses a count flag below its floor before any scan runs.
+func readeffFlagErr(flags map[string][2]int) error {
+	for _, name := range []string{"days", "big", "window", "top"} {
+		if v, ok := flags[name]; ok && v[0] < v[1] {
+			return runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
+				Detail: fmt.Sprintf("--%s must be at least %d (got %d)", name, v[1], v[0])}}
+		}
+	}
+	return nil
+}
+
 func (rt *runtime) readeffApplet() *cobra.Command {
 	cmd := rt.readeffCommand("readeff")
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
@@ -80,6 +91,9 @@ func (rt *runtime) readeffCommand(use string) *cobra.Command {
 	// scan reads the window. sessionID narrows it to one session and every
 	// repository, since a session id is already unique.
 	scan := func(sessionID string, each func(readeff.Session)) (readeff.Options, []runx.Diagnostic, error) {
+		if err := readeffFlagErr(map[string][2]int{"days": {days, 1}, "big": {bigFile, 0}, "window": {window, 1}}); err != nil {
+			return readeff.Options{}, nil, err
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return readeff.Options{}, nil, err
@@ -135,6 +149,9 @@ func (rt *runtime) readeffCommand(use string) *cobra.Command {
 		Use: "files", Short: "The files read most, with how often they were re-read", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s := session(cmd)
+			if err := readeffFlagErr(map[string][2]int{"top": {top, 1}}); err != nil {
+				return finish(s, nil, nil, err)
+			}
 			b := readeff.NewBuilder(cfg())
 			opts, diags, err := scan("", b.Add)
 			if err != nil {
