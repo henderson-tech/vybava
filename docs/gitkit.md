@@ -39,8 +39,15 @@ vybava gitkit admin-labels 42 --repo "$PWD"                   # prm --admin: ski
   boolean flags, how many positionals) and refuses the rest with its usage
   line, exit 1: an unknown flag, a stray positional, a flag given twice, a
   value flag with no or an empty value. `--json` (gitkit's persistent flag,
-  delivered in the verb's own argv) is accepted everywhere; `repoAnchor` turns
-  a parsed `--repo` into the `repoRoot` anchor. Until 2026-09-25 the ported
+  delivered in the verb's own argv) is accepted everywhere, and `--help` /
+  `-h` prints the verb's usage on stdout with exit 0 before it runs (the CLI
+  answers it from `Usage`; 108 refusals of `--help` in three days by
+  2026-09-27 were agents asking the one question a strict argv must always
+  answer). `repoAnchor` turns a parsed `--repo` into the `repoRoot` anchor —
+  for the github-io run verbs (`find-run`, `watch-run`, `failed-logs`,
+  `rerun-failed`) too, whose `--repo` is a directory like every other verb's
+  (the harness resets the cwd after each call); the API verbs' `--repo` stays
+  the GitHub repo NAME and never anchors. Until 2026-09-25 the ported
   verbs kept their Node grammar and IGNORED what they did not know: that
   day `github-io create-pr` dropped `--repo <path>` (the PR went to the cwd's
   repository) and `--body-file` (the PR got the commit log as its body), and

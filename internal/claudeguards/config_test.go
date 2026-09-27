@@ -80,6 +80,9 @@ func TestUnboundedOutput(t *testing.T) {
 		{"git log --oneline", "git log --oneline -20"},
 		{"git log", "git log --max-count=10"},
 		{"git diff", "git diff --stat"},
+		// --output sends the diff to a file, not to context.
+		{"git diff main...HEAD", "git diff main...HEAD --output=/tmp/x.diff && shasum /tmp/x.diff"},
+		{"git diff HEAD~1", "git diff HEAD~1 --output /tmp/x.diff"},
 		{"git show HEAD", "git show HEAD -- file.go"},
 		// git's global options sit before the subcommand; the pair-forming
 		// used to read `git -C repo log` as `git -C` and allow it uncapped.

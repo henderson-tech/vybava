@@ -82,6 +82,7 @@ func guardProdMerge(in *HookInput) *Denial {
 	}
 	home, _ := os.UserHomeDir()
 	dir := in.CWD
+	unexpanded := false // the last cd named a variable: dir is not known
 	// The escape counts only for the simple command it prefixes (and what that
 	// command runs): `CLAUDE_ALLOW_PROD_MERGE=1 true; gh pr merge …` is no go.
 	for _, top := range shellseg.SplitScript(cmd) {
@@ -96,12 +97,24 @@ func guardProdMerge(in *HookInput) *Denial {
 			}
 			if shellseg.CommandWord(seg) == "cd" {
 				if len(f) > 1 {
-					dir = resolveDir(f[1], dir, home)
+					// A target the hook cannot expand (`cd $W && gh pr merge`)
+					// is not a directory: joining the literal onto cwd sent gh
+					// into a path that does not exist and blamed gh auth
+					// (2026-09-27). Unknown stays unknown; the merge rules
+					// below say so when they need the directory.
+					if unexpanded = shellVariable(f[1]); !unexpanded {
+						dir = resolveDir(f[1], dir, home)
+					}
 				}
 				continue
 			}
 			if escaped {
 				continue
+			}
+			if unexpanded && mergeShaped(f) {
+				return deny("prod-merge:merge", strings.TrimSpace(seg)+`: this command may land on a production branch, and the
+checkout it runs in is unknown — an earlier cd names a shell variable the hook
+cannot expand. Re-run with the checkout spelled out (cd /abs/path && …).`, prodMergeEscape)
 			}
 			if args := afterCommand(f, "gh"); args != nil {
 				if d := prodMergeGH(args, seg, dir); d != nil {
@@ -380,6 +393,34 @@ or push there ships to production. prm stops here too.
 
 Do this instead: leave the PR open and green, and hand it back with its URL and
 what it promotes. The user merges it (or tells you to, for this one merge).`, what, base, source), prodMergeEscape)
+}
+
+// shellVariable reports whether a word needs the shell to expand it: a
+// variable, a substitution or a backtick. The hook sees the text, never the
+// value, so such a word names no directory it can read.
+func shellVariable(word string) bool {
+	return strings.ContainsAny(word, "$`")
+}
+
+// mergeShaped reports whether fields run a command the merge rules judge by
+// its checkout: `gh pr merge`, a `gh api` merge or ref write, or `git push`.
+func mergeShaped(f []string) bool {
+	if args := afterCommand(f, "gh"); len(args) >= 2 {
+		if args[0] == "pr" && args[1] == "merge" {
+			return true
+		}
+		if args[0] == "api" {
+			for _, a := range args[1:] {
+				if strings.Contains(a, "/merge") || strings.Contains(a, "git/refs") {
+					return true
+				}
+			}
+		}
+	}
+	if args := afterCommand(f, "git"); len(args) >= 1 && args[0] == "push" {
+		return true
+	}
+	return false
 }
 
 func prodMergeUnknown(what string, err error) *Denial {

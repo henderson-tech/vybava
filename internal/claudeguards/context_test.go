@@ -130,6 +130,33 @@ func TestContextReadMatch(t *testing.T) {
 	}
 }
 
+// Skill documents are read whole by design: a SKILL.md or a markdown file
+// under a skills tree passes the dump rules whole (Read tool and cat alike),
+// while the same length outside one is still refused.
+func TestSkillDocsPassTheDumpBudget(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("line\n", 400)
+	skill := filepath.Join(root, ".claude", "skills", "devbox", "SKILL.md")
+	ref := filepath.Join(root, "skills", "prm", "references", "merge.md")
+	doc := filepath.Join(root, "docs", "guide.md")
+	for _, p := range []string{skill, ref, doc} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, want := range map[string]bool{skill: false, ref: false, doc: true} {
+		if got := contextReadMatch(p, 0, root) != nil; got != want {
+			t.Errorf("Read %s: denied=%v, want %v", p, got, want)
+		}
+		if got := contextBashMatch("cat "+p, root) != nil; got != want {
+			t.Errorf("cat %s: denied=%v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestDenialText(t *testing.T) {
 	d := deny("x:y", "why", "")
 	if !strings.HasPrefix(d.Text(), "🚨 BLOCKED by claude-guards (x:y)") || strings.Contains(d.Text(), "\n\n\n") {

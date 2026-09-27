@@ -47,6 +47,45 @@ func Native(name string) (Verb, bool) {
 	return verb, ok
 }
 
+// usages is every native verb's usage line, the text its refusals print.
+// `--help`/`-h` reach it through Usage before a verb runs: 108 refusals of
+// `--help` in the three days to 2026-09-27 were agents asking the one
+// question a strict argv must always answer.
+var usages = map[string]string{
+	"tdd-classify":   tddClassifyArgs.usage,
+	"classify-paths": classifyPathsArgs.usage,
+	"worktree":       worktreeArgs.usage,
+	"sync-context":   syncContextArgs.usage,
+	"before-review":  beforeReviewArgs.usage,
+	"list-prs":       listPRsArgs.usage,
+	"merge-precheck": mergePrecheckArgs.usage,
+	"github-io":      githubIOUsage,
+	"resolve-fetch":  resolveFetchArgs.usage,
+	"pr-events":      prEventsArgs.usage,
+	"pr-extensions":  prExtensionsUsage,
+	"admin-labels":   adminLabelsArgs.usage,
+}
+
+// Usage returns the usage text for `<verb> [<sub>]`, for a --help request.
+// github-io answers with its subcommand's line when one is named.
+func Usage(name string, args []string) (string, bool) {
+	if name == "github-io" && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return githubIOUsageFor(args[0]), true
+	}
+	u, ok := usages[name]
+	return u, ok
+}
+
+// WantsHelp reports whether argv asks for usage: a standalone --help or -h.
+func WantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
 // fail reports an error the way every script's top-level catch does.
 func fail(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "error: %s\n", err.Error())

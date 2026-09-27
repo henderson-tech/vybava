@@ -30,17 +30,19 @@ Usage: node github-io.ts <subcommand> --key value ...
   review            --owner O --repo R --pr N --event request-changes|comment --body TEXT|--body-file F
   resolve-thread    --threadId PRRT_...
   create-pr         --head BRANCH --base BRANCH [--title T] [--body B|--body-file F] [--draft] [--label L]
-  find-run          --sha SHA
-  watch-run         --runId ID
-  failed-logs       --runId ID
-  rerun-failed      --runId ID
+  find-run          --sha SHA [--repo /abs/checkout]
+  watch-run         --runId ID [--repo /abs/checkout]
+  failed-logs       --runId ID [--repo /abs/checkout]
+  rerun-failed      --runId ID [--repo /abs/checkout]
   detect-workflows  (no flags — scans ./.github/workflows)
 
 Flags are camelCase (--commentId, --threadId, --runId). The API verbs (reply,
-comment, react, review) name the repository with --owner/--repo; create-pr and
-the run verbs act on the repository of the CURRENT DIRECTORY (cd into its
-checkout, or set GIT_SKILL_REPO) and take no --repo. Any flag a subcommand does
-not list is refused. ` + "`review`" + ` cannot approve, by design.
+comment, react, review) name the repository with --owner/--repo (a GitHub
+name). The run verbs take --repo as a DIRECTORY anchor like every other gitkit
+verb (the harness resets the cwd after each call); without it, and for
+create-pr, the repository is the CURRENT DIRECTORY's (cd into its checkout, or
+set GIT_SKILL_REPO). Any flag a subcommand does not list is refused; --json and
+--help are always accepted. ` + "`review`" + ` cannot approve, by design.
 
 The harness shell is zsh, which does NOT word-split unquoted $VAR — packing
 flags into one variable sends them as a SINGLE argument. Use an array:
@@ -209,10 +211,10 @@ var whitespace = regexp.MustCompile(`\s`)
 // before the build, so the build never sees it.
 var githubIOArgs = map[string]verbArgs{
 	"detect-workflows": {},
-	"find-run":         {values: []string{"sha"}},
-	"watch-run":        {values: []string{"runId"}},
-	"failed-logs":      {values: []string{"runId"}},
-	"rerun-failed":     {values: []string{"runId"}},
+	"find-run":         {values: []string{"sha", "repo"}},
+	"watch-run":        {values: []string{"runId", "repo"}},
+	"failed-logs":      {values: []string{"runId", "repo"}},
+	"rerun-failed":     {values: []string{"runId", "repo"}},
 	"reply":            {values: []string{"owner", "repo", "pr", "commentId", "body", "body-file"}},
 	"resolve-thread":   {values: []string{"threadId"}},
 	"comment":          {values: []string{"owner", "repo", "pr", "body", "body-file"}},
@@ -220,6 +222,9 @@ var githubIOArgs = map[string]verbArgs{
 	"review":           {values: []string{"owner", "repo", "pr", "event", "body", "body-file"}},
 	"create-pr":        {values: []string{"head", "base", "title", "body", "body-file", "label"}, bools: []string{"draft"}},
 }
+
+// runVerbs are the subcommands whose --repo is a directory anchor.
+var runVerbs = map[string]bool{"find-run": true, "watch-run": true, "failed-logs": true, "rerun-failed": true}
 
 // githubIOUsageFor is the usage line of one subcommand, for its refusals.
 func githubIOUsageFor(sub string) string {
@@ -324,9 +329,17 @@ func runGitHubIO(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	// repoRoot(nil) — NEVER the verb's argv: github-io's own --repo is a
-	// GitHub repo NAME, not a directory anchor. GIT_SKILL_REPO still applies.
-	root, err := repoRoot(nil)
+	// The API verbs' --repo is a GitHub repo NAME, never a directory anchor,
+	// so their root is repoRoot(nil) (GIT_SKILL_REPO still applies). The run
+	// verbs never had a name to give: their --repo is the directory anchor
+	// every other gitkit verb takes, because the harness resets the cwd after
+	// each call and `cd` before a gh run verb was refused 21 times in three
+	// days (2026-09-27).
+	var anchor []string
+	if runVerbs[sub] {
+		anchor = repoAnchor(o)
+	}
+	root, err := repoRoot(anchor)
 	if err != nil {
 		return fail(stderr, err)
 	}

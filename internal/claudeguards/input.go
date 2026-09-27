@@ -30,7 +30,18 @@ type HookInput struct {
 	budgetVal  Budget  // memoized by budget()
 	budgetErr  error
 	budgetRead bool
+
+	// Notes are one-line, model-visible remarks a rule attaches to a call it
+	// LETS THROUGH (the devbox rule running a routed command here because the
+	// box is saturated). The CLI delivers them as PreToolUse additionalContext
+	// next to the budget reminder. A rule never notes a passing call it did
+	// not otherwise judge: a remark on every call is the context cost the
+	// budget rules exist to prevent.
+	Notes []string
 }
+
+// note attaches one model-visible remark to this call.
+func (in *HookInput) note(msg string) { in.Notes = append(in.Notes, msg) }
 
 // budget returns this payload's context budget, reading the transcript at most
 // once. guardBudget consults it, and on every allowed call BudgetContext then

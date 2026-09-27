@@ -81,6 +81,7 @@ var Rules = []Rule{
 	{"secrets:proc-environ", "secrets", eventBash, "a read of /proc/*/environ", escapeDangerous},
 	{"secrets:secret-echo", "secrets", eventBash, "echo/printf expanding a secret-named variable, not piped into a consumer", escapeDangerous},
 	{"secrets:secret-fragment", "secrets", eventBash, "a secret's length, prefix or suffix (${#x}, cut -c, .slice(…) where one is read)", escapeDangerous},
+	{"shell:path-variable", "shell", eventBash, "`path` bound as a shell variable (for/read/assignment); zsh ties it to PATH and every later command fails", escapeNone},
 	{"simulator:appium-session-churn", "simulator", eventBash, "a script that opens and deletes a webdriverio session per look", escapeNone},
 	{"simulator:host-input", "simulator", eventBash, "cliclick/System Events driving the Simulator window", escapeNone},
 }

@@ -80,7 +80,7 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 		Command  string `json:"command"`
 	}
 	_ = json.Unmarshal(input, &in) // an unexpected input shape leaves the fields empty
-	c := Call{Tool: name, Lines: lines, Visible: 1}
+	c := Call{Tool: name, Lines: lines, Visible: 1, Escaped: escapeVar(in.Command)}
 	switch name {
 	case "Read":
 		if f := out.File; f != nil {

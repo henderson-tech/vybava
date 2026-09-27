@@ -65,6 +65,17 @@ func TestParseFlags(t *testing.T) {
 			t.Errorf("parseFlags(%q) = %v, %v", argv, o, err)
 		}
 	}
+	// the run verbs take --repo as a directory anchor (the harness resets the
+	// cwd after every call); create-pr still does not, and --json always parses
+	if o, err := parseFlags("find-run", []string{"--sha", "abc", "--repo", "/srv/repo", "--json"}); err != nil || !maps.Equal(o, flags{"sha": "abc", "repo": "/srv/repo", "json": ""}) {
+		t.Errorf("find-run --repo: %v, %v", o, err)
+	}
+	if _, err := parseFlags("create-pr", []string{"--head", "h", "--base", "b", "--repo", "/srv/repo"}); err == nil || !strings.Contains(err.Error(), "unknown argument --repo") {
+		t.Errorf("create-pr --repo must still be refused: %v", err)
+	}
+	if !runVerbs["find-run"] || runVerbs["reply"] {
+		t.Errorf("runVerbs must name exactly the run verbs")
+	}
 	// zsh does not split an unquoted $VAR: name that, not a missing field
 	_, err := parseFlags("reply", []string{"--owner acme --repo app --pr 1066", "--commentId", "11"})
 	if err == nil || !regexp.MustCompile(`ONE argument with embedded spaces[\s\S]*does NOT word-split`).MatchString(err.Error()) {

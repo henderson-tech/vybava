@@ -145,6 +145,9 @@ var tokenDetectors = []detector{
 	{id: "stripe-key", class: Tokens, window: true, hints: []string{"k_live_", "k_test_"}, re: regexp.MustCompile(`\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}`)},
 	{id: "google-api-key", class: Tokens, hints: []string{"AIza"}, re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	{id: "npm-token", class: Tokens, window: true, hints: []string{"npm_"}, re: regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}\b`)},
+	// Deployik API tokens (`dpk_` + 40+ url-safe chars); one sat in ~/.zshenv
+	// and reached 26 transcripts in three days (2026-09-27).
+	{id: "deployik-token", class: Tokens, window: true, hints: []string{"dpk_"}, re: regexp.MustCompile(`\bdpk_[A-Za-z0-9_-]{32,}`)},
 	{id: "jwt", class: Tokens, hints: []string{"eyJ"}, re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*)?`)},
 }
 
@@ -253,7 +256,7 @@ var otherDetectors = []detector{
 		accept: plausibleValue(3)},
 	// A token shape cut short for display: `ghp_abcd…`, `sk-ant-api03-xy...`.
 	{id: "fragment", class: Fragments, group: 1, window: true, hints: []string{"…", "..."},
-		re:     regexp.MustCompile(`(?:gh[pousr]_|github_pat_|sk-ant-|sk-proj-|xox[baprs]-|AKIA|AIza|[sr]k_(?:live|test)_|npm_)([A-Za-z0-9_-]{3,40})(?:…|\.\.\.)`),
+		re:     regexp.MustCompile(`(?:gh[pousr]_|github_pat_|sk-ant-|sk-proj-|xox[baprs]-|AKIA|AIza|[sr]k_(?:live|test)_|npm_|dpk_)([A-Za-z0-9_-]{3,40})(?:…|\.\.\.)`),
 		accept: plausibleValue(3)},
 }
 

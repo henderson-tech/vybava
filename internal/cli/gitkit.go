@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/henderson-tech/vybava/internal/gitkit"
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/spf13/cobra"
@@ -64,6 +66,14 @@ func (rt *runtime) gitkitCommand(use string) *cobra.Command {
 			Short:              "Run the " + script + " verb",
 			DisableFlagParsing: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				// Flag parsing is off (argv belongs to the verb), so --help
+				// is answered here: usage on stdout, exit 0, never a refusal.
+				if gitkit.WantsHelp(args) {
+					if u, ok := gitkit.Usage(script, args); ok {
+						fmt.Fprintln(rt.stdout, u)
+						return nil
+					}
+				}
 				verb, _ := gitkit.Native(script)
 				if code := verb(args, rt.stdout, rt.stderr); code != 0 {
 					return runx.ExitError{Code: code}

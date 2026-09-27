@@ -45,6 +45,43 @@ func renderSummary(w io.Writer, s Summary, cfg Config, indent string) {
 	if len(s.Blocked) > 0 {
 		row("guard blocks", num(sum(s.Blocked)), topRules(s.Blocked, 3))
 	}
+	if len(s.Outcomes) > 0 {
+		var c, e, a int
+		for _, o := range s.Outcomes {
+			c, e, a = c+o.Complied, e+o.Escaped, a+o.Abandoned
+		}
+		row("after a block", fmt.Sprintf("%.0f %% comply", pct(c, c+e+a)), fmt.Sprintf("complied %s · escaped %s · abandoned %s · %s", num(c), num(e), num(a), topEscaped(s.Outcomes, 3)))
+	}
+}
+
+// topEscaped names the rules escaped most, with each one's escape share —
+// the rules whose blocks teach a prefix instead of a bounded form.
+func topEscaped(m map[string]*Outcome, n int) string {
+	type kv struct {
+		rule  string
+		o     *Outcome
+		total int
+	}
+	var rows []kv
+	for rule, o := range m {
+		if o.Escaped > 0 {
+			rows = append(rows, kv{rule, o, o.Complied + o.Escaped + o.Abandoned})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].o.Escaped != rows[j].o.Escaped {
+			return rows[i].o.Escaped > rows[j].o.Escaped
+		}
+		return rows[i].rule < rows[j].rule
+	})
+	if len(rows) == 0 {
+		return "no rule escaped"
+	}
+	var parts []string
+	for _, r := range rows[:min(n, len(rows))] {
+		parts = append(parts, fmt.Sprintf("%s %.0f %% escaped", r.rule, pct(r.o.Escaped, r.total)))
+	}
+	return "most escaped: " + strings.Join(parts, ", ")
 }
 
 func renderScopes(w io.Writer, scopes []Scope) {

@@ -51,12 +51,16 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 				}
 				d := decide(in)
 				if d == nil {
-					// The budget context reads a Claude transcript; a Codex
+					// A rule's notes on a call it let through, then the budget
+					// context. The latter reads a Claude transcript; a Codex
 					// payload's transcript_path is a rollout.
-					if name == "codex" {
-						return nil
+					context := strings.Join(in.Notes, "\n")
+					if name != "codex" {
+						if b := claudeguards.BudgetContext(in); b != "" {
+							context = strings.TrimSpace(context + "\n" + b)
+						}
 					}
-					if context := claudeguards.BudgetContext(in); context != "" {
+					if context != "" {
 						return json.NewEncoder(rt.stdout).Encode(map[string]map[string]string{
 							"hookSpecificOutput": map[string]string{"hookEventName": "PreToolUse", "additionalContext": context},
 						})

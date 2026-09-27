@@ -47,6 +47,7 @@ func TestFindRedactsEachClassAndOnlyTheValue(t *testing.T) {
 		{"aws key", "id=⟦" + "AKIA" + strings.ToUpper(fake("", 16)) + "⟧", "aws-key"},
 		{"anthropic key in JSON", `{"key":"⟦` + fake("sk-"+"ant-api03-", 40) + `⟧"}`, "anthropic-key"},
 		{"stripe key", "⟦" + fake("sk_"+"live_", 24) + "⟧", "stripe-key"},
+		{"deployik token in a dotfile", "export DEPLOYIK_TOKEN=⟦" + fake("dp"+"k_", 43) + "⟧", "deployik-token"},
 		{"jwt whole", "⟦" + fake("ey"+"J", 24) + "." + fake("ey"+"J", 30) + "." + fake("", 20) + "⟧", "jwt"},
 		{"private key block", "cat id\n⟦" + pem + "⟧\ndone", "private-key"},
 		{"private key with literal \\n", `⟦-----BEGIN OPENSSH PRIVATE KEY-----\n` + fake("b3Bl", 70) + `\n-----END OPENSSH PRIVATE KEY-----⟧`, "private-key"},
