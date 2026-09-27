@@ -38,11 +38,16 @@ func WriteNote(home, typ, topic, description, body string, now time.Time) (strin
 		}
 		text := fmt.Sprintf("---\nname: %s\ndescription: \"%s\"\ntype: %s\nstatus: active\nlast-verified: %s\n---\n\n%s\n",
 			slug, desc, typ, now.Format("2006-01-02"), strings.TrimSpace(body))
+		// A failed write leaves no partial note behind: the exclusively
+		// created path would otherwise count as a collision forever while the
+		// caller was told nothing was written.
 		if _, err := f.WriteString(text); err != nil {
 			f.Close()
+			os.Remove(f.Name())
 			return "", err
 		}
 		if err := f.Close(); err != nil {
+			os.Remove(f.Name())
 			return "", err
 		}
 		return slug, nil
