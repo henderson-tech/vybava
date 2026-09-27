@@ -92,6 +92,7 @@ func TestProdMerge(t *testing.T) {
 		{"after cd into the repo", "cd " + wt + " && gh pr merge 12 --merge", other, "", true},
 		{"cd to a shell variable: unknown checkout fails closed", "cd $W && gh pr merge 13 --squash", other, "", true},
 		{"cd to a shell variable, then an absolute cd", "cd $W && cd " + wt + " && gh pr merge 13 --squash", other, "", false},
+		{"cd to a shell variable, then a relative cd: still unknown", "cd $W && cd apps/api && gh pr merge 13 --squash", other, "", true},
 		{"cd to a shell variable before a read only", "cd $W && gh pr view 12 --json baseRefName", other, "", false},
 		{"--repo naming another repo gets the default set", "gh pr merge 7 --repo Reservine/Reservine --merge", other, "", true},
 		{"--repo naming another repo, not a prod base", "gh pr merge 13 -R Reservine/ReservineBack --squash", other, "", false},

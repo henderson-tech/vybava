@@ -102,7 +102,14 @@ func guardProdMerge(in *HookInput) *Denial {
 					// into a path that does not exist and blamed gh auth
 					// (2026-09-27). Unknown stays unknown; the merge rules
 					// below say so when they need the directory.
-					if unexpanded = shellVariable(f[1]); !unexpanded {
+					switch {
+					case shellVariable(f[1]):
+						unexpanded = true
+					case unexpanded && !absoluteTarget(f[1]):
+						// `cd $W && cd sub`: still somewhere unknown; only an
+						// absolute (or ~) cd brings the directory back.
+					default:
+						unexpanded = false
 						dir = resolveDir(f[1], dir, home)
 					}
 				}
@@ -400,6 +407,12 @@ what it promotes. The user merges it (or tells you to, for this one merge).`, wh
 // value, so such a word names no directory it can read.
 func shellVariable(word string) bool {
 	return strings.ContainsAny(word, "$`")
+}
+
+// absoluteTarget reports whether a cd target names a directory on its own:
+// an absolute path or a ~ form, never relative to where the shell already is.
+func absoluteTarget(word string) bool {
+	return filepath.IsAbs(word) || word == "~" || strings.HasPrefix(word, "~/")
 }
 
 // mergeShaped reports whether fields run a command the merge rules judge by
