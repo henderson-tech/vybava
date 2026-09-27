@@ -92,6 +92,10 @@ type Record struct {
 	CredentialQuery   []string    `json:"credential_query,omitempty"`
 	Body              []byte      `json:"body,omitempty"`
 	BodyTruncated     bool        `json:"body_truncated,omitempty"`
+	// BodyUnparsed: a JSON/form body that did not parse (or was truncated)
+	// is stored WITHOUT bytes — an unparsed credential-typed body is never
+	// kept — and, like a truncated one, never replayed.
+	BodyUnparsed bool `json:"body_unparsed,omitempty"`
 	// BodyRedacted names the credential keys whose values were replaced by
 	// "[redacted]" in Body; such a record is never replayed.
 	BodyRedacted  []string `json:"body_redacted,omitempty"`
@@ -168,54 +172,78 @@ const redactedValue = "[redacted]"
 
 // redactBody replaces credential values in a JSON object or a form body and
 // returns the redacted body plus the key names it touched (nil when none).
-func redactBody(contentType string, body []byte) ([]byte, []string) {
+func redactBody(contentType string, body []byte) (out []byte, redacted []string, unparsed bool) {
 	if len(body) == 0 {
-		return body, nil
+		return body, nil, false
 	}
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	switch {
 	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(body, &obj); err != nil {
-			return body, nil
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return nil, nil, true
 		}
-		var names []string
-		for k := range obj {
-			if slices.Contains(credentialBodyKeys, strings.ToLower(k)) {
-				obj[k] = json.RawMessage(strconv.Quote(redactedValue))
-				names = append(names, k)
-			}
+		v = redactJSON(v, "", &redacted)
+		if redacted == nil {
+			return body, nil, false
 		}
-		if names == nil {
-			return body, nil
-		}
-		sort.Strings(names)
-		out, err := json.Marshal(obj)
+		sort.Strings(redacted)
+		out, err := json.Marshal(v)
 		if err != nil {
-			return body, nil
+			return nil, nil, true
 		}
-		return out, names
+		return out, redacted, false
 	case mediaType == "application/x-www-form-urlencoded":
-		var kept, names []string
+		var kept []string
 		for _, pair := range strings.Split(string(body), "&") {
 			key, _, hasValue := strings.Cut(pair, "=")
 			decoded, err := url.QueryUnescape(key)
 			if err != nil {
-				decoded = key
+				return nil, nil, true
 			}
 			if hasValue && slices.Contains(credentialBodyKeys, strings.ToLower(decoded)) {
 				kept = append(kept, key+"="+url.QueryEscape(redactedValue))
-				names = append(names, decoded)
+				redacted = append(redacted, decoded)
 				continue
 			}
 			kept = append(kept, pair)
 		}
-		if names == nil {
-			return body, nil
+		if redacted == nil {
+			return body, nil, false
 		}
-		return []byte(strings.Join(kept, "&")), names
+		return []byte(strings.Join(kept, "&")), redacted, false
 	}
-	return body, nil
+	return body, nil, false
+}
+
+// redactJSON walks objects and arrays at any depth, replacing the value of
+// every credential key and recording its dotted path (`credentials.password`,
+// `users[1].token`).
+func redactJSON(v any, path string, names *[]string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			if slices.Contains(credentialBodyKeys, strings.ToLower(k)) {
+				t[k] = redactedValue
+				*names = append(*names, p)
+				continue
+			}
+			t[k] = redactJSON(val, p, names)
+		}
+		return t
+	case []any:
+		for i := range t {
+			t[i] = redactJSON(t[i], path+"["+strconv.Itoa(i)+"]", names)
+		}
+		return t
+	}
+	return v
 }
 
 func (r *recorder) append(req *http.Request, body []byte, truncated bool, status int, respBytes int64) {
@@ -225,9 +253,17 @@ func (r *recorder) append(req *http.Request, body []byte, truncated bool, status
 	headers := req.Header.Clone()
 	creds := stripCredentials(headers)
 	query, qcreds := stripCredentialQuery(req.URL.RawQuery)
-	body, redacted := redactBody(req.Header.Get("Content-Type"), body)
+	// A truncated body can no longer be parsed for credentials, so it is not
+	// stored at all; replay skips truncated records anyway.
+	var redacted []string
+	unparsed := false
+	if truncated {
+		body = nil
+	} else {
+		body, redacted, unparsed = redactBody(req.Header.Get("Content-Type"), body)
+	}
 	rec := Record{At: time.Now(), Method: req.Method, Path: req.URL.Path, RawPath: req.URL.EscapedPath(), Query: query, Headers: headers, CredentialHeaders: creds, CredentialQuery: qcreds,
-		Body: body, BodyTruncated: truncated, BodyRedacted: redacted, Status: status, ResponseBytes: respBytes}
+		Body: body, BodyTruncated: truncated, BodyUnparsed: unparsed, BodyRedacted: redacted, Status: status, ResponseBytes: respBytes}
 	line, err := json.Marshal(rec)
 	if err != nil {
 		return

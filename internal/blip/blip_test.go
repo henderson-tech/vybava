@@ -491,19 +491,25 @@ func TestBodyRedaction(t *testing.T) {
 		}
 		resp.Body.Close()
 	}
-	post("/login", "application/json; charset=utf-8", `{"user":"lukas","Password":"hunter2","nested":{"password":"deep"}}`)
+	post("/login", "application/json; charset=utf-8", `{"user":"lukas","Password":"hunter2","n":7,"credentials":{"password":"deep"},"users":[{"id":1},{"id":2,"token":"arr-secret"}]}`)
 	post("/oauth/token", "application/x-www-form-urlencoded", "grant_type=client_credentials&client_id=app&client_secret=s3cret")
 	post("/notes", "text/plain", "password=not-a-form")
+	post("/broken", "application/json", `{"password":"unterminated`)
+	huge := `{"pad":"` + strings.Repeat("x", recordBodyLimit) + `","password":"oversize-secret"}`
+	post("/big", "application/json", huge)
 	raw, _ := os.ReadFile(rec)
-	if bytes.Contains(raw, []byte("hunter2")) || bytes.Contains(raw, []byte("s3cret")) {
-		t.Fatalf("credential value stored:\n%s", raw)
+	for _, secret := range []string{"hunter2", "s3cret", "deep", "arr-secret", "unterminated", "oversize-secret"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatalf("credential value %q stored:\n%.300s", secret, raw)
+		}
 	}
 	recs, _ := ReadRecords(rec)
-	if len(recs) != 3 {
+	if len(recs) != 5 {
 		t.Fatalf("records = %d", len(recs))
 	}
-	if got := recs[0].BodyRedacted; len(got) != 1 || got[0] != "Password" || !bytes.Contains(recs[0].Body, []byte(`"user":"lukas"`)) || !bytes.Contains(recs[0].Body, []byte(`"password":"deep"`)) {
-		t.Fatalf("json redaction (one level deep, other keys kept): %v %s", got, recs[0].Body)
+	if got := recs[0].BodyRedacted; strings.Join(got, ",") != "Password,credentials.password,users[1].token" ||
+		!bytes.Contains(recs[0].Body, []byte(`"user":"lukas"`)) || !bytes.Contains(recs[0].Body, []byte(`"n":7`)) || !bytes.Contains(recs[0].Body, []byte(`{"password":"[redacted]"}`)) {
+		t.Fatalf("json redaction (any depth, other keys kept): %v %s", got, recs[0].Body)
 	}
 	if got := recs[1].BodyRedacted; len(got) != 1 || got[0] != "client_secret" || string(recs[1].Body) != "grant_type=client_credentials&client_id=app&client_secret=%5Bredacted%5D" {
 		t.Fatalf("form redaction: %v %s", got, recs[1].Body)
@@ -511,10 +517,44 @@ func TestBodyRedaction(t *testing.T) {
 	if recs[2].BodyRedacted != nil || string(recs[2].Body) != "password=not-a-form" {
 		t.Fatalf("text/plain must be stored as-is: %+v", recs[2])
 	}
+	if !recs[3].BodyUnparsed || recs[3].Body != nil {
+		t.Fatalf("unparseable JSON must store no body: %+v", recs[3])
+	}
+	if !recs[4].BodyTruncated || recs[4].Body != nil {
+		t.Fatalf("truncated body must store no bytes: truncated=%v len=%d", recs[4].BodyTruncated, len(recs[4].Body))
+	}
 	id, _ := ParseIdentity("none")
 	rep, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}, Mutations: true})
-	if err != nil || rep.Checked != 1 || len(rep.Skipped) != 2 || rep.Skipped[0].Reason != "body carried credentials (redacted)" {
-		t.Fatalf("replay must skip redacted bodies: %+v %v", rep, err)
+	if err != nil || rep.Checked != 1 || len(rep.Skipped) != 4 || rep.Skipped[0].Reason != "body carried credentials (redacted)" || !strings.HasPrefix(rep.Skipped[2].Reason, "body not stored") {
+		t.Fatalf("replay must skip redacted/unstored bodies: %+v %v", rep, err)
+	}
+}
+
+// TestReplayDedupesOnWirePath: /files/a%2Fb and /files/a/b decode to the
+// same Path but are different requests on the wire — both must be replayed.
+func TestReplayDedupesOnWirePath(t *testing.T) {
+	var targets []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targets = append(targets, r.URL.RequestURI())
+	}))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "d.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	for _, p := range []string{"/files/a%2Fb", "/files/a/b", "/files/a%2Fb"} {
+		if _, _, err := get(t, "http://"+s.Addr().String()+p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, _ := ReadRecords(rec)
+	targets = nil
+	id, _ := ParseIdentity("none")
+	rep, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}})
+	if err != nil || rep.Checked != 2 {
+		t.Fatalf("checked = %d %v", rep.Checked, err)
+	}
+	if strings.Join(targets, " ") != "/files/a%2Fb /files/a/b" {
+		t.Fatalf("replayed %v", targets)
 	}
 }
 

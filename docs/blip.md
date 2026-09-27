@@ -57,8 +57,10 @@ headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`,
 `session`; case-insensitive) are stripped at record time and never re-added by
 a replay; only their NAMES are kept and `status` lists them. JSON (one level)
 and form bodies get credential keys (`password`, `secret`, `token`,
-`client_secret`, `otp`, `code`, …) replaced by `[redacted]`; such a record
-lists them in `body_redacted` and is skipped by `authz`. Paths are stored
+`client_secret`, `otp`, `code`, …) replaced by `[redacted]` at any depth;
+such a record lists their paths in `body_redacted` and is skipped by `authz`.
+A body over 64 KiB or a JSON/form body that does not parse is stored with NO
+bytes (`body_truncated`/`body_unparsed`) and never replayed. Paths are stored
 decoded (for `--only`) and raw (`raw_path`, what a replay sends). `status`
 shows `recorded=N`.
 

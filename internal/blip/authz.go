@@ -163,7 +163,15 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 		// Records are stored credential-free; strip again so a hand-edited
 		// or older recording can never replay a query credential.
 		rec.Query, _ = stripCredentialQuery(rec.Query)
-		key := rec.Method + " " + rec.Path + "?" + rec.Query
+		// Replay the path as it was sent: rec.Path is decoded (for --only),
+		// so /files/a%3Fb must not be rebuilt as /files/a?b — and the dedupe
+		// key uses the same wire path so /files/a%2Fb and /files/a/b are two
+		// requests.
+		wirePath := rec.RawPath
+		if wirePath == "" {
+			wirePath = (&url.URL{Path: rec.Path}).EscapedPath()
+		}
+		key := rec.Method + " " + wirePath + "?" + rec.Query
 		if seen[key] {
 			continue
 		}
@@ -175,19 +183,13 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "mutation (pass --mutations to replay)"})
 			continue
 		}
-		if rec.BodyTruncated {
-			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body truncated at record time"})
+		if rec.BodyTruncated || rec.BodyUnparsed {
+			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body not stored (truncated or unparsed at record time)"})
 			continue
 		}
 		if len(rec.BodyRedacted) > 0 {
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body carried credentials (redacted)"})
 			continue
-		}
-		// Replay the path as it was sent: rec.Path is decoded (for --only),
-		// so /files/a%3Fb must not be rebuilt as /files/a?b.
-		wirePath := rec.RawPath
-		if wirePath == "" {
-			wirePath = (&url.URL{Path: rec.Path}).EscapedPath()
 		}
 		target := strings.TrimSuffix(upstream, "/") + wirePath
 		if rec.Query != "" {
