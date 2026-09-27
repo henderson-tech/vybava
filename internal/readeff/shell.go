@@ -28,13 +28,17 @@ var (
 func shellCall(cmd, cwd string) Call {
 	c := Call{Tool: "Bash"}
 	c.shell(cmd, cwd, 0)
-	if c.patched && strings.Contains(cmd, "*** Begin Patch") { // apply_patch fed a heredoc
-		for i, body := range strings.Split(cmd, "*** Begin Patch")[1:] {
+	if starts := patchStart.FindAllStringIndex(cmd, -1); c.patched && len(starts) > 0 { // apply_patch fed a heredoc
+		for i, s := range starts {
+			end := len(cmd)
+			if i+1 < len(starts) {
+				end = starts[i+1][0]
+			}
 			dir := cwd // each body pairs with the apply_patch that ran it
 			if i < len(c.patchDirs) {
 				dir = c.patchDirs[i]
 			}
-			files, changed := patchChanged("*** Begin Patch"+body, dir)
+			files, changed := patchChanged(cmd[s[0]:end], dir)
 			c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
 		}
 	} else if c.wrote {
@@ -43,6 +47,10 @@ func shellCall(cmd, cwd string) Call {
 	c.classify()
 	return c
 }
+
+// patchStart is a patch's opening line; the marker inside an added line
+// (`+x := "*** Begin Patch"`) is patch content, not a new patch.
+var patchStart = regexp.MustCompile(`(?m)^\*\*\* Begin Patch`)
 
 // shell folds cmd's pipelines into c; depth bounds nested `sh -c` payloads.
 func (c *Call) shell(cmd, cwd string, depth int) {
