@@ -88,6 +88,14 @@ with claude-switcheroo (`src/arcade/contract.ts`), the beats JSON with its
 timesheet (`src/timesheet/contract.ts`). Beats (per-minute human/ai presence)
 backfill through a beats-only backlog read that never charges. Rules: `docs/tokentime.md`.
 
+`internal/readeff` measures agent navigation from the same transcripts,
+stateless: it scans on demand and keeps only counts and paths, never command
+text or output. Tool-call decoding (Claude `tool_use`/`toolUseResult`, Codex
+`exec` programs) lives in `internal/transcripts`, shell classification goes
+through `internal/shellseg`. A scan decodes on a few workers and folds one
+session at a time — never collect every session first (a week is several
+GB). Rules: `docs/readeff.md`.
+
 `internal/plaud` reads the Plaud account directly (PKCE login, vault-injected
 refresh token, cached access token only); the manual-only skill is
 `skills/plaud/`. `docs/plaud.md` has the auth model and the API map.
