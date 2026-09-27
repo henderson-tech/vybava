@@ -150,9 +150,17 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
                   a command matching guards.devboxWhenWorkspace run locally in
                   a checkout that has a Devbox workspace (same escape) ·
+                  `ssh <host> … docker (compose) exec` into a devbox-…
+                  container or compose project, around `devbox run -- 'docker
+                  compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
                   (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
+                  destination, rm) to a memo home's LEDGER.md, MEMORY.md or
+                  usage.jsonl — memo's own RefuseHandWrite, run here so memo's
+                  hook does not spawn per Bash call; the stderr names the memo
+                  verb that owns the file
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
@@ -473,7 +481,10 @@ environment variable for Read, a leading assignment for Bash).
 `context:unbounded-output` requests caps for `docker logs`, GitHub run logs,
 `git log` and unspecialized `git diff/show`. Examples: `docker logs --tail 200
 app`, `git log -n 20`, `git diff --stat`. The suggested form keeps the
-arguments you typed. Test runners are deliberately not covered: a passing suite
+arguments you typed. `git show <rev>:<path>` is not a diff but a file read at
+another revision: it skips this rule and is budgeted like `cat` by the blob's
+own length (`git cat-file`, 2 s bound; an unresolvable spec passes). It was 300
+of the 304 git-show denials in the 2026-09-25 field audit. Test runners are deliberately not covered: a passing suite
 prints little, a failing one puts what matters at the end, and every repo here
 documents a bare `go test ./...` / `bun test` as its verify step — a guard that
 refuses the documented command only teaches people to route around it. List one

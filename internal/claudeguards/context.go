@@ -2,13 +2,16 @@ package claudeguards
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/henderson-tech/vybava/internal/shellseg"
 )
@@ -129,7 +132,6 @@ func linesLabel(n int) string {
 }
 
 // lineCount counts newlines in a regular file; (0, false) when it is not one.
-// Reads at most 4 MiB — anything past that is over budget regardless.
 func lineCount(abs string) (int, bool) {
 	st, err := os.Stat(abs)
 	if err != nil || !st.Mode().IsRegular() {
@@ -140,6 +142,37 @@ func lineCount(abs string) (int, bool) {
 		return 0, false
 	}
 	defer f.Close()
+	return countLines(f)
+}
+
+// blobLines counts the lines `git show <spec>` prints for a <rev>:<path>
+// spec: the blob as it is at that revision, which the working tree may not
+// even hold. (0, false) when git cannot resolve it — a tree, a typo — which
+// passes, as a missing file does for cat. Bounded at 2 s so a partial clone
+// fetching the blob can never hang the hook.
+func blobLines(dir, spec string) (int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "blob", spec)
+	out, err := c.StdoutPipe()
+	if err != nil || c.Start() != nil {
+		return 0, false
+	}
+	n, ok := countLines(out)
+	if n >= unboundedLines {
+		_ = c.Process.Kill() // past 4 MiB: over budget whatever the rest holds
+		_ = c.Wait()
+		return n, true
+	}
+	if err := c.Wait(); err != nil || !ok {
+		return 0, false
+	}
+	return n, true
+}
+
+// countLines counts newlines in r. Reads at most 4 MiB — anything past that
+// is over budget regardless.
+func countLines(f io.Reader) (int, bool) {
 	n := 0
 	last := byte('\n')
 	buf := make([]byte, 64<<10)
@@ -402,7 +435,8 @@ func dumpBudget(seg, cwd string, cfg Config) (verdict dumpVerdict, file string, 
 
 func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpVerdict, file string, lines, total int) {
 	fields := shellseg.Fields(seg)
-	if len(fields) == 0 || !dumpCommands[fields[0]] {
+	gitDir, blobs := gitShowBlobs(fields, cwd)
+	if blobs == nil && (len(fields) == 0 || !dumpCommands[fields[0]]) {
 		return dumpOK, "", 0, 0
 	}
 	limit := -1 // -1 = whole file
@@ -467,6 +501,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 				paths = append(paths, a)
 			}
 		}
+	case "git": // `git show <rev>:<path>`: its blobs were gathered above
 	default: // cat, less, more, bat
 		for _, a := range args {
 			if !strings.HasPrefix(a, "-") {
@@ -502,6 +537,24 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 	if windowed && budget == maxDumpLines {
 		allowance = budget + 1
 	}
+	charge := func(name string, n int) {
+		printed := n
+		if limit >= 0 && limit < n {
+			printed = limit
+		}
+		total += printed
+		if total > unboundedLines {
+			total = unboundedLines // saturate: several unmeasured files must not wrap
+		}
+		if total > allowance && file == "" {
+			file, lines = name, n
+		}
+	}
+	for _, spec := range blobs {
+		if n, ok := blobLines(gitDir, spec); ok {
+			charge(spec, n)
+		}
+	}
 	for _, p := range paths {
 		abs := resolvePath(p, cwd)
 		if cfg.noRead(abs) {
@@ -513,20 +566,8 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if isLokCatalog(abs, cfg) {
 			return dumpCatalog, abs, 0, 0
 		}
-		n, ok := lineCount(abs)
-		if !ok {
-			continue
-		}
-		printed := n
-		if limit >= 0 && limit < n {
-			printed = limit
-		}
-		total += printed
-		if total > unboundedLines {
-			total = unboundedLines // saturate: several unmeasured files must not wrap
-		}
-		if total > allowance && file == "" {
-			file, lines = abs, n
+		if n, ok := lineCount(abs); ok {
+			charge(abs, n)
 		}
 	}
 	if total > allowance {

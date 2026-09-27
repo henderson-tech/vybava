@@ -57,6 +57,45 @@ func skipGitGlobals(f []string) []string {
 	return f[:1]
 }
 
+// blobSpecs returns a `git show`'s arguments when every revision it names is a
+// <rev>:<path> blob spec, nil otherwise — a bare commit prints its whole diff.
+func blobSpecs(args []string) []string {
+	var specs []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if !strings.Contains(a, ":") {
+			return nil
+		}
+		specs = append(specs, a)
+	}
+	return specs
+}
+
+// gitShowBlobs recognises `git [globals] show <rev>:<path>…` and returns the
+// directory git runs in (the cwd moved by each -C) and the blob specs; nil
+// specs for any other command.
+func gitShowBlobs(fields []string, cwd string) (dir string, specs []string) {
+	g := skipGitGlobals(fields)
+	if len(g) < 3 || g[0] != "git" || g[1] != "show" {
+		return "", nil
+	}
+	if specs = blobSpecs(g[2:]); specs == nil {
+		return "", nil
+	}
+	dir = cwd
+	for i := 1; i+1 < len(fields) && strings.HasPrefix(fields[i], "-"); i++ {
+		if fields[i] == "-C" {
+			dir = resolvePath(fields[i+1], dir)
+		}
+		if gitGlobalWithValue[fields[i]] {
+			i++
+		}
+	}
+	return dir, specs
+}
+
 func unboundedOutput(segment string, cfg Config) *Denial {
 	f := shellseg.Fields(shellseg.TrimAssignments(shellseg.TrimSubshell(segment)))
 	f = skipGitGlobals(f)
@@ -122,6 +161,12 @@ func unboundedOutput(segment string, cfg Config) *Denial {
 			fix = "git log -n 20 --oneline"
 		}
 	case "git diff", "git show":
+		// `git show <rev>:<path>` prints one file as it is at rev: a file read,
+		// which dumpBudget measures like cat. Refusing it as a diff was 300 of
+		// the 304 git-show denials in the 2026-09-25 field audit.
+		if f[1] == "show" && blobSpecs(f[2:]) != nil {
+			return nil
+		}
 		pathBound := false
 		for i, a := range f {
 			if a == "--" && i+1 < len(f) {
