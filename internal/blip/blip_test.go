@@ -455,6 +455,121 @@ func TestQueryCredentialsNeverStoredOrReplayed(t *testing.T) {
 	}
 }
 
+// TestTimeoutForReleasesWithoutTraffic: `set timeout --for 200ms` must
+// answer the held request when the timer fires, with no other call.
+func TestTimeoutForReleasesWithoutTraffic(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer up.Close()
+	s, _ := startHTTP(t, up.URL, "")
+	s.SetFault(&Fault{Kind: "timeout", For: 200 * time.Millisecond})
+	start := time.Now()
+	resp, _, err := get(t, "http://"+s.Addr().String()+"/held")
+	if err != nil || resp.StatusCode != 503 {
+		t.Fatalf("held request: %v %v", resp, err)
+	}
+	if d := time.Since(start); d < 150*time.Millisecond || d > 1500*time.Millisecond {
+		t.Fatalf("released after %s, want ~200ms", d)
+	}
+	if s.fault.Load() != nil {
+		t.Fatal("fault still set after --for")
+	}
+}
+
+// TestBodyRedaction: credential values in JSON and form bodies are never
+// stored, the key names are, and such records are skipped by Replay.
+func TestBodyRedaction(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "b.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	base := "http://" + s.Addr().String()
+	post := func(path, ct, body string) {
+		resp, err := http.Post(base+path, ct, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post("/login", "application/json; charset=utf-8", `{"user":"lukas","Password":"hunter2","nested":{"password":"deep"}}`)
+	post("/oauth/token", "application/x-www-form-urlencoded", "grant_type=client_credentials&client_id=app&client_secret=s3cret")
+	post("/notes", "text/plain", "password=not-a-form")
+	raw, _ := os.ReadFile(rec)
+	if bytes.Contains(raw, []byte("hunter2")) || bytes.Contains(raw, []byte("s3cret")) {
+		t.Fatalf("credential value stored:\n%s", raw)
+	}
+	recs, _ := ReadRecords(rec)
+	if len(recs) != 3 {
+		t.Fatalf("records = %d", len(recs))
+	}
+	if got := recs[0].BodyRedacted; len(got) != 1 || got[0] != "Password" || !bytes.Contains(recs[0].Body, []byte(`"user":"lukas"`)) || !bytes.Contains(recs[0].Body, []byte(`"password":"deep"`)) {
+		t.Fatalf("json redaction (one level deep, other keys kept): %v %s", got, recs[0].Body)
+	}
+	if got := recs[1].BodyRedacted; len(got) != 1 || got[0] != "client_secret" || string(recs[1].Body) != "grant_type=client_credentials&client_id=app&client_secret=%5Bredacted%5D" {
+		t.Fatalf("form redaction: %v %s", got, recs[1].Body)
+	}
+	if recs[2].BodyRedacted != nil || string(recs[2].Body) != "password=not-a-form" {
+		t.Fatalf("text/plain must be stored as-is: %+v", recs[2])
+	}
+	id, _ := ParseIdentity("none")
+	rep, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}, Mutations: true})
+	if err != nil || rep.Checked != 1 || len(rep.Skipped) != 2 || rep.Skipped[0].Reason != "body carried credentials (redacted)" {
+		t.Fatalf("replay must skip redacted bodies: %+v %v", rep, err)
+	}
+}
+
+// TestReplayKeepsEscapedPath: /files/a%3Fb must not be rebuilt as /files/a?b.
+func TestReplayKeepsEscapedPath(t *testing.T) {
+	var targets []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targets = append(targets, r.URL.RequestURI())
+	}))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "p.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	if _, _, err := get(t, "http://"+s.Addr().String()+"/files/a%3Fb?id=1"); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := ReadRecords(rec)
+	if len(recs) != 1 || recs[0].Path != "/files/a?b" || recs[0].RawPath != "/files/a%3Fb" {
+		t.Fatalf("record paths: %+v", recs)
+	}
+	targets = nil
+	id, _ := ParseIdentity("none")
+	if _, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}, Only: "/files/*"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0] != "/files/a%3Fb?id=1" {
+		t.Fatalf("replay target = %v", targets)
+	}
+}
+
+// TestSlowAbortsWhenClientLeaves: a throttled response to a client that
+// hangs up must not keep the handler (and the upstream copy) alive.
+func TestSlowAbortsWhenClientLeaves(t *testing.T) {
+	big := bytes.Repeat([]byte("x"), 200*1024)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(big) }))
+	defer up.Close()
+	s, _ := startHTTP(t, up.URL, "")
+	s.SetFault(&Fault{Kind: "slow", Bytes: 1000}) // 200 KiB at 1 KB/s: ~200 s if not aborted
+	c, err := net.Dial("tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write([]byte("GET /big HTTP/1.1\r\nHost: x\r\n\r\n"))
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	_, _ = c.Read(make([]byte, 64)) // headers + first chunk arrived: the copy is running
+	_ = c.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for s.inFlight.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s.inFlight.Load() != 0 {
+		t.Fatal("slow handler still running after the client left")
+	}
+}
+
 // TestTailLines pins the bounded tail read across chunk boundaries.
 func TestTailLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.log")

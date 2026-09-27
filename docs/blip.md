@@ -40,7 +40,8 @@ the active fault (and restarts `--after` counting); `ok` clears it.
 Rates are bits per second: `20kbps`, `1.5mbps`, `800bps`. Scoping:
 `--match` is a path glob where `*` also crosses `/` (http only), `--method`
 (http only), `--after N` skips the first N matching requests/connections,
-`--for <dur>` auto-clears (logged as `FAULT_EXPIRED`), `--rate p` applies
+`--for <dur>` auto-clears on a timer — a held `timeout` is released even
+with no further traffic (logged as `FAULT_EXPIRED`), `--rate p` applies
 with probability p (default 1). A fault swap is an atomic pointer store, safe
 under concurrent requests.
 
@@ -54,8 +55,12 @@ headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`,
 `X-Auth-Token`) and credential query keys (`access_token`, `X-Amz-Signature`, `X-Amz-Security-Token`, `X-Amz-Credential`, `X-Goog-Signature`, `X-Goog-Credential`,
 `sig`, `signature`, `token`, `api_key`, `apikey`, `key`, `auth`, `jwt`,
 `session`; case-insensitive) are stripped at record time and never re-added by
-a replay; only their NAMES are kept and `status` lists them. `status` shows
-`recorded=N`.
+a replay; only their NAMES are kept and `status` lists them. JSON (one level)
+and form bodies get credential keys (`password`, `secret`, `token`,
+`client_secret`, `otp`, `code`, …) replaced by `[redacted]`; such a record
+lists them in `body_redacted` and is skipped by `authz`. Paths are stored
+decoded (for `--only`) and raw (`raw_path`, what a replay sends). `status`
+shows `recorded=N`.
 
 `authz --as <identity>` replays each distinct recorded request straight at
 the upstream (not through the fault layer) with the identity substituted and
@@ -96,7 +101,7 @@ fact, then diagnostics as `CODE: detail — fix` and the `next` commands.
 Exit 0 ok, 1 infra, 2 diagnostics present. Diagnostic codes are the closed
 enum in `internal/blip/blip.go`: `NOT_RUNNING`, `STALE_STATE`,
 `ARGS_DIFFER`, `ALREADY_UP`, `UPSTREAM_INVALID`, `LISTEN_INVALID`,
-`FAULT_INVALID`, `HTTP_ONLY`, `NAME_INVALID`, `START_FAILED`,
+`FAULT_INVALID`, `HTTP_ONLY`, `NAME_INVALID`, `STARTUP_TIMEOUT`,
 `NOTHING_RECORDED`, `IDENTITY_INVALID`, `AUTHZ_LEAK_CANDIDATES`,
 `FAULT_EXPIRED`.
 

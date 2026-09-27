@@ -3,6 +3,7 @@ package blip
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -78,6 +79,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "slow":
 		sw.bytesPerSec = fs.Bytes
+		sw.ctx = r.Context()
 		s.proxy.ServeHTTP(sw, r)
 	default:
 		s.proxy.ServeHTTP(sw, r)
@@ -119,6 +121,7 @@ type statusWriter struct {
 	status      int
 	bytes       int64
 	bytesPerSec int64
+	ctx         context.Context // slow: a gone client aborts the throttled copy
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -151,7 +154,13 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 			f.Flush()
 		}
 		p = p[n:]
-		time.Sleep(time.Duration(float64(m) / float64(w.bytesPerSec) * float64(time.Second)))
+		pause := time.NewTimer(time.Duration(float64(m) / float64(w.bytesPerSec) * float64(time.Second)))
+		select {
+		case <-pause.C:
+		case <-w.ctx.Done():
+			pause.Stop()
+			return written, w.ctx.Err()
+		}
 	}
 	return written, nil
 }

@@ -70,9 +70,10 @@ type Server struct {
 	startedAt time.Time
 	pid       int
 
-	fault  atomic.Pointer[faultState]
-	holdMu sync.Mutex
-	hold   chan struct{} // closed on every fault change: releases `timeout`
+	fault    atomic.Pointer[faultState]
+	holdMu   sync.Mutex
+	hold     chan struct{} // closed on every fault change: releases `timeout`
+	forTimer *time.Timer   // fires the --for expiry even with no traffic
 
 	requests, faulted, inFlight, connections atomic.Int64
 
@@ -127,6 +128,11 @@ func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 
 // Close stops listening and closes every connection.
 func (s *Server) Close() error {
+	s.holdMu.Lock()
+	if s.forTimer != nil {
+		s.forTimer.Stop()
+	}
+	s.holdMu.Unlock()
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -153,9 +159,37 @@ func (s *Server) SetFault(f *Fault) {
 		fs = &faultState{Fault: cp}
 	}
 	s.holdMu.Lock()
+	if s.forTimer != nil {
+		s.forTimer.Stop()
+		s.forTimer = nil
+	}
 	s.fault.Store(fs)
 	s.rotateHoldLocked()
+	if fs != nil && fs.For > 0 {
+		// A held `timeout` must be released when --for elapses even if no
+		// request or status call ever arrives to observe the expiry.
+		s.forTimer = time.AfterFunc(time.Until(fs.SetAt.Add(fs.For)), func() { s.expire(fs) })
+	}
 	s.holdMu.Unlock()
+	s.changed()
+}
+
+// expire clears fs if it is still the active fault (a later `set`/`ok`
+// makes it a no-op) and releases whatever it held.
+func (s *Server) expire(fs *faultState) {
+	s.holdMu.Lock()
+	if s.fault.Load() != fs {
+		s.holdMu.Unlock()
+		return
+	}
+	s.fault.Store(nil)
+	s.rotateHoldLocked()
+	if s.forTimer != nil {
+		s.forTimer.Stop()
+		s.forTimer = nil
+	}
+	s.holdMu.Unlock()
+	s.logf("fault %s expired (--for %s)", fs.Kind, fs.For)
 	s.changed()
 }
 
@@ -212,11 +246,8 @@ func (s *Server) snapshot(now time.Time) (*faultState, <-chan struct{}) {
 	s.holdMu.Lock()
 	fs := s.fault.Load()
 	if fs != nil && fs.expired(now) {
-		s.fault.Store(nil)
-		s.rotateHoldLocked()
 		s.holdMu.Unlock()
-		s.logf("fault %s expired (--for %s)", fs.Kind, fs.For)
-		s.changed()
+		s.expire(fs) // the timer normally beats us here; this covers clock skew
 		return nil, s.holdCh()
 	}
 	ch := s.hold

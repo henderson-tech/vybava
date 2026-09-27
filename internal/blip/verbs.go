@@ -146,10 +146,10 @@ func (t *Tool) Up(name, listen, to string) (Result, error) {
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
 	}
-	_ = cmd.Process.Release()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if live, err := dial(p.Sock).status(); err == nil {
+			_ = cmd.Process.Release()
 			data := upData{Config: cfg, URL: listenURL(mode, listen), EnvHint: envHint(mode, listen), PID: live.PID, State: p.State, Log: p.Log}
 			return Result{Data: data, Lines: []string{
 				fmt.Sprintf("%s up: %s %s → %s (pid %d)", name, mode, data.URL, upstream, live.PID),
@@ -158,8 +158,13 @@ func (t *Tool) Up(name, listen, to string) (Result, error) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	_ = os.Remove(p.State)
-	return Result{}, diag(DiagStartFailed, "daemon did not answer within 3s; last log lines: "+lastLines(p.Log, 3), "blip up "+name+" --listen "+listen+" --to "+to)
+	// Never orphan a child that binds late: kill it, reap it, then clean.
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+	for _, f := range []string{p.State, p.Sock} {
+		_ = os.Remove(f)
+	}
+	return Result{}, diag(DiagStartupTimeout, "daemon did not answer within 3s and was terminated; last log lines: "+lastLines(p.Log, 3), "blip up "+name+" --listen "+listen+" --to "+to)
 }
 
 func lastLines(path string, n int) string {

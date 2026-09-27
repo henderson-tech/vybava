@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -178,7 +179,17 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body truncated at record time"})
 			continue
 		}
-		target := strings.TrimSuffix(upstream, "/") + rec.Path
+		if len(rec.BodyRedacted) > 0 {
+			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body carried credentials (redacted)"})
+			continue
+		}
+		// Replay the path as it was sent: rec.Path is decoded (for --only),
+		// so /files/a%3Fb must not be rebuilt as /files/a?b.
+		wirePath := rec.RawPath
+		if wirePath == "" {
+			wirePath = (&url.URL{Path: rec.Path}).EscapedPath()
+		}
+		target := strings.TrimSuffix(upstream, "/") + wirePath
 		if rec.Query != "" {
 			target += "?" + rec.Query
 		}

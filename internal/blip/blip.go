@@ -58,9 +58,9 @@ const (
 	DiagHTTPOnly = "HTTP_ONLY"
 	// DiagNameInvalid: the proxy name is not [a-z0-9-].
 	DiagNameInvalid = "NAME_INVALID"
-	// DiagStartFailed: the daemon did not answer within the start window;
-	// detail carries the last log lines.
-	DiagStartFailed = "START_FAILED"
+	// DiagStartupTimeout: the daemon did not answer within the start window
+	// and was terminated and reaped; detail carries the last log lines.
+	DiagStartupTimeout = "STARTUP_TIMEOUT"
 	// DiagNothingRecorded: authz asked before any request was recorded.
 	DiagNothingRecorded = "NOTHING_RECORDED"
 	// DiagIdentityInvalid: --as is not one of none|header:|cookie:|env:.
