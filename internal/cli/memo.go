@@ -156,6 +156,14 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		}
 		now := time.Now()
 		if noteText != "" {
+			// The ledger judges the row first (link forms, supersedes/retires
+			// targets, the home's types); the note is written only for a row
+			// it will take, so a refusal never strands a numbered note.
+			probe := memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence,
+				Links: append(append([]string{}, links...), "[[notes/"+memo.NoteSlug(typ, topic)+"]]")}
+			if d := l.Check(probe); d != nil {
+				return finish(s, nil, nil, fixes, d)
+			}
 			slug, err := memo.WriteNote(homes[0].Path, typ, topic, sentence, noteText, now)
 			if err != nil {
 				return finish(s, nil, nil, fixes, err)

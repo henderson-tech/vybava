@@ -440,18 +440,31 @@ func (l *Ledger) Validate(r Row) *Diag {
 }
 
 // Append validates and appends one row, returning it with its id assigned.
-func (l *Ledger) Append(r Row) (Row, *Diag, error) {
-	r.ID = l.NextID()
+// Check validates a row exactly as Append would — sentence, link forms,
+// then the ledger's own rules (type of this home, supersedes/retires
+// targets) — without writing it. `memo add --note` checks first and writes
+// the note only for a row the ledger will take, so a refusal never leaves an
+// orphaned note behind. r.ID and r.Team are filled as Append fills them.
+func (l *Ledger) Check(r Row) *Diag {
+	if r.ID == 0 {
+		r.ID = l.NextID()
+	}
 	r.Team = l.Kind == KindTeam
 	if d := ValidateSentence(r.Sentence); d != nil {
-		return Row{}, d, nil
+		return d
 	}
 	for _, link := range r.Links {
 		if d := validateLink(link); d != nil {
-			return Row{}, d, nil
+			return d
 		}
 	}
-	if d := l.Validate(r); d != nil {
+	return l.Validate(r)
+}
+
+func (l *Ledger) Append(r Row) (Row, *Diag, error) {
+	r.ID = l.NextID()
+	r.Team = l.Kind == KindTeam
+	if d := l.Check(r); d != nil {
 		return Row{}, d, nil
 	}
 	if err := appendLine(l.Path, r.Format()); err != nil {
