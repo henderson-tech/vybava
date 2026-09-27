@@ -104,6 +104,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "tokentime" {
 		return rt.tokentimeApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "readeff" {
+		return rt.readeffApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "worktime" {
 		return rt.worktimeApplet(), nil
 	}
@@ -201,6 +204,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.codexsyncCommand("codexsync"),
 		rt.codexusageCommand("codexusage"),
 		rt.tokentimeCommand("tokentime"),
+		rt.readeffCommand("readeff"),
 		rt.worktimeCommand("worktime"),
 		rt.reconcileCommand("reconcile"),
 		rt.menubarCommand("menubar-doctor"),

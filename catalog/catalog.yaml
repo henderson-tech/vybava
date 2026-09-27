@@ -115,6 +115,12 @@ items:
     description: Where your AI tokens went — Claude Code transcripts and Codex rollouts indexed incrementally into permanent hour × project × model buckets (worktrees fold into their repo), rolled up by day, hour, project and model with an API-equivalent USD value.
     applet: tokentime
 
+  - id: readeff
+    kind: applet
+    status: experimental
+    description: How agents navigate code — what Claude Code and Codex reads and searches put into context against what they changed, with re-reads, whole-file reads of big files, search hit rates and the most-read files, per repository, session and file. Scans on demand; stores nothing.
+    applet: readeff
+
   - id: repolicy
     kind: applet
     status: experimental
@@ -419,6 +425,7 @@ groups:
       - codexsync
       - codexusage
       - tokentime
+      - readeff
       - repolicy
       - skipci
       - redact
@@ -520,6 +527,7 @@ groups:
       - codexsync
       - codexusage
       - tokentime
+      - readeff
       - repolicy
       - skipci
       - redact

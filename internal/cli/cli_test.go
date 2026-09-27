@@ -25,6 +25,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"merge-assist", "merge-assist"},
 		{"memo", "memo"},
 		{"tokentime", "tokentime"},
+		{"readeff", "readeff"},
 		{"vpn", "vpn"},
 		{"redact", "redact"},
 		{"blip", "blip"},

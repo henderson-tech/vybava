@@ -1,6 +1,10 @@
 package claudeguards
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
+)
 
 const mainClone = "/Users/u/Work/Projects/FixIt-Technologies/FixIt"
 
@@ -122,7 +126,7 @@ func TestSegments(t *testing.T) {
 	// `$(e)` yields the command inside the substitution, not `e)` — the stray
 	// paren is an artifact of splitting on `$(`, and leaving it attached made
 	// the last field of every subshell unrecognisable to the rules.
-	got := segments("a && b; c | d $(e) `f`\ng")
+	got := shellseg.Segments("a && b; c | d $(e) `f`\ng")
 	want := []string{"a", "b", "c", "d", "e", "f", "g"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -167,7 +171,7 @@ func TestSubshellParensDoNotHideTheCommand(t *testing.T) {
 		}
 	}
 	// A legitimate trailing paren inside an argument is left alone.
-	if got := segments(`grep "f(x)" file.go`); len(got) != 1 || got[0] != `grep "f(x)" file.go` {
+	if got := shellseg.Segments(`grep "f(x)" file.go`); len(got) != 1 || got[0] != `grep "f(x)" file.go` {
 		t.Fatalf("balanced parens must survive: %q", got)
 	}
 }

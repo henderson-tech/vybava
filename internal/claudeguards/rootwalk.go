@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,11 +44,11 @@ var fdValueFlags = map[string]bool{
 }
 
 // chainCommand returns the argv of the first command in a launcher chain whose
-// word is one of names, or nil. Like commandChainHas, it only follows a real
+// word is one of names, or nil. Like shellseg.ChainHas, it only follows a real
 // wrapper chain (`sudo find /`, `timeout 30 find /`, `nice -n 5 bfs /`); a
 // quoted mention is one field and never matches.
 func chainCommand(seg string, names map[string]bool) []string {
-	toks := shellFields(trimAssignments(seg))
+	toks := shellseg.Fields(shellseg.TrimAssignments(seg))
 	for i, t := range toks {
 		if j := strings.LastIndexByte(t, '/'); j >= 0 {
 			t = t[j+1:]
@@ -54,7 +56,7 @@ func chainCommand(seg string, names map[string]bool) []string {
 		if names[t] {
 			return append([]string{t}, toks[i+1:]...)
 		}
-		if i == 0 && !commandRunners[t] {
+		if i == 0 && !shellseg.Runners[t] {
 			return nil
 		}
 	}
@@ -160,7 +162,7 @@ func unboundedRoot(root, home string) bool {
 // from the home lookup - unit-testable with an explicit cwd.
 func rootWalkMatch(cmd, cwd string) (command, root string) {
 	home, _ := os.UserHomeDir()
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}

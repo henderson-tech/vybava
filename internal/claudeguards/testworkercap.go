@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,7 @@ func testWorkerCapMatch(cmd string, max int) *testWorkerMatch {
 	for n := range packageLaunchers {
 		names[n] = true
 	}
-	for _, seg := range localSegments(cmd) {
+	for _, seg := range shellseg.LocalSegments(cmd) {
 		if textOnly(seg) {
 			continue
 		}
