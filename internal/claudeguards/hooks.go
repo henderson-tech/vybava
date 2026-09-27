@@ -422,6 +422,11 @@ func writeSettings(path string, top map[string]json.RawMessage, groups map[strin
 		mode, existed = fi.Mode().Perm(), true
 	}
 	tmp := path + ".claude-guards.tmp"
+	// WriteFile keeps an existing file's mode: a temp file a failed run left
+	// behind must not decide this one's.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	if err := os.WriteFile(tmp, []byte(b.String()), mode); err != nil {
 		return err
 	}
