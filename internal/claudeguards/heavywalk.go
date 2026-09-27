@@ -30,12 +30,16 @@ var heavyDirs = map[string]bool{
 	".next": true, ".turbo": true, ".expo": true, ".gradle": true, ".cache": true,
 }
 
-// heavyProbeDepth and heavyProbeDirs bound the probe: node_modules sits at
-// depth 1 of a repo and depth 3 of ~/Work/Projects, and a tree that holds none
-// within the first dirs read is left alone.
+// heavyProbeDepth, heavyProbeDirs and heavyProbeEntries bound the probe:
+// node_modules sits at depth 1 of a repo and depth 3 of ~/Work/Projects, and a
+// tree that holds none within the first dirs and entries read is left alone.
+// Entries are read in batches, so one huge flat directory costs a batch, not
+// its whole listing.
 const (
-	heavyProbeDepth = 4
-	heavyProbeDirs  = 1500
+	heavyProbeDepth   = 4
+	heavyProbeDirs    = 1500
+	heavyProbeEntries = 50000
+	heavyProbeBatch   = 512
 )
 
 // fdNoIgnore are the fd flags that turn its .gitignore handling off, which
@@ -45,9 +49,10 @@ var fdNoIgnore = map[string]bool{
 }
 
 // pruned reports whether the walker's own arguments keep it out of a
-// directory named name: find's -prune or bfs's -exclude next to a pattern
-// naming it, or fd's --exclude. `-not -path '*/node_modules/*'` filters the
-// output but still descends, so it does not count.
+// directory named name: the test find's -prune closes (`-name X -prune`,
+// `\( -name X -o -name Y \) -prune`), the one bfs's -exclude opens, or fd's
+// --exclude. `-not -path '*/node_modules/*'` filters the output but still
+// descends, and so does a prune of some other directory: neither counts.
 func pruned(argv []string, name string) bool {
 	if argv[0] == "fd" {
 		for i, a := range argv {
@@ -60,12 +65,71 @@ func pruned(argv []string, name string) bool {
 		}
 		return false
 	}
-	var prunes, names bool
-	for _, a := range argv[1:] {
-		prunes = prunes || a == "-prune" || a == "-exclude"
-		names = names || strings.Contains(a, name)
+	for i, a := range argv {
+		var test []string
+		switch a {
+		case "-prune":
+			test = primaryBefore(argv[:i])
+		case "-exclude":
+			test = primaryAfter(argv[i+1:])
+		}
+		for _, t := range test {
+			if strings.Contains(t, name) {
+				return true
+			}
+		}
 	}
-	return prunes && names
+	return false
+}
+
+// primaryBefore returns the test that ends args: a parenthesised group, or
+// the last primary and its operand (`-name X`).
+func primaryBefore(args []string) []string {
+	n := len(args)
+	if n == 0 {
+		return nil
+	}
+	if paren(args[n-1]) == ")" {
+		for i, depth := n-1, 0; i >= 0; i-- {
+			switch paren(args[i]) {
+			case ")":
+				depth++
+			case "(":
+				if depth--; depth == 0 {
+					return args[i:]
+				}
+			}
+		}
+		return nil
+	}
+	if n >= 2 {
+		return args[n-2:]
+	}
+	return args
+}
+
+// primaryAfter is primaryBefore's mirror for the test that starts args.
+func primaryAfter(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	if paren(args[0]) == "(" {
+		for i, depth := 0, 0; i < len(args); i++ {
+			switch paren(args[i]) {
+			case "(":
+				depth++
+			case ")":
+				if depth--; depth == 0 {
+					return args[:i+1]
+				}
+			}
+		}
+		return nil
+	}
+	if len(args) >= 2 {
+		return args[:2]
+	}
+	return args
 }
 
 // resolveWalkRoot turns a root argument into an absolute path, or "" when it
@@ -122,30 +186,39 @@ func heavyUnder(root string, argv []string) string {
 		path  string
 		depth int
 	}
-	queue, read := []dir{{root, 0}}, 0
-	for len(queue) > 0 && read < heavyProbeDirs {
+	queue, read, seen := []dir{{root, 0}}, 0, 0
+	for len(queue) > 0 && read < heavyProbeDirs && seen < heavyProbeEntries {
 		d := queue[0]
 		queue = queue[1:]
-		entries, err := os.ReadDir(d.path)
 		read++
+		f, err := os.Open(d.path)
 		if err != nil {
 			continue
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name, path := e.Name(), filepath.Join(d.path, e.Name())
-			if heavyDirs[name] || (gitHeavy && name == ".git") {
-				if !pruned(argv, name) {
-					return path
+		for seen < heavyProbeEntries {
+			entries, err := f.ReadDir(heavyProbeBatch)
+			seen += len(entries)
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
 				}
-				continue
+				name, path := e.Name(), filepath.Join(d.path, e.Name())
+				if heavyDirs[name] || (gitHeavy && name == ".git") {
+					if !pruned(argv, name) {
+						f.Close()
+						return path
+					}
+					continue
+				}
+				if d.depth+1 < heavyProbeDepth {
+					queue = append(queue, dir{path, d.depth + 1})
+				}
 			}
-			if d.depth+1 < heavyProbeDepth {
-				queue = append(queue, dir{path, d.depth + 1})
+			if err != nil {
+				break
 			}
 		}
+		f.Close()
 	}
 	return ""
 }
@@ -224,4 +297,10 @@ func guardHeavyWalk(in *HookInput) *Denial {
 	// No escape hatch: a prune, a depth cap or a root inside the heavy tree is
 	// the sanctioned form, and each is cheaper than the blocked walk.
 	return deny("context:heavy-walk", fmt.Sprintf(heavyWalkMsg, command, heavy, filepath.Base(heavy)), "")
+}
+
+// paren reads a find grouping token whether or not the shell escape survived
+// tokenisation: `\(` and `(` group alike.
+func paren(tok string) string {
+	return strings.TrimPrefix(tok, `\`)
 }

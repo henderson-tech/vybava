@@ -286,6 +286,10 @@ func DoctorCodex(path string, fix bool, stdout, stderr io.Writer) error {
 	}
 	if target, err := filepath.EvalSymlinks(path); err == nil {
 		path = target
+	} else if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		// A dangling link: writing here would replace the link with a file.
+		fmt.Fprintf(stderr, "claude-guards doctor: cannot check Codex hooks: %s is a symlink to a missing file\n", path)
+		return nil
 	}
 	top, groups, err := readSettings(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -411,8 +415,20 @@ func writeSettings(path string, top map[string]json.RawMessage, groups map[strin
 		b.WriteString("\n")
 	}
 	b.WriteString("}\n")
+	// The rewrite keeps the file's own mode: a private (0600) hooks file must
+	// not come back world-readable.
+	mode := fs.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
 	tmp := path + ".claude-guards.tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(b.String()), mode); err != nil {
+		return err
+	}
+	// WriteFile's mode passes through the umask; a file that existed keeps
+	// exactly the bits it had.
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

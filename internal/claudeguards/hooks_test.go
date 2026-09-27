@@ -290,7 +290,7 @@ func TestDoctorCodexAppendsThroughSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "hooks.json")
 	existing := `{"hooks":{"PreToolUse":[{"matcher":"apply_patch|Edit|Write","hooks":[{"type":"command","command":"memorylint hook","statusMessage":"Checking…"}]},{"matcher":"Bash","hooks":[{"type":"command","command":"e2e-gate"}]}]}}`
-	if err := os.WriteFile(target, []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "profile-hooks.json")
@@ -303,6 +303,9 @@ func TestDoctorCodexAppendsThroughSymlink(t *testing.T) {
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the profile link must survive the fix: %v", err)
+	}
+	if fi, err := os.Stat(target); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("a private hooks file must stay 0600: %v", fi.Mode())
 	}
 	_, groups, err := readSettings(target)
 	if err != nil {
@@ -322,5 +325,23 @@ func TestDoctorCodexAppendsThroughSymlink(t *testing.T) {
 	out.Reset()
 	if err := DoctorCodex(link, false, &out, &errOut); err != nil || out.Len() != 0 {
 		t.Errorf("a wired file reports nothing, got %q (%v)", out.String(), err)
+	}
+}
+
+// A dangling hooks.json link is reported, never replaced by a regular file.
+func TestDoctorCodexKeepsDanglingSymlink(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "hooks.json")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone.json"), link); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := DoctorCodex(link, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the dangling link must stay a link: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "symlink to a missing file") {
+		t.Errorf("expected a warning, got %q", errOut.String())
 	}
 }
