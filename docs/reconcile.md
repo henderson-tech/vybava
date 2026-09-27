@@ -130,8 +130,12 @@ rewrite (port of produlinka-infra `roll-notes.sh` + `map-paths.sh` `roll_note`):
 `{params}` in `restart` is the changed restart-only settings, sorted. A line
 the grammar cannot parse counts as a change on its own, so a real edit never
 passes as comment-only; a comment-only edit prints nothing and the file stays
-claimed. A claimed file drops its app from `ROLL MANUALLY` only when every file
-the tick converged for that app is claimed. Steps print one log line each
+claimed. Two edge cases are stricter than `roll-notes.sh`: a quoted
+postgresql value ends at its closing quote (a quote in a trailing comment never
+extends it), and a quoted pgbouncer key (`'…'`, or `"…"` with `""` escapes) is
+unquoted before classifying. A claimed file drops its app from
+`ROLL MANUALLY` only when every file the tick converged for that app is
+claimed. Steps print one log line each
 (after the `ROLL MANUALLY` line), join the digest under "Config converged that
 `docker compose up -d` does not apply — run the step:", and land in
 `roll_steps` (`--json`, `history.jsonl`, the page's history). `force` prints a

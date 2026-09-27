@@ -28,7 +28,7 @@ const (
 	GrammarPostgres Grammar = "postgresql"
 	// GrammarPgbouncer is pgbouncer.ini (libusual cfparser.c): only a line
 	// STARTING with `#` or `;` is a comment — a value runs to the end of the
-	// line, `#` included; keys may hold `-` / `*` or be quoted.
+	// line, `#` included; keys may hold `-` / `*` or be quoted ('…' / "…").
 	GrammarPgbouncer Grammar = "pgbouncer"
 	// GrammarRaw has no settings: every converge prints the reload step
 	// (pg_hba.conf, whose rules only a HUP applies).
@@ -176,7 +176,7 @@ func (r RollNote) note(before, after string) string {
 
 var (
 	iniSection   = regexp.MustCompile(`^[ \t\r\n\f\v]*\[[^\]]*\]`)
-	iniQuotedKey = regexp.MustCompile(`^'[^']+'`)
+	iniQuotedKey = regexp.MustCompile(`^('[^']+'|"(?:[^"]|"")+")`)
 	iniKey       = regexp.MustCompile(`^[A-Za-z0-9_.*-]+`)
 	pgKey        = regexp.MustCompile(`^[A-Za-z0-9_.]+`)
 	keySep       = regexp.MustCompile(`^[ \t\r\n\f\v]*=?[ \t\r\n\f\v]*`)
@@ -219,22 +219,59 @@ func confSettings(content string, g Grammar) map[string]string {
 		}
 		rest := keySep.ReplaceAllString(line[len(key):], "")
 		if ini {
+			key = unquoteKey(key)
 			if section == "pgbouncer:" {
 				key = strings.ToLower(key)
 			}
 			v[section+key] = rest
 			continue
 		}
-		// a quoted value runs to the LAST quote (escaped quotes inside it
-		// included); anything else ends at a # comment
-		if strings.HasPrefix(rest, "'") && strings.Contains(rest[1:], "'") {
-			rest = rest[:strings.LastIndex(rest, "'")+1]
+		// a quoted value ends at its closing quote; what follows it, and an
+		// unquoted value, ends at a # comment
+		if q, ok := pgQuoted(rest); ok {
+			rest = q + pgComment.ReplaceAllString(rest[len(q):], "")
 		} else {
 			rest = pgComment.ReplaceAllString(rest, "")
 		}
 		v[strings.ToLower(key)] = rest
 	}
 	return v
+}
+
+// pgQuoted returns the quoted value opening rest through its closing quote
+// (guc-file.l STRING: doubled and backslash-escaped quotes stay inside), so
+// a quote in a trailing comment never extends the value; ok=false when there
+// is none.
+func pgQuoted(rest string) (string, bool) {
+	if !strings.HasPrefix(rest, "'") {
+		return "", false
+	}
+	for i := 1; i < len(rest); i++ {
+		switch rest[i] {
+		case '\\':
+			i++
+		case '\'':
+			if i+1 < len(rest) && rest[i+1] == '\'' {
+				i++
+				continue
+			}
+			return rest[:i+1], true
+		}
+	}
+	return "", false
+}
+
+// unquoteKey strips a pgbouncer key's quotes ('…', or SQL-identifier "…" with
+// "" for a quote), so a quoted setting name classifies like the bare one.
+func unquoteKey(k string) string {
+	if len(k) < 2 || (k[0] != '\'' && k[0] != '"') || k[len(k)-1] != k[0] {
+		return k
+	}
+	inner := k[1 : len(k)-1]
+	if k[0] == '"' {
+		inner = strings.ReplaceAll(inner, `""`, `"`)
+	}
+	return inner
 }
 
 // changedSettings lists the keys added, removed or re-valued, byte-sorted.
