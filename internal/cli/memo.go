@@ -158,9 +158,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if noteText != "" {
 			// The ledger judges the row first (link forms, supersedes/retires
 			// targets, the home's types); the note is written only for a row
-			// it will take, so a refusal never strands a numbered note.
-			probe := memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence,
-				Links: append(append([]string{}, links...), "[[notes/"+memo.NoteSlug(typ, topic)+"]]")}
+			// it will take, so a refusal never strands a numbered note. The
+			// probe carries the caller's links only: Validate stats every note
+			// link, and the note does not exist yet — Append checks it again
+			// once it does.
+			probe := memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence, Links: links}
 			if d := l.Check(probe); d != nil {
 				return finish(s, nil, nil, fixes, d)
 			}
