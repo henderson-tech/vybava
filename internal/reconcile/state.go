@@ -182,6 +182,7 @@ type HistoryEntry struct {
 	Held        []string  `json:"held,omitempty"`
 	Errors      []Issue   `json:"errors,omitempty"`
 	RollNotes   []string  `json:"roll_manually,omitempty"`
+	RollSteps   []string  `json:"roll_steps,omitempty"`
 	SkippedApps []string  `json:"skipped_apps,omitempty"`
 	FailedHooks []string  `json:"failed_hooks,omitempty"`
 	Path        string    `json:"path,omitempty"` // force target

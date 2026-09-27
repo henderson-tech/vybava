@@ -44,6 +44,7 @@ type Result struct {
 	Held          []string `json:"held"`
 	SkippedApps   []string `json:"skipped_apps"`
 	RollNotes     []string `json:"roll_manually"`
+	RollSteps     []string `json:"roll_steps"` // exact steps of converged files a roll_notes arm claims
 	FailedHooks   []string `json:"failed_hooks"`
 	Errors        []Issue  `json:"errors"`
 	LastGood      string   `json:"last_good,omitempty"`
@@ -218,6 +219,7 @@ type sweep struct {
 	st        State
 	hooks     map[string]bool
 	preloaded map[string]bool
+	plain     map[string]bool // compose hooks with an unclaimed converged file: they owe ROLL MANUALLY
 	rbDir     string
 	nginxRB   []nginxRB
 	copyFail  bool
@@ -232,7 +234,7 @@ func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
 	}
 	res := Result{Action: action, Commit: head, CommitSubject: g.subject(head), Mode: mode,
 		Applied: []string{}, Pending: []string{}, Held: []string{}, SkippedApps: []string{},
-		RollNotes: []string{}, FailedHooks: []string{}, Errors: []Issue{}}
+		RollNotes: []string{}, RollSteps: []string{}, FailedHooks: []string{}, Errors: []Issue{}}
 	if statusOnly {
 		res.Mode = e.Mode()
 	}
@@ -245,13 +247,14 @@ func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
 		e.logErr("version: %s", mm)
 	}
 
-	sw := &sweep{e: e, mode: mode, status: statusOnly, st: st, hooks: map[string]bool{}, preloaded: map[string]bool{}, res: &res}
+	sw := &sweep{e: e, mode: mode, status: statusOnly, st: st, hooks: map[string]bool{}, preloaded: map[string]bool{}, plain: map[string]bool{}, res: &res}
 	if !statusOnly {
 		// a hook that failed on an earlier tick retries now, even with no new
 		// drift — applied.tsv already matches, so nothing else reschedules it
 		for _, h := range st.PendingHooks() {
 			sw.hooks[h] = true
 			sw.preloaded[h] = true
+			sw.plain[h] = true
 		}
 	}
 	files, err := g.lsFiles()
@@ -278,7 +281,7 @@ func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
 	}
 	entry := HistoryEntry{Time: e.now(), Action: action, Commit: head, Mode: mode, OK: ok,
 		Applied: res.Applied, Pending: res.Pending, Held: res.Held, Errors: res.Errors,
-		RollNotes: res.RollNotes, SkippedApps: res.SkippedApps, FailedHooks: res.FailedHooks,
+		RollNotes: res.RollNotes, RollSteps: res.RollSteps, SkippedApps: res.SkippedApps, FailedHooks: res.FailedHooks,
 		LastGood: res.LastGood, Pin: res.Pin}
 	if err := st.AppendHistory(entry); err != nil {
 		return res, err
@@ -355,6 +358,7 @@ func (s *sweep) file(rp string) {
 	liveSHA := fileSHA(t.Dest)
 
 	apply := func(label string) {
+		step := e.M.rollStepFor(rp, t.Dest, src) // live→repo, before the rewrite
 		if t.Hook == HookNginx && !s.snapshotNginx(rp, t.Dest) {
 			return // no snapshot, no overwrite: the transaction rolls back without it
 		}
@@ -372,6 +376,12 @@ func (s *sweep) file(rp string) {
 		s.res.Applied = append(s.res.Applied, label)
 		if k := hookKey(t); k != "" {
 			s.hooks[k] = true
+			if !step.claimed {
+				s.plain[k] = true
+			}
+		}
+		if step.note != "" {
+			s.res.RollSteps = append(s.res.RollSteps, step.note)
 		}
 	}
 
@@ -502,9 +512,9 @@ func (s *sweep) runHooks() {
 				} else {
 					e.log("hook: rolled %s (opt-in auto-roll)", app)
 				}
-			} else {
+			} else if s.plain[h] {
 				s.res.RollNotes = append(s.res.RollNotes, app)
-			}
+			} // else every converged file of the app is claimed: its RollSteps say what to run
 		}
 	}
 	if err := s.st.WritePendingHooks(s.res.FailedHooks); err != nil {
@@ -529,6 +539,11 @@ func (s *sweep) report() {
 	if len(r.RollNotes) > 0 {
 		e.log("compose converged, ROLL MANUALLY: %s ", strings.Join(r.RollNotes, " "))
 	}
+	// one line per claimed file; the parity script reads only the pending /
+	// HELD / ERRORS lines, so these never move its sets
+	for _, step := range r.RollSteps {
+		e.log("%s", step)
+	}
 	if len(r.SkippedApps) > 0 {
 		apps := append([]string(nil), r.SkippedApps...)
 		sort.Strings(apps)
@@ -552,6 +567,12 @@ func (e *Engine) digest(r *Result) string {
 		b.WriteString("Compose files converged — roll manually:\n")
 		for _, a := range r.RollNotes {
 			b.WriteString("  cd " + filepath.Join(e.M.AppsRoot, a) + " && docker compose up -d\n")
+		}
+	}
+	if len(r.RollSteps) > 0 {
+		b.WriteString("Config converged that `docker compose up -d` does not apply — run the step:\n")
+		for _, step := range r.RollSteps {
+			b.WriteString("  " + step + "\n")
 		}
 	}
 	if len(r.Errors) > 0 {
@@ -653,6 +674,7 @@ func (e *Engine) Force(rp string) error {
 		}
 		e.log("force: backed up live %s -> %s", t.Dest, bak)
 	}
+	step := e.M.rollStepFor(rp, t.Dest, src) // live→repo, before the rewrite
 	if err := applyFile(src, t.Dest); err != nil {
 		issue := classifyWriteError(rp, t.Dest, t.Owner, err)
 		return fail("force: %s", issue.Message)
@@ -660,7 +682,11 @@ func (e *Engine) Force(rp string) error {
 	repoSHA := fileSHA(src)
 	record := func() error { return st.RecordApplied(rp, repoSHA) }
 	history := func(ok bool, issues ...Issue) {
-		_ = st.AppendHistory(HistoryEntry{Time: e.now(), Action: "force", Path: rp, Mode: "converge", OK: ok, Errors: issues, Applied: []string{rp}})
+		h := HistoryEntry{Time: e.now(), Action: "force", Path: rp, Mode: "converge", OK: ok, Errors: issues, Applied: []string{rp}}
+		if ok && step.note != "" {
+			h.RollSteps = []string{step.note}
+		}
+		_ = st.AppendHistory(h)
 	}
 	switch t.Hook {
 	case HookNginx:
@@ -696,13 +722,18 @@ func (e *Engine) Force(rp string) error {
 		}
 		e.log("force: nginx tested + reloaded")
 	case HookCompose:
-		e.log("force: compose file applied — roll manually: cd %s && docker compose up -d", filepath.Join(e.M.AppsRoot, t.App))
+		if !step.claimed {
+			e.log("force: compose file applied — roll manually: cd %s && docker compose up -d", filepath.Join(e.M.AppsRoot, t.App))
+		}
 	}
 	if err := record(); err != nil {
 		return err
 	}
 	history(true)
 	e.log("force: applied %s -> %s", rp, t.Dest)
+	if step.note != "" {
+		e.log("force: %s", step.note)
+	}
 	return nil
 }
 

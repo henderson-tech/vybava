@@ -48,6 +48,10 @@ type Manifest struct {
 	Mappings []Mapping `yaml:"mappings" json:"mappings"`
 	// AutoRollApps opt into `docker compose up -d` after a compose converge.
 	AutoRollApps []string `yaml:"auto_roll_apps,omitempty" json:"auto_roll_apps,omitempty"`
+	// RollNotes claim converged files `docker compose up -d` does not apply
+	// (bind-mounted DB config) and name their exact step instead of the
+	// generic ROLL MANUALLY — rollnotes.go.
+	RollNotes []RollNote `yaml:"roll_notes,omitempty" json:"roll_notes,omitempty"`
 
 	Hooks  Hooks       `yaml:"hooks,omitempty" json:"hooks"`
 	Alerts []Alert     `yaml:"alerts,omitempty" json:"alerts,omitempty"`
@@ -254,6 +258,11 @@ func (m *Manifest) Finalize(base string) error {
 		}
 		if *mp.RequireLiveDir && mp.Hook != HookCompose {
 			return fmt.Errorf("mappings[%d]: require_live_dir needs hook: compose", i)
+		}
+	}
+	for i, r := range m.RollNotes {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("roll_notes[%d]: %w", i, err)
 		}
 	}
 	return nil

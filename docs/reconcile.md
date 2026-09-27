@@ -33,6 +33,7 @@ root). Unknown subcommands are rejected, never run.
 | committed symlink, symlinked destination component, write escaping the app dir | refused with a classified error |
 | nginx conf converged | `nginx -t` via the manifest hook; reload only on pass; **transactional** — every nginx file the tick touched is restored (and its applied record re-pointed) when the test or any copy fails |
 | compose file converged | file only + `ROLL MANUALLY: <app>`; `auto_roll_apps` opt-in runs `docker compose up -d` |
+| bind-mounted config converged (a `roll_notes` arm claims it: `postgresql.conf`, `pg_hba.conf`, `pgbouncer.ini`) | its exact step instead of `ROLL MANUALLY` — the `restart` text for a restart-only setting, `reload` otherwise, nothing for a comment-only edit (below) |
 | write refused (EACCES) | `permission` error naming the destination owner, the running user and the mapping's `owner` hint |
 | existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename |
 | mode = `report` (default) | computes + alerts everything, changes **nothing** on disk |
@@ -81,6 +82,11 @@ hooks:
     test:   [docker, compose, exec, -T, nginx, nginx, -t]
     reload: [docker, compose, exec, -T, nginx, nginx, -s, reload]
   compose: [docker, compose, up, -d]    # auto-roll command, run inside <apps_root>/<app>
+roll_notes:                             # ordered arms, first match wins (see "Roll notes")
+  - match: [apps/fixit-prod/postgresql.conf]
+    grammar: postgresql                 # postgresql | pgbouncer | raw
+    restart: "RESTART REQUIRED: fixit-prod postgres ({params}) — use /opt/scripts/pg-safe-restart.sh fixit-prod"
+    reload: "RELOAD postgres: docker kill -s HUP fixit-prod-postgres"
 alerts:
   - type: telegram                      # sources `lib` and calls notify_telegram
     lib: /opt/scripts/lib/telegram-notify.sh
@@ -103,6 +109,36 @@ ignored.
 The three real box manifests (ported from each repo's `map-paths.sh`) live in
 `internal/reconcile/testdata/manifests/{produlinka,devulinka,webulinka}.yaml`
 with a contract test each; the infra repos adopt them in their own PRs.
+
+## Roll notes
+
+`postgresql.conf`, `pg_hba.conf` and `pgbouncer.ini` are single-file bind
+mounts: `docker compose up -d` (the generic `ROLL MANUALLY` step) applies none
+of them — only a HUP or a restart does. On 2026-09-27 a
+`shared_preload_libraries` change got the generic line, a bare
+`docker compose restart postgres` followed, and PgBouncer's cached login
+failure stalled FixIt for 15 s. A `roll_notes` arm claims such a file and
+prints its exact step instead, classified from the live → repo diff before the
+rewrite (port of produlinka-infra `roll-notes.sh` + `map-paths.sh` `roll_note`):
+
+| `grammar` | reads the file as | `restart` when a changed setting is |
+|---|---|---|
+| `postgresql` | guc-file.l: `#` comments anywhere outside a quoted value, case-insensitive keys | postmaster-context (PostgreSQL 16 list + `pg_stat_statements.max`) |
+| `pgbouncer` | libusual cfparser: only a line starting with `#` / `;` is a comment (`#` inside a value is data), `* = …` and quoted keys, `[section]` scoped | a `[pgbouncer]` setting RELOAD ignores (1.25 `CF_NO_RELOAD`) |
+| `raw` | no settings — any converge | never: always `reload` |
+
+`{params}` in `restart` is the changed restart-only settings, sorted. A line
+the grammar cannot parse counts as a change on its own, so a real edit never
+passes as comment-only; a comment-only edit prints nothing and the file stays
+claimed. A claimed file drops its app from `ROLL MANUALLY` only when every file
+the tick converged for that app is claimed. Steps print one log line each
+(after the `ROLL MANUALLY` line), join the digest under "Config converged that
+`docker compose up -d` does not apply — run the step:", and land in
+`roll_steps` (`--json`, `history.jsonl`, the page's history). `force` prints a
+claimed file's step as `force: <step>`. The report-mode sweep (`status`, the
+parity script's input) computes none: pending / HELD / errors are unchanged.
+The parameter lists are per server major version — regenerate them on an
+upgrade (`SELECT name FROM pg_settings WHERE context = 'postmaster'`).
 
 ## State directory
 
