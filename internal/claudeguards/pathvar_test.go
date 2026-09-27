@@ -12,6 +12,7 @@ func TestPathVariable(t *testing.T) {
 		`path=$(git rev-parse --show-toplevel); ls "$path"`:                  true,
 		`cd /tmp && path=/tmp/x.log; tail -2 "$path"`:                        true,
 		`FOO=1 path=/tmp/x ls`:                                         true,
+		`FOO=1 path+=(/tmp/x) ls`:                                      true,
 		`local path=/tmp/x; ls`:                                        true,
 		`export path=/tmp/x; ls`:                                       true,
 		`(for path in a b; do echo $path; done)`:                       true,

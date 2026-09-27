@@ -22,6 +22,10 @@ import (
 // bare or behind local/export/declare/typeset (with their flags).
 var pathAssignRE = regexp.MustCompile(`^(?:(?:local|export|declare|typeset|readonly)[ \t]+(?:-[A-Za-z]+[ \t]+)*)?path(?:\+?=|[ \t]*$)`)
 
+// leadingAssignRE is one leading assignment word, `NAME=…` or `NAME+=…`
+// (shellseg.AssignPrefix knows only the former).
+var leadingAssignRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\+?=`)
+
 // shellKeywords open a compound command and are not the command word.
 var shellKeywords = map[string]bool{"while": true, "until": true, "if": true, "then": true, "else": true, "elif": true, "do": true, "{": true, "!": true, "time": true}
 
@@ -44,10 +48,10 @@ func pathVariableUse(cmd string) (string, bool) {
 		if pathAssignRE.MatchString(s) {
 			return seg, true
 		}
-		// `FOO=1 path=/tmp/x cmd`: every leading assignment binds, not only
-		// the first word.
+		// `FOO=1 path=/tmp/x cmd`, `FOO=1 path+=(/tmp) cmd`: every leading
+		// assignment binds, not only the first word, and `+=` is one too.
 		for _, w := range shellseg.Fields(s) {
-			if !shellseg.AssignPrefix.MatchString(w) {
+			if !leadingAssignRE.MatchString(w) {
 				break
 			}
 			if strings.HasPrefix(w, "path=") || strings.HasPrefix(w, "path+=") {
