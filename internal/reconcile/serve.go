@@ -284,7 +284,7 @@ var boxPage = template.Must(template.New("box").Funcs(pageFuncs).Parse(`<!doctyp
 <table><tr><th>when</th><th>action</th><th>commit</th><th>mode</th><th>result</th><th>detail</th></tr>
 {{range .History}}<tr><td>{{.Time.Format "01-02 15:04:05"}}</td><td>{{.Action}}{{if .Path}} <code>{{.Path}}</code>{{end}}</td><td><code>{{short .Commit}}</code></td><td>{{.Mode}}</td>
 <td>{{if .OK}}<span class="pill in-sync">ok</span>{{else}}<span class="pill errors">failed</span>{{end}}</td>
-<td class="muted">{{if .Applied}}applied {{len .Applied}} {{end}}{{if .Pending}}pending {{len .Pending}} {{end}}{{if .Held}}held {{len .Held}} {{end}}{{if .Errors}}errors {{len .Errors}} {{end}}{{if .RollNotes}}roll: {{range .RollNotes}}{{.}} {{end}}{{end}}</td></tr>{{end}}
+<td class="muted">{{if .Applied}}applied {{len .Applied}} {{end}}{{if .Pending}}pending {{len .Pending}} {{end}}{{if .Held}}held {{len .Held}} {{end}}{{if .Errors}}errors {{len .Errors}} {{end}}{{if .RollNotes}}roll: {{range .RollNotes}}{{.}} {{end}}{{end}}{{range .RollSteps}}<br><strong>{{.}}</strong>{{end}}</td></tr>{{end}}
 </table>`))
 
 var hubPage = template.Must(template.New("hub").Funcs(pageFuncs).Parse(`<!doctype html><meta charset="utf-8">
