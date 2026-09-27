@@ -44,6 +44,7 @@ func TestCodexExecCommands(t *testing.T) {
 		`  tools.exec_command({cmd:"sed -n '1,40p' a.go && echo \"done\"",workdir:"/repo",max_output_tokens:3000}),` + "\n" +
 		"  tools.exec_command({cmd:`rg -n foo`}),\n" +
 		"  tools.exec_command({cmd: built}),\n" +
+		"  tools.exec_command({cmd:`cat ${f}`}),\n" +
 		"  tools.apply_patch(`*** Begin Patch\n*** Update File: a.go\n-x\n+y\n*** End Patch`),\n" +
 		"]);"
 	cmds, patches := ResponseItem{Type: ItemCustomCall, Name: "exec", Input: js}.Commands()

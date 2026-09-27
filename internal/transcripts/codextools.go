@@ -249,6 +249,9 @@ func jsString(s string) (string, bool) {
 		c := s[i]
 		switch {
 		case c == q:
+			if q == '`' && strings.Contains(b.String(), "${") {
+				return "", false // interpolated: built at runtime, never guessed
+			}
 			return b.String(), true
 		case c == '\\' && i+1 < len(s):
 			i++
