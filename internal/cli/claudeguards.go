@@ -35,7 +35,8 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			"  PreToolUse mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.* → claude-guards browser\n" +
 			"  SessionStart → claude-guards doctor --fix · claude-guards weather --reap · claude-guards swarm-teardown --dead-only\n" +
 			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap · claude-guards redact-session\n" +
-			"`claude-guards hooks` prints this wiring as JSON; `doctor` checks the live file against it.\n" +
+			"  Codex (~/.codex/hooks.json): PreToolUse Bash|shell → claude-guards codex (the safety rules)\n" +
+			"`claude-guards hooks` prints this wiring as JSON; `doctor` checks the live files against it.\n" +
 			"A block prints its reason and the sanctioned alternative on stderr and exits 2.",
 	}
 	hook := func(name, short string, decide func(*claudeguards.HookInput) *claudeguards.Denial) *cobra.Command {
@@ -50,6 +51,11 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 				}
 				d := decide(in)
 				if d == nil {
+					// The budget context reads a Claude transcript; a Codex
+					// payload's transcript_path is a rollout.
+					if name == "codex" {
+						return nil
+					}
 					if context := claudeguards.BudgetContext(in); context != "" {
 						return json.NewEncoder(rt.stdout).Encode(map[string]map[string]string{
 							"hookSpecificOutput": map[string]string{"hookEventName": "PreToolUse", "additionalContext": context},
@@ -66,11 +72,12 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 	}
 	root.AddCommand(hook("bash", "PreToolUse:Bash — every command rule (stdin: hook JSON)", claudeguards.Bash))
 	root.AddCommand(hook("read", "PreToolUse:Read — raw .e2e PNGs, transcripts, over-budget reads (stdin: hook JSON)", claudeguards.Read))
+	root.AddCommand(hook("codex", "Codex PreToolUse:Bash|shell — the safety rules, without the Claude context-budget and /e2e ones (stdin: hook JSON)", claudeguards.Codex))
 	root.AddCommand(hook("browser", "PreToolUse:mcp__playwright__*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__* — this session's Onyx browser must be running (stdin: hook JSON)", claudeguards.Browser))
 
 	var cwd string
 	check := &cobra.Command{
-		Use:   "check <bash|read> <command-or-path>",
+		Use:   "check <bash|codex|read> <command-or-path>",
 		Short: "Evaluate the rules against a command or path without a hook payload",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,6 +88,9 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			case "bash":
 				in.ToolInput.Command = args[1]
 				d = claudeguards.Bash(in)
+			case "codex":
+				in.ToolInput.Command = args[1]
+				d = claudeguards.Codex(in)
 			case "read":
 				in.ToolInput.FilePath = args[1]
 				d = claudeguards.Read(in)
@@ -151,17 +161,21 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 	})
 
 	var doctorFix bool
-	var settingsPath string
+	var settingsPath, codexHooksPath string
 	doctor := &cobra.Command{
 		Use:   "doctor",
-		Short: "Verify ~/.claude/settings.json still carries every claude-guards hook (SessionStart); --fix re-inserts missing ones",
+		Short: "Verify ~/.claude/settings.json and Codex's hooks.json still carry every claude-guards hook (SessionStart); --fix re-inserts missing ones",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return claudeguards.Doctor(settingsPath, doctorFix, rt.stdout, rt.stderr)
+			if err := claudeguards.Doctor(settingsPath, doctorFix, rt.stdout, rt.stderr); err != nil {
+				return err
+			}
+			return claudeguards.DoctorCodex(codexHooksPath, doctorFix, rt.stdout, rt.stderr)
 		},
 	}
 	doctor.Flags().BoolVar(&doctorFix, "fix", false, "re-insert missing hook entries into settings.json (surgical merge, never a rewrite)")
 	doctor.Flags().StringVar(&settingsPath, "settings", "", "settings file to check (default ~/.claude/settings.json)")
+	doctor.Flags().StringVar(&codexHooksPath, "codex-hooks", "", "Codex hooks file to check (default $CODEX_HOME/hooks.json, skipped when that home does not exist)")
 	root.AddCommand(doctor)
 
 	root.AddCommand(&cobra.Command{

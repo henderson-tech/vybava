@@ -98,6 +98,22 @@ SessionEnd            claude-guards reap
 SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
+Codex speaks the same hook contract (`cwd` and `tool_input.command` on stdin,
+exit 2 blocks), so `doctor` also holds `$CODEX_HOME/hooks.json` (`~/.codex`,
+skipped when absent) to one entry:
+
+```text
+PreToolUse    Bash|shell    claude-guards codex   # destructive, secrets, simulator, machine,
+                                                  # root/heavy walk, prod-merge, commit-secrets
+```
+
+`codex` leaves out the context-budget rules (they read a Claude transcript) and
+the /e2e rules (a Claude skill's). The fix appends a new group and rewrites a
+symlinked hooks.json at its target (switcheroo's Codex homes link to
+`~/.codex/hooks.json`): Codex keys each hook's trust by its position, so no
+trusted hook moves, and Codex asks to trust the new one before it runs.
+`claude-guards check codex '<command>'` evaluates that subset.
+
 `claude-guards hooks` prints this wiring as JSON and `doctor` checks the live
 file against it; `doctor --fix` also removes wirings an older manifest
 installed (`retiredHooks` — the separate SessionStart `weather` and `reap`
@@ -161,13 +177,27 @@ context:*         inline python/node scripts that write files · cat/tee over an
                   locale catalog declared in vybava.config.ts (lok.catalogs) —
                   ranges included; the message points at lok get/grep/add ·
                   find/bfs/fd rooted at /, ~, /Users, /Users/<name>, /Volumes
-                  or /Library (or run there with no root) without -maxdepth
+                  or /Library (or run there with no root) without -maxdepth ·
+                  find/bfs (fd -u/-I) descending into an unpruned node_modules,
+                  build cache (.next, Pods, DerivedData, .turbo, .gradle, …)
+                  or, rooted above the repos, a nested .git
 ```
 
 The two `simulator:`/`context:` machine-health rules are incident-born
 (2026-09-19, the day a `bfs /` crawl plus a per-look Appium probe pushed the
 Mac to load 680). `context:root-walk` accepts a scoped root, `-maxdepth N`
 (`fd -d N`), and points a whole-disk name lookup at `mdfind -name`.
+`context:heavy-walk` is its sibling for walks that are not whole-disk (2026-09-27:
+a Codex session's `find ~/Work/Projects -path '*/.worktrees/*' -prune -o -name
+devbox.yaml -print` crawled every repo's node_modules for minutes; `rg --files
+-g devbox.yaml ~/Work/Projects` answers in ~2 s). find and bfs ignore
+.gitignore, so the rule probes the root breadth-first (depth 4, at most 1500
+directories and 50,000 entries read in batches, symlinks never followed) for a
+heavy directory the command does not `-prune` (`-exclude` for bfs, `-E` for
+fd); `-not -path` still descends and does not count, nor does a `-prune`
+closing some other test. A root inside a heavy directory, a `-maxdepth` and fd
+honouring .gitignore all pass; an undecided probe allows. The message points at
+`rg --files -g` and `git ls-files`.
 `simulator:appium-session-churn` reads the script the command would run and
 fires only when the file both imports `remote` from `webdriverio` and calls
 `deleteSession(`; every fresh XCUITest session relaunches WebDriverAgent
