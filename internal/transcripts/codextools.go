@@ -154,9 +154,13 @@ func parseExec(js string) (cmds []CodexCommand, patches []string) {
 // is not read.
 func jsLiteralRanges(js string) [][2]int {
 	var out [][2]int
+	var prev byte // the last code character before i, whitespace skipped
 	for i := 0; i < len(js); i++ {
 		end := -1
 		switch c := js[i]; {
+		case c == '/' && !strings.HasPrefix(js[i:], "//") && !strings.HasPrefix(js[i:], "/*") &&
+			(prev == 0 || strings.IndexByte("(,=:[!&|?{};+-*%<>~^", prev) >= 0):
+			end = regexEnd(js, i) // a `/` where a value starts opens a regex
 		case c == '/' && strings.HasPrefix(js[i:], "//"):
 			if end = strings.IndexByte(js[i:], '\n'); end < 0 {
 				end = len(js)
@@ -182,9 +186,37 @@ func jsLiteralRanges(js string) [][2]int {
 		if end >= 0 {
 			out = append(out, [2]int{i, end})
 			i = end - 1
+			prev = 'x' // a literal is a value
+		} else if !strings.ContainsRune(" \t\r\n", rune(js[i])) {
+			prev = js[i]
 		}
 	}
 	return out
+}
+
+// regexEnd returns the end of the regex literal opening at i (its flags
+// included), or -1 when the line ends first: then the `/` was division.
+func regexEnd(js string, i int) int {
+	inClass := false
+	for j := i + 1; j < len(js); j++ {
+		switch js[j] {
+		case '\\':
+			j++
+		case '\n':
+			return -1
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				for j++; j < len(js) && (js[j] >= 'a' && js[j] <= 'z'); j++ {
+				}
+				return j
+			}
+		}
+	}
+	return -1
 }
 
 func inRanges(pos int, ranges [][2]int) bool {

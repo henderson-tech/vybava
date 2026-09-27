@@ -39,6 +39,7 @@ func TestClaudeToolTraffic(t *testing.T) {
 func TestCodexExecCommands(t *testing.T) {
 	js := "// tools.exec_command({cmd:\"cat commented.go\"})\n" +
 		"const note = \"tools.exec_command({cmd:'cat quoted.go'})\";\n" +
+		"const p = /tools.exec_command({cmd:\"cat regex.go\"})/g;\n" +
 		"const r = await Promise.allSettled([\n" +
 		`  tools.exec_command({cmd:"sed -n '1,40p' a.go && echo \"done\"",workdir:"/repo",max_output_tokens:3000}),` + "\n" +
 		"  tools.exec_command({cmd:`rg -n foo`}),\n" +
