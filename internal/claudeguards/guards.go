@@ -44,8 +44,9 @@ func deny(rule, msg, escapeHatch string) *Denial {
 
 // Bash evaluates every PreToolUse:Bash rule in this order; the first match
 // wins, so an allowed call runs them all and the order only decides what a
-// denied call pays. It is not by cost: the first five rules do no I/O,
-// guardAppiumChurn is the first to load the repo config (memoized for the
+// denied call pays. It is not by cost: the first six rules do no I/O,
+// guardHeavyWalk reads a bounded slice of the tree only for an uncapped
+// find/bfs, guardAppiumChurn is the first to load the repo config (memoized for the
 // rest), guardMachineCap may fork `ps -axo`, and guardBudget and
 // guardContextBash read the transcript and files. prod-merge and
 // commit-secrets run last because they fork git and may call gh (prod-merge
@@ -58,6 +59,7 @@ func Bash(in *HookInput) *Denial {
 		guardSecretPrint,
 		guardHostInput,
 		guardRootWalk,
+		guardHeavyWalk,
 		guardAppiumChurn,
 		guardTestWorkerCap,
 		guardDevboxOnly,
@@ -66,6 +68,35 @@ func Bash(in *HookInput) *Denial {
 		guardBudget,
 		guardContextBash,
 		guardE2EScreenshot,
+		guardProdMerge,
+		guardCommitSecrets,
+	} {
+		if d := g(in); d != nil {
+			return d
+		}
+	}
+	return nil
+}
+
+// Codex evaluates the Bash rules a Codex session breaks things with as easily
+// as a Claude one: the hard bans, the secret dumps, the machine-load rules and
+// the merge and commit gates. Codex speaks the same hook contract (cwd and
+// tool_input.command on stdin, exit 2 blocks). The context-budget rules read a
+// Claude transcript and the /e2e rules a Claude skill, so they stay in Bash.
+func Codex(in *HookInput) *Denial {
+	for _, g := range []func(*HookInput) *Denial{
+		guardDestructive,
+		guardPluginCache,
+		guardEnvDump,
+		guardSecretPrint,
+		guardHostInput,
+		guardRootWalk,
+		guardHeavyWalk,
+		guardAppiumChurn,
+		guardTestWorkerCap,
+		guardDevboxOnly,
+		guardDevboxWhenWorkspace,
+		guardMachineCap,
 		guardProdMerge,
 		guardCommitSecrets,
 	} {

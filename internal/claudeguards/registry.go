@@ -46,6 +46,7 @@ var Rules = []Rule{
 	{"browser:screenshot-dir", "browser", eventBrowser, "a browser screenshot written anywhere but .vitrinka/mcp/", escapeNone},
 	{"commit-secrets", "commit-secrets", eventBash, "git commit when any change it could take (staged, unstaged, or untracked with git add) holds key files, secret-shaped lines or private infra strings", escapeCommit},
 	{"context:budget-read", "context", eventBoth, "a read above the remaining context budget", escapeDump},
+	{"context:heavy-walk", "context", eventBash, "find/bfs (or fd -u/-I) descending into an unpruned node_modules, build cache or, above the repos, a nested .git", escapeNone},
 	{"context:heredoc-overwrite", "context", eventBash, "cat/tee heredoc over an existing file instead of Edit", escapeShellEdit},
 	{"context:inline-script-write", "context", eventBash, "an inline python/node script that writes files", escapeShellEdit},
 	{"context:locale-catalog", "context", eventBoth, "a raw read of a lok locale catalog; use lok get/grep/add", escapeDump},
