@@ -44,6 +44,16 @@ func pathVariableUse(cmd string) (string, bool) {
 		if pathAssignRE.MatchString(s) {
 			return seg, true
 		}
+		// `FOO=1 path=/tmp/x cmd`: every leading assignment binds, not only
+		// the first word.
+		for _, w := range shellseg.Fields(s) {
+			if !shellseg.AssignPrefix.MatchString(w) {
+				break
+			}
+			if strings.HasPrefix(w, "path=") || strings.HasPrefix(w, "path+=") {
+				return seg, true
+			}
+		}
 		f := shellseg.Fields(shellseg.TrimAssignments(s))
 		if len(f) < 2 {
 			continue
