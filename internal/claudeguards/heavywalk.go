@@ -70,6 +70,10 @@ func pruned(argv []string, name string) bool {
 		switch a {
 		case "-prune":
 			test = primaryBefore(argv[:i])
+			// `! -name node_modules -prune` prunes everything BUT it.
+			if j := i - len(test) - 1; j >= 0 && (argv[j] == "!" || argv[j] == `\!` || argv[j] == "-not") {
+				test = nil
+			}
 		case "-exclude":
 			test = primaryAfter(argv[i+1:])
 		}

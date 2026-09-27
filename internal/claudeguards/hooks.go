@@ -417,19 +417,21 @@ func writeSettings(path string, top map[string]json.RawMessage, groups map[strin
 	b.WriteString("}\n")
 	// The rewrite keeps the file's own mode: a private (0600) hooks file must
 	// not come back world-readable.
-	mode := fs.FileMode(0o644)
+	mode, existed := fs.FileMode(0o644), false
 	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
+		mode, existed = fi.Mode().Perm(), true
 	}
 	tmp := path + ".claude-guards.tmp"
 	if err := os.WriteFile(tmp, []byte(b.String()), mode); err != nil {
 		return err
 	}
-	// WriteFile's mode passes through the umask; a file that existed keeps
-	// exactly the bits it had.
-	if err := os.Chmod(tmp, mode); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	// WriteFile's mode passes through the umask, which a new file keeps; a
+	// file that existed keeps exactly the bits it had.
+	if existed {
+		if err := os.Chmod(tmp, mode); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

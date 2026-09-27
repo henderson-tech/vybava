@@ -30,6 +30,8 @@ func TestHeavyWalkPatterns(t *testing.T) {
 		"find . -name a.ts | head -5",
 		"find . -name src -prune -o -not -path '*/node_modules/*' -print",
 		"bfs . -exclude -name src -name node_modules",
+		"find . ! -name node_modules -prune -o -print",
+		"find . -not -name node_modules -prune -o -print",
 		"fd -u a.ts .",
 		"fd --no-ignore a.ts",
 		"find " + parent + " -path '*/.worktrees/*' -prune -o -name devbox.yaml -print",
