@@ -39,7 +39,8 @@ worker.
 
 | metric | means |
 |---|---|
-| lines read / line changed | read + search lines per line an edit or write changed — the headline cost |
+| lines read / line changed | read + search + mixed lines per line an edit or write changed — the headline cost |
+| mixed lines | one result holding output of different kinds (`cat a.go; rg foo`): the split is unknowable, so it is never guessed |
 | re-read rate | reads whose range overlaps an earlier read of the same file, with no edit of it and no compaction in between |
 | whole-file big reads | a read that returned an entire file above `--big` lines |
 | search → read hit rate | searches that printed files, followed within `--window` calls by a read of one of them |
@@ -55,15 +56,23 @@ repository's `x`; re-reads stay per real path.
 Most navigation is shell, not the Read tool: `cat`, `sed -n`, `grep`, `rg`,
 often behind `cd … &&` or `W=… &&`. Commands are split through
 `internal/shellseg` — the same segmentation claude-guards enforces — then
-classified per segment:
+classified **per pipeline**, because only a pipeline's last stage prints into
+the result:
 
 - **edit** — any write: a redirect into a file (scratch dirs like `/tmp` are
-  not code), `sed -i`, `perl -i`, `tee`, `apply_patch`, an apply_patch body.
+  not code), `sed -i`, `perl -i`, `tee`, `apply_patch`. An apply_patch body
+  counts its `+`/`-` lines; a quoted heredoc written to a file counts its body.
 - **read** — `cat`, `nl`, `bat`, `head`, `tail`, `sed`, `git show rev:path`
   with a file operand. `sed -n 'A,Bp'` and `head -n N` keep their range; a
-  read piped onward keeps its file but not its range.
+  read filtered downstream (`| head`) keeps its file but not its range.
 - **search** — `grep`, `rg`, `ag`, `find`, `fd`, `ls`, `tree`, `git grep`,
-  `git ls-files`.
+  `git ls-files` — and a read piped into one (`cat big.go | grep x`): the
+  file only fed the search.
+
+A pipeline redirected into a file put nothing into context. One call records
+every kind it did (`cat a.go; echo x > a.go` is a read, then an edit), and its
+output lines go to a kind only when every piece of output is of that kind —
+otherwise they are mixed. `echo`/`printf` separators are not output.
 
 `cd` segments and the command's own `NAME=value` assignments are followed, so
 `W=~/repo/.worktrees/x && cd $W && sed -n '1,40p' a.go` reads

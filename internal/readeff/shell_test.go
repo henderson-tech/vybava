@@ -20,7 +20,9 @@ func TestShellCall(t *testing.T) {
 		{"cat is whole", "cat a.go b.go", ClassRead, []Span{{Path: "/r/a.go", Start: 1, Whole: true}, {Path: "/r/b.go", Start: 1, Whole: true}}, nil},
 		{"assigned dir and cd", `W=/w/wt && cd $W && sed -n '1,5p' x.go`, ClassRead, []Span{{Path: "/w/wt/x.go", Start: 1, N: 5}}, nil},
 		{"subshell cd", "(cd /w && cat x.go)", ClassRead, []Span{{Path: "/w/x.go", Start: 1, Whole: true}}, nil},
-		{"piped read has no known range", "cat a.go | grep foo", ClassRead, []Span{{Path: "/r/a.go"}}, nil},
+		{"a read filtered downstream loses its range", "cat a.go | head -5", ClassRead, []Span{{Path: "/r/a.go"}}, nil},
+		{"a read feeding a search is a search", "cat big.go | grep needle", ClassSearch, nil, nil},
+		{"a read into a scratch file shows nothing", "cat a.go > /tmp/out", ClassOther, nil, nil},
 		{"git show path", "git show HEAD:a.go", ClassRead, []Span{{Path: "/r/a.go"}}, nil},
 		{"grep is a search", "grep -rn foo internal | head -20", ClassSearch, nil, nil},
 		{"stderr to /dev/null is not a write", "ls -la 2>/dev/null", ClassSearch, nil, nil},
@@ -42,5 +44,29 @@ func TestShellCall(t *testing.T) {
 				t.Errorf("edited = %q, want %q", c.Edited, tc.edited)
 			}
 		})
+	}
+}
+
+// Several outputs in one result are all recorded, and none gets the lines;
+// a write through the shell counts what it changed where the command says.
+func TestShellCallMixedAndWrites(t *testing.T) {
+	mixed := shellCall("cat a.go; rg foo", "/r")
+	if !mixed.Read || !mixed.Search || mixed.Visible != 2 {
+		t.Errorf("cat; rg = read %v search %v visible %d, want both and 2", mixed.Read, mixed.Search, mixed.Visible)
+	}
+	if two := shellCall("cat a.go; echo ---; cat b.go", "/r"); two.outputs != 1<<0 {
+		t.Errorf("cat; echo; cat outputs = %b, want reads only", two.outputs)
+	}
+	readThenEdit := shellCall("cat a.go; echo x > a.go", "/r")
+	if !readThenEdit.Read || !readThenEdit.Edit || readThenEdit.Visible != 1 {
+		t.Errorf("cat; echo > = %+v, want a visible read and an edit", readThenEdit)
+	}
+	patch := shellCall("apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: a.go\n-x\n+y\n+z\n*** End Patch\nEOF", "/r")
+	if !patch.Edit || patch.Changed != 3 || !slices.Equal(patch.Edited, []string{"/r/a.go"}) {
+		t.Errorf("apply_patch heredoc = edited %q changed %d, want /r/a.go and 3", patch.Edited, patch.Changed)
+	}
+	heredoc := shellCall("cat > new.go <<'EOF'\npackage x\n\nfunc F() {}\nEOF", "/r")
+	if !heredoc.Edit || heredoc.Changed != 3 {
+		t.Errorf("heredoc write changed %d, want its 3 body lines", heredoc.Changed)
 	}
 }

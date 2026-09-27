@@ -21,7 +21,7 @@ func readCodex(path string) (Session, error) {
 		cwd  string
 	}
 	open := map[string]pending{}
-	_, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
+	res, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
 		meta := transcripts.RolloutUsageLine(line)
 		if !meta && !transcripts.RolloutToolLine(line) && !bytes.Contains(line, []byte(`"compacted"`)) {
 			return nil
@@ -62,6 +62,7 @@ func readCodex(path string) (Session, error) {
 		}
 		return nil
 	})
+	s.Oversize = res.Oversize
 	return s, err
 }
 
@@ -80,39 +81,25 @@ func execOutput(s string) string {
 // codexCall reduces one paired call and output.
 func codexCall(it transcripts.ResponseItem, cwd, out string) Call {
 	cmds, patches := it.Commands()
-	c := Call{Tool: it.Name, Class: ClassOther, Lines: countLines(out)}
-	var read, search, edit bool
+	c := Call{Tool: it.Name, Lines: countLines(out)}
 	for _, cmd := range cmds {
-		dir := firstNonEmpty(cmd.Workdir, cwd)
-		sc := shellCall(cmd.Cmd, dir)
-		read = read || sc.Class == ClassRead
-		search = search || sc.Class == ClassSearch
-		edit = edit || sc.Class == ClassEdit
+		sc := shellCall(cmd.Cmd, firstNonEmpty(cmd.Workdir, cwd))
+		c.Read, c.Search, c.Edit = c.Read || sc.Read, c.Search || sc.Search, c.Edit || sc.Edit
+		c.Visible, c.outputs = c.Visible+sc.Visible, c.outputs|sc.outputs
 		c.Spans = append(c.Spans, sc.Spans...)
 		c.Edited = append(c.Edited, sc.Edited...)
+		c.Changed += sc.Changed
 		if c.Query == "" && sc.Query != "" {
 			c.Query, c.dir = sc.Query, sc.dir
 		}
 	}
 	for _, p := range patches {
 		files, changed := patchChanged(p, cwd)
-		edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
+		c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
 	}
-	switch {
-	case edit:
-		c.Class = ClassEdit
-	case read:
-		c.Class = ClassRead
-	case search:
-		c.Class = ClassSearch
+	if c.Visible > 1 {
+		c.Query = "" // several outputs share one result: no retry to judge
 	}
-	if len(cmds) == 1 && len(patches) == 0 {
-		c = settle(c, out, false)
-		if c.Class == ClassSearch && !c.Empty {
-			c.Found = foundPaths(out, c.dir)
-		}
-	} else if c.Class == ClassSearch {
-		c.Query = "" // several commands share one output: no retry to judge
-	}
-	return c
+	c.classify()
+	return settle(c, out, false)
 }

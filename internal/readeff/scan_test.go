@@ -63,4 +63,9 @@ func TestScanPairsBothAgents(t *testing.T) {
 		len(x.Calls[0].Found) != 1 || x.Calls[0].Found[0] != repo+"/a.go" {
 		t.Errorf("codex session = %+v", x)
 	}
+	// A session id picks its transcript by name, before anything is decoded.
+	jobs, err := scanJobs(Options{ClaudeRoot: claude, CodexDir: codex, Session: "s1"})
+	if err != nil || len(jobs) != 1 || filepath.Base(jobs[0].path) != "s1.jsonl" {
+		t.Errorf("jobs for s1 = %v %v, want only s1.jsonl", jobs, err)
+	}
 }

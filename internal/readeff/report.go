@@ -98,7 +98,7 @@ func scopes(m map[string]*Totals) []Scope {
 		out = append(out, Scope{Name: name, Summary: summarize(*t)})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].ReadLines+out[i].SearchLines, out[j].ReadLines+out[j].SearchLines
+		a, b := out[i].ReadLines+out[i].SearchLines+out[i].MixedLines, out[j].ReadLines+out[j].SearchLines+out[j].MixedLines
 		if a != b {
 			return a > b
 		}

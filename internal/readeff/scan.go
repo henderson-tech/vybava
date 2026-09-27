@@ -71,6 +71,9 @@ func Scan(opts Options, each func(Session)) (warnings []string, err error) {
 			continue
 		}
 		if s, ok := keep(opts, r.path, r.sess); ok {
+			if s.Oversize > 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: %d record(s) over 16 MiB skipped unread; their tool calls are not counted", r.path, s.Oversize))
+			}
 			each(s)
 		}
 	}
@@ -91,8 +94,12 @@ func scanJobs(opts Options) ([]scanJob, error) {
 		if f.Info.ModTime().Before(opts.Since) {
 			continue
 		}
-		if slug := projectSlug(opts.ClaudeRoot, f.Path); opts.Repo != "" && slug != repoSlug && !strings.HasPrefix(slug, repoSlug+"-") {
+		slug, name := projectSlug(opts.ClaudeRoot, f.Path)
+		if opts.Repo != "" && slug != repoSlug && !strings.HasPrefix(slug, repoSlug+"-") {
 			continue // launched outside the repository (and its worktrees)
+		}
+		if sid, _, _ := strings.Cut(opts.Session, "/"); sid != "" && !strings.HasPrefix(name, sid) {
+			continue // <session>.jsonl, or its <session>/subagents/ tree
 		}
 		sub := f.Kind != transcripts.ClaudeSession
 		out = append(out, scanJob{f.Path, func(p string) (Session, error) {
@@ -108,6 +115,9 @@ func scanJobs(opts Options) ([]scanJob, error) {
 		return out, fmt.Errorf("walk %s: %w", opts.CodexDir, err)
 	}
 	for _, p := range rollouts {
+		if opts.Session != "" && !strings.Contains(filepath.Base(p), "-"+opts.Session) {
+			continue // rollout-<time>-<thread id>.jsonl
+		}
 		if opts.Repo != "" && rolloutRepo(p) != opts.Repo {
 			continue
 		}
@@ -138,13 +148,18 @@ var slugUnsafe = regexp.MustCompile(`[^A-Za-z0-9]`)
 // directory: every character but a letter or digit becomes "-".
 func claudeSlug(dir string) string { return slugUnsafe.ReplaceAllString(dir, "-") }
 
-// projectSlug is the projects-directory a transcript sits in.
-func projectSlug(root, path string) string {
+// projectSlug is the projects-directory a transcript sits in, and the name
+// under it: the session's file or its subagents directory.
+func projectSlug(root, path string) (slug, name string) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+	parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
+	if len(parts) < 2 {
+		return parts[0], ""
+	}
+	return parts[0], parts[1]
 }
 
 // rolloutRepo reads only a rollout's opening session_meta to learn its

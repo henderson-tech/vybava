@@ -33,9 +33,16 @@ type Span struct {
 }
 
 // Call is one tool invocation reduced to what navigation accounting needs.
+// A shell command can do several things at once (`cat a.go; rg foo`), so
+// Read, Search and Edit are independent; Class is the headline kind for
+// display (edit > read > search > other).
 type Call struct {
 	Tool    string
 	Class   Class
+	Read    bool
+	Search  bool
+	Edit    bool
+	Visible int      // pieces of output in the result (shell pipelines); 1 for a plain tool
 	Lines   int      // lines the result put into context
 	Empty   bool     // a search that found nothing
 	Spans   []Span   // file ranges a read returned
@@ -46,7 +53,41 @@ type Call struct {
 	Found   []string // files a search printed, for the hit rate
 	Query   string   // a search's segment: compared, never printed
 
-	dir string // where a search ran, to resolve what it printed
+	dir     string // where a search ran, to resolve what it printed
+	wrote   bool   // a redirect or tee wrote a file whose lines are unmeasured
+	outputs uint8  // kinds of output in the result: 1<<0 read, 1<<1 search, 1<<2 other
+}
+
+// classify sets the headline Class from what the call did.
+func (c *Call) classify() {
+	switch {
+	case c.Edit:
+		c.Class = ClassEdit
+	case c.Read:
+		c.Class = ClassRead
+	case c.Search:
+		c.Class = ClassSearch
+	default:
+		c.Class = ClassOther
+	}
+}
+
+// settle fills what a call's output says — only when a single piece of
+// output is in the result, so it belongs to that piece: a search's emptiness
+// and hits, a single-file whole read's length.
+func settle(c Call, out string, failed bool) Call {
+	if c.Visible != 1 {
+		return c
+	}
+	if c.Search {
+		if c.Empty = emptyOutput(out); !c.Empty {
+			c.Found = foundPaths(out, c.dir)
+		}
+	}
+	if c.Read && !failed && len(c.Spans) == 1 && c.Spans[0].Whole && c.Spans[0].N == 0 {
+		c.Spans[0].N, c.Spans[0].Total = c.Lines, c.Lines
+	}
+	return c
 }
 
 // Session is one transcript's calls, in order.
@@ -56,6 +97,9 @@ type Session struct {
 	Repo  string
 	Start time.Time
 	Calls []Call
+	// Oversize counts records past the scan limit (16 MiB), skipped unread:
+	// their calls are missing from the counts.
+	Oversize int
 }
 
 // countLines counts the lines of a tool result as they land in context.
@@ -77,7 +121,8 @@ func emptyOutput(s string) bool {
 	if strings.HasPrefix(s, "Exit code ") && !strings.Contains(s, "\n") {
 		return true
 	}
-	return s == "" || s == "(Bash completed with no output)"
+	return s == "" || s == "(Bash completed with no output)" ||
+		strings.HasPrefix(s, "No files found") || strings.HasPrefix(s, "No matches found")
 }
 
 // maxFound caps the paths kept from one search's output.
@@ -123,11 +168,19 @@ func guardRule(s string) string {
 	return ""
 }
 
-// patchChanged counts a unified or apply_patch body's changed lines and the
-// files it names.
+// patchChanged counts an apply_patch body's changed lines and the files it
+// names. Text carrying `*** Begin Patch` is read only between its markers,
+// so a heredoc'd patch inside a longer command counts nothing else.
 func patchChanged(patch, dir string) (files []string, changed int) {
+	marked := strings.Contains(patch, "*** Begin Patch")
+	in := !marked
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
+		case marked && strings.HasPrefix(line, "*** Begin Patch"):
+			in = true
+		case marked && strings.HasPrefix(line, "*** End Patch"):
+			in = false
+		case !in:
 		case strings.HasPrefix(line, "*** Update File: "), strings.HasPrefix(line, "*** Add File: "), strings.HasPrefix(line, "*** Delete File: "):
 			files = append(files, resolve(dir, strings.TrimSpace(line[strings.IndexByte(line, ':')+1:])))
 		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):

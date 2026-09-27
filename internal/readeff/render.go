@@ -36,7 +36,7 @@ func renderSummary(w io.Writer, s Summary, cfg Config, indent string) {
 	row := func(label, value, note string) {
 		fmt.Fprintf(w, "%s%-26s %10s   %s\n", indent, label, value, note)
 	}
-	row("lines read / line changed", ratio(s.LinesPerChange), fmt.Sprintf("read %s · search %s · changed %s", num(s.ReadLines), num(s.SearchLines), num(s.Changed)))
+	row("lines read / line changed", ratio(s.LinesPerChange), fmt.Sprintf("read %s · search %s · mixed %s · changed %s", num(s.ReadLines), num(s.SearchLines), num(s.MixedLines), num(s.Changed)))
 	row("re-read rate", fmt.Sprintf("%.1f %%", s.RereadRate), fmt.Sprintf("%s of %s ranged reads · %s lines", num(s.Rereads), num(s.RangedReads), num(s.RereadLines)))
 	row("whole-file big reads", num(s.BigWhole), fmt.Sprintf("files over %d lines · %s lines", cfg.BigFile, num(s.BigWholeLines)))
 	row("search → read hit rate", fmt.Sprintf("%.1f %%", s.HitRate), fmt.Sprintf("%s of %s searches that printed files", num(s.SearchHits), num(s.SearchesFound)))
@@ -50,7 +50,7 @@ func renderSummary(w io.Writer, s Summary, cfg Config, indent string) {
 func renderScopes(w io.Writer, scopes []Scope) {
 	for _, s := range scopes {
 		fmt.Fprintf(w, "    %-48s %5d sessions  %9s nav lines  %6s /change  re-read %5.1f %%\n",
-			short(s.Name, ""), s.Sessions, num(s.ReadLines+s.SearchLines), ratio(s.LinesPerChange), s.RereadRate)
+			short(s.Name, ""), s.Sessions, num(s.ReadLines+s.SearchLines+s.MixedLines), ratio(s.LinesPerChange), s.RereadRate)
 	}
 }
 

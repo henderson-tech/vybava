@@ -18,97 +18,146 @@ var (
 	gitSearches = map[string]bool{"grep": true, "ls-files": true}
 )
 
-// shellCall classifies one command line by what its segments do: any write
-// makes it an edit, else any read a read, else any search a search. cwd is
-// where it ran; a `cd` segment moves it for the segments after it.
+// shellCall classifies one command line pipeline by pipeline. Only a
+// pipeline's last stage prints into the result: a read piped into a search
+// is a search, a reader with no file operand only filters, and a pipeline
+// redirected into a file put nothing into context (it wrote the file). The
+// call records every kind it did; Visible counts the pipelines whose output
+// reached the result, so output lines are attributed only when one did. cwd
+// is where it ran; `cd` moves it for what follows.
 func shellCall(cmd, cwd string) Call {
-	piped := map[string]bool{}  // top-level segments whose output feeds a pipe
+	c := Call{Tool: "Bash"}
+	c.shell(cmd, cwd, 0)
+	if strings.Contains(cmd, "*** Begin Patch") { // apply_patch fed a heredoc
+		files, changed := patchChanged(cmd, cwd)
+		c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
+	} else if c.wrote {
+		c.Changed += heredocLines(cmd) // `cat > f <<'EOF'`: the body is the file
+	}
+	c.classify()
+	return c
+}
+
+// shell folds cmd's pipelines into c; depth bounds nested `sh -c` payloads.
+func (c *Call) shell(cmd, cwd string, depth int) {
 	vars := map[string]string{} // `W=… && cd $W`: assignments later words expand
+	dir := cwd
+	var stages []string
 	for _, p := range shellseg.SplitScript(cmd) {
 		text := shellseg.TrimSubshell(strings.Trim(p.Text, " \t\r"))
-		if p.Sep == "|" {
-			piped[shellseg.TrimAssignments(text)] = true
-		}
 		if shellseg.TrimAssignments(text) == "" {
 			for _, f := range shellseg.Fields(text) {
 				if k, v, ok := strings.Cut(f, "="); ok {
 					vars[k] = expandVars(v, vars)
 				}
 			}
+		} else {
+			stages = append(stages, shellseg.TrimAssignments(text))
+		}
+		if p.Sep != "|" && len(stages) > 0 {
+			c.pipeline(stages, &dir, vars, depth)
+			stages = stages[:0]
 		}
 	}
-	var c Call
-	var read, search, edit bool
-	dir := cwd
-	for _, seg := range shellseg.Segments(cmd) {
-		f := shellseg.Fields(seg)
+}
+
+// pipeline folds one pipeline's stages into c.
+func (c *Call) pipeline(stages []string, dir *string, vars map[string]string, depth int) {
+	var spans []Span
+	var search, visible = false, true
+	var query string
+	for i, st := range stages {
+		f := shellseg.Fields(st)
 		if len(f) == 0 {
 			continue
 		}
-		for i := range f {
-			f[i] = expandVars(f[i], vars)
+		for j := range f {
+			f[j] = expandVars(f[j], vars)
 		}
-		word, args := shellseg.CommandWord(seg), f[1:]
-		if targets := redirectTargets(seg); len(targets) > 0 && word != "cd" {
-			for _, t := range targets {
-				if p := resolve(dir, expandVars(t, vars)); !scratch(p) {
-					edit = true
-					c.Edited = append(c.Edited, p)
-				}
+		word, args := shellseg.CommandWord(st), f[1:]
+		targets, away := redirectTargets(st)
+		for _, t := range targets {
+			if p := resolve(*dir, expandVars(t, vars)); !scratch(p) {
+				c.Edit, c.wrote = true, true
+				c.Edited = append(c.Edited, p)
 			}
-			continue // its output went to the file, not into context
+		}
+		if away && i == len(stages)-1 {
+			visible = false
+		}
+		if payloads := shellseg.RunnerPayloads(st); len(payloads) > 0 && depth < shellseg.MaxRunnerDepth {
+			for _, p := range payloads { // `bash -lc '…'` runs its payload here
+				c.shell(p, *dir, depth+1)
+			}
+			visible = false // the payload's own pipelines carry its output
+			continue
 		}
 		switch {
-		case word == "cd":
+		case word == "cd" && len(stages) == 1:
 			if len(args) > 0 {
-				dir = resolve(dir, args[0])
+				*dir = resolve(*dir, args[0])
 			}
 		case word == "apply_patch":
-			edit = true
+			c.Edit = true
 		case word == "tee":
-			for _, p := range operands(word, args, dir) {
+			for _, p := range operands(word, args, *dir) {
 				if !scratch(p) {
-					edit = true
+					c.Edit, c.wrote = true, true
 					c.Edited = append(c.Edited, p)
 				}
 			}
 		case (word == "sed" || word == "perl") && inPlace(args):
-			edit = true
-			c.Edited = append(c.Edited, operands(word, args, dir)...)
+			c.Edit = true
+			c.Edited = append(c.Edited, operands(word, args, *dir)...)
 		case readVerbs[word]:
-			spans := readSpans(word, args, dir)
-			read = read || len(spans) > 0 // no file operand: it filters a pipe
-			if piped[seg] {
-				for i := range spans { // filtered on the way: the range is unknown
-					spans[i] = Span{Path: spans[i].Path}
+			for _, sp := range readSpans(word, args, *dir) { // no operand: a filter
+				if i < len(stages)-1 {
+					sp = Span{Path: sp.Path} // filtered downstream: range unknown
 				}
+				spans = append(spans, sp)
 			}
-			c.Spans = append(c.Spans, spans...)
 		case searchVerbs[word], word == "git" && len(args) > 0 && gitSearches[args[0]]:
 			search = true
-			if c.Query == "" {
-				c.Query, c.dir = seg, dir
+			if query == "" {
+				query = st
 			}
 		case word == "git" && len(args) > 0 && args[0] == "show":
 			for _, a := range args[1:] {
-				if i := strings.IndexByte(a, ':'); i > 0 && i < len(a)-1 {
-					read = true
-					c.Spans = append(c.Spans, Span{Path: resolve(dir, a[i+1:])})
+				if j := strings.IndexByte(a, ':'); j > 0 && j < len(a)-1 {
+					spans = append(spans, Span{Path: resolve(*dir, a[j+1:])})
 				}
 			}
 		}
 	}
-	switch {
-	case edit:
-		c.Class = ClassEdit
-	case read:
-		c.Class = ClassRead
-	case search:
-		c.Class = ClassSearch
-	default:
-		c.Class = ClassOther
+	if !visible {
+		return // written to a file or discarded: nothing reached context
 	}
-	return c
+	switch {
+	case search: // a read feeding a search only fed it
+		c.Visible++
+		c.outputs |= 1 << 1
+		c.Search = true
+		if c.Query == "" {
+			c.Query, c.dir = query, *dir
+		}
+	case len(spans) > 0:
+		c.Visible++
+		c.outputs |= 1 << 0
+		c.Read = true
+		c.Spans = append(c.Spans, spans...)
+	case !(len(stages) == 1 && silentVerbs[shellseg.CommandWord(stages[0])]):
+		c.Visible++ // other output (a build, a test run) shares the result
+		c.outputs |= 1 << 2
+	}
+}
+
+// silentVerbs print nothing on success, or only what the command itself
+// wrote (an `echo ---` separator): no navigation to attribute.
+var silentVerbs = map[string]bool{"cd": true, "export": true, "set": true, "source": true, ".": true, "true": true, "mkdir": true, "unset": true, "echo": true, "printf": true}
+
+// heredocLines counts the body lines of a command's quoted heredocs.
+func heredocLines(cmd string) int {
+	return max(0, countLines(cmd)-countLines(shellseg.StripQuotedHeredocs(cmd))-1)
 }
 
 // readSpans returns the file ranges a reader prints. Start 0 means the range
@@ -233,8 +282,8 @@ func inPlace(args []string) bool {
 
 // redirectTargets lists the files a segment's unquoted `>` / `>>` redirects
 // write. Descriptor redirects (2>&1) and /dev/null are not writes.
-func redirectTargets(seg string) []string {
-	var out []string
+// away reports stdout leaving the result at all, /dev/null included.
+func redirectTargets(seg string) (out []string, away bool) {
 	var quote byte
 	for i := 0; i < len(seg); i++ {
 		c := seg[i]
@@ -261,12 +310,15 @@ func redirectTargets(seg string) []string {
 		for k < len(seg) && !strings.ContainsRune(" \t;&|<>)", rune(seg[k])) {
 			k++
 		}
-		if t := strings.Trim(seg[j:k], `'"`); t != "" && !strings.HasPrefix(seg[j:], "&") && t != "/dev/null" {
-			out = append(out, t)
+		if t := strings.Trim(seg[j:k], `'"`); t != "" && !strings.HasPrefix(seg[j:], "&") {
+			away = true
+			if t != "/dev/null" {
+				out = append(out, t)
+			}
 		}
 		i = k
 	}
-	return out
+	return out, away
 }
 
 // scratch reports a throwaway location: writing there changes no code.

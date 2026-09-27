@@ -26,7 +26,7 @@ func readClaude(path string) (Session, error) {
 		cwd   string
 	}
 	open := map[string]pending{}
-	_, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
+	res, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
 		if !transcripts.ClaudeToolLine(line) && !transcripts.ClaudeCompactLine(line) {
 			return nil
 		}
@@ -60,6 +60,7 @@ func readClaude(path string) (Session, error) {
 		}
 		return nil
 	})
+	s.Oversize = res.Oversize
 	return s, err
 }
 
@@ -74,22 +75,21 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 		Command  string `json:"command"`
 	}
 	_ = json.Unmarshal(input, &in) // an unexpected input shape leaves the fields empty
-	c := Call{Tool: name, Class: ClassOther, Lines: lines}
+	c := Call{Tool: name, Lines: lines, Visible: 1}
 	switch name {
 	case "Read":
 		if f := out.File; f != nil {
-			c.Class, c.Lines = ClassRead, f.NumLines
+			c.Read, c.Lines = true, f.NumLines
 			c.Spans = []Span{{Path: f.FilePath, Start: max(f.StartLine, 1), N: f.NumLines, Total: f.TotalLines,
 				Whole: f.StartLine <= 1 && f.NumLines >= f.TotalLines}}
 		}
 	case "Grep", "Glob":
-		c.Class, c.Query, c.dir = ClassSearch, string(input), cwd
-		c.Empty = emptyOutput(r.Text) || strings.HasPrefix(r.Text, "No files found") || strings.HasPrefix(r.Text, "No matches found")
+		c.Search, c.Query, c.dir = true, string(input), cwd
 	case "Edit", "MultiEdit", "Write", "NotebookEdit":
 		if r.IsError {
 			break
 		}
-		c.Class, c.Stale = ClassEdit, out.StaleRecovered
+		c.Edit, c.Stale = true, out.StaleRecovered
 		c.Edited = []string{firstNonEmpty(out.FilePath, in.FilePath)}
 		for _, h := range out.StructuredPatch {
 			for _, l := range h.Lines {
@@ -102,27 +102,11 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 			c.Changed = countLines(out.Content)
 		}
 	case "Bash":
-		shell := shellCall(in.Command, cwd)
-		shell.Tool, shell.Lines, shell.Stale = name, lines, out.StaleHint != ""
-		c = settle(shell, r.Text, r.IsError)
+		c = shellCall(in.Command, cwd)
+		c.Tool, c.Lines, c.Stale = name, lines, out.StaleHint != ""
 	}
-	if c.Class == ClassSearch && !c.Empty {
-		c.Found = foundPaths(r.Text, c.dir)
-	}
-	return c
-}
-
-// settle fills what a shell call's output says once it is known: a search's
-// emptiness, and the length of a single-file whole read (its output is the
-// file).
-func settle(c Call, out string, failed bool) Call {
-	if c.Class == ClassSearch {
-		c.Empty = emptyOutput(out)
-	}
-	if c.Class == ClassRead && !failed && len(c.Spans) == 1 && c.Spans[0].Whole && c.Spans[0].N == 0 {
-		c.Spans[0].N, c.Spans[0].Total = c.Lines, c.Lines
-	}
-	return c
+	c.classify()
+	return settle(c, r.Text, r.IsError)
 }
 
 func firstNonEmpty(a, b string) string {

@@ -2,6 +2,7 @@ package readeff
 
 import (
 	"math"
+	"math/bits"
 	"sort"
 	"strings"
 )
@@ -26,6 +27,7 @@ type Totals struct {
 	ReadLines   int `json:"read_lines"`
 	SearchLines int `json:"search_lines"`
 	OtherLines  int `json:"other_lines"`
+	MixedLines  int `json:"mixed_lines"` // one result, several outputs: not attributable
 	Changed     int `json:"lines_changed"`
 	// Reads with a known range, and those overlapping an earlier read of the
 	// same file with no edit of it (and no compaction) in between.
@@ -47,13 +49,13 @@ type Totals struct {
 	Blocked       map[string]int `json:"blocked"`
 }
 
-// LinesPerChange is navigation lines (read + search) per line changed; 0
+// LinesPerChange is navigation lines (read + search + mixed) per line changed; 0
 // when nothing changed.
 func (t Totals) LinesPerChange() float64 {
 	if t.Changed == 0 {
 		return 0
 	}
-	return round1(float64(t.ReadLines+t.SearchLines) / float64(t.Changed))
+	return round1(float64(t.ReadLines+t.SearchLines+t.MixedLines) / float64(t.Changed))
 }
 
 // RereadRate is the share of ranged reads that re-read, in percent.
@@ -72,6 +74,7 @@ func (t *Totals) add(o Totals) {
 	t.ReadLines += o.ReadLines
 	t.SearchLines += o.SearchLines
 	t.OtherLines += o.OtherLines
+	t.MixedLines += o.MixedLines
 	t.Changed += o.Changed
 	t.RangedReads += o.RangedReads
 	t.Rereads += o.Rereads
@@ -152,13 +155,26 @@ func analyze(s Session, cfg Config, files map[string]*fileAcc, steps *[]Step) To
 			t.OtherLines += c.Lines
 			continue
 		}
-		switch c.Class {
-		case ClassRead:
-			t.ReadCalls++
+		// Output lines belong to a kind only when every piece of output in the
+		// result is of that kind; `cat a.go; rg foo` is counted as mixed.
+		switch {
+		case bits.OnesCount8(c.outputs) > 1:
+			t.MixedLines += c.Lines
+			flag("mixed")
+		case c.Read:
 			t.ReadLines += c.Lines
+		case c.Search:
+			t.SearchLines += c.Lines
+		default:
+			t.OtherLines += c.Lines
+		}
+		// Reads count before edits: `cat a.go; echo x > a.go` read the old
+		// file, then changed it.
+		if c.Read {
+			t.ReadCalls++
 			for _, sp := range c.Spans {
 				n := sp.N
-				if len(c.Spans) == 1 && n == 0 {
+				if len(c.Spans) == 1 && n == 0 && c.Visible == 1 {
 					n = c.Lines
 				}
 				key := foldWorktree(sp.Path, s.Repo)
@@ -190,9 +206,9 @@ func analyze(s Session, cfg Config, files map[string]*fileAcc, steps *[]Step) To
 				}
 				held[sp.Path] = append(held[sp.Path], sp)
 			}
-		case ClassSearch:
+		}
+		if c.Search {
 			t.SearchCalls++
-			t.SearchLines += c.Lines
 			if c.Empty {
 				t.EmptySearches++
 				flag("empty")
@@ -209,14 +225,13 @@ func analyze(s Session, cfg Config, files map[string]*fileAcc, steps *[]Step) To
 					flag("miss")
 				}
 			}
-		case ClassEdit:
+		}
+		if c.Edit {
 			t.EditCalls++
 			t.Changed += c.Changed
 			for _, p := range c.Edited {
 				delete(held, p)
 			}
-		default:
-			t.OtherLines += c.Lines
 		}
 	}
 	return t
@@ -270,7 +285,7 @@ func end(s Span) int {
 func retried(calls []Call, i, window int) bool {
 	q := calls[i].Query
 	for _, c := range next(calls, i, window) {
-		if q != "" && c.Class == ClassSearch && c.Query == q && !c.Empty {
+		if q != "" && c.Search && c.Query == q && !c.Empty {
 			return true
 		}
 	}
@@ -322,7 +337,7 @@ func topFiles(files map[string]*fileAcc, n int) []FileStat {
 		}
 		return out[i].Path < out[j].Path
 	})
-	if len(out) > n {
+	if n >= 0 && len(out) > n {
 		out = out[:n]
 	}
 	return out
