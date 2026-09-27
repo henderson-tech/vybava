@@ -23,9 +23,10 @@ func TestBadFilePatterns(t *testing.T) {
 		"id_rsa", "keys/id_ed25519.bak", "cert.pem", "server.key", "app.p12",
 		"deploy.pfx", "site.crt", "ca.cer", "x.der", "release.jks", "app.keystore",
 		"putty.ppk", "cluster.kubeconfig", ".env", ".env.local", "api/.netrc",
-		"ssh/known_hosts", "ssh/authorized_keys",
+		"ssh/known_hosts", "ssh/authorized_keys", ".env.example.local",
 	}
-	pass := []string{".env.example", "src/main.go", "docs/keys.md", "monkey.ts", "envelope.env.example"}
+	pass := []string{".env.example", "src/main.go", "docs/keys.md", "monkey.ts", "envelope.env.example",
+		"apps/api/.env.e2e.example", ".env.sample", ".env.local.template", "web/.env.dist"}
 	for _, f := range block {
 		if !reBadFile.MatchString(f) || reEnvExample.MatchString(f) {
 			t.Errorf("should block staged file %q", f)

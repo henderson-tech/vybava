@@ -75,7 +75,10 @@ func TestComputeEvents(t *testing.T) {
 		"review same":     {&Snapshot{State: "OPEN", CI: "SUCCESS", Reviews: reviewsOf("a", "CHANGES_REQUESTED")}, with(open("SUCCESS"), func(s *Snapshot) { s.Reviews = reviewsOf("a", "CHANGES_REQUESTED") }), []string{}, false},
 		"review flip":     {&Snapshot{State: "OPEN", CI: "SUCCESS", Reviews: reviewsOf("a", "CHANGES_REQUESTED")}, with(open("SUCCESS"), func(s *Snapshot) { s.Reviews = reviewsOf("a", "APPROVED") }), []string{"review APPROVED by a"}, false},
 		"push":            {&Snapshot{State: "OPEN", CI: "SUCCESS", HeadSha: ptr("aaaaaaa1111")}, with(open("SUCCESS"), func(s *Snapshot) { s.HeadSha = ptr("bbbbbbb2222") }), []string{"push bbbbbbb"}, false},
-		"mergeable flip":  {&Snapshot{State: "OPEN", CI: "SUCCESS", Mergeable: ptr("MERGEABLE")}, with(open("SUCCESS"), func(s *Snapshot) { s.Mergeable = ptr("CONFLICTING") }), []string{"mergeable MERGEABLE->CONFLICTING"}, false},
+		// a head equal to the checkout's own HEAD is the session's push
+		"own push":       {&Snapshot{State: "OPEN", CI: "SUCCESS", HeadSha: ptr("aaaaaaa1111")}, with(open("SUCCESS"), func(s *Snapshot) { s.HeadSha, s.LocalHead = ptr("bbbbbbb2222"), "bbbbbbb2222" }), []string{}, false},
+		"foreign push":   {&Snapshot{State: "OPEN", CI: "SUCCESS", HeadSha: ptr("aaaaaaa1111")}, with(open("SUCCESS"), func(s *Snapshot) { s.HeadSha, s.LocalHead = ptr("bbbbbbb2222"), "aaaaaaa1111" }), []string{"push bbbbbbb"}, false},
+		"mergeable flip": {&Snapshot{State: "OPEN", CI: "SUCCESS", Mergeable: ptr("MERGEABLE")}, with(open("SUCCESS"), func(s *Snapshot) { s.Mergeable = ptr("CONFLICTING") }), []string{"mergeable MERGEABLE->CONFLICTING"}, false},
 		// fields absent from an older snapshot never fire
 		"mergeable absent": {&Snapshot{State: "OPEN", CI: "SUCCESS"}, with(open("SUCCESS"), func(s *Snapshot) { s.Mergeable = ptr("CONFLICTING") }), []string{}, false},
 		"draft":            {&Snapshot{State: "OPEN", CI: "SUCCESS", IsDraft: boolPtr(false)}, with(open("SUCCESS"), func(s *Snapshot) { s.IsDraft = boolPtr(true) }), []string{"draft"}, false},
@@ -127,13 +130,14 @@ func TestShapeSnapshot(t *testing.T) {
 		"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":5,"author":{"login":"alice"}},{"databaseId":6,"author":{"login":"me"}}]}}]},
 		"latestReviews":{"nodes":[{"state":"COMMENTED","author":{"login":"bob"}},{"state":"APPROVED","author":{"login":"eve"}}]},
 		"headRefOid":"abc1234def","mergeable":"UNKNOWN","isDraft":false,
-		"comments":{"nodes":[{"databaseId":90}]}}}}}`
+		"comments":{"nodes":[{"databaseId":90,"author":{"login":"alice"}},{"databaseId":91,"author":{"login":"me"}},{"databaseId":92}]}}}}}`
 	s, err := shapeSnapshot([]byte(raw), ptr("CONFLICTING"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// UNKNOWN carries the last stored value; COMMENTED reviews are not states.
-	if s.CI != "PENDING" || !slices.Equal(s.CommentIDs, []int{5, 90}) || *s.Mergeable != "CONFLICTING" ||
+	// UNKNOWN carries the last stored value; COMMENTED reviews are not states;
+	// the viewer's own comments (6, 91) never wake the session.
+	if s.CI != "PENDING" || !slices.Equal(s.CommentIDs, []int{5, 90, 92}) || *s.Mergeable != "CONFLICTING" ||
 		*s.HeadSha != "abc1234def" || *s.IsDraft || !slices.Equal(s.Reviews.ordered(), []string{"eve"}) {
 		t.Errorf("snapshot = %+v", s)
 	}

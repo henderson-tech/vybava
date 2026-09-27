@@ -198,7 +198,10 @@ registered alias wins over the alias in a ledger's frontmatter.
 - **PreToolUse**: refuses Edit/Write/MultiEdit/NotebookEdit on `LEDGER.md`,
   `MEMORY.md` or `usage.jsonl` in any home, and Bash commands that write
   them (`>`/`>>` redirects, heredocs, `tee`, `sed -i`/`perl -i`, `cp`/`mv`
-  destinations, `rm`). Exit 2; stderr names the memo verb that owns the file
+  destinations, `rm`). In Claude Code the Bash half runs inside `claude-guards
+  bash` (`memo:ledger-hand-write`, the same `RefuseHandWrite`), so memo is not
+  wired on Bash and spawns on no shell call; Codex still sends its shell tool
+  here. Exit 2; stderr names the memo verb that owns the file
   (`memo add`, `memo render`, `memo touch`). Files under `notes/` stay under
   memorylint's hook. Shell segmentation is the one definition
   (`shellseg.Segments`), so quoted mentions never trip it.
@@ -217,12 +220,14 @@ registered alias wins over the alias in a ledger's frontmatter.
   stderr (a tracked team `MEMORY.md` is one, carrying its `SURFACE_TRACKED`
   fix), the other homes still render, exit 0.
 
-Claude Code `settings.json`:
+Claude Code `settings.json` (a bare `exec "$HOME/.local/bin/memo" hook` is
+enough: a build without `hook` fails visibly with `unknown command`, so no
+`--help | grep` probe wrapper):
 
 ```json
 {"hooks": {
   "SessionStart": [{"hooks": [{"type": "command", "command": "memo hook"}]}],
-  "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": "memo hook"}]}],
+  "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "memo hook"}]}],
   "Stop": [{"hooks": [{"type": "command", "command": "memo hook"}]}]
 }}
 ```

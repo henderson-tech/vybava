@@ -1,7 +1,6 @@
 ---
 name: cli-craft
-disable-model-invocation: true
-description: "AI-first CLI doctrine — envelope contract, closed diagnostics, Go/Charm patterns, thin-wrapper skills. Reference: devbox."
+description: "Use when building or changing an agent-facing CLI or its thin-wrapper skill. AI-first CLI doctrine — envelope contract, closed diagnostics, Go/Charm patterns, thin-wrapper skills. Reference: devbox."
 ---
 
 # cli-craft — AI-first CLI tools and their thin-wrapper skills

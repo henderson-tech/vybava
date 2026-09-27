@@ -44,8 +44,9 @@ func deny(rule, msg, escapeHatch string) *Denial {
 
 // Bash evaluates every PreToolUse:Bash rule in this order; the first match
 // wins, so an allowed call runs them all and the order only decides what a
-// denied call pays. It is not by cost: the first six rules do no I/O,
-// guardHeavyWalk reads a bounded slice of the tree only for an uncapped
+// denied call pays. It is not by cost: the first eight rules do no I/O (the
+// memo ledger rule stats a directory only for a write to a file named
+// LEDGER.md, MEMORY.md or usage.jsonl), guardHeavyWalk reads a bounded slice of the tree only for an uncapped
 // find/bfs, guardAppiumChurn is the first to load the repo config (memoized for the
 // rest), guardMachineCap may fork `ps -axo`, and guardBudget and
 // guardContextBash read the transcript and files. prod-merge and
@@ -59,6 +60,8 @@ func Bash(in *HookInput) *Denial {
 		guardSecretPrint,
 		guardHostInput,
 		guardRootWalk,
+		guardDevboxSSHExec,
+		guardMemoLedger,
 		guardHeavyWalk,
 		guardAppiumChurn,
 		guardTestWorkerCap,
@@ -91,6 +94,7 @@ func Codex(in *HookInput) *Denial {
 		guardSecretPrint,
 		guardHostInput,
 		guardRootWalk,
+		guardDevboxSSHExec,
 		guardHeavyWalk,
 		guardAppiumChurn,
 		guardTestWorkerCap,

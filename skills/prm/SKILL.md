@@ -19,8 +19,9 @@ whatever opened it (prm, raw `gh pr create`, a skill flow), watch it here unless
 user explicitly takes it over.
 
 References (`references/`; read round, ensure-pr, pr-body and verdicts before
-starting; merge.md at the terminus; extensions.md once `gitkit pr-extensions` lists
-one; auto-audit.md only under `--audit`). The
+starting; merge.md, then teardown.md, at the terminus (config.md for the keys);
+extensions.md once `gitkit pr-extensions` lists one; auto-audit.md only under
+`--audit`). The
 deterministic layer is `vybava gitkit <script>` (`vybava gitkit doctor` checks it;
 contract: Výbava `docs/gitkit.md`):
 
@@ -29,8 +30,9 @@ contract: Výbava `docs/gitkit.md`):
 - `ensure-pr.md` — idempotent create-or-find (quiesce → body → create).
 - `pr-body.md` — the PR description contract: dense sections, blockers lens, links table.
 - `verdicts.md` — verdict→action (wraps the `push-back` skill).
-- `merge.md` — gates, CI fix loop, solo-owner carve-out, the merge, teardown, and the
-  `.claude/.claude.git.config` keys.
+- `merge.md` — gates, CI fix loop, solo-owner carve-out, the merge.
+- `teardown.md` — after the merge: feature closure, QA plan, cleanup, main-clone pull.
+- `config.md` — the `.claude/.claude.git.config` keys.
 - `output.md` — full-clickable-link summaries.
 - `auto-audit.md` — the opt-in pre-merge regression audit.
 - `extensions.md` — `PR_EXTENSIONS`: a repo's own markdown steps prm follows at
@@ -191,7 +193,7 @@ the PR URL.
 
 On a `merged` event (ours or external): **step zero, `TaskStop` this PR's Monitor by
 its recorded task id** (self-exit lags a poll cycle — same on `closed` and every stop
-path). Then run `merge.md`'s Teardown section — watcher stop, cwd guard,
+path). Then run `teardown.md`'s Teardown section — watcher stop, cwd guard,
 self-occupant triage, `AFTER_MERGE_CMD` hook or generic scoped cleanup, the
 `AFTER_MERGE_STOP_SERVERS` sweep (runs after either path), local branch
 delete, prune, pull.
@@ -212,7 +214,7 @@ the audit when `--audit` was passed) replace this offer.
   task saw was answered; name deliberate DEFERs in the state line
   (`ready — 1 conversation ask deferred`).
 - `botApproval.pending` non-empty → NOT ready; list as `blocked on bot review
-  (<bot>)` and keep watching. Required-bot resolution: `merge.md`'s config section.
+  (<bot>)` and keep watching. Required-bot resolution: `config.md`.
 - Approval stays a human gate; `--admin` only if the user passed it or via the
   carve-out.
 

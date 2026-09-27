@@ -1,6 +1,7 @@
 package claudeguards
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/shellseg"
@@ -55,6 +56,95 @@ func skipGitGlobals(f []string) []string {
 		}
 	}
 	return f[:1]
+}
+
+// blobSpecs returns a `git show`'s arguments when every revision it names is a
+// <rev>:<path> blob spec, nil otherwise — a bare commit prints its whole diff,
+// and --textconv/--filters print a converter's output, not the blob.
+func blobSpecs(args []string) []string {
+	var specs []string
+	for _, a := range args {
+		if a == "--textconv" || a == "--filters" {
+			return nil
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if !strings.Contains(a, ":") {
+			return nil
+		}
+		specs = append(specs, a)
+	}
+	return specs
+}
+
+// gitRepoGlobals are the global options that pick the repository; the blob is
+// measured in the same one. -c stays out: the hook never runs caller config.
+var gitRepoGlobals = map[string]bool{"--git-dir": true, "--work-tree": true, "--namespace": true}
+
+// gitShowBlobs recognises `git [globals] show <rev>:<path>…` and returns the
+// directory git runs in (the cwd moved by each -C), the repository-selecting
+// globals as `--opt=value`, and the blob specs; nil specs for any other command.
+func gitShowBlobs(fields []string, cwd string) (dir string, repo, specs []string) {
+	g := skipGitGlobals(fields)
+	if len(g) < 3 || g[0] != "git" || g[1] != "show" {
+		return "", nil, nil
+	}
+	if specs = blobSpecs(g[2:]); specs == nil {
+		return "", nil, nil
+	}
+	dir = cwd
+	for i := 1; i < len(fields) && strings.HasPrefix(fields[i], "-"); i++ {
+		name, value, joined := strings.Cut(fields[i], "=")
+		if !joined && gitGlobalWithValue[name] && i+1 < len(fields) {
+			i++
+			value = fields[i]
+		}
+		switch {
+		case name == "-C":
+			dir = resolvePath(value, dir)
+		case gitRepoGlobals[name]:
+			repo = append(repo, name+"="+value)
+		}
+	}
+	return dir, repo, specs
+}
+
+// blobPath is the working-tree file a <rev>:<path> spec names, so the
+// protected-file rules (noRead, transcripts, lok catalogs) judge it as they
+// judge cat: `rev:./x` and `rev:../x` resolve against dir, any other path
+// against the root of the repository the command selects — its --work-tree,
+// else the checkout holding its --git-dir, else dir's checkout. "" when there
+// is none to name (a bare --git-dir has no working tree).
+func blobPath(spec, dir string, repo []string) string {
+	_, p, _ := strings.Cut(spec, ":")
+	if p == "" {
+		return ""
+	}
+	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
+		return resolvePath(p, dir)
+	}
+	root, gitDir, workTree := checkoutRoot(dir), "", ""
+	for _, g := range repo {
+		switch name, value, _ := strings.Cut(g, "="); name {
+		case "--git-dir":
+			gitDir = resolvePath(value, dir)
+		case "--work-tree":
+			workTree = resolvePath(value, dir)
+		}
+	}
+	switch {
+	case workTree != "":
+		root = workTree
+	case gitDir != "" && filepath.Base(gitDir) == ".git":
+		root = filepath.Dir(gitDir)
+	case gitDir != "":
+		root = ""
+	}
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, p)
 }
 
 func unboundedOutput(segment string, cfg Config) *Denial {
@@ -122,6 +212,12 @@ func unboundedOutput(segment string, cfg Config) *Denial {
 			fix = "git log -n 20 --oneline"
 		}
 	case "git diff", "git show":
+		// `git show <rev>:<path>` prints one file as it is at rev: a file read,
+		// which dumpBudget measures like cat. Refusing it as a diff was 300 of
+		// the 304 git-show denials in the 2026-09-25 field audit.
+		if f[1] == "show" && blobSpecs(f[2:]) != nil {
+			return nil
+		}
 		pathBound := false
 		for i, a := range f {
 			if a == "--" && i+1 < len(f) {
