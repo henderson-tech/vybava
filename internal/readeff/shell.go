@@ -29,8 +29,14 @@ func shellCall(cmd, cwd string) Call {
 	c := Call{Tool: "Bash"}
 	c.shell(cmd, cwd, 0)
 	if c.patched && strings.Contains(cmd, "*** Begin Patch") { // apply_patch fed a heredoc
-		files, changed := patchChanged(cmd, firstNonEmpty(c.patchDir, cwd))
-		c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
+		for i, body := range strings.Split(cmd, "*** Begin Patch")[1:] {
+			dir := cwd // each body pairs with the apply_patch that ran it
+			if i < len(c.patchDirs) {
+				dir = c.patchDirs[i]
+			}
+			files, changed := patchChanged("*** Begin Patch"+body, dir)
+			c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
+		}
 	} else if c.wrote {
 		c.Changed += heredocLines(cmd) // `cat > f <<'EOF'`: the body is the file
 	}
@@ -100,7 +106,7 @@ func (c *Call) pipeline(stages []string, dir *string, vars map[string]string, de
 				inner.shell(p, *dir, depth+1)
 			}
 			c.Edit, c.wrote, c.patched = c.Edit || inner.Edit, c.wrote || inner.wrote, c.patched || inner.patched
-			c.patchDir = firstNonEmpty(c.patchDir, inner.patchDir)
+			c.patchDirs = append(c.patchDirs, inner.patchDirs...)
 			c.Edited = append(c.Edited, inner.Edited...)
 			for _, sp := range inner.Spans {
 				spans = append(spans, Span{Path: sp.Path}) // filtered downstream: range unknown
@@ -117,9 +123,7 @@ func (c *Call) pipeline(stages []string, dir *string, vars map[string]string, de
 			}
 		case word == "apply_patch":
 			c.Edit, c.patched = true, true
-			if c.patchDir == "" {
-				c.patchDir = *dir // its paths are relative to where it ran
-			}
+			c.patchDirs = append(c.patchDirs, *dir) // its paths are relative to where it ran
 		case word == "tee":
 			for _, p := range operands(word, args, *dir) {
 				if !scratch(p) {

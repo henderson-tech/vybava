@@ -76,6 +76,11 @@ func TestShellCallMixedAndWrites(t *testing.T) {
 	if !slices.Equal(nested.Edited, []string{"/r/sub/a.go"}) {
 		t.Errorf("apply_patch after a payload cd edited %q, want /r/sub/a.go", nested.Edited)
 	}
+	two := "cd a && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: x.go\n+y\n*** End Patch\nEOF\n" +
+		"cd /r/b && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: x.go\n+z\n*** End Patch\nEOF"
+	if twice := shellCall(two, "/r"); !slices.Equal(twice.Edited, []string{"/r/a/x.go", "/r/b/x.go"}) || twice.Changed != 2 {
+		t.Errorf("two patches under two dirs = edited %q changed %d, want /r/a/x.go and /r/b/x.go, 2", twice.Edited, twice.Changed)
+	}
 	heredoc := shellCall("cat > new.go <<'EOF'\npackage x\n\nfunc F() {}\nEOF", "/r")
 	if !heredoc.Edit || heredoc.Changed != 3 {
 		t.Errorf("heredoc write changed %d, want its 3 body lines", heredoc.Changed)
