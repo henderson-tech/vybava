@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,9 +109,9 @@ func TestFaultDecide(t *testing.T) {
 	}
 }
 
-func startHTTP(t *testing.T, upstream string, recPath string) (*Server, *bytes.Buffer) {
+func startHTTP(t *testing.T, upstream string, recPath string) (*Server, *syncBuffer) {
 	t.Helper()
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	s, err := NewServer(Config{Name: "t", Mode: "http", Listen: "127.0.0.1:0", Upstream: upstream}, &logBuf, recPath)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +225,7 @@ func echoServer(t *testing.T) string {
 }
 
 func TestTCPProxy(t *testing.T) {
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	s, err := NewServer(Config{Name: "db", Mode: "tcp", Listen: "127.0.0.1:0", Upstream: echoServer(t)}, &logBuf, "")
 	if err != nil {
 		t.Fatal(err)
@@ -663,4 +664,22 @@ func hasCode(err error, code string) bool {
 func hasExit(err error, code int) bool {
 	var e runx.ExitCoder
 	return errors.As(err, &e) && e.ExitCode() == code
+}
+
+// syncBuffer is a bytes.Buffer safe to read while handler goroutines log to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
