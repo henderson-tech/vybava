@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -154,15 +156,15 @@ func scriptKind(payload []string) string {
 // `dev:*` script's package.json is read.
 func machineStartMatch(cmd, cwd string) (segment, kind string) {
 	home, _ := os.UserHomeDir()
-	for _, seg := range localSegments(cmd) {
-		if f := shellFields(seg); len(f) > 1 && f[0] == "cd" {
+	for _, seg := range shellseg.LocalSegments(cmd) {
+		if f := shellseg.Fields(seg); len(f) > 1 && f[0] == "cd" {
 			cwd = resolveDir(f[1], cwd, home)
 			continue
 		}
 		if textOnly(seg) {
 			continue
 		}
-		argv := chainCommand(trimSubshell(seg), machineStarters)
+		argv := chainCommand(shellseg.TrimSubshell(seg), machineStarters)
 		if argv == nil {
 			continue
 		}
@@ -171,7 +173,7 @@ func machineStartMatch(cmd, cwd string) (segment, kind string) {
 			k = devScriptKind(argv, cwd)
 		}
 		if k != "" {
-			return strings.TrimSpace(trimAssignments(trimSubshell(seg))), k
+			return strings.TrimSpace(shellseg.TrimAssignments(shellseg.TrimSubshell(seg))), k
 		}
 	}
 	return "", ""
@@ -194,8 +196,8 @@ func devScriptKind(argv []string, cwd string) string {
 	if !ok {
 		return "dev"
 	}
-	for _, seg := range localSegments(body) {
-		if a := chainCommand(trimSubshell(seg), machineStarters); a != nil {
+	for _, seg := range shellseg.LocalSegments(body) {
+		if a := chainCommand(shellseg.TrimSubshell(seg), machineStarters); a != nil {
 			switch k := startKind(a); k {
 			case "":
 			case kindDevScript:

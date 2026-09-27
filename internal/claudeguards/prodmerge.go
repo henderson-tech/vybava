@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/gitkit"
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -83,17 +84,17 @@ func guardProdMerge(in *HookInput) *Denial {
 	dir := in.CWD
 	// The escape counts only for the simple command it prefixes (and what that
 	// command runs): `CLAUDE_ALLOW_PROD_MERGE=1 true; gh pr merge …` is no go.
-	for _, top := range shellSegments(cmd) {
-		escaped := escapeHatch(strings.Trim(top.text, " \t\r"), prodMergeEscapeVar)
-		for _, seg := range appendSegments(nil, top.text, 0, false) {
+	for _, top := range shellseg.SplitScript(cmd) {
+		escaped := escapeHatch(strings.Trim(top.Text, " \t\r"), prodMergeEscapeVar)
+		for _, seg := range shellseg.AppendSegments(nil, top.Text, 0, false) {
 			if textOnly(seg) {
 				continue
 			}
-			f := shellFields(seg)
+			f := shellseg.Fields(seg)
 			if len(f) == 0 {
 				continue
 			}
-			if commandWord(seg) == "cd" {
+			if shellseg.CommandWord(seg) == "cd" {
 				if len(f) > 1 {
 					dir = resolveDir(f[1], dir, home)
 				}
@@ -125,7 +126,7 @@ func guardProdMerge(in *HookInput) *Denial {
 func afterCommand(f []string, name string) []string {
 	launched := false
 	for i, t := range f {
-		if assignPrefix.MatchString(t) && !launched {
+		if shellseg.AssignPrefix.MatchString(t) && !launched {
 			continue
 		}
 		if j := strings.LastIndexByte(t, '/'); j >= 0 {
@@ -134,7 +135,7 @@ func afterCommand(f []string, name string) []string {
 		if t == name {
 			return f[i+1:]
 		}
-		if !launched && !commandRunners[t] {
+		if !launched && !shellseg.Runners[t] {
 			return nil
 		}
 		launched = true

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/henderson-tech/vybava/internal/claudeguards"
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // HookPayload is the subset of a Claude Code / Codex hook event memo reads.
@@ -186,8 +186,8 @@ func patchFileTargets(command string) []string {
 // invokes apply_patch, through claudeguards' one segmentation (so a `bash
 // -lc "..."` payload counts and a quoted mention does not).
 func shellRunsApplyPatch(command string) bool {
-	for _, seg := range claudeguards.Segments(command) {
-		fields := claudeguards.ShellFields(seg)
+	for _, seg := range shellseg.Segments(command) {
+		fields := shellseg.Fields(seg)
 		if len(fields) > 0 && filepath.Base(fields[0]) == "apply_patch" {
 			return true
 		}
@@ -200,8 +200,8 @@ func shellRunsApplyPatch(command string) bool {
 // `rm`/`truncate` operands. Segmentation is claudeguards' one definition.
 func shellWriteTargets(command string) []string {
 	var out []string
-	for _, seg := range claudeguards.Segments(command) {
-		fields := claudeguards.ShellFields(seg)
+	for _, seg := range shellseg.Segments(command) {
+		fields := shellseg.Fields(seg)
 		if len(fields) == 0 {
 			continue
 		}

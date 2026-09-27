@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -165,40 +167,6 @@ func lineCount(abs string) (int, bool) {
 	return n, true
 }
 
-// shellFields splits a segment on whitespace, honouring single and double
-// quotes (kept out of the field). Good enough for argv-shaped commands.
-func shellFields(s string) []string {
-	var out []string
-	var cur strings.Builder
-	inField, q := false, byte(0)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case q != 0:
-			if c == q {
-				q = 0
-			} else {
-				cur.WriteByte(c)
-			}
-		case c == '\'' || c == '"':
-			q, inField = c, true
-		case c == ' ' || c == '\t' || c == '\r':
-			if inField {
-				out = append(out, cur.String())
-				cur.Reset()
-				inField = false
-			}
-		default:
-			cur.WriteByte(c)
-			inField = true
-		}
-	}
-	if inField {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
 // dumpSegment is one shell segment plus whether its stdout goes somewhere
 // other than the tool result (a pipe into the next segment, or a redirect).
 type dumpSegment struct {
@@ -206,7 +174,7 @@ type dumpSegment struct {
 	consumed bool
 }
 
-// dumpSegments splits like segments() but remembers when a segment's output
+// dumpSegments splits like shellseg.Segments() but remembers when a segment's output
 // is consumed by a pipe. `cat f | grep x` never reaches context; `cat f` does.
 // reducingSinks shrink what a pipe delivers, so a read feeding one never
 // reaches context whole. `cat`, `tee`, `less` and `more` reproduce their input
@@ -261,7 +229,7 @@ func inlineProgramSink(name string, args []string) bool {
 // to within budget. head and tail are sinks only when their own limit says so:
 // `head -1000` and `tail -n +1` are reducing in name alone.
 func reducesOutput(seg string, budget int) bool {
-	f := shellFields(strings.TrimLeft(seg, "( \t"))
+	f := shellseg.Fields(strings.TrimLeft(seg, "( \t"))
 	for len(f) > 0 && strings.Contains(f[0], "=") {
 		f = f[1:]
 	}
@@ -376,16 +344,16 @@ func dumpSegments(cmd string, budget int) []dumpSegment {
 	// separator inside a grep pattern or a commit message is not read as a
 	// pipeline here either. sep carries the separator that FOLLOWS a segment,
 	// which is what the pipe walk below needs.
-	parts := shellSegments(cmd)
+	parts := shellseg.SplitScript(cmd)
 	texts := make([]string, len(parts))
 	piped := make([]bool, len(parts))
 	for i, p := range parts {
-		texts[i], piped[i] = p.text, p.sep == "|"
+		texts[i], piped[i] = p.Text, p.Sep == "|"
 	}
 
 	var out []dumpSegment
 	for i, raw := range texts {
-		s := trimAssignments(trimSubshell(strings.Trim(raw, " \t\r")))
+		s := shellseg.TrimAssignments(shellseg.TrimSubshell(strings.Trim(raw, " \t\r")))
 		if s == "" {
 			continue
 		}
@@ -433,7 +401,7 @@ func dumpBudget(seg, cwd string, cfg Config) (verdict dumpVerdict, file string, 
 }
 
 func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpVerdict, file string, lines, total int) {
-	fields := shellFields(seg)
+	fields := shellseg.Fields(seg)
 	if len(fields) == 0 || !dumpCommands[fields[0]] {
 		return dumpOK, "", 0, 0
 	}
@@ -574,7 +542,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 // the next attempt from missing the same way. Anything further over budget is
 // a genuinely different read and gets no hint.
 func sedWindowHint(seg string, budget int) string {
-	f := shellFields(seg)
+	f := shellseg.Fields(seg)
 	if len(f) == 0 || f[0] != "sed" {
 		return ""
 	}

@@ -1,6 +1,10 @@
 package claudeguards
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
+)
 
 // cappedValue reports whether one of these flags carries a real limit. A flag
 // whose value is `all` names the uncapped default, so it caps nothing.
@@ -32,7 +36,7 @@ var gitGlobalFlags = map[string]bool{
 }
 
 func skipGitGlobals(f []string) []string {
-	if len(f) == 0 || commandWord(f[0]) != "git" {
+	if len(f) == 0 || shellseg.CommandWord(f[0]) != "git" {
 		return f
 	}
 	i := 1
@@ -54,7 +58,7 @@ func skipGitGlobals(f []string) []string {
 }
 
 func unboundedOutput(segment string, cfg Config) *Denial {
-	f := shellFields(trimAssignments(trimSubshell(segment)))
+	f := shellseg.Fields(shellseg.TrimAssignments(shellseg.TrimSubshell(segment)))
 	f = skipGitGlobals(f)
 	if len(f) < 2 {
 		return nil
