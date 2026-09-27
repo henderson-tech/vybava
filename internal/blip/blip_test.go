@@ -433,14 +433,14 @@ func TestQueryCredentialsNeverStoredOrReplayed(t *testing.T) {
 	rec := filepath.Join(t.TempDir(), "q.rec.jsonl")
 	s, _ := startHTTP(t, up.URL, rec)
 	s.SetRecording(true)
-	if _, _, err := get(t, "http://"+s.Addr().String()+"/files?id=1&access_token=secret&X-Amz-Signature=sigsecret"); err != nil {
+	if _, _, err := get(t, "http://"+s.Addr().String()+"/files?id=1&access_token=secret&X-Amz-Signature=sigsecret&X-Amz-Security-Token=tokensecret&X-Amz-Credential=AKIAsecret"); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(rec)
-	if bytes.Contains(raw, []byte("secret")) || !bytes.Contains(raw, []byte(`"query":"id=1"`)) || !bytes.Contains(raw, []byte(`"credential_query":["access_token","x-amz-signature"]`)) {
+	if bytes.Contains(raw, []byte("secret")) || !bytes.Contains(raw, []byte(`"query":"id=1"`)) || !bytes.Contains(raw, []byte(`"credential_query":["access_token","x-amz-signature","x-amz-security-token","x-amz-credential"]`)) {
 		t.Fatalf("recording: %s", raw)
 	}
-	if st := s.Status(); len(st.CredentialQuery) != 2 || st.CredentialQuery[0] != "access_token" {
+	if st := s.Status(); len(st.CredentialQuery) != 4 || st.CredentialQuery[0] != "access_token" {
 		t.Fatalf("status credential query = %v", st.CredentialQuery)
 	}
 	recs, _ := ReadRecords(rec)

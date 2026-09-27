@@ -51,7 +51,7 @@ under concurrent requests.
 response status and byte length; never the response body) to
 `<name>.rec.jsonl` (0600, removed by `record clear` and `down`). Credential
 headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`,
-`X-Auth-Token`) and credential query keys (`access_token`, `X-Amz-Signature`,
+`X-Auth-Token`) and credential query keys (`access_token`, `X-Amz-Signature`, `X-Amz-Security-Token`, `X-Amz-Credential`, `X-Goog-Signature`, `X-Goog-Credential`,
 `sig`, `signature`, `token`, `api_key`, `apikey`, `key`, `auth`, `jwt`,
 `session`; case-insensitive) are stripped at record time and never re-added by
 a replay; only their NAMES are kept and `status` lists them. `status` shows

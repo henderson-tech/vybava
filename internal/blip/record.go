@@ -42,7 +42,7 @@ func stripCredentials(h http.Header) []string {
 // reads, signed URLs). Matched case-insensitively; stripped from the stored
 // query and never re-added by a replay — the --as identity is the only
 // credential a replay carries.
-var credentialQueryKeys = []string{"access_token", "x-amz-signature", "sig", "signature", "token", "api_key", "apikey", "key", "auth", "jwt", "session"}
+var credentialQueryKeys = []string{"access_token", "x-amz-signature", "x-amz-security-token", "x-amz-credential", "x-goog-signature", "x-goog-credential", "sig", "signature", "token", "api_key", "apikey", "key", "auth", "jwt", "session"}
 
 // stripCredentialQuery removes credentialQueryKeys from a raw query,
 // preserving the order and encoding of what remains, and returns the
