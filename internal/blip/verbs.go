@@ -142,7 +142,7 @@ func (t *Tool) Up(name, listen, to string) (Result, error) {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = logF, logF, nil
 	cmd.Env = append(os.Environ(), "BLIP_STATE_DIR="+t.Dir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
 	}
