@@ -19,19 +19,37 @@ func WriteNote(home, typ, topic, description, body string, now time.Time) (strin
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	base := Slugify(typ + "-" + topic)
-	slug := base
-	for n := 2; ; n++ {
-		if _, err := os.Stat(filepath.Join(dir, slug+".md")); os.IsNotExist(err) {
-			break
-		}
-		slug = fmt.Sprintf("%s-%d", base, n)
-	}
+	base := NoteSlug(typ, topic)
 	desc := strings.ReplaceAll(strings.ReplaceAll(description, `\`, `\\`), `"`, `\"`)
-	text := fmt.Sprintf("---\nname: %s\ndescription: \"%s\"\ntype: %s\nstatus: active\nlast-verified: %s\n---\n\n%s\n",
-		slug, desc, typ, now.Format("2006-01-02"), strings.TrimSpace(body))
-	if err := os.WriteFile(filepath.Join(dir, slug+".md"), []byte(text), 0o644); err != nil {
-		return "", err
+	// Create exclusively and move to the next number on a collision: a stat
+	// followed by a write would let two concurrent adds pick the same slug
+	// and the later one truncate the earlier note.
+	for n := 1; ; n++ {
+		slug := base
+		if n > 1 {
+			slug = fmt.Sprintf("%s-%d", base, n)
+		}
+		f, err := os.OpenFile(filepath.Join(dir, slug+".md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		text := fmt.Sprintf("---\nname: %s\ndescription: \"%s\"\ntype: %s\nstatus: active\nlast-verified: %s\n---\n\n%s\n",
+			slug, desc, typ, now.Format("2006-01-02"), strings.TrimSpace(body))
+		if _, err := f.WriteString(text); err != nil {
+			f.Close()
+			return "", err
+		}
+		if err := f.Close(); err != nil {
+			return "", err
+		}
+		return slug, nil
 	}
-	return slug, nil
 }
+
+// NoteSlug is the slug WriteNote starts from for a row: <type>-<topic>.
+// A caller that validates the row before writing the note links this
+// prospective slug; the written one differs only by a number on collision.
+func NoteSlug(typ, topic string) string { return Slugify(typ + "-" + topic) }
