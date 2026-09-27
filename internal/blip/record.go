@@ -179,16 +179,19 @@ func redactBody(contentType string, body []byte) (out []byte, redacted []string,
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	switch {
 	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
+		// The stored body is ALWAYS the re-encoded parsed value — original
+		// bytes never reach the file. Decode accepts trailing data, so the
+		// stream must be exactly one value followed by EOF.
 		dec := json.NewDecoder(bytes.NewReader(body))
 		dec.UseNumber()
 		var v any
-		if err := dec.Decode(&v); err != nil {
+		if err := dec.Decode(&v); err != nil || dec.More() {
+			return nil, nil, true
+		}
+		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 			return nil, nil, true
 		}
 		v = redactJSON(v, "", &redacted)
-		if redacted == nil {
-			return body, nil, false
-		}
 		sort.Strings(redacted)
 		out, err := json.Marshal(v)
 		if err != nil {
@@ -196,24 +199,20 @@ func redactBody(contentType string, body []byte) (out []byte, redacted []string,
 		}
 		return out, redacted, false
 	case mediaType == "application/x-www-form-urlencoded":
-		var kept []string
-		for _, pair := range strings.Split(string(body), "&") {
-			key, _, hasValue := strings.Cut(pair, "=")
-			decoded, err := url.QueryUnescape(key)
-			if err != nil {
-				return nil, nil, true
-			}
-			if hasValue && slices.Contains(credentialBodyKeys, strings.ToLower(decoded)) {
-				kept = append(kept, key+"="+url.QueryEscape(redactedValue))
-				redacted = append(redacted, decoded)
-				continue
-			}
-			kept = append(kept, pair)
+		// Same rule: parse fully (ParseQuery rejects bad escapes in keys AND
+		// values) and store values.Encode(), never the original bytes.
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil, nil, true
 		}
-		if redacted == nil {
-			return body, nil, false
+		for k := range values {
+			if slices.Contains(credentialBodyKeys, strings.ToLower(k)) {
+				values[k] = []string{redactedValue}
+				redacted = append(redacted, k)
+			}
 		}
-		return []byte(strings.Join(kept, "&")), redacted, false
+		sort.Strings(redacted)
+		return []byte(values.Encode()), redacted, false
 	}
 	return body, nil, false
 }

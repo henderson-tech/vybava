@@ -498,21 +498,29 @@ func TestBodyRedaction(t *testing.T) {
 	post("/broken", "application/json", `{"password":"unterminated`)
 	huge := `{"pad":"` + strings.Repeat("x", recordBodyLimit) + `","password":"oversize-secret"}`
 	post("/big", "application/json", huge)
+	post("/trailing", "application/json", `{"ok":1} {"password":"trailing-secret"}`)
+	post("/badform", "application/x-www-form-urlencoded", "user=abc%GG&password=escape-secret")
 	raw, _ := os.ReadFile(rec)
-	for _, secret := range []string{"hunter2", "s3cret", "deep", "arr-secret", "unterminated", "oversize-secret"} {
+	for _, secret := range []string{"hunter2", "s3cret", "deep", "arr-secret", "unterminated", "oversize-secret", "trailing-secret", "escape-secret", "abc%GG"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("credential value %q stored:\n%.300s", secret, raw)
 		}
 	}
 	recs, _ := ReadRecords(rec)
-	if len(recs) != 5 {
+	if len(recs) != 7 {
 		t.Fatalf("records = %d", len(recs))
+	}
+	for _, i := range []int{5, 6} {
+		if !recs[i].BodyUnparsed || recs[i].Body != nil {
+			t.Fatalf("%s: trailing JSON / bad form escape must be unparsed with no bytes: %+v", recs[i].Path, recs[i])
+		}
 	}
 	if got := recs[0].BodyRedacted; strings.Join(got, ",") != "Password,credentials.password,users[1].token" ||
 		!bytes.Contains(recs[0].Body, []byte(`"user":"lukas"`)) || !bytes.Contains(recs[0].Body, []byte(`"n":7`)) || !bytes.Contains(recs[0].Body, []byte(`{"password":"[redacted]"}`)) {
 		t.Fatalf("json redaction (any depth, other keys kept): %v %s", got, recs[0].Body)
 	}
-	if got := recs[1].BodyRedacted; len(got) != 1 || got[0] != "client_secret" || string(recs[1].Body) != "grant_type=client_credentials&client_id=app&client_secret=%5Bredacted%5D" {
+	// Forms are stored as url.Values.Encode() (sorted keys), never the raw bytes.
+	if got := recs[1].BodyRedacted; len(got) != 1 || got[0] != "client_secret" || string(recs[1].Body) != "client_id=app&client_secret=%5Bredacted%5D&grant_type=client_credentials" {
 		t.Fatalf("form redaction: %v %s", got, recs[1].Body)
 	}
 	if recs[2].BodyRedacted != nil || string(recs[2].Body) != "password=not-a-form" {
@@ -526,8 +534,37 @@ func TestBodyRedaction(t *testing.T) {
 	}
 	id, _ := ParseIdentity("none")
 	rep, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}, Mutations: true})
-	if err != nil || rep.Checked != 1 || len(rep.Skipped) != 4 || rep.Skipped[0].Reason != "body carried credentials (redacted)" || !strings.HasPrefix(rep.Skipped[2].Reason, "body not stored") {
+	if err != nil || rep.Checked != 1 || len(rep.Skipped) != 6 || rep.Skipped[0].Reason != "body carried credentials (redacted)" || !strings.HasPrefix(rep.Skipped[2].Reason, "body not stored") {
 		t.Fatalf("replay must skip redacted/unstored bodies: %+v %v", rep, err)
+	}
+}
+
+// TestBodySkipDoesNotConsumeURL: an unparsed recording followed by a valid
+// one of the same method+URL still yields exactly one replay.
+func TestBodySkipDoesNotConsumeURL(t *testing.T) {
+	var hits int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "s.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	base := "http://" + s.Addr().String()
+	for _, body := range []string{`{"q":"broken`, `{"q":"fine"}`, `{"q":"fine"}`} {
+		resp, err := http.Post(base+"/search", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	recs, _ := ReadRecords(rec)
+	if len(recs) != 3 || !recs[0].BodyUnparsed || recs[1].BodyUnparsed {
+		t.Fatalf("records: %+v", recs)
+	}
+	hits = 0
+	id, _ := ParseIdentity("none")
+	rep, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}, Mutations: true})
+	if err != nil || rep.Checked != 1 || hits != 1 || len(rep.Skipped) != 1 {
+		t.Fatalf("checked=%d hits=%d skipped=%d %v", rep.Checked, hits, len(rep.Skipped), err)
 	}
 }
 

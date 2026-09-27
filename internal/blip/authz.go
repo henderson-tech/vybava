@@ -175,14 +175,16 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 		if seen[key] {
 			continue
 		}
-		seen[key] = true
 		if (opts.Only != "" && !MatchPath(opts.Only, rec.Path)) || (opts.Exclude != "" && MatchPath(opts.Exclude, rec.Path)) {
 			continue
 		}
 		if mutating[rec.Method] && !opts.Mutations {
+			seen[key] = true // per-URL decision: one skip line per URL
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "mutation (pass --mutations to replay)"})
 			continue
 		}
+		// Body-based skips are per RECORD: a later valid recording of the
+		// same URL must still be replayed, so they do not consume the key.
 		if rec.BodyTruncated || rec.BodyUnparsed {
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body not stored (truncated or unparsed at record time)"})
 			continue
@@ -191,6 +193,7 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 			rep.Skipped = append(rep.Skipped, Skipped{Method: rec.Method, Path: rec.Path, Reason: "body carried credentials (redacted)"})
 			continue
 		}
+		seen[key] = true
 		target := strings.TrimSuffix(upstream, "/") + wirePath
 		if rec.Query != "" {
 			target += "?" + rec.Query

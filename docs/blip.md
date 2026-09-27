@@ -59,8 +59,11 @@ a replay; only their NAMES are kept and `status` lists them. JSON (one level)
 and form bodies get credential keys (`password`, `secret`, `token`,
 `client_secret`, `otp`, `code`, …) replaced by `[redacted]` at any depth;
 such a record lists their paths in `body_redacted` and is skipped by `authz`.
-A body over 64 KiB or a JSON/form body that does not parse is stored with NO
-bytes (`body_truncated`/`body_unparsed`) and never replayed. Paths are stored
+A JSON/form body is stored ONLY as its re-encoded parsed value (never the
+original bytes); one over 64 KiB or one that does not fully parse (trailing
+data, bad escapes) is stored with NO bytes (`body_truncated`/`body_unparsed`)
+and never replayed, without blocking a later valid recording of the same
+URL. Paths are stored
 decoded (for `--only`) and raw (`raw_path`, what a replay sends). `status`
 shows `recorded=N`.
 
