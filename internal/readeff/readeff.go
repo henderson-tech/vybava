@@ -87,6 +87,9 @@ func settle(c Call, out string, failed bool) Call {
 			c.Found = foundPaths(out, c.dir)
 		}
 	}
+	if sp := c.Spans; c.Read && len(sp) == 1 && sp[0].Start > 0 && sp[0].N > c.Lines {
+		sp[0].N = c.Lines // `head -n 30` of a 5-line file returned 5
+	}
 	if c.Read && !failed && len(c.Spans) == 1 && c.Spans[0].Whole && c.Spans[0].N == 0 {
 		c.Spans[0].N, c.Spans[0].Total = c.Lines, c.Lines
 	}

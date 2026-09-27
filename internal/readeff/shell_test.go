@@ -30,6 +30,7 @@ func TestShellCall(t *testing.T) {
 		{"heredoc overwrite is an edit", "cat > out.go <<'EOF'\npackage x\nEOF", ClassEdit, nil, []string{"/r/out.go"}},
 		{"sed -i is an edit", `sed -i '' 's/a/b/' a.go`, ClassEdit, nil, []string{"/r/a.go"}},
 		{"scratch output is not an edit", "jq . a.json > /tmp/x.json", ClassOther, nil, nil},
+		{"a quoted redirect target is one word", `echo x > "foo bar.go"`, ClassEdit, nil, []string{"/r/foo bar.go"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +85,11 @@ func TestShellCallMixedAndWrites(t *testing.T) {
 	inner := "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: m.go\n+const m = \"*** Begin Patch\"\n+x\n*** End Patch\nEOF"
 	if marker := shellCall(inner, "/r"); marker.Changed != 2 || !slices.Equal(marker.Edited, []string{"/r/m.go"}) {
 		t.Errorf("a marker inside an added line = changed %d edited %q, want 2 and /r/m.go", marker.Changed, marker.Edited)
+	}
+	short := shellCall("head -n 30 a.go", "/r")
+	short.Lines = 5
+	if got := settle(short, "1\n2\n3\n4\n5", false); got.Spans[0].N != 5 {
+		t.Errorf("head -n 30 of a 5-line file spans %d lines, want the 5 returned", got.Spans[0].N)
 	}
 	heredoc := shellCall("cat > new.go <<'EOF'\npackage x\n\nfunc F() {}\nEOF", "/r")
 	if !heredoc.Edit || heredoc.Changed != 3 {

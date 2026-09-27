@@ -29,9 +29,15 @@ to counts and paths: lines returned, file ranges, files changed. No command
 text or output leaves the scan, and nothing is stored — every report scans
 on demand, so there is no index to keep fresh.
 
-A scoped report opens only the repository's transcripts: a Claude project
-directory is named after its launch directory, and a rollout's first record
-names its cwd. Scanning every repository reads every transcript in the window —
+A scoped report decodes only the repository's transcripts: a Claude project
+directory is named after its launch directory, so other repositories' Claude
+transcripts are never opened, and a Codex rollout is opened for its first
+record (the cwd) and closed when it names another repository. A Claude
+session launched from a linked worktree OUTSIDE the repository directory has
+an unrelated project name and is only counted by `--all` — resolving it would
+mean opening every other project's transcript. Worktrees under the repository
+(`.worktrees/`, `.claude/worktrees/`) are counted and fold into its files.
+Scanning every repository reads every transcript in the window —
 a few GB for a busy week — on up to four workers, one session in memory per
 worker.
 

@@ -340,8 +340,13 @@ func redirectTargets(seg string) (out []string, away bool) {
 			j++
 		}
 		k := j
-		for k < len(seg) && !strings.ContainsRune(" \t;&|<>)", rune(seg[k])) {
-			k++
+		for q := byte(0); k < len(seg) && (q != 0 || !strings.ContainsRune(" \t;&|<>)", rune(seg[k]))); k++ {
+			switch { // a quoted target is one word, spaces included
+			case q != 0 && seg[k] == q:
+				q = 0
+			case q == 0 && (seg[k] == '\'' || seg[k] == '"'):
+				q = seg[k]
+			}
 		}
 		if t := strings.Trim(seg[j:k], `'"`); t != "" && !strings.HasPrefix(seg[j:], "&") {
 			away = true
