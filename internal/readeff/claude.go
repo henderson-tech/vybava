@@ -80,7 +80,7 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 		Command  string `json:"command"`
 	}
 	_ = json.Unmarshal(input, &in) // an unexpected input shape leaves the fields empty
-	c := Call{Tool: name, Lines: lines, Visible: 1, Escaped: escapeVar(in.Command)}
+	c := Call{Tool: name, Lines: lines, Visible: 1}
 	switch name {
 	case "Read":
 		if f := out.File; f != nil {
@@ -110,6 +110,9 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 		c = shellCall(in.Command, cwd)
 		c.Tool, c.Lines, c.Stale = name, lines, out.StaleHint != ""
 	}
+	// After the Bash arm, which builds a fresh Call: the escape variable is
+	// what the outcome tally reads on the call after a block.
+	c.Escaped = escapeVar(in.Command)
 	c.classify()
 	return settle(c, r.Text, r.IsError)
 }
