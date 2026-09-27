@@ -23,7 +23,7 @@ Steps:
    `vybava gitkit before-review --repo <ABS repo path>`
    (LITERAL absolute path); a non-null `resolvedBeforeReviewCmd` runs BEFORE anything
    else here, null → skip silently — dev servers and bundlers must stop before you
-   diff. Then write the body per `pr-body.md` — run its blockers lens and links sweep
+   diff. Keep its `mergePolicy` for step 3. Then write the body per `pr-body.md` — run its blockers lens and links sweep
    over `git diff <base>...HEAD`, and fill `Opened by session` from
    `printenv CLAUDE_CODE_SESSION_ID`, so migrations, env vars, flags, deployed-client
    breaks, boards and the opening session surface before the PR exists.
@@ -39,9 +39,9 @@ Steps:
    - otherwise: `git push -u origin HEAD`, then
      `vybava gitkit github-io create-pr --head <branch> --base <base>`
      with `--title <text>` and `--body-file <file>` (caller's values win when
-     supplied) and `--draft` when passed. **`MERGE_POLICY=self`** in
-     `<mainClone>/.claude/.claude.git.config` → add `--label eve-ignore` (create the
-     label first if missing: `gh label create eve-ignore --color ededed --description
+     supplied) and `--draft` when passed. **`mergePolicy: "self"`** in step 0's
+     `before-review` JSON (never `cat` the config — most repos have none) → add
+     `--label eve-ignore` (create the label first if missing: `gh label create eve-ignore --color ededed --description
      "skip eve's automatic PR review" --force`) so eve never reviews a PR nobody will
      wait on; a labelled PR whose author later wants a review just removes the label. `--fill` stays in argv as a backstop, but
      reaching it means step 0 was skipped — a bug, not an outcome. "No commits between
