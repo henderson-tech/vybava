@@ -311,7 +311,7 @@ func guardDevboxOnly(in *HookInput) *Denial {
 
 runs on this Mac; this repo's guards.devboxOnly routes it to the Devbox:
     %s
-From a worktree without a workspace, /devbox resolves-or-creates one. The
-Mac keeps simulators, Appium specs and native builds; everything else that
-serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, hit.seg, devboxRerun(hit, hit.runs[0], in.CWD, "")), devboxOnlyEscape)
+From a worktree without a workspace, /devbox resolves-or-creates one. What
+stays on this Mac (simulators, Metro, native builds, …) is listed beside
+guards.devboxOnly in the repo's vybava.config.ts.`, hit.seg, devboxRerun(hit, hit.runs[0], in.CWD, "")), devboxOnlyEscape)
 }
