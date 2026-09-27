@@ -348,7 +348,7 @@ func redirectTargets(seg string) (out []string, away bool) {
 				q = seg[k]
 			}
 		}
-		if t := strings.Trim(seg[j:k], `'"`); t != "" && !strings.HasPrefix(seg[j:], "&") {
+		if t := strings.Join(shellseg.Fields(seg[j:k]), ""); t != "" && !strings.HasPrefix(seg[j:], "&") { // one word, quotes decoded
 			away = true
 			if t != "/dev/null" {
 				out = append(out, t)

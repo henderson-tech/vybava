@@ -31,6 +31,7 @@ func TestShellCall(t *testing.T) {
 		{"sed -i is an edit", `sed -i '' 's/a/b/' a.go`, ClassEdit, nil, []string{"/r/a.go"}},
 		{"scratch output is not an edit", "jq . a.json > /tmp/x.json", ClassOther, nil, nil},
 		{"a quoted redirect target is one word", `echo x > "foo bar.go"`, ClassEdit, nil, []string{"/r/foo bar.go"}},
+		{"a partly quoted redirect target decodes", `echo x > foo" bar".go`, ClassEdit, nil, []string{"/r/foo bar.go"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
