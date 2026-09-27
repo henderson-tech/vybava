@@ -82,8 +82,15 @@ func skillDoc(abs string) bool {
 	if filepath.Base(abs) == "SKILL.md" {
 		return true
 	}
-	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/") {
-		if part == "skills" {
+	// `<root>/skills/<name>/**.md` is a skill's document only when that skill
+	// exists — `<root>/skills/<name>/SKILL.md` — so a directory that merely
+	// happens to be called skills opens no hole in the budget.
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] != "skills" {
+			continue
+		}
+		if _, err := os.Stat(filepath.FromSlash(strings.Join(parts[:i+2], "/") + "/SKILL.md")); err == nil {
 			return true
 		}
 	}

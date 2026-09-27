@@ -137,9 +137,11 @@ func TestSkillDocsPassTheDumpBudget(t *testing.T) {
 	root := t.TempDir()
 	body := strings.Repeat("line\n", 400)
 	skill := filepath.Join(root, ".claude", "skills", "devbox", "SKILL.md")
+	prm := filepath.Join(root, "skills", "prm", "SKILL.md")
 	ref := filepath.Join(root, "skills", "prm", "references", "merge.md")
+	stray := filepath.Join(root, "skills", "orphan", "notes.md") // no SKILL.md beside it
 	doc := filepath.Join(root, "docs", "guide.md")
-	for _, p := range []string{skill, ref, doc} {
+	for _, p := range []string{skill, prm, ref, stray, doc} {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -147,7 +149,7 @@ func TestSkillDocsPassTheDumpBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for p, want := range map[string]bool{skill: false, ref: false, doc: true} {
+	for p, want := range map[string]bool{skill: false, prm: false, ref: false, stray: true, doc: true} {
 		if got := contextReadMatch(p, 0, root) != nil; got != want {
 			t.Errorf("Read %s: denied=%v, want %v", p, got, want)
 		}
