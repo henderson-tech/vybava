@@ -2,7 +2,8 @@
 // run": quote-aware splitting, heredoc stripping, assignment and subshell
 // trimming, and runner-payload unwrapping. claude-guards' rules and readeff's
 // command classification both read commands through it; never re-derive
-// segmentation locally (docs/decisions/0004-guard-field-audit.md).
+// segmentation locally (docs/decisions/0004-guard-field-audit.md). Quoting a
+// string as one shell word for output is internal/shellword.
 package shellseg
 
 import (

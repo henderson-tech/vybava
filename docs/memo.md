@@ -200,7 +200,7 @@ registered alias wins over the alias in a ledger's frontmatter.
   them (`>`/`>>` redirects, heredocs, `tee`, `sed -i`/`perl -i`, `cp`/`mv`
   destinations, `rm`). Exit 2; stderr names the memo verb that owns the file
   (`memo add`, `memo render`, `memo touch`). Files under `notes/` stay under
-  memorylint's hook. Shell segmentation is claudeguards' one definition
+  memorylint's hook. Shell segmentation is the one definition
   (`shellseg.Segments`), so quoted mentions never trip it.
 - **Stop / SessionEnd**: opens `transcript_path`, collects citations from
   assistant text and tool inputs (`#NN` / `^mNN` / `[[LEDGER#^mNN]]` credit
