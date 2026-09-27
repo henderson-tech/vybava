@@ -185,3 +185,9 @@ never a substring; an `always()`-style job behind guarded needs is an
 precedent; `pull_request_target` is outside the standard); repolicy's default policy carries the labels; `gitkit admin-labels` puts them on a PR and
 cancels the runs the push already queued; `merge-precheck` waives only the CI
 gate (`ciWaived`) for a `skip-ci` PR, which still needs `--admin` to land.
+
+`internal/blip` is the polish skill's chaos proxy (`docs/blip.md`): one daemon per
+name, http (path/method-scoped faults, `error`, `record`/`authz` replay) or raw
+tcp; ONE fault at a time behind an atomic pointer, `set` replaces it; every
+verb goes through the control socket, never the state file, and `authz`
+substitutes only the identity given by `--as` — it never guesses credentials.

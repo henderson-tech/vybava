@@ -92,6 +92,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "hotfix" {
 		return rt.hotfixApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "blip" {
+		return rt.blipApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "codexsync" {
 		return rt.codexsyncApplet(), nil
 	}
@@ -193,6 +196,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.pressCommand("press"),
 		rt.ingressgenCommand("ingressgen"),
 		rt.hotfixCommand("hotfix"),
+		rt.blipCommand("blip"),
 		rt.readinessCommand("readiness"),
 		rt.codexsyncCommand("codexsync"),
 		rt.codexusageCommand("codexusage"),
