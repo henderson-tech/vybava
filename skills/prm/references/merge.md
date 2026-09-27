@@ -213,22 +213,25 @@ Two non-negotiables: (a) every git op runs from the main clone via `git -C <main
 4b. **Devbox workspace** (after either path, while `<worktree>` is known): if the
    removed worktree carried a `devbox.yaml` (or `devbox.worktree.yaml`) — check
    BEFORE removal, or ask the box: `git -C <mainClone> ls-tree HEAD devbox.yaml` —
-   run `devbox reap --worktree <worktree> --json` from the main clone. It frees the
-   branch's port window and stops its stack; it applies exactly `devbox gc`'s verdict,
-   so it can never reap more than gc would. `ok:false` with `WS_NOT_DEAD` → report the
-   diagnostic's `fix` line, never retry, never `devbox down` on your own; `ok:true`
-   with `WS_NO_RUNTIME_META` (never instantiated) is a clean no-op. `devbox` missing
-   from PATH → skip silently (a non-devbox Mac). `WS_REAP_FAILED` saying "held or
-   not parked/stopped" on a workspace whose apps are all inactive is a **hold
-   lease** (4 h, renewed by every `devbox up`/`run`; `park`/`down` never clear it):
-   `devbox unhold <workspace>` then reap again — seen 2026-09-14 on
-   `fixit-work-vt-863`. A workspace with apps still ACTIVE is a different case:
-   report it, never `unhold` your way past a live session — unless `devbox` is
-   `down` (the default): merge = the branch's stack goes. Resolve the name
-   BEFORE the worktree is removed (`(cd <worktree> && devbox status --json)` →
-   `data.context.workspace`), then after removal `devbox down <workspace>` →
-   `devbox unhold <workspace>` → the reap above. Only that one workspace, never a
-   sibling; a `down` that fails is reported with its diagnostic, never retried.
+   act per `devbox` from the precheck. `devbox` missing from PATH → skip silently (a
+   non-devbox Mac). Either mode touches only this branch's workspace, never a sibling.
+   - **`down` (default) — merge = the branch's stack goes.** Resolve the name BEFORE
+     the worktree is removed (`(cd <worktree> && devbox status --json)` →
+     `data.context.workspace`); after removal, `devbox down <workspace> --json` →
+     `devbox unhold <workspace> --json` → `devbox reap --worktree <worktree> --json`
+     from the main clone. `down` may retire the record outright: a later `unknown
+     workspace` / `WS_NO_RUNTIME_META` means it is already gone, a clean finish. Any
+     other failure is reported with its diagnostic, never retried.
+   - **`reap` — gc's verdict only.** `devbox reap --worktree <worktree> --json` from
+     the main clone frees the branch's port window and stops its stack, but never
+     more than `devbox gc` would. `ok:false` with `WS_NOT_DEAD` → report the
+     diagnostic's `fix` line, never retry, never `devbox down` on your own; `ok:true`
+     with `WS_NO_RUNTIME_META` (never instantiated) is a clean no-op. `WS_REAP_FAILED`
+     saying "held or not parked/stopped" on a workspace whose apps are all inactive
+     is a **hold lease** (4 h, renewed by every `devbox up`/`run`; `park`/`down` never
+     clear it): `devbox unhold <workspace>` then reap again — seen 2026-09-14 on
+     `fixit-work-vt-863`. Apps still ACTIVE → report it, never `unhold` your way
+     past a live session.
 4c. **Main-clone dev servers** — `AFTER_MERGE_STOP_SERVERS` (after EITHER path, hook
    or generic, because a repo whose work lands from the main clone never had a
    worktree to scope step 4 to). `worktree` (default) → nothing extra; step 4 already
