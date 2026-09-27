@@ -65,6 +65,13 @@ func TestShellCallMixedAndWrites(t *testing.T) {
 	if !patch.Edit || patch.Changed != 3 || !slices.Equal(patch.Edited, []string{"/r/a.go"}) {
 		t.Errorf("apply_patch heredoc = edited %q changed %d, want /r/a.go and 3", patch.Edited, patch.Changed)
 	}
+	if inert := shellCall(`rg -n '*** Begin Patch' docs`, "/r"); inert.Edit || inert.Changed != 0 {
+		t.Errorf("searching for the patch marker = edit %v changed %d, want neither", inert.Edit, inert.Changed)
+	}
+	filtered := shellCall(`bash -lc 'cat a.go' | head -5`, "/r")
+	if !filtered.Read || len(filtered.Spans) != 1 || filtered.Spans[0] != (Span{Path: "/r/a.go"}) {
+		t.Errorf("runner piped into head = %+v, want a read of a.go with an unknown range", filtered.Spans)
+	}
 	heredoc := shellCall("cat > new.go <<'EOF'\npackage x\n\nfunc F() {}\nEOF", "/r")
 	if !heredoc.Edit || heredoc.Changed != 3 {
 		t.Errorf("heredoc write changed %d, want its 3 body lines", heredoc.Changed)

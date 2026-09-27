@@ -28,7 +28,7 @@ var (
 func shellCall(cmd, cwd string) Call {
 	c := Call{Tool: "Bash"}
 	c.shell(cmd, cwd, 0)
-	if strings.Contains(cmd, "*** Begin Patch") { // apply_patch fed a heredoc
+	if c.patched && strings.Contains(cmd, "*** Begin Patch") { // apply_patch fed a heredoc
 		files, changed := patchChanged(cmd, cwd)
 		c.Edit, c.Edited, c.Changed = true, append(c.Edited, files...), c.Changed+changed
 	} else if c.wrote {
@@ -86,10 +86,27 @@ func (c *Call) pipeline(stages []string, dir *string, vars map[string]string, de
 			visible = false
 		}
 		if payloads := shellseg.RunnerPayloads(st); len(payloads) > 0 && depth < shellseg.MaxRunnerDepth {
-			for _, p := range payloads { // `bash -lc '…'` runs its payload here
-				c.shell(p, *dir, depth+1)
+			if i == len(stages)-1 {
+				for _, p := range payloads { // `bash -lc '…'` runs its payload here
+					c.shell(p, *dir, depth+1)
+				}
+				visible = false // the payload's own pipelines carry its output
+				continue
 			}
-			visible = false // the payload's own pipelines carry its output
+			// `bash -lc 'cat a.go' | head`: the payload's writes stand, but
+			// its output is this pipeline's input — it is a stage here.
+			var inner Call
+			for _, p := range payloads {
+				inner.shell(p, *dir, depth+1)
+			}
+			c.Edit, c.wrote, c.patched = c.Edit || inner.Edit, c.wrote || inner.wrote, c.patched || inner.patched
+			c.Edited = append(c.Edited, inner.Edited...)
+			for _, sp := range inner.Spans {
+				spans = append(spans, Span{Path: sp.Path}) // filtered downstream: range unknown
+			}
+			if inner.Search && query == "" {
+				search, query = true, inner.Query
+			}
 			continue
 		}
 		switch {
@@ -98,7 +115,7 @@ func (c *Call) pipeline(stages []string, dir *string, vars map[string]string, de
 				*dir = resolve(*dir, args[0])
 			}
 		case word == "apply_patch":
-			c.Edit = true
+			c.Edit, c.patched = true, true
 		case word == "tee":
 			for _, p := range operands(word, args, *dir) {
 				if !scratch(p) {

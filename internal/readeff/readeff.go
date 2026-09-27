@@ -55,6 +55,7 @@ type Call struct {
 
 	dir     string // where a search ran, to resolve what it printed
 	wrote   bool   // a redirect or tee wrote a file whose lines are unmeasured
+	patched bool   // an apply_patch ran: its heredoc body is the change
 	outputs uint8  // kinds of output in the result: 1<<0 read, 1<<1 search, 1<<2 other
 }
 
