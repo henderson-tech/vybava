@@ -3,6 +3,7 @@ package readeff
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ func readCodex(path string) (Session, error) {
 	type pending struct {
 		item transcripts.ResponseItem
 		cwd  string
+		at   int // its place in s.Calls: a parallel batch finishes in any order
 	}
 	open := map[string]pending{}
 	res, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
@@ -52,16 +54,18 @@ func readCodex(path string) (Session, error) {
 			}
 			switch it.Type {
 			case transcripts.ItemFunctionCall, transcripts.ItemCustomCall:
-				open[it.CallID] = pending{item: it, cwd: cwd}
+				s.Calls = append(s.Calls, Call{open: true})
+				open[it.CallID] = pending{item: it, cwd: cwd, at: len(s.Calls) - 1}
 			case transcripts.ItemFunctionOutput, transcripts.ItemCustomOutput:
 				if p, ok := open[it.CallID]; ok {
 					delete(open, it.CallID)
-					s.Calls = append(s.Calls, codexCall(p.item, p.cwd, execOutput(it.OutputText())))
+					s.Calls[p.at] = codexCall(p.item, p.cwd, execOutput(it.OutputText()))
 				}
 			}
 		}
 		return nil
 	})
+	s.Calls = slices.DeleteFunc(s.Calls, func(c Call) bool { return c.open })
 	s.Oversize = res.Oversize
 	return s, err
 }

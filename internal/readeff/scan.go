@@ -105,6 +105,9 @@ func scanJobs(opts Options) ([]scanJob, error) {
 		out = append(out, scanJob{f.Path, func(p string) (Session, error) {
 			s, err := readClaude(p)
 			if sub { // a subagent shares its parent's session id
+				if s.ID == "" {
+					_, s.ID = projectSlug(opts.ClaudeRoot, p) // <session>/subagents/…
+				}
 				s.ID += "/" + trimExt(filepath.Base(p))
 			}
 			return s, err

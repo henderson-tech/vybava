@@ -3,6 +3,7 @@ package readeff
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/transcripts"
@@ -17,13 +18,15 @@ const compactTool = "(compact)"
 var wholeRead = transcripts.ScanOptions{Budget: math.MaxInt64, SkipOversize: true}
 
 // readClaude builds a session from one Claude Code transcript. A call pairs
-// with its result by tool_use id; a call whose result never came is dropped.
+// with its result by tool_use id and keeps its place in invocation order; a
+// call whose result never came is dropped.
 func readClaude(path string) (Session, error) {
 	s := Session{Agent: "claude"}
 	type pending struct {
 		name  string
 		input json.RawMessage
 		cwd   string
+		at    int // its place in s.Calls: results arrive in any order
 	}
 	open := map[string]pending{}
 	res, err := transcripts.Scan(path, transcripts.Cursor{}, false, wholeRead, func(line []byte, _ int64) error {
@@ -45,7 +48,8 @@ func readClaude(path string) (Session, error) {
 			s.Calls = append(s.Calls, Call{Tool: compactTool, Class: ClassOther})
 		case rec.Type == "assistant":
 			for _, u := range rec.Message.ToolUses() {
-				open[u.ID] = pending{name: u.Name, input: u.Input, cwd: rec.Cwd}
+				s.Calls = append(s.Calls, Call{open: true})
+				open[u.ID] = pending{name: u.Name, input: u.Input, cwd: rec.Cwd, at: len(s.Calls) - 1}
 			}
 		case rec.Type == "user":
 			outcome, _ := rec.Outcome()
@@ -55,11 +59,12 @@ func readClaude(path string) (Session, error) {
 					continue
 				}
 				delete(open, r.UseID)
-				s.Calls = append(s.Calls, claudeCall(p.name, p.input, p.cwd, r, outcome))
+				s.Calls[p.at] = claudeCall(p.name, p.input, p.cwd, r, outcome)
 			}
 		}
 		return nil
 	})
+	s.Calls = slices.DeleteFunc(s.Calls, func(c Call) bool { return c.open })
 	s.Oversize = res.Oversize
 	return s, err
 }

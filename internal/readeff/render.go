@@ -56,7 +56,7 @@ func renderScopes(w io.Writer, scopes []Scope) {
 
 func renderFiles(w io.Writer, files []FileStat, repo string) {
 	for _, f := range files {
-		fmt.Fprintf(w, "    %-52s %9s lines  %3d sessions  %3d reads  %3d re-reads\n", short(f.Path, repo), num(f.Lines), f.Sessions, f.Reads, f.Rereads)
+		fmt.Fprintf(w, "    %-52s %9s lines  %3d sessions  %3d reads (%d unsized)  %3d re-reads\n", short(f.Path, repo), num(f.Lines), f.Sessions, f.Reads, f.Unsized, f.Rereads)
 	}
 }
 

@@ -57,6 +57,11 @@ func TestBigReadsAndFiles(t *testing.T) {
 	if got.BigWhole != 1 || got.BigWholeLines != 900 {
 		t.Errorf("big whole = %d (%d lines), want 1 (900)", got.BigWhole, got.BigWholeLines)
 	}
+	analyze(Session{ID: "t", Calls: []Call{{Class: ClassRead, Read: true, Visible: 1, Lines: 70,
+		Spans: []Span{{Path: "/r/small.go", Start: 1, Whole: true}, {Path: "/r/other.go", Start: 1, Whole: true}}}}}, DefaultConfig, files, nil)
+	if f := files["/r/small.go"]; f.Unsized != 1 || f.Lines != 30 {
+		t.Errorf("small.go after `cat small.go other.go` = %+v, want 1 unsized read and its 30 sized lines", f.FileStat)
+	}
 	top := topFiles(files, 1)
 	if len(top) != 1 || top[0].Path != "/r/big.go" || top[0].Lines != 940 || top[0].Reads != 2 {
 		t.Errorf("top file = %+v, want /r/big.go with 940 lines over 2 reads", top)

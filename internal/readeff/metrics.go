@@ -97,11 +97,14 @@ func (t *Totals) add(o Totals) {
 
 // FileStat is one file's read traffic across sessions.
 type FileStat struct {
-	Path     string `json:"path"`
-	Lines    int    `json:"lines"`
-	Reads    int    `json:"reads"`
-	Rereads  int    `json:"rereads"`
-	Sessions int    `json:"sessions"`
+	Path    string `json:"path"`
+	Lines   int    `json:"lines"`
+	Reads   int    `json:"reads"`
+	Rereads int    `json:"rereads"`
+	// Unsized reads returned this file among others (`cat a b`) or filtered
+	// (`cat a | head`): their lines are in the totals, not in Lines.
+	Unsized  int `json:"unsized_reads"`
+	Sessions int `json:"sessions"`
 }
 
 // fileAcc accumulates a FileStat; sessions dedupe by id.
@@ -185,6 +188,9 @@ func analyze(s Session, cfg Config, files map[string]*fileAcc, steps *[]Step) To
 				}
 				f.Reads++
 				f.Lines += n
+				if n == 0 {
+					f.Unsized++
+				}
 				if !f.seen[s.ID] {
 					f.seen[s.ID] = true
 					f.Sessions++

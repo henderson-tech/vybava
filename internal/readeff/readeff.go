@@ -53,10 +53,12 @@ type Call struct {
 	Found   []string // files a search printed, for the hit rate
 	Query   string   // a search's segment: compared, never printed
 
-	dir     string // where a search ran, to resolve what it printed
-	wrote   bool   // a redirect or tee wrote a file whose lines are unmeasured
-	patched bool   // an apply_patch ran: its heredoc body is the change
-	outputs uint8  // kinds of output in the result: 1<<0 read, 1<<1 search, 1<<2 other
+	dir      string // where a search ran, to resolve what it printed
+	wrote    bool   // a redirect or tee wrote a file whose lines are unmeasured
+	open     bool   // a placeholder whose result has not arrived
+	patched  bool   // an apply_patch ran: its heredoc body is the change
+	patchDir string // where it ran
+	outputs  uint8  // kinds of output in the result: 1<<0 read, 1<<1 search, 1<<2 other
 }
 
 // classify sets the headline Class from what the call did.

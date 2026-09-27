@@ -72,6 +72,10 @@ func TestShellCallMixedAndWrites(t *testing.T) {
 	if !filtered.Read || len(filtered.Spans) != 1 || filtered.Spans[0] != (Span{Path: "/r/a.go"}) {
 		t.Errorf("runner piped into head = %+v, want a read of a.go with an unknown range", filtered.Spans)
 	}
+	nested := shellCall("bash -lc \"cd sub && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: a.go\n+y\n*** End Patch\nEOF\"", "/r")
+	if !slices.Equal(nested.Edited, []string{"/r/sub/a.go"}) {
+		t.Errorf("apply_patch after a payload cd edited %q, want /r/sub/a.go", nested.Edited)
+	}
 	heredoc := shellCall("cat > new.go <<'EOF'\npackage x\n\nfunc F() {}\nEOF", "/r")
 	if !heredoc.Edit || heredoc.Changed != 3 {
 		t.Errorf("heredoc write changed %d, want its 3 body lines", heredoc.Changed)
