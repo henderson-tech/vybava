@@ -192,10 +192,11 @@ a Codex session's `find ~/Work/Projects -path '*/.worktrees/*' -prune -o -name
 devbox.yaml -print` crawled every repo's node_modules for minutes; `rg --files
 -g devbox.yaml ~/Work/Projects` answers in ~2 s). find and bfs ignore
 .gitignore, so the rule probes the root breadth-first (depth 4, at most 1500
-directories, symlinks never followed) for a heavy directory the command does
-not `-prune` (`-exclude` for bfs, `-E` for fd); `-not -path` still descends and
-does not count, nor does a `-prune` closing some other test. A root inside a heavy directory, a `-maxdepth` and fd honouring
-.gitignore all pass; an undecided probe allows. The message points at
+directories and 50,000 entries read in batches, symlinks never followed) for a
+heavy directory the command does not `-prune` (`-exclude` for bfs, `-E` for
+fd); `-not -path` still descends and does not count, nor does a `-prune`
+closing some other test. A root inside a heavy directory, a `-maxdepth` and fd
+honouring .gitignore all pass; an undecided probe allows. The message points at
 `rg --files -g` and `git ls-files`.
 `simulator:appium-session-churn` reads the script the command would run and
 fires only when the file both imports `remote` from `webdriverio` and calls
