@@ -37,7 +37,9 @@ func TestClaudeToolTraffic(t *testing.T) {
 // An exec program's literal commands and patches are read; a command built
 // from a variable is not guessed.
 func TestCodexExecCommands(t *testing.T) {
-	js := "const r = await Promise.allSettled([\n" +
+	js := "// tools.exec_command({cmd:\"cat commented.go\"})\n" +
+		"const note = \"tools.exec_command({cmd:'cat quoted.go'})\";\n" +
+		"const r = await Promise.allSettled([\n" +
 		`  tools.exec_command({cmd:"sed -n '1,40p' a.go && echo \"done\"",workdir:"/repo",max_output_tokens:3000}),` + "\n" +
 		"  tools.exec_command({cmd:`rg -n foo`}),\n" +
 		"  tools.exec_command({cmd: built}),\n" +

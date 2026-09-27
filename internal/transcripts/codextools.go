@@ -115,9 +115,15 @@ var (
 )
 
 // parseExec reads the tool calls of an exec program. Each tools.<name>( call
-// owns the source up to the next one.
+// in code — not inside a string or a comment — owns the source up to the next.
 func parseExec(js string) (cmds []CodexCommand, patches []string) {
-	calls := execToolCall.FindAllStringSubmatchIndex(js, -1)
+	literals := jsLiteralRanges(js)
+	var calls [][]int
+	for _, m := range execToolCall.FindAllStringSubmatchIndex(js, -1) {
+		if !inRanges(m[0], literals) {
+			calls = append(calls, m)
+		}
+	}
 	for i, m := range calls {
 		end := len(js)
 		if i+1 < len(calls) {
@@ -141,6 +147,53 @@ func parseExec(js string) (cmds []CodexCommand, patches []string) {
 		}
 	}
 	return cmds, patches
+}
+
+// jsLiteralRanges lists the [start, end) byte ranges of a JS program's string
+// literals and comments. A template's ${…} is part of its literal: code there
+// is not read.
+func jsLiteralRanges(js string) [][2]int {
+	var out [][2]int
+	for i := 0; i < len(js); i++ {
+		end := -1
+		switch c := js[i]; {
+		case c == '/' && strings.HasPrefix(js[i:], "//"):
+			if end = strings.IndexByte(js[i:], '\n'); end < 0 {
+				end = len(js)
+			} else {
+				end += i
+			}
+		case c == '/' && strings.HasPrefix(js[i:], "/*"):
+			if end = strings.Index(js[i+2:], "*/"); end < 0 {
+				end = len(js)
+			} else {
+				end += i + 4
+			}
+		case c == '\'' || c == '"' || c == '`':
+			j := i + 1
+			for j < len(js) && js[j] != c {
+				if js[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			end = min(j+1, len(js))
+		}
+		if end >= 0 {
+			out = append(out, [2]int{i, end})
+			i = end - 1
+		}
+	}
+	return out
+}
+
+func inRanges(pos int, ranges [][2]int) bool {
+	for _, r := range ranges {
+		if pos >= r[0] && pos < r[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // jsKeyString decodes the string literal that follows the first key match.
