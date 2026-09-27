@@ -2,6 +2,7 @@ package blip
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/runx"
@@ -163,15 +163,55 @@ func (t *Tool) Up(name, listen, to string) (Result, error) {
 }
 
 func lastLines(path string, n int) string {
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	lines, err := tailLines(path, n)
+	if err != nil || len(lines) == 0 {
 		return "(no log)"
 	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	return strings.Join(lines, " | ")
+}
+
+// tailLines returns the last n lines of path, reading backwards from the
+// end in fixed chunks so a long-running daemon's log never has to fit in
+// memory. n <= 0 returns nothing; a missing file is an empty tail.
+func tailLines(path string, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	const chunk = 8 * 1024
+	var tail []byte
+	for off := size; off > 0 && bytes.Count(tail, []byte{'\n'}) <= n; {
+		read := int64(chunk)
+		if off < read {
+			read = off
+		}
+		off -= read
+		buf := make([]byte, read)
+		if _, err := f.ReadAt(buf, off); err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		tail = append(buf, tail...)
+	}
+	text := strings.TrimRight(string(tail), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	lines := strings.Split(text, "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	return strings.Join(lines, " | ")
+	return lines, nil
 }
 
 // Down stops a proxy and removes its files; a dead daemon is cleaned too.
@@ -191,10 +231,8 @@ func (t *Tool) Down(name string) (Result, error) {
 			for i := 0; i < 40 && fileExists(p.State); i++ {
 				time.Sleep(50 * time.Millisecond)
 			}
-		} else if st.PID > 0 {
-			if proc, perr := os.FindProcess(st.PID); perr == nil {
-				_ = proc.Signal(syscall.SIGTERM)
-			}
+		} else if st.PID > 0 && ownsPID(st.PID, name) {
+			_ = terminate(st.PID)
 		}
 	}
 	for _, f := range []string{p.State, p.Sock, p.Log, p.Rec} {
@@ -350,6 +388,9 @@ func (t *Tool) Status(name string) (Result, error) {
 		"fault: " + live.Fault.String(),
 		fmt.Sprintf("requests=%d faulted=%d in_flight=%d connections=%d recorded=%d recording=%t", k.Requests, k.Faulted, k.InFlight, k.Connections, k.Recorded, live.Recording),
 	}
+	if len(live.CredentialHeaders) > 0 {
+		lines = append(lines, "recorded flow used credential headers: "+strings.Join(live.CredentialHeaders, ", ")+" (values not stored)")
+	}
 	var diags []runx.Diagnostic
 	if live.Fault == nil {
 		diags = append(diags, info("NO_FAULT", "passing through", ""))
@@ -361,29 +402,26 @@ func (t *Tool) Status(name string) (Result, error) {
 	return Result{Data: live, Lines: lines, Diagnostics: diags, Next: next}, nil
 }
 
-// Log prints the last `last` lines, or follows the file when tail is set
-// (out receives the lines; Tail returns on ctx-less EOF only via stop).
-func (t *Tool) Log(name string, last int, tail bool, out io.Writer, stop <-chan struct{}) (Result, error) {
+// Log returns the last `last` lines, or — when tail is set — hands the
+// existing tail and then every new line to emit until stop closes (the CLI
+// decides whether a line is plain text or an NDJSON event).
+func (t *Tool) Log(name string, last int, tail bool, emit func(line string), stop <-chan struct{}) (Result, error) {
 	p, _, _, err := t.connect(name)
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := os.ReadFile(p.Log)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	lines, err := tailLines(p.Log, last)
+	if err != nil {
 		return Result{}, err
 	}
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		lines = nil
-	}
-	if last > 0 && len(lines) > last {
-		lines = lines[len(lines)-last:]
+	if lines == nil {
+		lines = []string{}
 	}
 	if !tail {
 		return Result{Data: map[string]any{"file": p.Log, "lines": lines}, Lines: lines, Next: []string{"blip " + name + " log --tail", "blip " + name + " status"}}, nil
 	}
 	for _, l := range lines {
-		fmt.Fprintln(out, l)
+		emit(l)
 	}
 	f, err := os.Open(p.Log)
 	if err != nil {
@@ -397,7 +435,7 @@ func (t *Tool) Log(name string, last int, tail bool, out io.Writer, stop <-chan 
 	for {
 		line, err := r.ReadString('\n')
 		if line != "" {
-			fmt.Fprint(out, line)
+			emit(strings.TrimRight(line, "\n"))
 		}
 		if err != nil {
 			select {

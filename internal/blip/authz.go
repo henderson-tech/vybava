@@ -56,7 +56,8 @@ func ParseIdentity(spec string) (Identity, error) {
 		}
 		return Identity{Kind: "header", Header: "Authorization", value: v}, nil
 	}
-	return Identity{}, diag(DiagIdentityInvalid, "unknown identity form "+strconv.Quote(spec), usage)
+	// Never echo the given value: it may be a credential.
+	return Identity{}, diag(DiagIdentityInvalid, "--as must be one of: none, header:<Name>=<value>, cookie:<name>=<value>, env:<VAR>", usage)
 }
 
 // String names the identity without its value.
@@ -78,16 +79,7 @@ func (id Identity) apply(h http.Header) {
 	case "header":
 		h.Set(id.Header, id.value)
 	case "cookie":
-		var kept []string
-		for _, c := range strings.Split(h.Get("Cookie"), ";") {
-			c = strings.TrimSpace(c)
-			if c == "" || strings.HasPrefix(c, id.Cookie+"=") {
-				continue
-			}
-			kept = append(kept, c)
-		}
-		kept = append(kept, id.Cookie+"="+id.value)
-		h.Set("Cookie", strings.Join(kept, "; "))
+		h.Set("Cookie", id.Cookie+"="+id.value)
 	}
 }
 
@@ -195,6 +187,10 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 		for _, h := range hopByHop {
 			req.Header.Del(h)
 		}
+		// Records are stored credential-free, but strip again here so a
+		// replay never carries anything but the --as identity, whichever
+		// header the identity swaps.
+		stripCredentials(req.Header)
 		opts.Identity.apply(req.Header)
 		resp, err := client.Do(req)
 		if err != nil {

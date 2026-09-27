@@ -35,7 +35,7 @@ func (s *Server) handleTCP(client net.Conn) {
 	}()
 
 	applied := ""
-	fs := s.current(start)
+	fs, hold := s.snapshot(start)
 	if fs != nil && fs.decide("", "", start) {
 		applied = fs.Kind
 		s.faulted.Add(1)
@@ -59,7 +59,7 @@ func (s *Server) handleTCP(client net.Conn) {
 		done := make(chan struct{})
 		go func() { _, _ = io.Copy(io.Discard, client); close(done) }()
 		select {
-		case <-s.holdCh():
+		case <-hold:
 		case <-done:
 		}
 		log(0, 0)

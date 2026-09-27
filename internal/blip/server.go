@@ -55,7 +55,10 @@ type Status struct {
 	StartedAt time.Time `json:"started_at"`
 	Fault     *Fault    `json:"fault"`
 	Recording bool      `json:"recording"`
-	Counters  Counters  `json:"counters"`
+	// CredentialHeaders names (never values) the credential headers the
+	// recorded flow carried; the values are stripped at record time.
+	CredentialHeaders []string `json:"credential_headers"`
+	Counters          Counters `json:"counters"`
 }
 
 // Server is one proxy: listener, atomic fault, counters, the set of open
@@ -137,9 +140,8 @@ func (s *Server) Close() error {
 
 // SetFault REPLACES the active fault and releases `timeout` holds.
 func (s *Server) SetFault(f *Fault) {
-	if f == nil {
-		s.fault.Store(nil)
-	} else {
+	var fs *faultState
+	if f != nil {
 		cp := *f
 		if cp.SetAt.IsZero() {
 			cp.SetAt = time.Now()
@@ -147,9 +149,12 @@ func (s *Server) SetFault(f *Fault) {
 		if cp.Rate == 0 {
 			cp.Rate = 1
 		}
-		s.fault.Store(&faultState{Fault: cp})
+		fs = &faultState{Fault: cp}
 	}
-	s.release()
+	s.holdMu.Lock()
+	s.fault.Store(fs)
+	s.rotateHoldLocked()
+	s.holdMu.Unlock()
 	s.changed()
 }
 
@@ -179,7 +184,7 @@ func (s *Server) ClearRecording() error { return s.rec.clear() }
 
 // Status snapshots the proxy.
 func (s *Server) Status() Status {
-	st := Status{Config: s.cfg, PID: s.pid, StartedAt: s.startedAt, Recording: s.rec.on.Load()}
+	st := Status{Config: s.cfg, PID: s.pid, StartedAt: s.startedAt, Recording: s.rec.on.Load(), CredentialHeaders: s.rec.credentialNames()}
 	if fs := s.current(time.Now()); fs != nil {
 		f := fs.Fault
 		st.Fault = &f
@@ -192,16 +197,29 @@ func (s *Server) Status() Status {
 
 // current returns the active fault, clearing it when --for has elapsed.
 func (s *Server) current(now time.Time) *faultState {
+	fs, _ := s.snapshot(now)
+	return fs
+}
+
+// snapshot returns the active fault AND the hold channel that belongs to
+// it, read under the same lock every fault change writes under — so a
+// `timeout` decided against fault F always waits on F's channel, never on
+// the one a concurrent `ok`/`set` just rotated in. Expired faults are
+// cleared here.
+func (s *Server) snapshot(now time.Time) (*faultState, <-chan struct{}) {
+	s.holdMu.Lock()
 	fs := s.fault.Load()
 	if fs != nil && fs.expired(now) {
-		if s.fault.CompareAndSwap(fs, nil) {
-			s.release()
-			s.logf("fault %s expired (--for %s)", fs.Kind, fs.For)
-			s.changed()
-		}
-		return nil
+		s.fault.Store(nil)
+		s.rotateHoldLocked()
+		s.holdMu.Unlock()
+		s.logf("fault %s expired (--for %s)", fs.Kind, fs.For)
+		s.changed()
+		return nil, s.holdCh()
 	}
-	return fs
+	ch := s.hold
+	s.holdMu.Unlock()
+	return fs, ch
 }
 
 func (s *Server) changed() {
@@ -217,11 +235,10 @@ func (s *Server) holdCh() <-chan struct{} {
 	return s.hold
 }
 
-func (s *Server) release() {
-	s.holdMu.Lock()
+// rotateHoldLocked releases every held request; caller holds holdMu.
+func (s *Server) rotateHoldLocked() {
 	close(s.hold)
 	s.hold = make(chan struct{})
-	s.holdMu.Unlock()
 }
 
 func (s *Server) track(c net.Conn) {

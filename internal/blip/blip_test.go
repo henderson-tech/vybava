@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -316,8 +318,14 @@ func TestRecordAndAuthz(t *testing.T) {
 	if err != nil || len(recs) != 3 || s.Status().Counters.Recorded != 3 {
 		t.Fatalf("records = %d (%v), counter %d", len(recs), err, s.Status().Counters.Recorded)
 	}
-	if recs[2].Method != "POST" || string(recs[2].Body) != `{"k":1}` || recs[0].Status != 200 || recs[0].Headers.Get("Authorization") == "" {
+	if recs[2].Method != "POST" || string(recs[2].Body) != `{"k":1}` || recs[0].Status != 200 {
 		t.Fatalf("record shape: %+v", recs[2])
+	}
+	if recs[0].Headers.Get("Authorization") != "" || len(recs[0].CredentialHeaders) != 1 || recs[0].CredentialHeaders[0] != "Authorization" {
+		t.Fatalf("credential value stored or name missing: %+v", recs[0])
+	}
+	if st := s.Status(); len(st.CredentialHeaders) != 1 || st.CredentialHeaders[0] != "Authorization" {
+		t.Fatalf("status credential names = %v", st.CredentialHeaders)
 	}
 
 	id, err := ParseIdentity("none")
@@ -350,6 +358,87 @@ func TestRecordAndAuthz(t *testing.T) {
 	}
 	if _, err := ParseIdentity("token:abc"); !hasCode(err, DiagIdentityInvalid) {
 		t.Fatalf("bad identity accepted: %v", err)
+	}
+}
+
+// TestReplayCarriesOnlyTheIdentity: a recorded flow that used BOTH an
+// Authorization header and a Cookie is replayed with exactly the --as
+// credential — never the other original one — and the recording on disk
+// holds no credential value at all.
+func TestReplayCarriesOnlyTheIdentity(t *testing.T) {
+	var seen []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Clone())
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "both.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	req, _ := http.NewRequest("GET", "http://"+s.Addr().String()+"/account?tab=billing", nil)
+	req.Header.Set("Authorization", "Bearer original-secret")
+	req.Header.Set("Cookie", "sid=original-cookie; theme=dark")
+	req.Header.Set("X-Api-Key", "original-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	raw, _ := os.ReadFile(rec)
+	for _, secret := range []string{"original-secret", "original-cookie", "original-key"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatalf("recording stores a credential value: %s", raw)
+		}
+	}
+	if !bytes.Contains(raw, []byte(`"query":"tab=billing"`)) || !bytes.Contains(raw, []byte(`"credential_headers":["Authorization","Cookie","X-Api-Key"]`)) {
+		t.Fatalf("record must keep the full URL and the credential NAMES: %s", raw)
+	}
+	recs, err := ReadRecords(rec)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("records: %d %v", len(recs), err)
+	}
+	seen = nil
+	hdr, _ := ParseIdentity("header:Authorization=Bearer other-user")
+	if _, err := Replay(up.URL, recs, AuthzOptions{Identity: hdr, Expect: []int{401}}); err != nil {
+		t.Fatal(err)
+	}
+	ck, _ := ParseIdentity("cookie:sid=other-session")
+	if _, err := Replay(up.URL, recs, AuthzOptions{Identity: ck, Expect: []int{401}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("upstream saw %d replays", len(seen))
+	}
+	if h := seen[0]; h.Get("Authorization") != "Bearer other-user" || h.Get("Cookie") != "" || h.Get("X-Api-Key") != "" {
+		t.Fatalf("header replay leaked another credential: %v", h)
+	}
+	if h := seen[1]; h.Get("Cookie") != "sid=other-session" || h.Get("Authorization") != "" || h.Get("X-Api-Key") != "" {
+		t.Fatalf("cookie replay leaked another credential: %v", h)
+	}
+	if _, err := ParseIdentity("token:super-secret"); err == nil || strings.Contains(err.Error(), "super-secret") {
+		t.Fatalf("bad --as must be refused without echoing the value: %v", err)
+	}
+}
+
+// TestTailLines pins the bounded tail read across chunk boundaries.
+func TestTailLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.log")
+	var b strings.Builder
+	for i := 1; i <= 5000; i++ {
+		b.WriteString(strings.Repeat("x", 40) + " line " + strconv.Itoa(i) + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := tailLines(path, 3)
+	if err != nil || len(lines) != 3 || !strings.HasSuffix(lines[0], "line 4998") || !strings.HasSuffix(lines[2], "line 5000") {
+		t.Fatalf("tail = %v, %v", lines, err)
+	}
+	if lines, err := tailLines(path, 10000); err != nil || len(lines) != 5000 || !strings.HasSuffix(lines[0], "line 1") {
+		t.Fatalf("whole-file tail = %d lines, %v", len(lines), err)
+	}
+	if lines, err := tailLines(filepath.Join(t.TempDir(), "missing"), 3); err != nil || lines != nil {
+		t.Fatalf("missing file: %v %v", lines, err)
 	}
 }
 

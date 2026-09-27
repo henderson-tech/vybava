@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -269,7 +270,17 @@ func (rt *runtime) blipVerbs(name *string) *cobra.Command {
 				signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 				go func() { <-sig; close(stop) }()
 			}
-			res, err := t.Log(*name, last, tail, rt.stdout, stop)
+			// --tail streams: plain lines, or under --json one NDJSON event per
+			// line, followed by the envelope when the stream ends.
+			enc := json.NewEncoder(rt.stdout)
+			emit := func(line string) {
+				if rt.json {
+					_ = enc.Encode(map[string]string{"event": "log", "line": line})
+					return
+				}
+				fmt.Fprintln(rt.stdout, line)
+			}
+			res, err := t.Log(*name, last, tail, emit, stop)
 			return finish(s, res, err)
 		},
 	}
@@ -306,7 +317,8 @@ func (rt *runtime) blipVerbs(name *string) *cobra.Command {
 			}
 			exp, err := blip.ParseExpect(expect)
 			if err != nil {
-				return finish(s, blip.Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: blip.DiagFaultInvalid, Severity: "error", Detail: err.Error(), Fix: "blip " + *name + " authz --as " + as + " --expect 401,403,404"}})
+				// Never echo --as: it may carry a credential.
+				return finish(s, blip.Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: blip.DiagFaultInvalid, Severity: "error", Detail: err.Error(), Fix: "blip " + *name + " authz --as <identity> --expect 401,403,404"}})
 			}
 			res, err := t.Authz(*name, blip.AuthzOptions{Identity: id, Expect: exp, Only: only, Exclude: exclude, Mutations: mutations})
 			return finish(s, res, err)

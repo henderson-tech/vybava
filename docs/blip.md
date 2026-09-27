@@ -46,9 +46,13 @@ under concurrent requests.
 
 ## Access-control replay (http only)
 
-`record on` makes the daemon append every proxied request (method, path,
-query, headers, body ≤ 64 KiB, response status and byte length — never the
-response body) to `<name>.rec.jsonl`; `status` shows `recorded=N`.
+`record on` makes the daemon append every proxied request (method, FULL URL
+— path and query, it is the request under test — headers, body ≤ 64 KiB,
+response status and byte length; never the response body) to
+`<name>.rec.jsonl` (0600, removed by `record clear` and `down`). Credential
+headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`,
+`X-Auth-Token`) are stripped at record time; only their NAMES are kept and
+`status` lists them. `status` shows `recorded=N`.
 
 `authz --as <identity>` replays each distinct recorded request straight at
 the upstream (not through the fault layer) with the identity substituted and
@@ -59,7 +63,9 @@ lists every answer whose status is NOT in `--expect` (default 401,403,404):
 - `--as 'cookie:<name>=<value>'` replaces that cookie
 - `--as env:<VAR>` sets `Authorization` from that variable (inject it via onyx `run_command`; blip never prints it)
 
-Identity comes only from these flags. Mutating methods (POST/PUT/PATCH/
+Identity comes only from these flags; every replay strips the whole
+credential set first and carries exactly the `--as` credential. No
+diagnostic ever echoes an `--as` value. Mutating methods (POST/PUT/PATCH/
 DELETE) are replayed only with `--mutations` and otherwise listed as
 skipped. Verdicts: `same payload` (2xx and the same byte length as the
 original — strongest), `different payload` (2xx, other length), `not
@@ -70,10 +76,14 @@ else 0. `record clear` deletes the recording.
 
 `~/.local/state/blip/` (override `BLIP_STATE_DIR`): `<name>.json` (pid,
 mode, addresses, fault, recording), `<name>.sock` (control, JSON over HTTP),
-`<name>.log` (one line per request/connection: time, method+path or conn id,
-fault, status, duration), `<name>.rec.jsonl`. A state file whose daemon no
-longer answers is `STALE_STATE`; `blip down <name>` cleans it (kills a
-lingering pid, removes all four files).
+`<name>.log` (one line per request/connection: time, method+path — never the
+query string — or conn id, fault, status, duration), `<name>.rec.jsonl`.
+`log` reads the tail backwards in chunks; `log --tail` streams plain lines,
+or under `--json` one `{"event":"log","line":"…"}` per line and the envelope
+on Ctrl-C. A state file whose daemon no longer answers is `STALE_STATE`;
+`blip down <name>` cleans it: a lingering pid is signalled only when its
+command line is `… serve --name <name> …` (PIDs are recycled; on Windows it
+is never signalled), then all four files are removed.
 
 ## Envelope and exit codes
 

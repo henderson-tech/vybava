@@ -35,7 +35,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.inFlight.Add(-1)
 
 	applied := ""
-	fs := s.current(start)
+	fs, hold := s.snapshot(start)
 	if fs != nil && fs.decide(r.Method, r.URL.Path, start) {
 		applied = fs.Kind
 		s.faulted.Add(1)
@@ -66,7 +66,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(sw, body)
 	case "timeout":
 		select {
-		case <-s.holdCh():
+		case <-hold:
 			http.Error(sw, "blip: request held by timeout fault, released", http.StatusServiceUnavailable)
 		case <-r.Context().Done():
 		}
@@ -88,7 +88,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if fault == "" {
 		fault = "-"
 	}
-	s.logf("%s %s fault=%s status=%d dur=%s", r.Method, r.URL.RequestURI(), fault, sw.status, dur.Round(time.Millisecond))
+	// Path only: query strings carry tokens and signed-URL params, and the
+	// log is transcript-grade output.
+	s.logf("%s %s fault=%s status=%d dur=%s", r.Method, r.URL.Path, fault, sw.status, dur.Round(time.Millisecond))
 	if recording {
 		s.rec.append(r, body, truncated, sw.status, sw.bytes)
 	}
