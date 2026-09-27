@@ -420,6 +420,41 @@ func TestReplayCarriesOnlyTheIdentity(t *testing.T) {
 	}
 }
 
+// TestQueryCredentialsNeverStoredOrReplayed: a token read via
+// ?access_token= keeps only the non-credential keys on disk, lists the key
+// name, and replays without it.
+func TestQueryCredentialsNeverStoredOrReplayed(t *testing.T) {
+	var targets []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targets = append(targets, r.URL.RequestURI())
+		_, _ = io.WriteString(w, "file")
+	}))
+	defer up.Close()
+	rec := filepath.Join(t.TempDir(), "q.rec.jsonl")
+	s, _ := startHTTP(t, up.URL, rec)
+	s.SetRecording(true)
+	if _, _, err := get(t, "http://"+s.Addr().String()+"/files?id=1&access_token=secret&X-Amz-Signature=sigsecret"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(rec)
+	if bytes.Contains(raw, []byte("secret")) || !bytes.Contains(raw, []byte(`"query":"id=1"`)) || !bytes.Contains(raw, []byte(`"credential_query":["access_token","x-amz-signature"]`)) {
+		t.Fatalf("recording: %s", raw)
+	}
+	if st := s.Status(); len(st.CredentialQuery) != 2 || st.CredentialQuery[0] != "access_token" {
+		t.Fatalf("status credential query = %v", st.CredentialQuery)
+	}
+	recs, _ := ReadRecords(rec)
+	recs[0].Query = "id=1&token=handedited" // an older/edited recording must still be sanitized
+	id, _ := ParseIdentity("none")
+	targets = nil
+	if _, err := Replay(up.URL, recs, AuthzOptions{Identity: id, Expect: []int{401}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0] != "/files?id=1" {
+		t.Fatalf("replay target = %v", targets)
+	}
+}
+
 // TestTailLines pins the bounded tail read across chunk boundaries.
 func TestTailLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.log")

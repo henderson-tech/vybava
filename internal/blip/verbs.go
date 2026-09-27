@@ -391,6 +391,9 @@ func (t *Tool) Status(name string) (Result, error) {
 	if len(live.CredentialHeaders) > 0 {
 		lines = append(lines, "recorded flow used credential headers: "+strings.Join(live.CredentialHeaders, ", ")+" (values not stored)")
 	}
+	if len(live.CredentialQuery) > 0 {
+		lines = append(lines, "recorded flow used credential query keys: "+strings.Join(live.CredentialQuery, ", ")+" (values not stored)")
+	}
 	var diags []runx.Diagnostic
 	if live.Fault == nil {
 		diags = append(diags, info("NO_FAULT", "passing through", ""))

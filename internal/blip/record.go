@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
+	"net/url"
 	"os"
-	"sort"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +38,42 @@ func stripCredentials(h http.Header) []string {
 	return names
 }
 
+// credentialQueryKeys are query parameters that carry a credential (token
+// reads, signed URLs). Matched case-insensitively; stripped from the stored
+// query and never re-added by a replay — the --as identity is the only
+// credential a replay carries.
+var credentialQueryKeys = []string{"access_token", "x-amz-signature", "sig", "signature", "token", "api_key", "apikey", "key", "auth", "jwt", "session"}
+
+// stripCredentialQuery removes credentialQueryKeys from a raw query,
+// preserving the order and encoding of what remains, and returns the
+// (lower-cased) names that were present.
+func stripCredentialQuery(raw string) (string, []string) {
+	if raw == "" {
+		return "", nil
+	}
+	var kept, names []string
+	seen := map[string]bool{}
+	for _, pair := range strings.Split(raw, "&") {
+		key := pair
+		if i := strings.IndexByte(pair, '='); i >= 0 {
+			key = pair[:i]
+		}
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
+		}
+		key = strings.ToLower(key)
+		if slices.Contains(credentialQueryKeys, key) {
+			if !seen[key] {
+				names = append(names, key)
+				seen[key] = true
+			}
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	return strings.Join(kept, "&"), names
+}
+
 // Record is one proxied HTTP request as stored in <name>.rec.jsonl (full
 // URL: path AND query — the request under test). Credential headers are
 // stripped; only their names survive in CredentialHeaders. Response bodies
@@ -46,6 +85,7 @@ type Record struct {
 	Query             string      `json:"query,omitempty"`
 	Headers           http.Header `json:"headers"`
 	CredentialHeaders []string    `json:"credential_headers,omitempty"`
+	CredentialQuery   []string    `json:"credential_query,omitempty"`
 	Body              []byte      `json:"body,omitempty"`
 	BodyTruncated     bool        `json:"body_truncated,omitempty"`
 	Status            int         `json:"status"`
@@ -54,22 +94,21 @@ type Record struct {
 
 // recorder appends Records to a 0600 JSONL file while on.
 type recorder struct {
-	path  string
-	on    atomic.Bool
-	mu    sync.Mutex
-	n     atomic.Int64
-	creds map[string]bool // credential header NAMES seen (never values)
+	path   string
+	on     atomic.Bool
+	mu     sync.Mutex
+	n      atomic.Int64
+	creds  map[string]bool // credential header NAMES seen (never values)
+	qcreds map[string]bool // credential query KEYS seen (never values)
 }
 
 func newRecorder(path string) *recorder {
-	r := &recorder{path: path, creds: map[string]bool{}}
+	r := &recorder{path: path, creds: map[string]bool{}, qcreds: map[string]bool{}}
 	if path != "" {
 		if recs, err := ReadRecords(path); err == nil {
 			r.n.Store(int64(len(recs)))
 			for _, rec := range recs {
-				for _, name := range rec.CredentialHeaders {
-					r.creds[name] = true
-				}
+				r.noteCredentials(rec.CredentialHeaders, rec.CredentialQuery)
 			}
 		}
 	}
@@ -78,15 +117,22 @@ func newRecorder(path string) *recorder {
 
 func (r *recorder) count() int64 { return r.n.Load() }
 
-func (r *recorder) credentialNames() []string {
+func (r *recorder) noteCredentials(headers, query []string) {
+	for _, name := range headers {
+		r.creds[name] = true
+	}
+	for _, name := range query {
+		r.qcreds[name] = true
+	}
+}
+
+// credentialNames returns the header names and query keys seen, sorted.
+func (r *recorder) credentialNames() (headers, query []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	names := make([]string, 0, len(r.creds))
-	for n := range r.creds {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	headers = slices.Sorted(maps.Keys(r.creds))
+	query = slices.Sorted(maps.Keys(r.qcreds))
+	return headers, query
 }
 
 // capture reads up to recordBodyLimit of the body and puts it back.
@@ -112,7 +158,8 @@ func (r *recorder) append(req *http.Request, body []byte, truncated bool, status
 	}
 	headers := req.Header.Clone()
 	creds := stripCredentials(headers)
-	rec := Record{At: time.Now(), Method: req.Method, Path: req.URL.Path, Query: req.URL.RawQuery, Headers: headers, CredentialHeaders: creds,
+	query, qcreds := stripCredentialQuery(req.URL.RawQuery)
+	rec := Record{At: time.Now(), Method: req.Method, Path: req.URL.Path, Query: query, Headers: headers, CredentialHeaders: creds, CredentialQuery: qcreds,
 		Body: body, BodyTruncated: truncated, Status: status, ResponseBytes: respBytes}
 	line, err := json.Marshal(rec)
 	if err != nil {
@@ -120,9 +167,7 @@ func (r *recorder) append(req *http.Request, body []byte, truncated bool, status
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, name := range creds {
-		r.creds[name] = true
-	}
+	r.noteCredentials(creds, qcreds)
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
@@ -137,7 +182,7 @@ func (r *recorder) clear() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.n.Store(0)
-	r.creds = map[string]bool{}
+	r.creds, r.qcreds = map[string]bool{}, map[string]bool{}
 	if err := os.Remove(r.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

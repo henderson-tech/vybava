@@ -159,6 +159,9 @@ func Replay(upstream string, recs []Record, opts AuthzOptions) (AuthzReport, err
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	seen := map[string]bool{}
 	for _, rec := range recs {
+		// Records are stored credential-free; strip again so a hand-edited
+		// or older recording can never replay a query credential.
+		rec.Query, _ = stripCredentialQuery(rec.Query)
 		key := rec.Method + " " + rec.Path + "?" + rec.Query
 		if seen[key] {
 			continue

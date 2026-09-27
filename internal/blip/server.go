@@ -58,6 +58,7 @@ type Status struct {
 	// CredentialHeaders names (never values) the credential headers the
 	// recorded flow carried; the values are stripped at record time.
 	CredentialHeaders []string `json:"credential_headers"`
+	CredentialQuery   []string `json:"credential_query"`
 	Counters          Counters `json:"counters"`
 }
 
@@ -184,7 +185,8 @@ func (s *Server) ClearRecording() error { return s.rec.clear() }
 
 // Status snapshots the proxy.
 func (s *Server) Status() Status {
-	st := Status{Config: s.cfg, PID: s.pid, StartedAt: s.startedAt, Recording: s.rec.on.Load(), CredentialHeaders: s.rec.credentialNames()}
+	credHeaders, credQuery := s.rec.credentialNames()
+	st := Status{Config: s.cfg, PID: s.pid, StartedAt: s.startedAt, Recording: s.rec.on.Load(), CredentialHeaders: credHeaders, CredentialQuery: credQuery}
 	if fs := s.current(time.Now()); fs != nil {
 		f := fs.Fault
 		st.Fault = &f
