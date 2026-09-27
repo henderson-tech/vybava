@@ -297,10 +297,13 @@ func parseStopServers(cfg gitConfig) policy {
 }
 
 // AFTER_MERGE_DEVBOX: what teardown does to the branch's devbox workspace —
-// reap (default) retires it only when gc would (idle, unheld), down stops
-// its apps and releases its hold first so the reap always lands. A typo →
-// reap, never a silently widened stop.
+// down (default: a merged branch's stack never outlives it) stops its apps and
+// releases its hold so the reap always lands; reap retires it only when gc
+// would (idle, unheld). A typo → reap, never a silently widened stop.
 func parseDevbox(cfg gitConfig) policy {
+	if strings.TrimSpace(cfg["AFTER_MERGE_DEVBOX"]) == "" {
+		return policy{value: "down"}
+	}
 	return parseEnum(cfg, "AFTER_MERGE_DEVBOX", []string{"reap", "down"}, "reap")
 }
 

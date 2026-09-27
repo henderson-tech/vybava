@@ -25,7 +25,7 @@ mergeMethodsAllowed, afterMergeCmd, resolvedAfterMergeCmd, stopServers, devbox, 
 a non-null `mergePolicyInvalid` is a typo in the config: say so, run as `review`.
 `stopServers` is `worktree` (default), `repo` or `none` — step 4c; a non-null
 `stopServersInvalid` is likewise a typo: say so, run as `worktree`.
-`devbox` is `reap` (default) or `down` — step 4b; a non-null `devboxInvalid` is a
+`devbox` is `down` (default) or `reap` — step 4b; a non-null `devboxInvalid` is a
 typo: say so, run as `reap`.
 
 Hard guards — STOP immediately:
@@ -224,7 +224,7 @@ Two non-negotiables: (a) every git op runs from the main clone via `git -C <main
    `devbox unhold <workspace>` then reap again — seen 2026-09-14 on
    `fixit-work-vt-863`. A workspace with apps still ACTIVE is a different case:
    report it, never `unhold` your way past a live session — unless `devbox` is
-   `down`: the repo opted into merge = the branch's stack goes. Resolve the name
+   `down` (the default): merge = the branch's stack goes. Resolve the name
    BEFORE the worktree is removed (`(cd <worktree> && devbox status --json)` →
    `data.context.workspace`), then after removal `devbox down <workspace>` →
    `devbox unhold <workspace>` → the reap above. Only that one workspace, never a
@@ -301,11 +301,12 @@ AFTER_MERGE_CMD=/wk:cleanup {slug} --remove --yes --delete-remote
 # never the clone itself.
 AFTER_MERGE_STOP_SERVERS=repo
 
-# What a successful merge does to the branch's devbox workspace (step 4b). reap
-# (default): retire it only when gc would — a workspace with apps still running is
-# reported and kept. down: the merge takes the stack down — stop its apps, release
-# its hold, then reap. A typo → reap.
-AFTER_MERGE_DEVBOX=down
+# What a successful merge does to the branch's devbox workspace (step 4b). down
+# (default): the merge takes the stack down — stop its apps, release its hold, then
+# reap. reap: retire it only when gc would — a workspace with apps still running is
+# reported and kept (for a repo that hand-tests main-bound stacks after merge). A
+# typo → reap.
+AFTER_MERGE_DEVBOX=reap
 
 # Runs when prm ENTERS the review loop, and again at the start of each round.
 # Same tokens. Must be idempotent and cheap. Stops processes we own (dev servers,
