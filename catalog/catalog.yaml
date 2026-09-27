@@ -133,6 +133,12 @@ items:
     description: Release-lineage hotfix lane for trunk-based repos — cut a branch from the tag production runs in an isolated worktree, open the PR that is both CI gate and forward-port, deploy production FROM the branch, merge once shipped; state re-derived from git + gh, every verb idempotent with a JSON envelope.
     applet: hotfix
 
+  - id: blip
+    kind: applet
+    status: experimental
+    description: Chaos proxy for polish passes — an HTTP-aware or raw-TCP proxy per name (app→API, server→Postgres) whose faults (delay, drop, error, timeout, slow, flap, cut) are toggled live from the CLI, scoped by path/method/count/duration, plus an access-control replay (record the flow, replay it as another identity, list what still succeeds); never touches the machine's network.
+    applet: blip
+
   - id: reclaim
     kind: applet
     status: experimental
@@ -234,6 +240,12 @@ items:
     status: experimental
     description: Thin wrapper skill for the hotfix applet — the ordered verbs and the hard laws (never merge main into a hotfix branch, deploy only from the branch).
     source: skills/hotfix-lane
+
+  - id: polish
+    kind: skill
+    status: experimental
+    description: Manual-only protocol — fix a branch's findings in its existing PR, then run the adverse-condition matrix (network, app lifecycle, web, backend, DB) with blip until a clean pass.
+    source: skills/polish
 
   - id: readiness
     kind: applet
@@ -413,6 +425,8 @@ groups:
       - tsgate
       - hotfix
       - hotfix-lane
+      - blip
+      - polish
       - readiness
       - release-readiness
       - reclaim
@@ -512,6 +526,8 @@ groups:
       - tsgate
       - hotfix
       - hotfix-lane
+      - blip
+      - polish
       - readiness
       - release-readiness
       - operator
