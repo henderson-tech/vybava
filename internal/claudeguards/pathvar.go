@@ -26,6 +26,34 @@ var pathAssignRE = regexp.MustCompile(`^(?:(?:local|export|declare|typeset|reado
 // (shellseg.AssignPrefix knows only the former).
 var leadingAssignRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\+?=`)
 
+// skipValue returns s past one assignment value: a parenthesised array
+// (`(one two)`, spaces and all), a quoted string, or a bare word ending at
+// the first unquoted whitespace.
+func skipValue(s string) string {
+	if strings.HasPrefix(s, "(") {
+		if end := strings.IndexByte(s, ')'); end >= 0 {
+			return s[end+1:]
+		}
+		return ""
+	}
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '\\' && i+1 < len(s):
+			i++
+		case c == ' ' || c == '\t':
+			return s[i:]
+		}
+	}
+	return ""
+}
+
 // shellKeywords open a compound command and are not the command word.
 var shellKeywords = map[string]bool{"while": true, "until": true, "if": true, "then": true, "else": true, "elif": true, "do": true, "{": true, "!": true, "time": true}
 
@@ -48,15 +76,19 @@ func pathVariableUse(cmd string) (string, bool) {
 		if pathAssignRE.MatchString(s) {
 			return seg, true
 		}
-		// `FOO=1 path=/tmp/x cmd`, `FOO=1 path+=(/tmp) cmd`: every leading
-		// assignment binds, not only the first word, and `+=` is one too.
-		for _, w := range shellseg.Fields(s) {
-			if !leadingAssignRE.MatchString(w) {
+		// `FOO=1 path=/tmp/x cmd`, `FOO+=(one two) path=/tmp cmd`: every
+		// leading assignment binds, not only the first word; `+=` is one too,
+		// and a value may be a spaced array or a quoted string, so the walk
+		// consumes values itself instead of splitting on whitespace.
+		for rest := s; ; {
+			m := leadingAssignRE.FindString(rest)
+			if m == "" {
 				break
 			}
-			if strings.HasPrefix(w, "path=") || strings.HasPrefix(w, "path+=") {
+			if strings.HasPrefix(m, "path=") || strings.HasPrefix(m, "path+=") {
 				return seg, true
 			}
+			rest = strings.TrimLeft(skipValue(rest[len(m):]), " \t")
 		}
 		f := shellseg.Fields(shellseg.TrimAssignments(s))
 		if len(f) < 2 {
