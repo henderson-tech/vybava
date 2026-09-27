@@ -214,8 +214,9 @@ func TestGitShowBlobIsAFileRead(t *testing.T) {
 		{"git show HEAD:big.ts | grep line", root, ""},
 		{"git show HEAD:big.ts | cat", root, "context:whole-file-dump"},
 		{"git -C " + root + " show HEAD:big.ts", elsewhere, "context:whole-file-dump"},
-		{"git --git-dir=" + root + "/.git show HEAD:big.ts", elsewhere, "context:whole-file-dump"}, // measured in the repo it names
-		{"git show HEAD:gen.ts", root, "context:no-read"},                                          // protected-file rules apply as for cat
+		{"git --git-dir=" + root + "/.git show HEAD:big.ts", elsewhere, "context:whole-file-dump"},                  // measured in the repo it names
+		{"git show HEAD:gen.ts", root, "context:no-read"},                                                           // protected-file rules apply as for cat
+		{"git --git-dir=" + root + "/.git show HEAD:projects/slug/abc.jsonl", elsewhere, "context:transcript-dump"}, // the selected repo's path, not the cwd's
 		{"git show HEAD HEAD:small.ts", root, "context:unbounded-output"},
 		{"git show --textconv HEAD:small.ts", root, "context:unbounded-output"}, // a converter's output, not the blob
 		{"git show HEAD", root, "context:unbounded-output"},

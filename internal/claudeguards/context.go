@@ -553,7 +553,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		}
 	}
 	for _, spec := range blobs {
-		if abs := blobPath(spec, gitDir); abs != "" {
+		if abs := blobPath(spec, gitDir, gitRepo); abs != "" {
 			if cfg.noRead(abs) {
 				return dumpNoRead, abs, 0, 0
 			}

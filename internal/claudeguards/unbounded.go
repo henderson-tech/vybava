@@ -113,8 +113,10 @@ func gitShowBlobs(fields []string, cwd string) (dir string, repo, specs []string
 // blobPath is the working-tree file a <rev>:<path> spec names, so the
 // protected-file rules (noRead, transcripts, lok catalogs) judge it as they
 // judge cat: `rev:./x` and `rev:../x` resolve against dir, any other path
-// against the checkout root. "" when there is none to name.
-func blobPath(spec, dir string) string {
+// against the root of the repository the command selects — its --work-tree,
+// else the checkout holding its --git-dir, else dir's checkout. "" when there
+// is none to name (a bare --git-dir has no working tree).
+func blobPath(spec, dir string, repo []string) string {
 	_, p, _ := strings.Cut(spec, ":")
 	if p == "" {
 		return ""
@@ -122,10 +124,27 @@ func blobPath(spec, dir string) string {
 	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
 		return resolvePath(p, dir)
 	}
-	if root := checkoutRoot(dir); root != "" {
-		return filepath.Join(root, p)
+	root, gitDir, workTree := checkoutRoot(dir), "", ""
+	for _, g := range repo {
+		switch name, value, _ := strings.Cut(g, "="); name {
+		case "--git-dir":
+			gitDir = resolvePath(value, dir)
+		case "--work-tree":
+			workTree = resolvePath(value, dir)
+		}
 	}
-	return ""
+	switch {
+	case workTree != "":
+		root = workTree
+	case gitDir != "" && filepath.Base(gitDir) == ".git":
+		root = filepath.Dir(gitDir)
+	case gitDir != "":
+		root = ""
+	}
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, p)
 }
 
 func unboundedOutput(segment string, cfg Config) *Denial {
