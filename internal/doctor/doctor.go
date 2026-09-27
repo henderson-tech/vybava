@@ -94,6 +94,7 @@ func Run(c catalog.Catalog, store state.Store) Report {
 	} else {
 		report.Checks = append(report.Checks, Check{ID: "gh", Status: StatusPass, Message: "GitHub CLI is available"})
 	}
+	report.Checks = append(report.Checks, agentShellGlobCheck(agentShellNomatch))
 
 	if stateErr != nil {
 		return report

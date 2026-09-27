@@ -44,6 +44,44 @@ func TestSearchOutcomes(t *testing.T) {
 	}
 }
 
+// The call after a guard block is its verdict: a bounded Bash/Read complies,
+// an escape variable escapes, anything else (an edit, the end, a compaction)
+// abandons. Only the variable's name is kept from the command.
+func TestGuardOutcomes(t *testing.T) {
+	block := Call{Tool: "Bash", Class: ClassOther, Blocked: "context:whole-file-dump"}
+	s := Session{ID: "s", Calls: []Call{
+		block, read("/r/a.go", 1, 120, 900), // complied: a ranged read
+		block, {Tool: "Bash", Class: ClassRead, Read: true, Escaped: "CLAUDE_ALLOW_CONTEXT_DUMP=1"}, // escaped
+		block, {Tool: "Edit", Class: ClassEdit, Edit: true}, // abandoned
+		{Tool: "Bash", Class: ClassOther, Blocked: "machine:devbox-workspace"}, {Tool: compactTool, Class: ClassOther}, // abandoned at a compaction
+		block, // abandoned at the end
+	}}
+	got := analyze(s, DefaultConfig, map[string]*fileAcc{}, nil)
+	if o := got.Outcomes["context:whole-file-dump"]; o == nil || *o != (Outcome{Complied: 1, Escaped: 1, Abandoned: 2}) {
+		t.Errorf("whole-file-dump outcomes %+v, want complied 1 escaped 1 abandoned 2", o)
+	}
+	if o := got.Outcomes["machine:devbox-workspace"]; o == nil || *o != (Outcome{Abandoned: 1}) {
+		t.Errorf("devbox-workspace outcomes %+v, want abandoned 1", o)
+	}
+	var merged Totals
+	merged.add(got)
+	merged.add(got)
+	if o := merged.Outcomes["context:whole-file-dump"]; o.Escaped != 2 {
+		t.Errorf("add must sum outcomes: %+v", o)
+	}
+	for cmd, want := range map[string]string{
+		"CLAUDE_ALLOW_CONTEXT_DUMP=1 cat big.ts":                        "CLAUDE_ALLOW_CONTEXT_DUMP=1",
+		"cd /r && CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1 bunx jest":          "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1",
+		"COMMIT_GUARD_ALLOW=1 git commit -m x":                          "COMMIT_GUARD_ALLOW=1",
+		"echo 'set CLAUDE_ALLOW_CONTEXT_DUMP=0 to keep it' && cat x.ts": "",
+		"cat big.ts | head -50":                                         "",
+	} {
+		if got := escapeVar(cmd); got != want {
+			t.Errorf("escapeVar(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
+
 // A whole read of a file above the threshold counts as big; files rank
 // with their worktree copies folded into the repository's file.
 func TestBigReadsAndFiles(t *testing.T) {

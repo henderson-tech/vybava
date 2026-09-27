@@ -110,6 +110,9 @@ func claudeCall(name string, input json.RawMessage, cwd string, r transcripts.To
 		c = shellCall(in.Command, cwd)
 		c.Tool, c.Lines, c.Stale = name, lines, out.StaleHint != ""
 	}
+	// After the Bash arm, which builds a fresh Call: the escape variable is
+	// what the outcome tally reads on the call after a block.
+	c.Escaped = escapeVar(in.Command)
 	c.classify()
 	return settle(c, r.Text, r.IsError)
 }

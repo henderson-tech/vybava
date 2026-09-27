@@ -219,6 +219,40 @@ func ValidateSentence(s string) *Diag {
 	return nil
 }
 
+// NormalizeSentence applies the mechanical fixes the grammar allows and
+// reports each as a warning: a long dash becomes a hyphen, a missing period
+// is added, and a second sentence is split off into spill (for a note),
+// leaving the first. Length is never fixed here — cutting a sentence loses
+// the fact. In the three days to 2026-09-27 the grammar refused ~290 adds,
+// 43 of them for a dash and 38 for a period; each refusal was a retry, and
+// the retry often a shorter row that lost the detail.
+func NormalizeSentence(s string) (fixed, spill string, fixes []*Diag) {
+	warn := func(code, detail string) {
+		fixes = append(fixes, &Diag{Code: code, Severity: "warning", Detail: detail})
+	}
+	fixed = strings.Join(strings.Fields(s), " ")
+	if fixed != s {
+		warn(DiagRowSyntax, "whitespace folded to single spaces on one line")
+	}
+	if longDashRE.MatchString(fixed) {
+		fixed = longDashRE.ReplaceAllString(fixed, "-")
+		warn(DiagRowLongDash, "long dash replaced by a hyphen")
+	}
+	prefix := retiresRE.FindString(fixed)
+	body := strings.TrimPrefix(fixed, prefix)
+	if m := sentenceBreakRE.FindStringIndex(body); m != nil {
+		spill = strings.TrimSpace(body[m[0]+1:])
+		body = body[:m[0]+1]
+		warn(DiagRowTwoSentences, "second sentence moved out of the row: "+spill)
+	}
+	if body != "" && !strings.HasSuffix(body, ".") && !strings.HasSuffix(body, "?") && !strings.HasSuffix(body, "!") {
+		body += "."
+		warn(DiagRowNoPeriod, "period added")
+	}
+	fixed = prefix + body
+	return fixed, spill, fixes
+}
+
 // SentenceWarning returns the soft-length warning, or nil.
 func SentenceWarning(s string) *Diag {
 	if n := len([]rune(s)); n > WarnSentence {
@@ -406,18 +440,31 @@ func (l *Ledger) Validate(r Row) *Diag {
 }
 
 // Append validates and appends one row, returning it with its id assigned.
-func (l *Ledger) Append(r Row) (Row, *Diag, error) {
-	r.ID = l.NextID()
+// Check validates a row exactly as Append would — sentence, link forms,
+// then the ledger's own rules (type of this home, supersedes/retires
+// targets) — without writing it. `memo add --note` checks first and writes
+// the note only for a row the ledger will take, so a refusal never leaves an
+// orphaned note behind. r.ID and r.Team are filled as Append fills them.
+func (l *Ledger) Check(r Row) *Diag {
+	if r.ID == 0 {
+		r.ID = l.NextID()
+	}
 	r.Team = l.Kind == KindTeam
 	if d := ValidateSentence(r.Sentence); d != nil {
-		return Row{}, d, nil
+		return d
 	}
 	for _, link := range r.Links {
 		if d := validateLink(link); d != nil {
-			return Row{}, d, nil
+			return d
 		}
 	}
-	if d := l.Validate(r); d != nil {
+	return l.Validate(r)
+}
+
+func (l *Ledger) Append(r Row) (Row, *Diag, error) {
+	r.ID = l.NextID()
+	r.Team = l.Kind == KindTeam
+	if d := l.Check(r); d != nil {
 		return Row{}, d, nil
 	}
 	if err := appendLine(l.Path, r.Format()); err != nil {

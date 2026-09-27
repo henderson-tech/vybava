@@ -35,7 +35,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		Use:   use,
 		Short: "Append-only memory ledger - capture a row, cite it, render the hot surface",
 		Long: "memo owns LEDGER.md (append-only truth), MEMORY.md (rendered) and usage.jsonl.\n" +
-			"  memo add <type>/<topic>[!] \"<sentence>.\" [--link <l>]... [--supersedes N] [--retires N]\n" +
+			"  memo add <type>/<topic>[!] \"<sentence>.\" [--note <detail>] [--link <l>]... [--supersedes N] [--retires N]\n" +
 			"  memo show <ref> · memo find <words>... · memo touch <ref> · memo render [--check] · memo ensure\n" +
 			"  memo import <file> · memo migrate <home> · memo homes [register <alias> <path>]\n" +
 			"  memo vault [--path ~/Memory] · memo snapshot [-m msg] · memo log [-n N] · memo restore <rev> <file>\n" +
@@ -107,6 +107,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 
 	// add
 	var links []string
+	var note string
 	var supersedes, retires int
 	add := &cobra.Command{Use: "add <type>/<topic>[!] \"<sentence>.\"", Short: "Append one row, render, snapshot the personal home", Args: cobra.ArbitraryArgs}
 	add.RunE = func(cmd *cobra.Command, args []string) error {
@@ -129,6 +130,13 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if retires > 0 && !strings.HasPrefix(sentence, "retires #") {
 			sentence = fmt.Sprintf("retires #%s%d. %s", prefix, retires, sentence)
 		}
+		// Mechanical grammar (dash, period, a second sentence) is fixed and
+		// reported, never refused; what does not fit the row goes to the note.
+		sentence, spill, fixes := memo.NormalizeSentence(sentence)
+		if d := memo.ValidateSentence(sentence); d != nil {
+			return finish(s, nil, nil, fixes, d)
+		}
+		noteText := strings.TrimSpace(strings.TrimSpace(spill) + "\n\n" + strings.TrimSpace(note))
 		env := memoEnv()
 		homes, d, err := env.Resolve(homeSpec, typ)
 		if d != nil || err != nil {
@@ -147,9 +155,27 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
 		now := time.Now()
+		if noteText != "" {
+			// The ledger judges the row first (link forms, supersedes/retires
+			// targets, the home's types); the note is written only for a row
+			// it will take, so a refusal never strands a numbered note. The
+			// probe carries the caller's links only: Validate stats every note
+			// link, and the note does not exist yet — Append checks it again
+			// once it does.
+			probe := memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence, Links: links}
+			if d := l.Check(probe); d != nil {
+				return finish(s, nil, nil, fixes, d)
+			}
+			slug, err := memo.WriteNote(homes[0].Path, typ, topic, sentence, noteText, now)
+			if err != nil {
+				return finish(s, nil, nil, fixes, err)
+			}
+			links = append(links, "[[notes/"+slug+"]]")
+			fixes = append(fixes, &memo.Diag{Code: "NOTE_WRITTEN", Severity: "info", Detail: "detail written to notes/" + slug + ".md and linked from the row"})
+		}
 		row, d, err := l.Append(memo.Row{Type: typ, Topic: topic, Pinned: pinned, Sentence: sentence, Links: links})
 		if d != nil || err != nil {
-			return finish(s, nil, nil, nil, diagOrErr(d, err))
+			return finish(s, nil, nil, fixes, diagOrErr(d, err))
 		}
 		events, err := recordAdded(env, l.Home(), []memo.Row{row}, now)
 		if err != nil {
@@ -167,9 +193,10 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				data["snapshot"] = rev
 			}
 		}
-		return finish(s, data, []string{fmt.Sprintf("memo show %s%d%s --json", row.IDPrefix(), row.ID, homeArg(homes[0]))}, []*memo.Diag{memo.SentenceWarning(sentence), tracked}, nil)
+		return finish(s, data, []string{fmt.Sprintf("memo show %s%d%s --json", row.IDPrefix(), row.ID, homeArg(homes[0]))}, append(fixes, memo.SentenceWarning(sentence), tracked), nil)
 	}
 	add.Flags().StringArrayVar(&links, "link", nil, "link after ->: [[notes/<slug>]], [[LEDGER#^m<id>]], [[<alias>/...]], https://...")
+	add.Flags().StringVar(&note, "note", "", "detail that does not fit the sentence; written to notes/<type>-<topic>.md and linked from the row")
 	add.Flags().IntVar(&supersedes, "supersedes", 0, "mark row N superseded by this one")
 	add.Flags().IntVar(&retires, "retires", 0, "mark row N retired by this one")
 

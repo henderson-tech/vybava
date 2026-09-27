@@ -180,6 +180,14 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 			if ws == "" {
 				continue
 			}
+			// The box cannot admit a run: refusing would only teach the
+			// prefix (186 escapes for 102 refusals by 2026-09-27). Run here,
+			// say why once, and stop judging this call.
+			if a := currentAdmission(); a.Saturated {
+				in.note(fmt.Sprintf("claude-guards: `%s` runs on this Mac although %s is synced to the Devbox workspace %s — the box cannot admit a run right now (%s). Keep it to one heavy command at a time.",
+					hit.seg, filepath.Base(root), ws, a.Reason))
+				return nil
+			}
 			return deny("machine:devbox-workspace", fmt.Sprintf(`%s
 
 runs on this Mac, and its checkout is synced to the Devbox workspace %s; this

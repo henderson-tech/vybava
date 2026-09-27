@@ -90,7 +90,18 @@ ledger keeps reading and taking `memo add` — nothing rewrites its rows.
 - `type`: `user | feedback | project | reference`; `topic`: kebab-case.
 - `!` after the topic pins the row: rendered first, never ages out.
 - `sentence`: one line, one fact, plain hyphens only (no em or en dash, U+2014 / U+2013), ends with a
-  period, at most 200 characters (a warning above 160).
+  period, at most 200 characters (a warning above 160). `memo add` fixes the
+  mechanical part itself and says so (`!` warnings on the row it wrote): a
+  long dash becomes a hyphen, a missing period is added, folded whitespace,
+  and a second sentence is moved out of the row into a note. Length is the one
+  thing it never fixes — cutting a sentence loses the fact — so `ROW_TOO_LONG`
+  stays a refusal. `memo add --note "<detail>"` writes the detail to
+  `notes/<type>-<topic>.md` (numbered when one exists; never overwritten) and
+  links it from the row in the same call; the spilled second sentence lands in
+  the same note. The grammar itself is unchanged: what the ledger holds is
+  still one sentence per row, and `memorylint` reads the same rules. (~290
+  refusals in the three days to 2026-09-27, 169 for length, 81 for dash or
+  period; each one a retry.)
 - `supersedes #N: <sentence>` (`#tN` in a team ledger) marks row N superseded; `retires #N.` (with an
   optional reason after it) marks it retired. Both are ordinary rows; the old
   row is never touched and never rendered again.

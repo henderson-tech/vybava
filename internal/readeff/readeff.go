@@ -50,6 +50,7 @@ type Call struct {
 	Changed int      // lines added or removed
 	Stale   bool     // a file changed behind the harness's back
 	Blocked string   // the claude-guards rule that denied the call
+	Escaped string   // the claude-guards escape variable the command carried (CLAUDE_ALLOW_…=1)
 	Found   []string // files a search printed, for the hit rate
 	Query   string   // a search's segment: compared, never printed
 
@@ -158,6 +159,26 @@ func foundPaths(out, dir string) []string {
 		}
 	}
 	return paths
+}
+
+// escapeVar returns the claude-guards escape variable a command carries
+// (`CLAUDE_ALLOW_CONTEXT_DUMP=1`, `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`, …) or
+// "". Only the name is kept, never the command.
+func escapeVar(cmd string) string {
+	for _, prefix := range []string{"CLAUDE_ALLOW_", "CLAUDE_GUARDS_ALLOW_", "COMMIT_GUARD_ALLOW="} {
+		i := strings.Index(cmd, prefix)
+		if i < 0 {
+			continue
+		}
+		end := i
+		for end < len(cmd) && (cmd[end] == '_' || cmd[end] == '=' || cmd[end] >= 'A' && cmd[end] <= 'Z' || cmd[end] >= '0' && cmd[end] <= '9') {
+			end++
+		}
+		if name := cmd[i:end]; strings.HasSuffix(name, "=1") {
+			return name
+		}
+	}
+	return ""
 }
 
 // guardRule extracts the claude-guards rule id from a denial message.

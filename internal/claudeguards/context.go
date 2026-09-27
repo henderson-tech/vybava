@@ -67,6 +67,36 @@ var dumpCommands = map[string]bool{"cat": true, "sed": true, "head": true, "tail
 // noLineBudget are Read-tool targets the offset/limit knobs do not apply to.
 var noLineBudget = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".pdf": true, ".ipynb": true}
 
+// skillDoc reports whether abs is an agent skill document: a SKILL.md, or a
+// markdown file under a skills tree (`~/.claude/skills/**`,
+// `~/.agents/skills/**`, a repo's `.claude/skills/**` or `skills/**`, the
+// plugin cache's `skills/`) — its `references/` included. Skills are written
+// to be read whole, and budgeting them taught the escape instead: the 370-line
+// devbox skill alone drew 28 CLAUDE_ALLOW_CONTEXT_DUMP=1 prefixes in three
+// days (2026-09-27). The dump rules skip them; context:budget-read still
+// counts what they deliver.
+func skillDoc(abs string) bool {
+	if !strings.HasSuffix(abs, ".md") {
+		return false
+	}
+	if filepath.Base(abs) == "SKILL.md" {
+		return true
+	}
+	// `<root>/skills/<name>/**.md` is a skill's document only when that skill
+	// exists — `<root>/skills/<name>/SKILL.md` — so a directory that merely
+	// happens to be called skills opens no hole in the budget.
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] != "skills" {
+			continue
+		}
+		if _, err := os.Stat(filepath.FromSlash(strings.Join(parts[:i+2], "/") + "/SKILL.md")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // throwawayRoots are scratch locations the write rules ignore.
 var throwawayRoots = func() []string {
 	roots := []string{"/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"}
@@ -582,6 +612,9 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if isLokCatalog(abs, cfg) {
 			return dumpCatalog, abs, 0, 0
 		}
+		if skillDoc(abs) {
+			continue // read whole by design; budget-read still counts it
+		}
 		if n, ok := lineCount(abs); ok {
 			charge(abs, n)
 		}
@@ -750,7 +783,7 @@ func contextReadMatchCfg(path string, offset, limit int, cwd string, cfg Config)
 	if isLokCatalog(abs, cfg) {
 		return catalogDenial(abs)
 	}
-	if (limit > 0 && limit <= cfg.MaxDumpLines) || noLineBudget[strings.ToLower(filepath.Ext(abs))] {
+	if (limit > 0 && limit <= cfg.MaxDumpLines) || noLineBudget[strings.ToLower(filepath.Ext(abs))] || skillDoc(abs) {
 		return nil
 	}
 	n, ok := lineCount(abs)

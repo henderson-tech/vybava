@@ -47,6 +47,34 @@ type Totals struct {
 	Stale         int            `json:"stale"`
 	Compactions   int            `json:"compactions"`
 	Blocked       map[string]int `json:"blocked"`
+	// What the agent did right after each guard block, per rule: complied
+	// (the next Bash/Read ran without an escape variable), escaped (the next
+	// call carried one), or abandoned (no Bash/Read followed before the next
+	// prompt, edit or compaction). A rule whose escapes approach its blocks
+	// protects nothing and is a retirement candidate; one whose complied
+	// share is high is doing its job. The session-mining of 2026-09-27 could
+	// only guess this from prefix counts.
+	Outcomes map[string]*Outcome `json:"outcomes,omitempty"`
+}
+
+// Outcome is the next-call tally behind one rule's blocks.
+type Outcome struct {
+	Complied  int `json:"complied"`
+	Escaped   int `json:"escaped"`
+	Abandoned int `json:"abandoned"`
+}
+
+// outcome returns the rule's tally, creating it.
+func (t *Totals) outcome(rule string) *Outcome {
+	if t.Outcomes == nil {
+		t.Outcomes = map[string]*Outcome{}
+	}
+	o := t.Outcomes[rule]
+	if o == nil {
+		o = &Outcome{}
+		t.Outcomes[rule] = o
+	}
+	return o
 }
 
 // LinesPerChange is navigation lines (read + search + mixed) per line changed; 0
@@ -93,6 +121,12 @@ func (t *Totals) add(o Totals) {
 		}
 		t.Blocked[k] += v
 	}
+	for k, v := range o.Outcomes {
+		acc := t.outcome(k)
+		acc.Complied += v.Complied
+		acc.Escaped += v.Escaped
+		acc.Abandoned += v.Abandoned
+	}
 }
 
 // FileStat is one file's read traffic across sessions.
@@ -121,6 +155,19 @@ type Step struct {
 	Lines int      `json:"lines"`
 	Files []string `json:"files,omitempty"`
 	Flags []string `json:"flags,omitempty"`
+}
+
+// navTools are the tools a blocked agent complies with: the same command in
+// a bounded form, a range read, or a search for the range.
+var navTools = map[string]bool{"Bash": true, "Read": true, "Grep": true, "Glob": true, "shell": true, "exec": true}
+
+// nextCall is the call after index i, or nil at the end of the session or
+// at a compaction (the agent never saw the block again).
+func nextCall(calls []Call, i int) *Call {
+	if i+1 >= len(calls) || calls[i+1].Tool == compactTool {
+		return nil
+	}
+	return &calls[i+1]
 }
 
 // analyze folds one session into its totals and the per-file accumulators.
@@ -156,6 +203,19 @@ func analyze(s Session, cfg Config, files map[string]*fileAcc, steps *[]Step) To
 			t.Blocked[c.Blocked]++
 			flag("blocked:" + c.Blocked)
 			t.OtherLines += c.Lines
+			// The call after a block is the verdict on the block.
+			o := t.outcome(c.Blocked)
+			switch next := nextCall(s.Calls, i); {
+			case next == nil:
+				o.Abandoned++
+			case next.Escaped != "":
+				o.Escaped++
+				flag("escaped:" + next.Escaped)
+			case navTools[next.Tool]:
+				o.Complied++
+			default:
+				o.Abandoned++
+			}
 			continue
 		}
 		// Output lines belong to a kind only when every piece of output in the

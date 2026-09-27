@@ -224,7 +224,9 @@ func unboundedOutput(segment string, cfg Config) *Denial {
 				pathBound = true
 			}
 		}
-		if !has("--stat", "--name-only", "--name-status", "--numstat", "--shortstat") && !pathBound {
+		// `--output=<file>` / `--output <file>` sends the diff to a file, not
+		// to context (10 escapes on that shape by 2026-09-27).
+		if !has("--stat", "--name-only", "--name-status", "--numstat", "--shortstat", "--output") && !pathBound {
 			// Keep the revisions the caller typed; a suggestion that drops them
 			// is a different command from the one they wanted.
 			fix = strings.Join(f, " ") + " --stat (or -- <path>)"

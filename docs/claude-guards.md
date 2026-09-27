@@ -41,6 +41,9 @@ prod-merge        a `gh pr merge`, a writing `gh api` or a `git push`: one
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
                   simulator or starts a dev server (a `dev:*` script counts
                   when its package.json body is one)
+devbox-workspace  one `devbox status --json` (≤8 s, cached 60 s in the temp
+                  dir) only when the checkout is synced and the command would
+                  otherwise be refused — the box's admission decides
 browser           a loopback GET to onyx (1.5 s timeout) on every
                   playwright/chrome-devtools call
 ```
@@ -156,6 +159,13 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
                   (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+shell:*           `path` bound as a shell variable — `for path in`, `while
+                  read path`, `path=…`, `local/export path` — in the
+                  harness's zsh, which ties path to PATH so every later
+                  command fails with `command not found` (1,765 times in
+                  three days by 2026-09-27; FixIt memo #194 said so in prose).
+                  Top-level segments only: a `bash -c` payload or a quoted
+                  heredoc is not zsh. No escape: rename the variable
 memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   destination, rm) to a memo home's LEDGER.md, MEMORY.md or
                   usage.jsonl — memo's own RefuseHandWrite, run here so memo's
@@ -176,11 +186,16 @@ prod-merge:*      landing on a production branch the repo names in
                   covers only the command it prefixes. A merge aimed at
                   another repo than the checkout's, or a repo whose policy
                   cannot be read, gets canary/release/master; an unreadable
-                  PR base fails closed
+                  PR base fails closed. A `cd $VAR &&` before the merge names
+                  no checkout the hook can read (the text, never the value):
+                  the block says so and asks for the absolute path
                   (escape: CLAUDE_ALLOW_PROD_MERGE=1, only on the user's go for
                   that one merge)
 context:*         inline python/node scripts that write files · cat/tee over an
-                  existing file · cat/sed/head/tail or Read above 200 lines ·
+                  existing file · cat/sed/head/tail or Read above 200 lines
+                  (skill documents excepted: a SKILL.md or a markdown file
+                  under a skills tree is read whole by design; budget-read
+                  still counts it) · `git diff --output=<file>` is a redirect ·
                   dumping a ~/.claude/projects transcript · any raw read of a
                   locale catalog declared in vybava.config.ts (lok.catalogs) —
                   ranges included; the message points at lok get/grep/add ·
@@ -262,8 +277,9 @@ as the CLI writes it: each entry's `workspace.yaml` (`apps.<app>.sync`) and
 only this file). A parked workspace keeps its record; `devbox down` and gc drop
 it. Paths compare for equality with symlinks resolved on both sides, never as
 a parent match: worktrees nest inside their main clone and the main clone's
-workspace must not route a bare worktree. No network and no subprocess: the
-lookup reads that directory once per matching command. FixIt put its
+workspace must not route a bare worktree. No network and no subprocess for the
+lookup itself (the admission ask below is the one exception): it reads that
+directory once per matching command. FixIt put its
 typechecks there on 2026-09-25 (the api spec check alone is 3 GB and 60 s;
 several at once froze the Mac at 50 GB of swap the day before, but a worktree
 without a workspace still typechecks locally). The message names the workspace
@@ -272,6 +288,23 @@ starts at the synced checkout's root, the rerun carries the command's `cd` back
 and keeps its leading assignments (`NODE_OPTIONS=…`); `machine:devbox-only`
 prints its rerun the same way. The escape is the same
 `CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1`.
+
+The refusal is admission-aware (2026-09-27). In the three days before, the
+rule fired 102 times and the escape was typed 186 times — the box was
+saturated and every refusal became the prefix, then the prefix came
+pre-emptively; a rule with a ~100 % escape rate protects nothing. Before
+refusing, the rule asks `devbox status --json` (≤8 s, the answer cached 60 s
+in the temp dir) and reads the box's own admission signals: the overview's
+`capacity.cpu.saturated` (admission's PSI rule), a `queued` entry in the run
+queue, memory headroom under its floor, or a WS_CPU_SATURATED / WS_MAKE_ROOM /
+WS_HOT_FULL diagnostic. Saturated → the command runs on the Mac and the call
+carries one model-visible note (PreToolUse `additionalContext`) naming the
+workspace and the reason, so the hand-back can say why the box was skipped.
+Unknown — no devbox on PATH, a slow or failing call, an unreadable answer —
+refuses as before: routing stays the default whenever the box cannot be asked.
+The lookup runs only for a command the rule would otherwise refuse, so an
+idle Mac pays nothing. Measure the effect with `vybava readeff report` ("after
+a block": complied / escaped / abandoned per rule).
 
 A `guards` key this binary does not know (a config written for a newer
 claude-guards) is skipped with one stderr line naming it; every key it does

@@ -27,6 +27,35 @@ func newHome(t *testing.T, kind Kind, rows ...string) *Ledger {
 	return l
 }
 
+// The mechanical fixes land the row and say what changed; a second sentence
+// spills for the note; length is never touched.
+func TestNormalizeSentence(t *testing.T) {
+	for in, want := range map[string]struct {
+		fixed, spill string
+		codes        []string
+	}{
+		"Never stash — parallel sessions share the tree.": {"Never stash - parallel sessions share the tree.", "", []string{DiagRowLongDash}},
+		"Never stash": {"Never stash.", "", []string{DiagRowNoPeriod}},
+		"Never stash. The tree is shared. Use worktrees.":              {"Never stash.", "The tree is shared. Use worktrees.", []string{DiagRowTwoSentences}},
+		"retires #46. The rule moved to guards. Nothing else changed.": {"retires #46. The rule moved to guards.", "Nothing else changed.", []string{DiagRowTwoSentences}},
+		"  spaced   out\ttext. ":                                       {"spaced out text.", "", []string{DiagRowSyntax}},
+		"Fine as it is.":                                               {"Fine as it is.", "", nil},
+		"Is it done?":                                                  {"Is it done?", "", nil},
+	} {
+		fixed, spill, fixes := NormalizeSentence(in)
+		var codes []string
+		for _, f := range fixes {
+			codes = append(codes, f.Code)
+		}
+		if fixed != want.fixed || spill != want.spill || strings.Join(codes, ",") != strings.Join(want.codes, ",") {
+			t.Errorf("%q: fixed=%q spill=%q codes=%v; want %q %q %v", in, fixed, spill, codes, want.fixed, want.spill, want.codes)
+		}
+	}
+	if fixed, _, _ := NormalizeSentence(strings.Repeat("x", 300)); len(fixed) != 301 {
+		t.Errorf("length is not a mechanical fix: %d", len(fixed))
+	}
+}
+
 func TestRowRoundTrip(t *testing.T) {
 	cases := []string{
 		"- #45 feedback/git Never `git stash`; parallel sessions share the tree. -> [[notes/git-stash-race]] ^m45",

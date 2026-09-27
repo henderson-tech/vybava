@@ -53,6 +53,7 @@ worker.
 | empty searches | searches that returned nothing; "re-run" when the same search found something within the window |
 | stale-state re-shows | an edit the harness had to recover, or a shell command that changed a file the session had read |
 | guard blocks | claude-guards denials, by rule |
+| after a block | the call after each denial, per rule: complied (the next Bash/Read/Grep ran without an escape variable, bounded or blocked again), escaped (it carried `CLAUDE_ALLOW_…=1` / `CLAUDE_GUARDS_ALLOW_…=1` / `COMMIT_GUARD_ALLOW=1`), abandoned (an edit, the end, a compaction). Only the variable's NAME is kept from the command. A rule whose escapes approach its blocks teaches a prefix, not a bounded form, and is a retirement or redesign candidate; the 2026-09-27 mining could only guess this from prefix counts (`outcomes` in the JSON) |
 
 Most-read files fold worktree copies (`<repo>/.worktrees/<name>/x`) into the
 repository's `x`; re-reads stay per real path.
