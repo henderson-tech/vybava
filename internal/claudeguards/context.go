@@ -149,11 +149,13 @@ func lineCount(abs string) (int, bool) {
 // spec: the blob as it is at that revision, which the working tree may not
 // even hold. (0, false) when git cannot resolve it — a tree, a typo — which
 // passes, as a missing file does for cat. Bounded at 2 s so a partial clone
-// fetching the blob can never hang the hook.
-func blobLines(dir, spec string) (int, bool) {
+// fetching the blob can never hang the hook. repo carries the command's own
+// --git-dir/--work-tree/--namespace, so the blob comes from the same repository.
+func blobLines(dir string, repo []string, spec string) (int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	c := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "blob", spec)
+	args := append(append([]string{"-C", dir}, repo...), "cat-file", "blob", spec)
+	c := exec.CommandContext(ctx, "git", args...)
 	out, err := c.StdoutPipe()
 	if err != nil || c.Start() != nil {
 		return 0, false
@@ -435,7 +437,7 @@ func dumpBudget(seg, cwd string, cfg Config) (verdict dumpVerdict, file string, 
 
 func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpVerdict, file string, lines, total int) {
 	fields := shellseg.Fields(seg)
-	gitDir, blobs := gitShowBlobs(fields, cwd)
+	gitDir, gitRepo, blobs := gitShowBlobs(fields, cwd)
 	if blobs == nil && (len(fields) == 0 || !dumpCommands[fields[0]]) {
 		return dumpOK, "", 0, 0
 	}
@@ -551,7 +553,21 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		}
 	}
 	for _, spec := range blobs {
-		if n, ok := blobLines(gitDir, spec); ok {
+		if abs := blobPath(spec, gitDir); abs != "" {
+			if cfg.noRead(abs) {
+				return dumpNoRead, abs, 0, 0
+			}
+			if isTranscript(abs) {
+				return dumpTranscript, abs, 0, 0
+			}
+			if isLokCatalog(abs, cfg) {
+				return dumpCatalog, abs, 0, 0
+			}
+		}
+		if total > allowance {
+			continue // already denied: no more git spawns, only the rules above
+		}
+		if n, ok := blobLines(gitDir, gitRepo, spec); ok {
 			charge(spec, n)
 		}
 	}

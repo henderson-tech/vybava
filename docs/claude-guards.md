@@ -482,8 +482,11 @@ environment variable for Read, a leading assignment for Bash).
 `git log` and unspecialized `git diff/show`. Examples: `docker logs --tail 200
 app`, `git log -n 20`, `git diff --stat`. The suggested form keeps the
 arguments you typed. `git show <rev>:<path>` is not a diff but a file read at
-another revision: it skips this rule and is budgeted like `cat` by the blob's
-own length (`git cat-file`, 2 s bound; an unresolvable spec passes). It was 300
+another revision: it skips this rule and is judged like `cat` — noRead,
+transcript and lok-catalog rules on the working-tree path it names, the budget
+on the blob's own length (`git cat-file` in the repository the command selects,
+2 s bound; an unresolvable spec passes). `--textconv`/`--filters` print a
+converter's output, so they stay under this rule. It was 300
 of the 304 git-show denials in the 2026-09-25 field audit. Test runners are deliberately not covered: a passing suite
 prints little, a failing one puts what matters at the end, and every repo here
 documents a bare `go test ./...` / `bun test` as its verify step — a guard that

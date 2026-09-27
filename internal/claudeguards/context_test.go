@@ -193,8 +193,13 @@ func TestDumpBudgetSumsUnmeasuredFilesWithoutWrapping(t *testing.T) {
 // git-show denials in the 2026-09-25 field audit were this shape).
 func TestGitShowBlobIsAFileRead(t *testing.T) {
 	root, _, _, _ := fixture(t) // small.ts 50 lines, big.ts 995
+	for name, body := range map[string]string{"gen.ts": "x\n", "vybava.config.json": `{"guards":{"noRead":["**/gen.ts"]}}`} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, args := range [][]string{
-		{"init", "-q"}, {"add", "small.ts", "big.ts"},
+		{"init", "-q"}, {"add", "small.ts", "big.ts", "gen.ts"},
 		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "c1"},
 	} {
 		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
@@ -209,8 +214,11 @@ func TestGitShowBlobIsAFileRead(t *testing.T) {
 		{"git show HEAD:big.ts | grep line", root, ""},
 		{"git show HEAD:big.ts | cat", root, "context:whole-file-dump"},
 		{"git -C " + root + " show HEAD:big.ts", elsewhere, "context:whole-file-dump"},
-		{"git show HEAD", root, "context:unbounded-output"},
+		{"git --git-dir=" + root + "/.git show HEAD:big.ts", elsewhere, "context:whole-file-dump"}, // measured in the repo it names
+		{"git show HEAD:gen.ts", root, "context:no-read"},                                          // protected-file rules apply as for cat
 		{"git show HEAD HEAD:small.ts", root, "context:unbounded-output"},
+		{"git show --textconv HEAD:small.ts", root, "context:unbounded-output"}, // a converter's output, not the blob
+		{"git show HEAD", root, "context:unbounded-output"},
 	} {
 		got := ""
 		if d := contextBashMatch(tc.cmd, tc.cwd); d != nil {
