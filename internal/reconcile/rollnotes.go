@@ -13,7 +13,6 @@ package reconcile
 import (
 	"errors"
 	"io/fs"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -136,11 +135,12 @@ func (m Manifest) rollStepFor(rp, before, after string) rollStep {
 	return rollStep{claimed: true, note: r.note(readConf(before), readConf(after))}
 }
 
-// readConf reads a config file; an absent one is empty. An unreadable one is
-// empty too, so every repo setting counts as changed — the conservative side:
-// a spurious RESTART REQUIRED beats a missing one.
+// readConf reads a config file; an absent one is empty. An unreadable or
+// non-regular one (a FIFO never blocks the sweep) is empty too, so every repo
+// setting counts as changed — the conservative side: a spurious RESTART
+// REQUIRED beats a missing one.
 func readConf(p string) string {
-	raw, err := os.ReadFile(p)
+	raw, err := readRegular(p)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return ""
 	}

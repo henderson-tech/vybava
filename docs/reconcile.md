@@ -35,7 +35,7 @@ root). Unknown subcommands are rejected, never run.
 | compose file converged | file only + `ROLL MANUALLY: <app>`; `auto_roll_apps` opt-in runs `docker compose up -d` |
 | bind-mounted config converged (a `roll_notes` arm claims it: `postgresql.conf`, `pg_hba.conf`, `pgbouncer.ini`) | its exact step instead of `ROLL MANUALLY` — the `restart` text for a restart-only setting, `reload` otherwise, nothing for a comment-only edit (below) |
 | write refused (EACCES) | `permission` error naming the destination owner, the running user and the mapping's `owner` hint |
-| existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename |
+| existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename. The rewrite never goes through the final component: a symlink there — also one swapped in after the canonical check (`O_NOFOLLOW` open) — is a `symlink` error, a FIFO, directory, socket or device (fstat of the opened descriptor) a `write` error, both `{kind, path: <repo path>}` under `.errors`, nothing written; a FIFO never blocks the sweep's reads (`O_NONBLOCK`) |
 | mode = `report` (default) | computes + alerts everything, changes **nothing** on disk |
 
 `run`, `force` and `rollback` serialize behind one flock-style lock
