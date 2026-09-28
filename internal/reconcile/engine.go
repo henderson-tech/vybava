@@ -23,8 +23,9 @@ type Engine struct {
 	Now     func() time.Time
 	// LockTimeout bounds the wait for the shared lock (default 30s).
 	LockTimeout time.Duration
-	// CertProbeTimeout bounds one certs_present probe (default 10s); once a
-	// probe expires, the rest of that sweep holds TLS vhosts unprobed.
+	// CertProbeTimeout bounds one certs_present probe (default 4s, under the
+	// hub's 5s poll of /status.json); once a probe expires, the rest of that
+	// sweep holds TLS vhosts unprobed.
 	CertProbeTimeout time.Duration
 }
 
@@ -106,7 +107,7 @@ func (e *Engine) certProbeTimeout() time.Duration {
 	if e.CertProbeTimeout > 0 {
 		return e.CertProbeTimeout
 	}
-	return 10 * time.Second
+	return 4 * time.Second
 }
 
 // Mode reads the mode file: anything but "converge" is report.
