@@ -158,6 +158,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "posta" {
 		return rt.postaApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "onyx-rest" {
+		return rt.onyxRestApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "vpn" {
 		return rt.vpnApplet(), nil
 	}
@@ -224,6 +227,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.mergeAssistCommand("merge-assist"),
 		rt.memoCommand("memo"),
 		rt.postaCommand("posta"),
+		rt.onyxRestCommand("onyx-rest"),
 		rt.repolicyCommand("repolicy"),
 		rt.vpnCommand(),
 		rt.configCommand(),

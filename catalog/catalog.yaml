@@ -49,6 +49,12 @@ items:
     description: Transfer named environment values through a private, expiring Unix socket without secret-bearing files; read output stays inside the consuming process.
     applet: envbridge
 
+  - id: onyx-rest
+    kind: applet
+    status: experimental
+    description: One REST call with a secret Onyx injects as ONYX_REST_TOKEN — Bearer or HTTP Basic, the response in a 0600 --out file (Onyx suppresses the stdout of secret-injected children); a strict argv (--base first and once, PATH pinned to the base host) makes an Onyx allowed_commands prefix a real host pin.
+    applet: onyx-rest
+
   - id: operator
     kind: applet
     status: experimental
@@ -421,6 +427,7 @@ groups:
       - menubar-doctor
       - claude-guards
       - envbridge
+      - onyx-rest
       - posta
       - codexsync
       - codexusage
@@ -523,6 +530,7 @@ groups:
       - menubar-doctor
       - claude-guards
       - envbridge
+      - onyx-rest
       - posta
       - codexsync
       - codexusage
