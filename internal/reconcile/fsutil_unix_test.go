@@ -4,6 +4,7 @@ package reconcile
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -122,6 +123,13 @@ func TestApplyFileNeverWritesThroughTheFinalComponent(t *testing.T) {
 		mustT(t, os.Remove(dest))
 		mustT(t, syscall.Mkfifo(dest, 0o644))
 	}
+	// with a reader the O_WRONLY open succeeds: only the fstat refuses it
+	fifoWithReader := func(t *testing.T, dest, victim string) {
+		fifo(t, dest, victim)
+		r, err := os.OpenFile(dest, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		mustT(t, err)
+		t.Cleanup(func() { r.Close() })
+	}
 	dir := func(t *testing.T, dest, _ string) {
 		mustT(t, os.Remove(dest))
 		mustT(t, os.Mkdir(dest, 0o755))
@@ -138,6 +146,7 @@ func TestApplyFileNeverWritesThroughTheFinalComponent(t *testing.T) {
 		{name: "symlink swapped in after the type check", live: steps(regular), swap: symlink, wantType: fs.ModeSymlink, wantKind: "symlink"},
 		{name: "named pipe", live: steps(regular, fifo), wantType: fs.ModeNamedPipe, wantKind: "write"},
 		{name: "named pipe swapped in after the type check", live: steps(regular), swap: fifo, wantType: fs.ModeNamedPipe, wantKind: "write"},
+		{name: "named pipe with a reader swapped in", live: steps(regular), swap: fifoWithReader, wantType: fs.ModeNamedPipe, wantKind: "write"},
 		{name: "directory", live: steps(regular, dir), wantType: fs.ModeDir, wantKind: "write"},
 	}
 	for _, tc := range cases {
@@ -194,6 +203,39 @@ func TestApplyFileNeverWritesThroughTheFinalComponent(t *testing.T) {
 
 func steps(fns ...func(t *testing.T, dest, victim string)) []func(t *testing.T, dest, victim string) {
 	return fns
+}
+
+// An nginx rollback snapshot reads the live file like every live read: a
+// symlink or FIFO swapped in after the sweep's checks is refused — never
+// read through into the snapshot, never blocked on while the lock is held.
+func TestCopyPreserveNeverReadsThroughTheFinalComponent(t *testing.T) {
+	cases := []struct {
+		name string
+		live func(t *testing.T, src, victim string)
+	}{
+		{"symlink", func(t *testing.T, src, victim string) { mustT(t, os.Symlink(victim, src)) }},
+		{"named pipe", func(t *testing.T, src, _ string) { mustT(t, syscall.Mkfifo(src, 0o644)) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			src, snap, victim := filepath.Join(root, "live.conf"), filepath.Join(root, "snap"), filepath.Join(root, "victim")
+			mustT(t, os.WriteFile(victim, []byte("victim\n"), 0o600))
+			mustT(t, os.WriteFile(snap, nil, 0o600))
+			tc.live(t, src, victim)
+
+			var err error
+			within(t, func() { err = copyPreserve(src, snap) })
+
+			var refused *refusedDest
+			if !errors.As(err, &refused) {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			if b, _ := os.ReadFile(snap); len(b) != 0 {
+				t.Fatalf("snapshot read through the %s: %q", tc.name, b)
+			}
+		})
+	}
 }
 
 // End to end: a destination swapped for a symlink after the sweep's

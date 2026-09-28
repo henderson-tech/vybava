@@ -207,13 +207,21 @@ func readRegular(path string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// copyPreserve is `cp -p src dest` for the rollback snapshots.
+// copyPreserve is `cp -p src dest` for the rollback snapshots. src (the live
+// file an nginx snapshot copies) is read through openRegular like every other
+// live read: a symlink or FIFO swapped in after the sweep's checks is refused,
+// never read through or blocked on.
 func copyPreserve(src, dest string) error {
-	fi, err := os.Stat(src)
+	f, err := openRegular(src, os.O_RDONLY)
 	if err != nil {
 		return err
 	}
-	content, err := os.ReadFile(src)
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	content, err := io.ReadAll(f)
 	if err != nil {
 		return err
 	}
