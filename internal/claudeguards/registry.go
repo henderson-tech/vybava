@@ -37,6 +37,7 @@ const (
 	escapeWorkers    = "CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1"
 	escapeLocalStack = "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1"
 	escapeMachineCap = "CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1"
+	escapeDesktopUI  = "CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1"
 	escapeProdMerge  = prodMergeEscapeVar + "=1"
 )
 
@@ -66,6 +67,7 @@ var Rules = []Rule{
 	{"e2e:raw-png-read", "e2e", eventRead, "Read of a raw PNG under .e2e/; snap makes a JPEG first", escapeNone},
 	{"e2e:raw-screenshot", "e2e", eventBash, "raw xcrun simctl screenshot inside /e2e; use snap", escapeNone},
 	{"e2e:screencapture", "e2e", eventBash, "screencapture inside /e2e; use snap", escapeNone},
+	{"machine:desktop-ui-tests", "machine", eventBash, "xcodebuild/tuist test on this Mac not narrowed to non-UI bundles; XCUITest drives the real cursor and focus", escapeDesktopUI},
 	{"machine:dev-server-cap", "machine", eventBash, "a Metro/next/API dev server start while guards.devServerCap already run", escapeMachineCap},
 	{"machine:devbox-only", "machine", eventBash, "a command a repo's guards.devboxOnly routes to the Devbox ran locally", escapeLocalStack},
 	{"machine:devbox-ssh-exec", "machine", eventBash, "ssh <host> … docker (compose) exec into a devbox-… workspace container; use devbox run -- 'docker compose exec -T <svc> …'", escapeNone},
