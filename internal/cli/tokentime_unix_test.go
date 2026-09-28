@@ -482,3 +482,59 @@ func TestTokentimePricesResolvesModels(t *testing.T) {
 		t.Fatalf("resolved = %v, want %v:\n%s", got, want, out.String())
 	}
 }
+
+// A pass that reads every new record but leaves a backlog owed — here the
+// limit points of a rollout indexed before points existed — is not finished:
+// `index` and `status` both name `tokentime index` next.
+func TestTokentimeABacklogStillOwedAsksForAnotherPass(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state, codex := filepath.Join(base, "state"), filepath.Join(base, "codex")
+	run := func(args ...string) map[string]any {
+		t.Helper()
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json", "--state-dir", state, "--claude-root", filepath.Join(base, "claude"), "--codex-dir", codex))
+		_ = cmd.Execute()
+		var env map[string]any
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("%v: not an envelope: %s", args, out.String())
+		}
+		return env
+	}
+	day := filepath.Join(codex, "sessions", "2026", "09", "27")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := `{"timestamp":"2026-09-27T22:00:00Z","type":"session_meta","payload":{"id":"t1","timestamp":"2026-09-27T22:00:00Z","cwd":"` + base + `"}}` + "\n"
+	for _, ts := range []string{"22:01", "22:02", "22:03"} {
+		rollout += `{"timestamp":"2026-09-27T` + ts + `:00Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":1,"window_minutes":10080,"resets_at":1791058036},"plan_type":"pro"}}}` + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(day, "rollout-2026-09-27T22-00-00-t1.jsonl"), []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if env := run("index"); env["ok"] != true {
+		t.Fatalf("seeding index = %v", env)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(state, "tokentime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As the schema 4 binary left it: read, with no points.
+	if _, err := db.Exec("DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; PRAGMA user_version=4"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	env := run("index", "--budget", "1") // one record of the backlog, nothing new to read
+	data, _ := env["data"].(map[string]any)
+	if data["pendingBytes"] != 0.0 || data["pointsPendingBytes"] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" ||
+		!strings.Contains(fmt.Sprint(env["diagnostics"]), diagBacklog) {
+		t.Fatalf("index leaving only points owed = %v; want pendingBytes 0, points owed, %s and tokentime index next", env, diagBacklog)
+	}
+	if env := run("status"); fmt.Sprint(env["next"]) != "[tokentime index]" {
+		t.Fatalf("status with points owed = %v; want tokentime index next", env)
+	}
+}

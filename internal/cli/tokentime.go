@@ -21,6 +21,7 @@ import (
 const (
 	diagIndexBusy     = "INDEX_BUSY"
 	diagIndexPartial  = "INDEX_PARTIAL"
+	diagBacklog       = "BACKLOG_PENDING"
 	diagFileError     = "FILE_ERROR"
 	diagStaleTail     = "STALE_TAIL"
 	diagPriceGap      = "PRICE_INCOMPLETE"
@@ -165,6 +166,13 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		if r.PendingBytes > 0 {
 			diags = append(diags, runx.Diagnostic{Code: diagIndexPartial, Severity: "info",
 				Detail: fmt.Sprintf("%s still unread; the next pass continues where this one stopped", humanBytes(r.PendingBytes)), Fix: "tokentime index"})
+		}
+		// Every new record read can still leave history owed its beats or limit points.
+		if owed := r.BeatsPendingBytes + r.PointsPendingBytes; owed > 0 {
+			diags = append(diags, runx.Diagnostic{Code: diagBacklog, Severity: "info",
+				Detail: fmt.Sprintf("%s of history still owed its beats or limit points; the next pass continues the backlog", humanBytes(owed)), Fix: "tokentime index"})
+		}
+		if r.PendingBytes > 0 || r.BeatsPendingBytes+r.PointsPendingBytes > 0 {
 			next = append(next, "tokentime index")
 		}
 		return diags, next
@@ -439,7 +447,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 			st.ClaudeRoot, st.CodexDir = opts.ClaudeRoot, opts.CodexDir
 			var next []string
-			if st.PendingBytes > 0 || st.LastIndexAt == "" {
+			if st.PendingBytes > 0 || st.PointsPendingBytes > 0 || st.LastIndexAt == "" {
 				next = append(next, "tokentime index")
 			}
 			return finish(s, st, nil, next, nil)

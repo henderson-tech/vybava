@@ -312,5 +312,6 @@ accounts:
   beat, no `seen` identity, and it never touches `files.beats` or beats
   coverage. A rollout that vanishes or shrinks under its debt takes the owed
   points with it; nothing moves. `index --json` and `status --json` report the
-  rest as `pointsPendingBytes`; `backfill` is the last completed pass's figure,
+  rest as `pointsPendingBytes`, and name `tokentime index` next while any is
+  owed (`index` adds a `BACKLOG_PENDING` info diagnostic, beats backlog included); `backfill` is the last completed pass's figure,
   `done` once nothing is owed.
