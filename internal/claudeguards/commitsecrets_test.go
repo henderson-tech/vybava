@@ -8,13 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/henderson-tech/vybava/internal/gittest"
 	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // TestMain keeps every test from spawning the detached visibility refresh: it
-// re-executes os.Executable(), which under `go test` is the test binary.
+// re-executes os.Executable(), which under `go test` is the test binary. The
+// git the fixtures commit with must not leave auto maintenance running either
+// (see gittest).
 func TestMain(m *testing.M) {
 	spawnVisibilityRefresh = func(string, string) {}
+	gittest.NoDaemons()
 	os.Exit(m.Run())
 }
 

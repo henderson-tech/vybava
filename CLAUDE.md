@@ -38,6 +38,9 @@ go run ./cmd/vybava doctor
 ```
 
 Run `go fmt ./...` after Go edits. Utilities are Go — never Python helpers.
+A package whose tests, or the code they drive, commit/merge/fetch/push in a
+`t.TempDir` repo calls `gittest.NoDaemons()` from its TestMain: git's detached
+auto maintenance otherwise writes into `.git` while the cleanup deletes it.
 
 Run verification remotely with `devbox run verify` using `devbox.yaml`. Its
 `repo` app holds the CLI test workspace open; its reserved port serves no UI.
