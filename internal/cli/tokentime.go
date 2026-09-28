@@ -447,7 +447,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			}
 			st.ClaudeRoot, st.CodexDir = opts.ClaudeRoot, opts.CodexDir
 			var next []string
-			if st.PendingBytes > 0 || st.PointsPendingBytes > 0 || st.LastIndexAt == "" {
+			if st.PendingBytes > 0 || st.BeatsPendingBytes+st.PointsPendingBytes > 0 || st.LastIndexAt == "" {
 				next = append(next, "tokentime index")
 			}
 			return finish(s, st, nil, next, nil)

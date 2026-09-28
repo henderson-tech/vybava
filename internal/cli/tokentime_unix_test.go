@@ -483,10 +483,21 @@ func TestTokentimePricesResolvesModels(t *testing.T) {
 	}
 }
 
-// A pass that reads every new record but leaves a backlog owed — here the
-// limit points of a rollout indexed before points existed — is not finished:
-// `index` and `status` both name `tokentime index` next.
+// A pass that reads every new record but leaves a backlog owed — the limit
+// points, or the beats, of a rollout indexed before they existed — is not
+// finished: `index` and `status` both report it and name `tokentime index` next.
 func TestTokentimeABacklogStillOwedAsksForAnotherPass(t *testing.T) {
+	for _, c := range []struct{ backlog, owed, ddl string }{
+		// As the schema 4 binary left it: read, with no points.
+		{"points", "pointsPendingBytes", "DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; PRAGMA user_version=4"},
+		// Read before beats existed, its points already recorded.
+		{"beats", "beatsPendingBytes", "UPDATE files SET beats = ''"},
+	} {
+		t.Run(c.backlog, func(t *testing.T) { backlogStillOwed(t, c.owed, c.ddl) })
+	}
+}
+
+func backlogStillOwed(t *testing.T, owed, ddl string) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	state, codex := filepath.Join(base, "state"), filepath.Join(base, "codex")
 	run := func(args ...string) map[string]any {
@@ -522,19 +533,19 @@ func TestTokentimeABacklogStillOwedAsksForAnotherPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// As the schema 4 binary left it: read, with no points.
-	if _, err := db.Exec("DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; PRAGMA user_version=4"); err != nil {
+	if _, err := db.Exec(ddl); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
 
 	env := run("index", "--budget", "1") // one record of the backlog, nothing new to read
 	data, _ := env["data"].(map[string]any)
-	if data["pendingBytes"] != 0.0 || data["pointsPendingBytes"] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" ||
+	if data["pendingBytes"] != 0.0 || data[owed] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" ||
 		!strings.Contains(fmt.Sprint(env["diagnostics"]), diagBacklog) {
-		t.Fatalf("index leaving only points owed = %v; want pendingBytes 0, points owed, %s and tokentime index next", env, diagBacklog)
+		t.Fatalf("index leaving only %s = %v; want pendingBytes 0, it owed, %s and tokentime index next", owed, env, diagBacklog)
 	}
-	if env := run("status"); fmt.Sprint(env["next"]) != "[tokentime index]" {
-		t.Fatalf("status with points owed = %v; want tokentime index next", env)
+	env = run("status")
+	if data, _ := env["data"].(map[string]any); data[owed] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" {
+		t.Fatalf("status with %s owed = %v; want it reported and tokentime index next", owed, env)
 	}
 }

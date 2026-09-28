@@ -14,7 +14,8 @@ type Status struct {
 	CodexDir     string `json:"codexDir"`
 	LastIndexAt  string `json:"lastIndexAt"`
 	PendingBytes int64  `json:"pendingBytes"`
-	// PointsPendingBytes is the limit-points backlog the last pass left.
+	// BeatsPendingBytes and PointsPendingBytes are the backlogs the last pass left.
+	BeatsPendingBytes  int64 `json:"beatsPendingBytes"`
 	PointsPendingBytes int64 `json:"pointsPendingBytes"`
 	Files              int64 `json:"files"`
 	Projects           int64 `json:"projects"`
@@ -43,10 +44,12 @@ func (s *Store) Status() (Status, error) {
 		return st, err
 	}
 	st.PendingBytes, _ = strconv.ParseInt(pending, 10, 64)
-	if pending, err = meta(tx, "points_pending_bytes"); err != nil {
-		return st, err
+	for key, dst := range map[string]*int64{"beats_pending_bytes": &st.BeatsPendingBytes, "points_pending_bytes": &st.PointsPendingBytes} {
+		if pending, err = meta(tx, key); err != nil {
+			return st, err
+		}
+		*dst, _ = strconv.ParseInt(pending, 10, 64)
 	}
-	st.PointsPendingBytes, _ = strconv.ParseInt(pending, 10, 64)
 	for _, q := range []struct {
 		sql string
 		dst *int64
