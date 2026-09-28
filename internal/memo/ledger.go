@@ -65,10 +65,14 @@ var (
 	// accepts and drops it — the same tolerance `memo import` has — so a
 	// legacy ledger keeps reading, rendering and taking `memo add` instead
 	// of refusing at its first row with no verb able to repair it.
-	rowPattern      = regexp.MustCompile(`^- #(t?)(\d+) (?:\d{4}-\d{2}-\d{2} )?([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
-	headPattern     = regexp.MustCompile(`^([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?)$`)
-	supersedesRE    = regexp.MustCompile(`^supersedes #t?(\d+): `)
-	retiresRE       = regexp.MustCompile(`^retires #t?(\d+)\.(?: |$)`)
+	rowPattern  = regexp.MustCompile(`^- #(t?)(\d+) (?:\d{4}-\d{2}-\d{2} )?([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?) (.+) \^([mt])(\d+)$`)
+	headPattern = regexp.MustCompile(`^([a-z]+)/([a-z0-9]+(?:-[a-z0-9]+)*)(!?)$`)
+	// Both markers take either separator. `memo add --retires N` keeps a
+	// sentence that already opens with the marker, and `retires #N: why.`
+	// written that way read as an ordinary active row, so the retired fact
+	// kept rendering on the hot surface.
+	supersedesRE    = regexp.MustCompile(`^supersedes #t?(\d+)[:.] `)
+	retiresRE       = regexp.MustCompile(`^retires #t?(\d+)[.:](?: |$)`)
 	sentenceBreakRE = regexp.MustCompile(`[.!?]\s+\p{Lu}`)
 	longDashRE      = regexp.MustCompile("[\u2013\u2014]") // en dash, em dash
 	noteLinkRE      = regexp.MustCompile(`^\[\[notes/([a-z0-9]+(?:-[a-z0-9]+)*)\]\]$`)
@@ -209,7 +213,7 @@ func ValidateSentence(s string) *Diag {
 	if !strings.HasSuffix(s, ".") {
 		return errorDiag(DiagRowNoPeriod, "sentence must end with a period", "")
 	}
-	body := retiresRE.ReplaceAllString(s, "")
+	body := supersedesRE.ReplaceAllString(retiresRE.ReplaceAllString(s, ""), "")
 	if sentenceBreakRE.MatchString(strings.TrimSuffix(body, ".")) {
 		return errorDiag(DiagRowTwoSentences, "one row is one sentence; split the second one into its own row or a note", "")
 	}

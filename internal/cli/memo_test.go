@@ -7,6 +7,34 @@ import (
 	"github.com/henderson-tech/vybava/internal/memo"
 )
 
+// The --supersedes / --retires flags write the marker, accept one the author
+// already wrote for the same row, and refuse one that names another row.
+func TestMarkSentence(t *testing.T) {
+	cases := []struct {
+		name, sentence, want string
+		supersedes, retires  int
+		refused              bool
+	}{
+		{name: "flag writes the retires marker", sentence: "Fixed upstream.", retires: 7, want: "retires #7. Fixed upstream."},
+		{name: "author's colon marker for the same row is kept", sentence: "retires #7: fixed upstream.", retires: 7, want: "retires #7: fixed upstream."},
+		{name: "a marker for another row is refused", sentence: "retires #8: fixed upstream.", retires: 7, refused: true},
+		{name: "flag writes the supersedes marker", sentence: "The new rule.", supersedes: 3, want: "supersedes #3: The new rule."},
+		{name: "a malformed supersedes marker is refused", sentence: "supersedes #3 the new rule.", supersedes: 3, refused: true},
+	}
+	for _, c := range cases {
+		got, problem, fix := markSentence(c.sentence, "", "feedback/git", c.supersedes, c.retires)
+		if c.refused {
+			if problem == "" || fix == "" {
+				t.Errorf("%s: want a refusal with a fix, got %q", c.name, got)
+			}
+			continue
+		}
+		if problem != "" || got != c.want {
+			t.Errorf("%s: got %q (%s), want %q", c.name, got, problem, c.want)
+		}
+	}
+}
+
 // A row's creation time is its `add` event, so add and import must stamp
 // exactly one per new row and leave earlier events untouched.
 func TestRecordAddedStampsOneAddEventPerRow(t *testing.T) {
