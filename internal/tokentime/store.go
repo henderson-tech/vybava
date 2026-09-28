@@ -59,7 +59,7 @@ const (
 const schema = `
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0, beats TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0, beats TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, root TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS roots(cwd TEXT PRIMARY KEY, root TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buckets(
@@ -93,23 +93,40 @@ CREATE TABLE IF NOT EXISTS beats(
 	kind INTEGER NOT NULL,
 	PRIMARY KEY(minute, project, kind)
 ) WITHOUT ROWID;
-PRAGMA user_version=4;
+CREATE TABLE IF NOT EXISTS limit_points(
+	id INTEGER PRIMARY KEY,
+	ts INTEGER NOT NULL,
+	thread TEXT NOT NULL,
+	plan TEXT NOT NULL,
+	model TEXT NOT NULL,
+	input INTEGER NOT NULL,
+	cached INTEGER NOT NULL,
+	cache_write INTEGER NOT NULL,
+	output INTEGER NOT NULL,
+	reasoning INTEGER NOT NULL,
+	windows TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS limit_points_by_ts ON limit_points(ts);
+PRAGMA user_version=5;
 `
 
 // schemaVersion is the user_version the schema above ends on.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // readableSchema is the oldest schema the rollup and status queries run on
-// unchanged — schema 3 only added an index, schema 4 a table and a column
-// they never read — so a store an index pass has not migrated yet is still
-// served. A migration that changes a table they read raises it.
+// unchanged — schema 3 only added an index, schemas 4 and 5 a table and a
+// column each that they never read — so a store an index pass has not
+// migrated yet is still served. A migration that changes a table they read
+// raises it.
 const readableSchema = 2
 
 // projectSchema is the oldest schema the project verb reads: the first with
-// buckets_by_project. beatsSchema is the first that records beats.
+// buckets_by_project. beatsSchema is the first that records beats,
+// limitsSchema the first that records limit points.
 const (
 	projectSchema = 3
 	beatsSchema   = 4
+	limitsSchema  = 5
 )
 
 // migrations bring an older schema up to date, keyed by the version they
@@ -131,6 +148,8 @@ var migrations = map[int]column{
 	1: {"files", "tail", "INTEGER NOT NULL DEFAULT 0"},
 	// v3 → v4: each file's beats backlog ('' = read before beats existed).
 	3: {"files", "beats", "TEXT NOT NULL DEFAULT ''"},
+	// v4 → v5: each rollout's limit-points backlog ('' = read before points existed).
+	4: {"files", "points", "TEXT NOT NULL DEFAULT ''"},
 }
 
 type column struct{ table, name, decl string }

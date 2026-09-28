@@ -113,14 +113,19 @@ type TokenCount struct {
 		ContextWindow int64      `json:"model_context_window"`
 	} `json:"info"`
 	RateLimits *struct {
-		LimitID  string `json:"limit_id"`
-		PlanType string `json:"plan_type"`
-		Primary  *struct {
-			UsedPercent   float64 `json:"used_percent"`
-			WindowMinutes int     `json:"window_minutes"`
-			ResetsAt      int64   `json:"resets_at"`
-		} `json:"primary"`
+		LimitID  string      `json:"limit_id"`
+		PlanType string      `json:"plan_type"`
+		Primary  *RateWindow `json:"primary"`
+		// Secondary is a second window some plans report (e.g. 5h beside the week).
+		Secondary *RateWindow `json:"secondary"`
 	} `json:"rate_limits"`
+}
+
+// RateWindow is one rate-limit window's reading; ResetsAt is unix seconds.
+type RateWindow struct {
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes int     `json:"window_minutes"`
+	ResetsAt      int64   `json:"resets_at"`
 }
 
 // UsageRecord is a token_usage_record payload (Codex CLI 0.153+): one exact

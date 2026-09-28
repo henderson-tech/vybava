@@ -52,6 +52,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			"  tokentime index            catch up on everything written since the last pass\n" +
 			"  tokentime rollup --json    days, hours, projects, models, lifetime — with API-equivalent usd\n" +
 			"  tokentime project --from D --to D --json   this repository (or --project NAME) across a range of local days\n" +
+			"  tokentime limits --since MS --json   Codex rate-limit readings per response, with the call each followed\n" +
 			"  tokentime status           what is indexed, what is pending\n" +
 			"  tokentime prices           the per-model price table and its override file",
 	}
@@ -383,6 +384,42 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	beats.Flags().StringVar(&beatsFrom, "from", "", "first local day, YYYY-MM-DD")
 	beats.Flags().StringVar(&beatsTo, "to", "", "last local day, YYYY-MM-DD (included)")
 
+	var limitsSince int64
+	limits := &cobra.Command{
+		Use: "limits", Short: "Codex rate-limit readings, one per response, with the call each followed (read-only, no index pass)", Args: cobra.NoArgs,
+		Long: "Every Codex token_count carrying a rate-limit reading, strictly after --since (unix ms), oldest first:\n" +
+			"ts (unix ms), thread, plan, model, the call's tokens and windows [{minutes, resetsAt (unix s), pct}].\n" +
+			"input keeps Codex's meaning: it INCLUDES cached and cacheWrite. A refresh (no call) has every count 0.\n" +
+			"cursor is the newest ts returned. Until backfill.done, index passes still recover points older than it.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s := session(cmd)
+			if limitsSince < 0 {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
+					Detail: "--since is unix milliseconds, 0 or later", Fix: "tokentime limits --since 0 --json"}})
+			}
+			state, _, err := paths()
+			if err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
+			// Read-only: never creates the directory or database, never migrates.
+			store, err := tokentime.OpenReadOnly(state)
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
+			}
+			defer store.Close()
+			out, err := store.Limits(limitsSince)
+			if err != nil {
+				return finish(s, nil, nil, nil, storeErr(err))
+			}
+			var next []string
+			if !out.Backfill.Done {
+				next = append(next, "tokentime index")
+			}
+			return finish(s, out, nil, next, nil)
+		},
+	}
+	limits.Flags().Int64Var(&limitsSince, "since", 0, "only points after this time, unix milliseconds (0 = all)")
+
 	status := &cobra.Command{
 		Use: "status", Short: "What is indexed and what is still pending", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -409,8 +446,12 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		},
 	}
 
+	var priceModels []string
 	prices := &cobra.Command{
 		Use: "prices", Short: "The per-model price table (USD per million tokens) and its override file", Args: cobra.NoArgs,
+		Long: "The effective price table. Each --model is also resolved the way the rollup prices it\n" +
+			"(context tag, dated suffix, -latest and aliases stripped) into resolved[<name as given>]:\n" +
+			"its canonical model and rates, or null when no row prices it.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s := session(cmd)
 			state, _, err := paths()
@@ -438,11 +479,23 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 			if overridden == nil {
 				overridden = []string{}
 			}
-			return finish(s, map[string]any{"asOf": tokentime.PricesAsOf, "overridePath": p.OverridePath, "overridden": overridden, "models": rows}, priceDiags(p), nil, nil)
+			out := map[string]any{"asOf": tokentime.PricesAsOf, "overridePath": p.OverridePath, "overridden": overridden, "models": rows}
+			if len(priceModels) > 0 {
+				resolved := map[string]*priced{}
+				for _, m := range priceModels {
+					resolved[m] = nil
+					if price, ok := p.Lookup(m); ok {
+						resolved[m] = &priced{Model: tokentime.CanonicalModel(m), Price: price}
+					}
+				}
+				out["resolved"] = resolved
+			}
+			return finish(s, out, priceDiags(p), nil, nil)
 		},
 	}
+	prices.Flags().StringArrayVar(&priceModels, "model", nil, "resolve this model name too (repeatable), e.g. claude-opus-5-5[1m]")
 
-	root.AddCommand(index, rollup, project, beats, status, prices)
+	root.AddCommand(index, rollup, project, beats, limits, status, prices)
 	return root
 }
 
