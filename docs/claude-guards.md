@@ -146,6 +146,9 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   ssh and devbox payloads, bun test, --version/--help/--list
                   and playwright install/codegen/show-report pass
                   (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1) ·
+                  xcodebuild / tuist test on this Mac not narrowed to non-UI
+                  bundles (-only-testing, -skip-testing:…UITests,
+                  --skip-ui-tests) (escape: CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1) ·
                   a command matching a repo's guards.devboxOnly run outside
                   devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
                   a command matching guards.devboxWhenWorkspace run locally in
@@ -231,6 +234,27 @@ command carried by `ssh` or `devbox run` runs on the box and is never read.
 Unlike its two siblings this rule HAS an escape, because a deliberate
 full-parallel run on a quiet Mac is legitimate:
 `CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1 <command>` as the command's env prefix.
+
+`machine:desktop-ui-tests` is `simulator:host-input` through the `xcodebuild`
+door. A macOS XCUITest run synthesizes real mouse and keyboard events on the
+Mac the user is working on, and testmanagerd attaches an automation session to
+whatever app is in front: on 2026-09-27 a background `xcodebuild … build test`
+of SwitcherooBar ran its UI bundle, and the session's teardown crashed Warp
+(SIGSEGV in XCTAutomationSupport) with every Claude session inside it. The rule
+reads `xcodebuild` (also behind `xcrun`, `nice`, `timeout`, `cd … &&`) and
+`tuist test`, and blocks a `test` / `test-without-building` run aimed at this
+Mac — a `platform=macOS` or Mac Catalyst destination, or none and no non-macOS
+`-sdk` — unless it is narrowed to non-UI bundles: `-only-testing` naming no
+`…UITests` bundle, `-skip-testing` naming one, `tuist test --skip-ui-tests`,
+`--skip-test-targets …UITests` or `--test-targets` without one. Simulator and
+device destinations (`platform=iOS Simulator`, `id=<udid>`, `-sdk
+iphonesimulator`, `tuist test --platform ios` / `-d`) pass: they do not touch
+the host's cursor. UI bundles are recognised by Xcode's `…UITests` naming, so
+a UI bundle named otherwise slips through a narrowing flag, and a bare
+`xcodebuild test` in a project with no UI bundle is refused once — the retry
+adds `-only-testing:<UnitTarget>`. A script that runs the tests inside itself
+is not read. When the user has said the Mac is free for a UI run:
+`CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1 <command>`.
 
 `machine:devbox-only` is config-driven: a repo lists RE2 patterns under
 `guards.devboxOnly` and any local command segment matching one (through
