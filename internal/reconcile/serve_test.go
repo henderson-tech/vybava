@@ -115,11 +115,12 @@ func TestHubAggregatesBoxes(t *testing.T) {
 }
 
 func TestMetricsShape(t *testing.T) {
-	out := Metrics(Result{Mode: "converge", Pending: []string{"a"}, Held: []string{"b", "c"}, Errors: []Issue{{}}, FailedHooks: []string{"nginx"}, LastGood: "abc"}, 42)
+	out := Metrics(Result{Mode: "converge", Pending: []string{"a"}, Held: []string{"b", "c"}, CertHeld: []string{"d"}, Errors: []Issue{{}}, FailedHooks: []string{"nginx"}, LastGood: "abc"}, 42)
 	for _, want := range []string{
 		"infra_reconcile_last_tick_timestamp 42\n",
 		"infra_reconcile_pending 1\n",
 		"infra_reconcile_held 2\n",
+		"infra_reconcile_cert_held 1\n",
 		"infra_reconcile_errors 2\n",
 		"infra_reconcile_mode_info{mode=\"converge\"} 1\n",
 		"infra_reconcile_last_good_commit_info{sha=\"abc\"} 1\n",

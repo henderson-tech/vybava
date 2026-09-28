@@ -42,6 +42,7 @@ type Result struct {
 	Applied       []string `json:"applied"`
 	Pending       []string `json:"pending"`
 	Held          []string `json:"held"`
+	CertHeld      []string `json:"cert_held"` // TLS vhosts whose certificate is not on the box yet — never in Pending/Held
 	SkippedApps   []string `json:"skipped_apps"`
 	RollNotes     []string `json:"roll_manually"`
 	RollSteps     []string `json:"roll_steps"` // exact steps of converged files a roll_notes arm claims
@@ -233,7 +234,7 @@ func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
 		return Result{}, err
 	}
 	res := Result{Action: action, Commit: head, CommitSubject: g.subject(head), Mode: mode,
-		Applied: []string{}, Pending: []string{}, Held: []string{}, SkippedApps: []string{},
+		Applied: []string{}, Pending: []string{}, Held: []string{}, CertHeld: []string{}, SkippedApps: []string{},
 		RollNotes: []string{}, RollSteps: []string{}, FailedHooks: []string{}, Errors: []Issue{}}
 	if statusOnly {
 		res.Mode = e.Mode()
@@ -280,7 +281,7 @@ func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
 		res.LastGood = head
 	}
 	entry := HistoryEntry{Time: e.now(), Action: action, Commit: head, Mode: mode, OK: ok,
-		Applied: res.Applied, Pending: res.Pending, Held: res.Held, Errors: res.Errors,
+		Applied: res.Applied, Pending: res.Pending, Held: res.Held, CertHeld: res.CertHeld, Errors: res.Errors,
 		RollNotes: res.RollNotes, RollSteps: res.RollSteps, SkippedApps: res.SkippedApps, FailedHooks: res.FailedHooks,
 		LastGood: res.LastGood, Pin: res.Pin}
 	if err := st.AppendHistory(entry); err != nil {
@@ -356,6 +357,15 @@ func (s *sweep) file(rp string) {
 	src := filepath.Join(e.M.Clone, rp)
 	repoSHA := fileSHA(src)
 	liveSHA := fileSHA(t.Dest)
+
+	// never move a TLS vhost whose certificate is not on this box: its
+	// `nginx -t` failure would roll back every nginx file of the tick. Probed
+	// only when the file would move (new, changed or hand-edited — bash
+	// checks before classifying), so an in-sync vhost costs nothing.
+	if t.Hook == HookNginx && liveSHA != repoSHA && !e.certsPresent(rp, src) {
+		s.res.CertHeld = append(s.res.CertHeld, rp)
+		return
+	}
 
 	apply := func(label string) {
 		step := e.M.rollStepFor(rp, t.Dest, src) // live→repo, before the rewrite
@@ -536,6 +546,9 @@ func (s *sweep) report() {
 	if len(r.Held) > 0 {
 		e.log("HELD (hand-edited live, backport or force) (%d): %s", len(r.Held), joinSemi(r.Held))
 	}
+	if len(r.CertHeld) > 0 {
+		e.log("HELD (TLS vhost, certificate missing on this box — issue it first) (%d): %s", len(r.CertHeld), joinSemi(r.CertHeld))
+	}
 	if len(r.RollNotes) > 0 {
 		e.log("compose converged, ROLL MANUALLY: %s ", strings.Join(r.RollNotes, " "))
 	}
@@ -560,6 +573,12 @@ func (e *Engine) digest(r *Result) string {
 	if len(r.Held) > 0 {
 		b.WriteString("HELD (hotfixed on VPS — backport to git or `vybava reconcile force <path>`):\n")
 		for _, p := range r.Held {
+			b.WriteString("  " + p + "\n")
+		}
+	}
+	if len(r.CertHeld) > 0 {
+		b.WriteString("HELD (TLS vhost without its certificate — issue it, next tick lands it):\n")
+		for _, p := range r.CertHeld {
 			b.WriteString("  " + p + "\n")
 		}
 	}

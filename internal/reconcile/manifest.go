@@ -91,6 +91,11 @@ type NginxHook struct {
 	Workdir string   `yaml:"workdir,omitempty" json:"workdir,omitempty"`
 	Test    []string `yaml:"test,omitempty" json:"test,omitempty"`
 	Reload  []string `yaml:"reload,omitempty" json:"reload,omitempty"`
+	// CertsPresent probes a TLS vhost's certificates before it may move: the
+	// vhost's ssl_certificate / ssl_certificate_key paths are appended as
+	// arguments, exit 0 = every one exists where nginx will look (inside the
+	// proxy container). Absent = no certificate hold — certhold.go.
+	CertsPresent []string `yaml:"certs_present,omitempty" json:"certs_present,omitempty"`
 }
 
 // Alert is one digest channel; both keep their own dedup marker.

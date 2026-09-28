@@ -28,6 +28,7 @@ type StatusReport struct {
 	Sync            string         `json:"sync"` // in-sync | pending | held | errors
 	Pending         []string       `json:"pending"`
 	Held            []string       `json:"held"`
+	CertHeld        []string       `json:"cert_held"` // TLS vhosts whose certificate is not on the box yet
 	SkippedApps     []string       `json:"skipped_apps"`
 	Errors          []Issue        `json:"errors"`
 	LastTick        *HistoryEntry  `json:"last_tick,omitempty"`
@@ -48,7 +49,7 @@ func (e *Engine) StatusReport(historyLimit int) (StatusReport, error) {
 		Version: e.Version, VersionMismatch: e.versionMismatch(),
 		Mode: res.Mode, Commit: res.Commit, CommitSubject: res.CommitSubject,
 		LastGood: st.LastGood(), Pin: st.Pin(),
-		Pending: res.Pending, Held: res.Held, SkippedApps: res.SkippedApps, Errors: res.Errors,
+		Pending: res.Pending, Held: res.Held, CertHeld: res.CertHeld, SkippedApps: res.SkippedApps, Errors: res.Errors,
 		History: []HistoryEntry{},
 	}
 	if rep.LastGood != "" {
@@ -57,7 +58,7 @@ func (e *Engine) StatusReport(historyLimit int) (StatusReport, error) {
 	switch {
 	case len(rep.Errors) > 0:
 		rep.Sync = "errors"
-	case len(rep.Held) > 0:
+	case len(rep.Held) > 0 || len(rep.CertHeld) > 0:
 		rep.Sync = "held"
 	case len(rep.Pending) > 0:
 		rep.Sync = "pending"
