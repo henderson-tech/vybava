@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSSLCertPaths(t *testing.T) {
@@ -150,6 +151,93 @@ func TestTLSVhostCertHold(t *testing.T) {
 					t.Fatalf("in-sync vhost probed again: %q", after)
 				}
 			}
+		})
+	}
+}
+
+// A hung probe (a stuck `docker compose exec`) holds its vhost without
+// stalling the tick or the status sweep the page serves under its lock: one
+// deadline per probe, and once one expires the rest of the sweep holds TLS
+// vhosts unprobed. A probe that answers classifies every file as before.
+func TestCertProbeDeadline(t *testing.T) {
+	const deadline = 400 * time.Millisecond
+	// the status sweep (what the page runs under its lock) costs ~60ms beside its
+	// probes, so one expiry fits and two do not; the tick adds a git fetch and
+	// hooks (~1s on a loaded laptop), so its bound only proves it never stalls —
+	// the probe count proves its breaker
+	const statusBound, tickBound = 2 * deadline, deadline + 5*time.Second
+	const hang = "sleep 30; :" // sleep is sh's child: it holds the probe's pipes after sh dies
+	expired := "certificate probe for nginx/a.conf did not answer within 400ms — held until it answers"
+	skipped := "certificate probe skipped for nginx/b.conf and every later TLS vhost of this sweep (an earlier probe hit its deadline) — held"
+	for _, tc := range []struct {
+		name     string
+		probe    string   // runs after the call is recorded
+		vhosts   []string // drifting TLS vhosts beside the plain site.conf
+		certs    []string // present under the probe's workdir
+		live     []string // conf.d files after the tick
+		certHeld []string
+		probes   [2]int   // run, then status (an in-sync vhost is not probed)
+		logs     []string // the sweep's certificate-probe stderr lines, in order
+	}{
+		{name: "probe past the deadline", probe: hang, vhosts: []string{"a"},
+			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf"}, probes: [2]int{1, 1}, logs: []string{expired}},
+		{name: "two vhosts cost one deadline", probe: hang, vhosts: []string{"a", "b"},
+			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf", "nginx/b.conf"}, probes: [2]int{1, 1}, logs: []string{expired, skipped}},
+		{name: "an answering probe classifies every vhost", probe: `for p; do [ -e "$p" ] || exit 1; done`, vhosts: []string{"a", "b"}, certs: []string{"a.pem"},
+			live: []string{"a.conf", "site.conf"}, certHeld: []string{"nginx/b.conf"}, probes: [2]int{2, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"nginx/site.conf": "server { listen 80; }\n"}
+			for _, v := range tc.vhosts {
+				files["nginx/"+v+".conf"] = "server {\n  listen 443 ssl;\n  ssl_certificate certs/" + v + ".pem;\n}\n"
+			}
+			b := newBox(t, files)
+			mustT(t, os.MkdirAll(filepath.Join(b.root, "certs"), 0o755))
+			for _, c := range tc.certs {
+				mustT(t, os.WriteFile(filepath.Join(b.root, "certs", c), nil, 0o600))
+			}
+			b.m.Hooks.Nginx.Workdir = b.root
+			b.m.Hooks.Nginx.CertsPresent = []string{"sh", "-c", `echo "$*" >> probes; ` + tc.probe, "sh"}
+			e := b.engine()
+			e.CertProbeTimeout = deadline
+
+			sweep := func(name string, bound time.Duration, probed int, run func() []string) {
+				t.Helper()
+				b.out.Reset()
+				_ = os.Remove(filepath.Join(b.root, "probes"))
+				start := time.Now()
+				certHeld := run()
+				took := time.Since(start)
+				probes, _ := os.ReadFile(filepath.Join(b.root, "probes"))
+				var logs []string
+				for _, line := range strings.Split(b.out.String(), "\n") {
+					if _, msg, ok := strings.Cut(line, "] "); ok && strings.HasPrefix(msg, "certificate probe") {
+						logs = append(logs, msg)
+					}
+				}
+				if took > bound || !slices.Equal(certHeld, tc.certHeld) || strings.Count(string(probes), "\n") != probed || !slices.Equal(logs, tc.logs) {
+					t.Fatalf("%s: took %s (bound %s) cert_held=%q probes=%q logs=%q\n%s", name, took, bound, certHeld, probes, logs, b.out.String())
+				}
+			}
+			sweep("run", tickBound, tc.probes[0], func() []string {
+				res, err := e.Run()
+				mustT(t, err) // a held vhost is never an error
+				return res.CertHeld
+			})
+			var live []string
+			for _, f := range []string{"a.conf", "b.conf", "site.conf"} {
+				if b.live("conf.d/"+f) != "" {
+					live = append(live, f)
+				}
+			}
+			if !slices.Equal(live, tc.live) {
+				t.Fatalf("live = %q, want %q", live, tc.live)
+			}
+			sweep("status", statusBound, tc.probes[1], func() []string {
+				rep, err := e.StatusReport(5)
+				mustT(t, err)
+				return rep.CertHeld
+			})
 		})
 	}
 }

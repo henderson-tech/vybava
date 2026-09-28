@@ -1,11 +1,13 @@
 package reconcile
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // The TLS certificate hold, ported from the bash twins' `nginx_certs_present`
@@ -41,7 +43,13 @@ func sslCertPaths(conf []byte) []string {
 // failure holds (fail closed, like bash); one that is more than "a path is
 // missing" (the container is down, the binary is absent) is logged on stderr
 // so a hold with a broken probe is never silent.
-func (e *Engine) certsPresent(rp, src string) bool {
+//
+// The probe runs inside the tick, `status` and the status page (which holds
+// its lock for the sweep), so it has a deadline, and the sweep a breaker: once
+// one probe expires, every later TLS vhost of the sweep holds unprobed — N
+// drifting vhosts behind a hung `docker compose exec` cost one deadline.
+func (s *sweep) certsPresent(rp, src string) bool {
+	e := s.e
 	probe := e.M.Hooks.Nginx.CertsPresent
 	if len(probe) == 0 {
 		return true
@@ -54,12 +62,25 @@ func (e *Engine) certsPresent(rp, src string) bool {
 	if len(paths) == 0 {
 		return true
 	}
+	if s.certProbeExpired {
+		if !s.certSkipLogged {
+			s.certSkipLogged = true
+			e.logErr("certificate probe skipped for %s and every later TLS vhost of this sweep (an earlier probe hit its deadline) — held", rp)
+		}
+		return false
+	}
 	argv := append(append([]string(nil), probe...), paths...)
-	err = e.runCmd(e.M.Hooks.Nginx.Workdir, argv)
+	timeout := e.certProbeTimeout()
+	err = runProbe(e.M.Hooks.Nginx.Workdir, argv, timeout)
 	if err == nil {
 		return true
 	}
-	// runCmd returns the bare *exec.ExitError only when the probe wrote nothing
+	if errors.Is(err, context.DeadlineExceeded) {
+		s.certProbeExpired = true
+		e.logErr("certificate probe for %s did not answer within %s — held until it answers", rp, timeout)
+		return false
+	}
+	// runQuiet returns the bare *exec.ExitError only when the probe wrote nothing
 	// to stderr: a silent exit 1 is the probe's own "a path is missing".
 	var exit *exec.ExitError
 	missing := errors.As(err, &exit) && exit.ExitCode() == 1 && err == error(exit)
@@ -67,4 +88,27 @@ func (e *Engine) certsPresent(rp, src string) bool {
 		e.logErr("certificate probe for %s failed (%v) — held until it answers", rp, err)
 	}
 	return false
+}
+
+// certProbeWaitDelay bounds Wait once the probe's context is done or its
+// process exited: a descendant that escaped the kill and still holds the
+// stderr pipe cannot keep the sweep blocked.
+const certProbeWaitDelay = time.Second
+
+// runProbe runs the certs_present probe under a deadline; an expired probe is
+// context.DeadlineExceeded, anything else is runQuiet's error shape. The probe
+// gets its own process group so expiry kills `docker compose exec` together
+// with the compose plugin it runs as a child (procgroup_unix.go).
+func runProbe(dir string, argv []string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.WaitDelay = certProbeWaitDelay
+	killGroupOnCancel(cmd)
+	err := runQuiet(cmd)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }

@@ -23,6 +23,9 @@ type Engine struct {
 	Now     func() time.Time
 	// LockTimeout bounds the wait for the shared lock (default 30s).
 	LockTimeout time.Duration
+	// CertProbeTimeout bounds one certs_present probe (default 10s); once a
+	// probe expires, the rest of that sweep holds TLS vhosts unprobed.
+	CertProbeTimeout time.Duration
 }
 
 // Issue is one classified error line. Kinds: symlink, escape, permission,
@@ -98,6 +101,12 @@ func (e *Engine) lockTimeout() time.Duration {
 		return e.LockTimeout
 	}
 	return 30 * time.Second
+}
+func (e *Engine) certProbeTimeout() time.Duration {
+	if e.CertProbeTimeout > 0 {
+		return e.CertProbeTimeout
+	}
+	return 10 * time.Second
 }
 
 // Mode reads the mode file: anything but "converge" is report.
@@ -224,7 +233,9 @@ type sweep struct {
 	rbDir     string
 	nginxRB   []nginxRB
 	copyFail  bool
-	res       *Result
+	// a certs_present probe hit its deadline: later TLS vhosts hold unprobed
+	certProbeExpired, certSkipLogged bool
+	res                              *Result
 }
 
 func (e *Engine) tick(action, mode string, statusOnly bool) (Result, error) {
@@ -362,7 +373,7 @@ func (s *sweep) file(rp string) {
 	// `nginx -t` failure would roll back every nginx file of the tick. Probed
 	// only when the file would move (new, changed or hand-edited — bash
 	// checks before classifying), so an in-sync vhost costs nothing.
-	if t.Hook == HookNginx && liveSHA != repoSHA && !e.certsPresent(rp, src) {
+	if t.Hook == HookNginx && liveSHA != repoSHA && !s.certsPresent(rp, src) {
 		s.res.CertHeld = append(s.res.CertHeld, rp)
 		return
 	}
@@ -764,6 +775,12 @@ func (e *Engine) runCmd(dir string, argv []string) error {
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
+	return runQuiet(cmd)
+}
+
+// runQuiet runs cmd with stdout discarded; a failure carries its stderr, and
+// is the bare error when the command wrote none.
+func runQuiet(cmd *exec.Cmd) error {
 	var errb strings.Builder
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &errb

@@ -124,7 +124,11 @@ expanded) and `hooks.nginx.certs_present` runs in `hooks.nginx.workdir` with
 them appended. The probe runs inside the proxy container because nginx
 resolves the paths there and the host copy is root 0700 on devulinka. A vhost
 naming no certificate always moves; any probe failure holds (one that is more
-than a silent exit 1 is logged on stderr). No `certs_present` = no hold
+than a silent exit 1 is logged on stderr). Each probe has a 10s deadline
+(`Engine.CertProbeTimeout`; expiry kills its process group, holds the vhost and
+logs it), and once one expires the rest of that sweep holds every later TLS
+vhost unprobed, so a hung `docker compose exec` costs a tick, `status` or the
+page one deadline, never one per vhost. No `certs_present` = no hold
 (webulinka's bash has none).
 
 A held vhost is logged exactly like bash —
