@@ -151,13 +151,13 @@ The capture must run next to the app, never on the Mac. The container needs the 
 1. `vitrinka board init --root --key --title --project`.
 2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. An `.ui-loop-adopted` ledger makes a re-run adopt only what is missing.
 3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`.
-4. A failed push is retried (`--retries`, default 3). After that the set is halved once: the tail moves to `<key>b` and both halves are pushed.
+4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
 
 Outcomes go to `<pass>/publish/index.json`. A set already pushed with the same files is skipped unless `--force`.
 
 ## Scoreboard and the review backlog
 
-`scoreboard` folds the pass's records with its review backlog. The backlog comes from `--backlog`, else from `<pass>/review/backlog.json` when present. The output is `scoreboard.json` and `scoreboard.md` in the pass directory. Each area counts:
+`scoreboard` folds the pass's records with its review backlog. The backlog comes from `--backlog`, else from `<pass>/review/backlog.json` when present. A backlog whose `pass` is not the scored pass is refused. The output is `scoreboard.json` and `scoreboard.md` in the pass directory. Each area counts:
 
 - screens by their worst open finding: broken, needs-work, polish or clean;
 - findings by status;
@@ -209,7 +209,7 @@ These cost real incidents. The review-loop workflow carries them into every lane
 - **Keep the shared dev server green.** Lanes share one dev server. Fix the provider first, and revert your own red edit after 5 minutes. Restarting a server on a red tree leaves no listener. A capture that meets a red overlay waits up to `--build-wait` and never records it as `ok`.
 - **Take the locks.** One deploy lock and one e2e lock per workspace.
 - **Never restart the capture container.** A pass cut short (oomd, a usage limit) is finished with `run --resume`, never by restarting.
-- **An e2e run never leaves seed data changed.** Back up first, reach states with request mocks, and shoot destructive recipes last, only with `--destructive`.
+- **An e2e run never leaves seed data changed.** Back up first and reach states with request mocks. Destructive recipes run only with `--destructive`, in a separate Playwright project that starts after every read-only shot has finished, one at a time. A harness error in the read-only phase skips them. `listStates` children keep their base screen's `destructive` flag.
 - **Recover from a usage-limit cutoff this way:**
   1. Map the dirty files to lanes from the transcripts.
   2. Commit an in-flight map.
