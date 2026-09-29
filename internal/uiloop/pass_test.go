@@ -145,6 +145,7 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
 	tool.Sleep = func(time.Duration) {}
 	pushes := map[string]int{}
+	tailDown := true // the tail half fails on the first run, then recovers
 	var captures []string
 	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
 		args := c.Args[1:]
@@ -161,7 +162,7 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 		case "board push":
 			key := filepath.Base(root)
 			pushes[key]++
-			if key == "ui-polish-p1-tasks-phone-light-1" && pushes[key] <= 3 {
+			if key == "ui-polish-p1-tasks-phone-light-1" || (key == "ui-polish-p1-tasks-phone-light-1b" && tailDown) {
 				return CmdOut{Code: 1, Stderr: "push timed out after 30s"}, nil
 			}
 			return CmdOut{Stdout: `{"v":1,"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + key + `","files":2}}`}, nil
@@ -179,34 +180,49 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s %d %v", s.Key, s.Status, s.Files, s.HalvedInto))
 	}
 	want := []string{
-		"ui-polish-p1-tasks-phone-light-1 failed 3 [ui-polish-p1-tasks-phone-light-1 ui-polish-p1-tasks-phone-light-1b]",
-		"ui-polish-p1-tasks-phone-light-1 pushed 2 []",
-		"ui-polish-p1-tasks-phone-light-1b pushed 1 []",
+		"ui-polish-p1-tasks-phone-light-1 halved 3 [ui-polish-p1-tasks-phone-light-1a ui-polish-p1-tasks-phone-light-1b]",
+		"ui-polish-p1-tasks-phone-light-1a pushed 2 []",
+		"ui-polish-p1-tasks-phone-light-1b failed 1 []",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("publish:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if pushes["ui-polish-p1-tasks-phone-light-1"] != 4 || len(res.Diagnostics) != 0 {
-		t.Errorf("3 tries, then the head half's push; pushes %v diags %v", pushes, res.Diagnostics)
+	if pushes["ui-polish-p1-tasks-phone-light-1"] != 3 || pushes["ui-polish-p1-tasks-phone-light-1b"] != 3 {
+		t.Errorf("3 tries per set, a half is never halved again: %v", pushes)
 	}
-	if sets[2].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-p1-tasks-phone-light-1b" {
-		t.Errorf("url from the --json envelope: %q", sets[2].URL)
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Fix, "--sets ui-polish-p1-tasks-phone-light-1b") {
+		t.Errorf("the failed half is retried by its own key: %+v", res.Diagnostics)
+	}
+	if sets[1].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-p1-tasks-phone-light-1a" {
+		t.Errorf("url from the --json envelope: %q", sets[1].URL)
 	}
 	if len(captures) != 6 || captures[5] != "ui-polish-p1-tasks-phone-light-1b P1-C-PHONE-LIGHT" {
 		t.Errorf("captures: %v", captures)
 	}
 
-	// A re-run skips what the index records as pushed with the same files.
+	// Retrying by the half's key pushes that half only; the pushed head is left alone.
+	tailDown = false
 	before := len(captures)
 	res, err = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks-phone-light-1b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := res.Data.(map[string]any)["sets"].([]PublishedSet); len(s) != 0 {
-		t.Errorf("a halved key is not in the plan, nothing to publish: %+v", s)
+	got = got[:0]
+	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
+		got = append(got, s.Key+" "+s.Status)
+	}
+	if !slices.Equal(got, []string{"ui-polish-p1-tasks-phone-light-1 halved", "ui-polish-p1-tasks-phone-light-1b pushed"}) || len(res.Diagnostics) != 0 {
+		t.Errorf("retry: %v %+v", got, res.Diagnostics)
 	}
 	if len(captures) != before {
-		t.Error("nothing is re-adopted")
+		t.Errorf("the tail was already adopted; only its push is retried: %v", captures[before:])
+	}
+	// A plain re-run finds both halves pushed and does nothing.
+	res, _ = tool.Publish(context.Background(), PublishOptions{})
+	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
+		if s.Status != "halved" && s.Status != "skipped" {
+			t.Errorf("re-run touched %s (%s)", s.Key, s.Status)
+		}
 	}
 }
 
@@ -259,6 +275,9 @@ func TestScoreboardMathAndDelta(t *testing.T) {
 		{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1, defects: map[string]int{"grid": 2}},
 		{order: 1, id: "task-detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
 	})
+	if _, err := tool.Scoreboard(ScoreboardOptions{Pass: 2, Backlog: filepath.Join(review, "backlog.json")}); diagCode(err) != DiagBacklogInvalid {
+		t.Errorf("pass 1's backlog must not score pass 2: %v", err)
+	}
 	res, err = tool.Scoreboard(ScoreboardOptions{Pass: 2})
 	if err != nil {
 		t.Fatal(err)

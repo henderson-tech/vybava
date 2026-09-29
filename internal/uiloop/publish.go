@@ -32,11 +32,11 @@ type PublishedSet struct {
 	Title    string `json:"title"`
 	Files    int    `json:"files"`
 	Digest   string `json:"digest"`
-	Status   string `json:"status"` // pushed | failed | skipped | planned
+	Status   string `json:"status"` // pushed | failed | halved (see HalvedInto) | skipped | planned
 	URL      string `json:"url,omitempty"`
 	Attempts int    `json:"attempts,omitempty"`
 	Error    string `json:"error,omitempty"`
-	// HalvedInto names the two sets a failing set was split into.
+	// HalvedInto names the two sets (<key>a, <key>b) a failing set was split into.
 	HalvedInto []string   `json:"halvedInto,omitempty"`
 	Commands   [][]string `json:"commands,omitempty"`
 }
@@ -226,27 +226,37 @@ func (p *publisher) publishSet(s Set, canHalve bool) []PublishedSet {
 	if !canHalve || len(s.Files) < 2 {
 		return []PublishedSet{rec}
 	}
-	// Halve: re-adopt the head into this set and the tail into <key>b. A
-	// shot's viewport + full pair stays together when the cut would split it.
-	cut := (len(s.Files) + 1) / 2
-	if cut < len(s.Files) && s.Files[cut].Full && s.Files[cut].Shot == s.Files[cut-1].Shot {
-		cut++
-	}
-	if cut >= len(s.Files) {
+	head, tail, ok := halves(s)
+	if !ok {
 		return []PublishedSet{rec}
 	}
 	if err := os.RemoveAll(root); err != nil {
 		rec.Error += "; " + err.Error()
 		return []PublishedSet{rec}
 	}
-	head, tail := s, s
-	head.Files, tail.Files = s.Files[:cut], s.Files[cut:]
-	tail.Key, tail.Title = s.Key+"b", s.Title+" (b)"
-	rec.HalvedInto = []string{head.Key, tail.Key}
+	rec.Status, rec.HalvedInto = "halved", []string{head.Key, tail.Key}
 	out := []PublishedSet{rec}
 	out = append(out, p.publishSet(head, false)...)
 	out = append(out, p.publishSet(tail, false)...)
 	return out
+}
+
+// halves splits a set in two: <key>a takes the head, <key>b the tail. A
+// shot's viewport + full pair stays together when the cut would split it.
+// Deterministic, so a later run finds the same halves by key.
+func halves(s Set) (head, tail Set, ok bool) {
+	cut := (len(s.Files) + 1) / 2
+	if cut < len(s.Files) && s.Files[cut].Full && s.Files[cut].Shot == s.Files[cut-1].Shot {
+		cut++
+	}
+	if len(s.Files) < 2 || cut >= len(s.Files) {
+		return s, s, false
+	}
+	head, tail = s, s
+	head.Files, tail.Files = s.Files[:cut], s.Files[cut:]
+	head.Key, head.Title = s.Key+"a", s.Title+" (a)"
+	tail.Key, tail.Title = s.Key+"b", s.Title+" (b)"
+	return head, tail, true
 }
 
 // Publish adopts the pass's split plan into vitrinka sets under
@@ -279,13 +289,49 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 		prior[s.Key] = s
 	}
 	var results []PublishedSet
+	want := func(keys ...string) bool {
+		if len(o.Sets) == 0 {
+			return true
+		}
+		for _, k := range keys {
+			if slices.Contains(o.Sets, k) {
+				return true
+			}
+		}
+		return false
+	}
+	pushed := func(s Set) (PublishedSet, bool) {
+		was, ok := prior[s.Key]
+		return was, ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s)
+	}
 	for _, s := range plan.Sets {
-		if len(o.Sets) > 0 && !slices.Contains(o.Sets, s.Key) {
+		head, tail, split := halves(s)
+		// A set halved on an earlier run is worked as its two halves, so a
+		// failed half is retried by the key its diagnostic names.
+		if was, ok := prior[s.Key]; ok && split && !o.Force && was.Status == "halved" && was.Digest == setDigest(s) {
+			if !want(s.Key, head.Key, tail.Key) {
+				continue
+			}
+			results = append(results, was)
+			for _, h := range []Set{head, tail} {
+				if !want(s.Key, h.Key) {
+					continue
+				}
+				if done, ok := pushed(h); ok {
+					done.Status = "skipped"
+					results = append(results, done)
+					continue
+				}
+				results = append(results, p.publishSet(h, false)...)
+			}
 			continue
 		}
-		if was, ok := prior[s.Key]; ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s) {
-			was.Status = "skipped"
-			results = append(results, was)
+		if !want(s.Key, head.Key, tail.Key) {
+			continue
+		}
+		if done, ok := pushed(s); ok {
+			done.Status = "skipped"
+			results = append(results, done)
 			continue
 		}
 		results = append(results, p.publishSet(s, true)...)
@@ -306,7 +352,7 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	}
 	index.Sets = index.Sets[:0]
 	for _, s := range plan.Sets {
-		for _, k := range []string{s.Key, s.Key + "b"} {
+		for _, k := range []string{s.Key, s.Key + "a", s.Key + "b"} {
 			if r, ok := merged[k]; ok {
 				index.Sets = append(index.Sets, r)
 				delete(merged, k)
