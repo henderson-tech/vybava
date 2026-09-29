@@ -217,6 +217,15 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 	if len(captures) != before {
 		t.Errorf("the tail was already adopted; only its push is retried: %v", captures[before:])
 	}
+	// --force re-pushes the named half, never the whole parent.
+	res, _ = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks-phone-light-1b"}, Force: true})
+	got = got[:0]
+	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
+		got = append(got, fmt.Sprintf("%s %s %d", s.Key, s.Status, s.Files))
+	}
+	if !slices.Equal(got, []string{"ui-polish-p1-tasks-phone-light-1 halved 3", "ui-polish-p1-tasks-phone-light-1b pushed 1"}) {
+		t.Errorf("forced half retry: %v", got)
+	}
 	// A plain re-run finds both halves pushed and does nothing.
 	res, _ = tool.Publish(context.Background(), PublishOptions{})
 	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {

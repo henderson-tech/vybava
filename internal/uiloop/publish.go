@@ -307,8 +307,9 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	for _, s := range plan.Sets {
 		head, tail, split := halves(s)
 		// A set halved on an earlier run is worked as its two halves, so a
-		// failed half is retried by the key its diagnostic names.
-		if was, ok := prior[s.Key]; ok && split && !o.Force && was.Status == "halved" && was.Digest == setDigest(s) {
+		// failed half is retried by the key its diagnostic names. --force only
+		// re-pushes halves already pushed; it never re-merges them into the parent.
+		if was, ok := prior[s.Key]; ok && split && was.Status == "halved" && was.Digest == setDigest(s) {
 			if !want(s.Key, head.Key, tail.Key) {
 				continue
 			}
