@@ -425,6 +425,11 @@ func (t *Tool) Scoreboard(o ScoreboardOptions) (Result, error) {
 		if backlog, err = LoadBacklog(file); err != nil {
 			return Result{}, err
 		}
+		// A previous pass's backlog would mark this pass reviewed with stale verdicts.
+		if backlog.Pass != pass {
+			return Result{}, diag(DiagBacklogInvalid, fmt.Sprintf("%s is the backlog of pass %d, not pass %d", file, backlog.Pass, pass),
+				fmt.Sprintf("pass this pass's backlog (its \"pass\" is %d)", pass))
+		}
 	}
 	sb := ComputeScoreboard(pass, t.Config.Areas, records, backlog)
 	var diags []runxDiagnostic
