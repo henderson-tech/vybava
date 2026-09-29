@@ -94,7 +94,7 @@ func TestOutFileShapeAndMode(t *testing.T) {
 	if _, out, _ = call(t, srv, "GET", "/x"); readOut(t, out).Body != "plain" {
 		t.Fatal("a non-JSON body must come back as a string")
 	}
-	for _, binary := range []string{"\x89PNG\r\n\x1a\n\x00\xff", `"\xff"`} {
+	for _, binary := range []string{"\x89PNG\r\n\x1a\n\x00\xff", "\"\xff\""} {
 		srv, _ = server(t, 200, binary)
 		if _, out, _ = call(t, srv, "GET", "/x"); readOut(t, out).BodyBase64 != base64.StdEncoding.EncodeToString([]byte(binary)) {
 			t.Fatalf("non-UTF-8 body %q must come back byte-exact in body_base64", binary)
