@@ -226,3 +226,30 @@ func TestLoadSeesSameSizeRewriteWithinOneMtimeTick(t *testing.T) {
 		})
 	}
 }
+
+// bun re-opens the file it evaluates: when the bytes on disk change across the
+// evaluation (here the config rewrites itself on import), the result is not
+// cached under the hash of the bytes read before it.
+func TestLoadDoesNotCacheAConfigRewrittenDuringEvaluation(t *testing.T) {
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Skip("bun not installed")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err) // keeps the cache inside the temp dir
+	}
+	path := filepath.Join(root, FileTS)
+	body := `import { writeFileSync } from "node:fs";
+writeFileSync(import.meta.path, "export default { guards: { cap: 7 } };\n");
+export default { guards: { cap: 4 } };
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath(root, path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a config rewritten during evaluation was cached (stat err %v)", err)
+	}
+}

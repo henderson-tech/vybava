@@ -229,6 +229,12 @@ func evaluate(root, path string) (json.RawMessage, error) {
 	if !json.Valid(doc) {
 		return nil, fmt.Errorf("%s: evaluation did not produce JSON", path)
 	}
+	// bun re-opened the file: cache the document only under the bytes it was
+	// evaluated from, so a rewrite during evaluation never pairs new output with
+	// the old hash (a later rewrite back would then serve the wrong document)
+	if after, err := os.ReadFile(path); err != nil || sha256.Sum256(after) != sum {
+		return doc, nil
+	}
 	_ = os.MkdirAll(filepath.Dir(cp), 0o755)
 	if raw, err := json.Marshal(cacheEntry{SHA256: key, Doc: doc}); err == nil {
 		_ = os.WriteFile(cp, raw, 0o644)
