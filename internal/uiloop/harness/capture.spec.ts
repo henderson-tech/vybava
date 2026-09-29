@@ -64,18 +64,30 @@ import { insetsOf } from './viewports';
 const run = loadRun();
 const p: Project = project;
 
-test.describe.configure({ mode: 'parallel' });
-
-for (const shot of plannedShots(p, run)) {
+const pending = plannedShots(p, run).filter((shot) => {
+  if (!run.selection.resume) return true;
+  const previous = readRecord(shotFiles(run, shot.screen.id, shot.viewport, shot.theme).json);
+  return !(previous && FINAL_STATUSES.includes(previous.status));
+});
+const define = (shot: PlannedShot, tag: string): void => {
   const files = shotFiles(run, shot.screen.id, shot.viewport, shot.theme);
-  if (run.selection.resume) {
-    const previous = readRecord(files.json);
-    if (previous && FINAL_STATUSES.includes(previous.status)) continue;
-  }
-  test(`${shot.screen.id} @${shot.viewport} ${shot.theme}`, async ({ browser }) => {
+  test(`${shot.screen.id} @${shot.viewport} ${shot.theme}${tag}`, async ({ browser }) => {
     await capture(browser, shot, run, files);
   });
-}
+};
+
+// Everything that only reads, in parallel (project `ui-loop`).
+test.describe('shots', () => {
+  test.describe.configure({ mode: 'parallel' });
+  for (const shot of pending) if (!shot.screen.destructive) define(shot, '');
+});
+
+// Destructive recipes (they write data) run in project `ui-loop-destructive`,
+// which depends on `ui-loop`: after every other shot finished, one at a time.
+test.describe('destructive', () => {
+  test.describe.configure({ mode: 'default' });
+  for (const shot of pending) if (shot.screen.destructive) define(shot, ' @destructive');
+});
 
 const firstLine = (error: unknown): string =>
   (error instanceof Error ? (error.message.split('\n')[0] ?? error.message) : String(error)).slice(0, 500);

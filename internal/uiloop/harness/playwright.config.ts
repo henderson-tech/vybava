@@ -36,5 +36,11 @@ export default defineConfig({
       ...(executablePath ? { executablePath } : {}),
     },
   },
-  projects: [{ name: 'ui-loop' }],
+  // Destructive shots start only after every read-only shot is done (a
+  // dependency, not declaration order: parallel workers have no barrier). A
+  // harness error in the first project skips them — a broken run writes nothing.
+  projects: [
+    { name: 'ui-loop', grepInvert: /@destructive/ },
+    { name: 'ui-loop-destructive', grep: /@destructive/, dependencies: ['ui-loop'], fullyParallel: false },
+  ],
 });
