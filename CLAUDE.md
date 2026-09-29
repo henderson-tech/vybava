@@ -88,8 +88,9 @@ builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract
 with claude-switcheroo (`src/arcade/contract.ts`), the beats JSON with its
-timesheet (`src/timesheet/contract.ts`). Beats (per-minute human/ai presence)
-backfill through a beats-only backlog read that never charges. Rules: `docs/tokentime.md`.
+timesheet (`src/timesheet/contract.ts`), the limits JSON with its Arcade
+accounts. Beats (per-minute human/ai presence) and Codex limit points backfill
+through their own backlog reads (`files.beats`, `files.points`) that never charge. Rules: `docs/tokentime.md`.
 
 `internal/readeff` measures agent navigation from the same transcripts,
 stateless: it scans on demand and keeps only counts and paths, never command

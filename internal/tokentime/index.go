@@ -65,13 +65,18 @@ type IndexReport struct {
 	ErroredBytes int64 `json:"erroredBytes"`
 	// BeatsPendingBytes is the beats backlog still unread: bytes passes read
 	// before beats existed, owed one more read (beats only).
-	BeatsPendingBytes int64    `json:"beatsPendingBytes"`
-	Responses         int64    `json:"responses"`
-	Duplicates        int64    `json:"duplicates"`
-	Resets            int      `json:"resets"`
-	DecodeErrors      int64    `json:"decodeErrors"`
-	FileErrors        []string `json:"fileErrors"`
-	DurationMs        int64    `json:"durationMs"`
+	BeatsPendingBytes int64 `json:"beatsPendingBytes"`
+	// PointsPendingBytes is the limit-points backlog still unread: rollout
+	// bytes passes read before points existed, owed one more read (points only).
+	PointsPendingBytes int64 `json:"pointsPendingBytes"`
+	// Points are the limit points this pass added; copies already kept are not.
+	Points       int64    `json:"points"`
+	Responses    int64    `json:"responses"`
+	Duplicates   int64    `json:"duplicates"`
+	Resets       int      `json:"resets"`
+	DecodeErrors int64    `json:"decodeErrors"`
+	FileErrors   []string `json:"fileErrors"`
+	DurationMs   int64    `json:"durationMs"`
 }
 
 // ErrBusy means another pass holds the index lock.
@@ -90,6 +95,9 @@ type fileRow struct {
 	tail bool
 	// beats is the file's beats backlog (a beatsLag); '' = read before beats existed.
 	beats string
+	// points is a rollout's limit-points backlog (a pointsLag); '' = read
+	// before points existed. Only the points backlog writes it.
+	points string
 }
 
 // beatsLag is a file's beats backlog: bytes [Cursor.Offset, Until) were read
@@ -135,6 +143,29 @@ func lagOf(stored string, cur transcripts.Cursor) beatsLag {
 	}
 	if l.Written == 0 && !l.done() {
 		l.Written = cur.Modified
+	}
+	return l
+}
+
+// pointsLag is a rollout's limit-points backlog: bytes [Cursor.Offset, Until)
+// were read before this store recorded limit points. It is a beatsLag without
+// Written: no answer vouches for points being complete, so a debt lost with
+// its file moves nothing.
+type pointsLag = beatsLag
+
+// pointsDone is the stored backlog of a rollout whose every read byte has its
+// points — also what a file first read after points existed is inserted with.
+const pointsDone = beatsDone
+
+// pointsOf reads a stored points backlog. A rollout read before points
+// existed (an empty column) owes everything up to where its stored cursor
+// stood when this pass began — what the pass reads after it records its
+// points as it goes. Points are idempotent, so an unreadable backlog is owed
+// again from byte 0.
+func pointsOf(stored string, cur transcripts.Cursor) pointsLag {
+	var l pointsLag
+	if stored == "" || json.Unmarshal([]byte(stored), &l) != nil {
+		return pointsLag{Until: cur.Offset}
 	}
 	return l
 }
@@ -194,6 +225,29 @@ type codexState struct {
 	Human *bool `json:"human,omitempty"`
 }
 
+// readMode is what one read of a rollout's bytes records.
+type readMode int
+
+const (
+	// readTokens is the forward read: it charges each response and records
+	// its beats and every limit point.
+	readTokens readMode = iota
+	// readBeats is the beats backlog: beats only (see catchUp).
+	readBeats
+	// readPoints is the points backlog: limit points only (see pointsBacklog).
+	readPoints
+)
+
+func (m readMode) String() string {
+	switch m {
+	case readBeats:
+		return "beats"
+	case readPoints:
+		return "points"
+	}
+	return "tokens"
+}
+
 type indexer struct {
 	s       *Store
 	ctx     context.Context
@@ -202,8 +256,12 @@ type indexer struct {
 	buckets map[bucketKey]*bucketVal
 	spans   map[spanKey]*span
 	beats   map[beatKey]struct{}
+	points  map[int64]limitPoint
 	newSeen map[int64]seenRow
 	files   map[string]fileRow
+	// debts are the points backlogs the points backlog moved, by path: its
+	// own column, so no other writer of a file row can put an older one back.
+	debts map[string]string
 	// read is every file row a token read left this pass; commits never clear it.
 	read     map[string]fileRow
 	rootMemo map[string]string
@@ -316,6 +374,9 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 	if err := ix.backlog(targets, known, opts.Budget, perCommit); err != nil {
 		return IndexReport{}, err
 	}
+	if err := ix.pointsBacklog(targets, known, opts.Budget, perCommit); err != nil {
+		return IndexReport{}, err
+	}
 	since, err := meta(s.db, "beats_since")
 	if err != nil {
 		return IndexReport{}, err
@@ -361,6 +422,10 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	if err := setMeta(tx, "beats_pending_bytes", strconv.FormatInt(ix.report.BeatsPendingBytes, 10)); err != nil {
+		tx.Rollback()
+		return IndexReport{}, err
+	}
+	if err := setMeta(tx, "points_pending_bytes", strconv.FormatInt(ix.report.PointsPendingBytes, 10)); err != nil {
 		tx.Rollback()
 		return IndexReport{}, err
 	}
@@ -412,23 +477,23 @@ func discover(opts Options) ([]target, bool, error) {
 }
 
 func (s *Store) loadFiles() (map[string]fileRow, error) {
-	rows, err := s.db.Query("SELECT path, cursor, state, tail, beats FROM files")
+	rows, err := s.db.Query("SELECT path, cursor, state, tail, beats, points FROM files")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	known := map[string]fileRow{}
 	for rows.Next() {
-		var path, cursor, state, beats string
+		var path, cursor, state, beats, points string
 		var tail bool
-		if err := rows.Scan(&path, &cursor, &state, &tail, &beats); err != nil {
+		if err := rows.Scan(&path, &cursor, &state, &tail, &beats, &points); err != nil {
 			return nil, err
 		}
 		var cur transcripts.Cursor
 		if err := json.Unmarshal([]byte(cursor), &cur); err != nil {
 			continue // unreadable cursor: re-read the file; identities stop double counting
 		}
-		known[path] = fileRow{cur: cur, state: state, tail: tail, beats: beats}
+		known[path] = fileRow{cur: cur, state: state, tail: tail, beats: beats, points: points}
 	}
 	return known, rows.Err()
 }
@@ -461,8 +526,10 @@ func (ix *indexer) reset() {
 	ix.buckets = map[bucketKey]*bucketVal{}
 	ix.spans = map[spanKey]*span{}
 	ix.beats = map[beatKey]struct{}{}
+	ix.points = map[int64]limitPoint{}
 	ix.newSeen = map[int64]seenRow{}
 	ix.files = map[string]fileRow{}
+	ix.debts = map[string]string{}
 	ix.newRoots = map[string]string{}
 	ix.dirty = 0
 }
@@ -477,7 +544,7 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 	}
 	parse := ix.claudeLine(true)
 	if t.codex {
-		parse = ix.codexLine(&cs, true)
+		parse = ix.codexLine(&cs, readTokens)
 	}
 	var read, pending, unsaved int64
 	opened, tail, fresh := false, false, !known
@@ -617,14 +684,16 @@ func (ix *indexer) claudeLine(tokens bool) func([]byte, int64) error {
 	}
 }
 
-// codexLine is claudeLine for a rollout, threading its parse state.
-func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) error {
+// codexLine is claudeLine for a rollout, threading its parse state. Its mode
+// says what the read records: see readMode.
+func (ix *indexer) codexLine(cs *codexState, mode readMode) func([]byte, int64) error {
+	tokens := mode == readTokens
 	return func(line []byte, offset int64) error {
 		if offset == 0 {
 			*cs = codexState{} // first read, or the file was replaced
 		}
-		if !transcripts.RolloutUsageLine(line) && !transcripts.RolloutUserLine(line) {
-			return nil
+		if !transcripts.RolloutUsageLine(line) && (mode == readPoints || !transcripts.RolloutUserLine(line)) {
+			return nil // a prompt is a beat, never a point
 		}
 		var entry transcripts.RolloutLine
 		if err := json.Unmarshal(line, &entry); err != nil {
@@ -660,7 +729,7 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 			}
 		case transcripts.RolloutUsageRecord:
 			var r transcripts.UsageRecord
-			if json.Unmarshal(entry.Payload, &r) != nil || cs.Owner == "" || r.ThreadID != cs.Owner ||
+			if mode == readPoints || json.Unmarshal(entry.Payload, &r) != nil || cs.Owner == "" || r.ThreadID != cs.Owner ||
 				r.ResponseID == "" || !r.Usage.Valid() || ts.IsZero() || ts.UnixMilli() < cs.Created {
 				return nil // copied fork history keeps its original owner's thread id
 			}
@@ -685,7 +754,7 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 			ix.beat(ts, cs.Cwd, beatAI)
 			ix.chargeCodex(ts, cs, r.Usage)
 		case transcripts.RolloutEventMsg:
-			if transcripts.RolloutUserLine(line) {
+			if mode != readPoints && transcripts.RolloutUserLine(line) {
 				var h transcripts.EventHeader
 				if json.Unmarshal(entry.Payload, &h) == nil && h.UserPrompt() {
 					// A person's prompt — not a spawned thread's brief, not copied fork history.
@@ -696,20 +765,27 @@ func (ix *indexer) codexLine(cs *codexState, tokens bool) func([]byte, int64) er
 				}
 			}
 			var tc transcripts.TokenCount
-			if json.Unmarshal(entry.Payload, &tc) != nil || tc.Type != transcripts.EventTokenCount || tc.Info == nil {
-				return nil // a null info is a rate-limit refresh
-			}
-			// Receipts are exact; once a thread writes them, token_count is bookkeeping.
-			if cs.Receipts || cs.Owner == "" || ts.IsZero() || ts.UnixMilli() < cs.Created {
+			if json.Unmarshal(entry.Payload, &tc) != nil || tc.Type != transcripts.EventTokenCount {
 				return nil
 			}
-			// An unchanged total means no call happened: a rate-limit refresh.
-			if cs.Prev != nil && *cs.Prev == tc.Info.Total {
+			// Copied fork history is older than the thread: its owner recorded it.
+			if cs.Owner == "" || ts.IsZero() || ts.UnixMilli() < cs.Created {
+				return nil
+			}
+			// A null info, or an unchanged total, means no call happened: a
+			// rate-limit refresh. It still carries a limit reading.
+			refresh := tc.Info == nil || cs.Prev != nil && *cs.Prev == tc.Info.Total
+			if mode != readBeats {
+				ix.point(ts, cs, tc, refresh)
+			}
+			if refresh {
 				return nil
 			}
 			total, last := tc.Info.Total, tc.Info.Last
+			// Kept past receipts too: the next point tells a call from a refresh by it.
 			cs.Prev = &total
-			if !last.Valid() || last.Input+last.Output == 0 {
+			// Receipts are exact; once a thread writes them, token_count is bookkeeping.
+			if cs.Receipts || mode == readPoints || !last.Valid() || last.Input+last.Output == 0 {
 				return nil
 			}
 			if !tokens {
@@ -742,6 +818,50 @@ func (ix *indexer) chargeCodex(ts time.Time, cs *codexState, u transcripts.Codex
 	// Cached and cache-written tokens are subsets of input; split them out.
 	c := Counts{Input: u.Input - u.Cached - u.CacheWrite, CacheRead: u.Cached, CacheWrite5m: u.CacheWrite, Output: u.Output, Responses: 1}
 	ix.add(ts, cs.Cwd, model, OpenAI, c, "codex:"+cs.Owner)
+}
+
+// limitPoint is one limit_points row: the account's rate-limit reading a
+// token_count carried, and the call it followed (zero for a refresh).
+type limitPoint struct {
+	ts                  int64
+	thread, plan, model string
+	u                   transcripts.CodexUsage
+	windows             string // JSON []LimitWindow
+}
+
+// point records the limit reading of a token_count. Rollouts older than the
+// readings carry none. A copy of the event — an archived rollout, a re-read,
+// the backlog meeting what a token read recorded — has the same identity, and
+// the store keeps one.
+func (ix *indexer) point(ts time.Time, cs *codexState, tc transcripts.TokenCount, refresh bool) {
+	if tc.RateLimits == nil {
+		return
+	}
+	windows := []LimitWindow{}
+	for _, w := range []*transcripts.RateWindow{tc.RateLimits.Primary, tc.RateLimits.Secondary} {
+		if w != nil {
+			windows = append(windows, LimitWindow{Minutes: w.WindowMinutes, ResetsAt: w.ResetsAt, Pct: w.UsedPercent})
+		}
+	}
+	if len(windows) == 0 {
+		return
+	}
+	var total, last transcripts.CodexUsage
+	if tc.Info != nil {
+		total = tc.Info.Total
+		// Counters the charge rejects are no call either.
+		if !refresh && tc.Info.Last.Valid() {
+			last = tc.Info.Last
+		}
+	}
+	model := cs.Model
+	if model == "" {
+		model = UnknownCodexModel
+	}
+	raw, _ := json.Marshal(windows)
+	key := identity("codex-limit", cs.Owner, strconv.FormatInt(ts.UnixMilli(), 10), strconv.FormatInt(total.Input, 10),
+		strconv.FormatInt(total.Cached, 10), strconv.FormatInt(total.CacheWrite, 10), strconv.FormatInt(total.Output, 10), string(raw))
+	ix.points[key] = limitPoint{ts: ts.UnixMilli(), thread: cs.Owner, plan: tc.RateLimits.PlanType, model: model, u: last, windows: string(raw)}
 }
 
 // seen reports whether an identity was already counted, and records it if not.
@@ -822,7 +942,7 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 		lag, lost := lagOf(row.beats, row.cur), false
 		if !lag.done() && ix.ctx.Err() == nil && (budget <= 0 || ix.report.ReadBytes < budget) {
 			var err error
-			if lag, lost, err = ix.catchUp(t, &row, lag, budget); err != nil {
+			if lag, lost, err = ix.catchUp(t, &row, lag, budget, readBeats); err != nil {
 				return err
 			}
 		}
@@ -857,9 +977,60 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 	return nil
 }
 
+// pointsBacklog recovers the limit points of rollout bytes passes read before
+// points existed — points only: no token charged, no beat, no seen identity —
+// with whatever budget tokens and beats left, newest rollouts first, so the
+// recent windows a caller asks for fill before older history. Its debt is its
+// own (files.points), apart from the beats backlog and its coverage.
+//
+// A debt is fixed when it opens, at the cursor this pass started from: the
+// token read records the points of everything after it. The backlog reads it
+// with its own parse state from byte 0, so a refresh is told from a call just
+// as a token read would.
+func (ix *indexer) pointsBacklog(targets []target, known map[string]fileRow, budget int64, perCommit int) error {
+	order := make([]target, 0, len(targets))
+	for _, t := range targets {
+		if t.codex {
+			order = append(order, t)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return order[i].info.ModTime().After(order[j].info.ModTime()) })
+	sinceCommit, lastCommit := 0, time.Now()
+	for _, t := range order {
+		row, ok := known[t.path]
+		if !ok || row.points == pointsDone {
+			continue // new this pass: its token read records its points
+		}
+		lag := pointsOf(row.points, row.cur)
+		if !lag.done() && ix.ctx.Err() == nil && (budget <= 0 || ix.report.ReadBytes < budget) {
+			var err error
+			// A file that shrank under its debt took the points it owed along;
+			// nothing claims them, so the debt just ends.
+			if lag, _, err = ix.catchUp(t, &row, lag, budget, readPoints); err != nil {
+				return err
+			}
+		}
+		if !lag.done() {
+			ix.report.PointsPendingBytes += lag.Until - lag.Cursor.Offset
+		}
+		if points := lag.encode(); points != row.points {
+			ix.debts[t.path] = points
+			sinceCommit++
+		}
+		if (sinceCommit > 0 || ix.dirty > 0) && (ix.dirty >= commitBytes || sinceCommit >= perCommit || time.Since(lastCommit) >= commitEvery) {
+			if err := ix.flush(); err != nil {
+				return err
+			}
+			sinceCommit, lastCommit = 0, time.Now()
+		}
+	}
+	return nil
+}
+
 // catchUp reads one file's backlog until it is paid, the budget runs out or
-// the pass is stopped. A rollout's token state learns from it whether a
-// person drives the thread, so later token reads record that person's prompts.
+// the pass is stopped; mode names the backlog, beats or points. A rollout's
+// token state learns from the beats backlog whether a person drives the
+// thread, so later token reads record that person's prompts.
 //
 // The backlog cannot follow the charge the way a token read does: every
 // response in it was charged before beats existed, so seen holds all of them,
@@ -870,14 +1041,14 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 // lands on the original's minute; one that changed them adds its own.
 //
 // lost reports a backlog that ended short of Until because its file did.
-func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (_ beatsLag, lost bool, _ error) {
+func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64, mode readMode) (_ beatsLag, lost bool, _ error) {
 	var cs codexState
 	if lag.State != nil {
 		cs = *lag.State
 	}
 	parse := ix.claudeLine(false)
 	if t.codex {
-		parse = ix.codexLine(&cs, false)
+		parse = ix.codexLine(&cs, mode)
 	}
 	for !lag.done() && ix.ctx.Err() == nil {
 		if lag.Cursor.Unchanged(t.info) {
@@ -894,7 +1065,7 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 		}
 		res, err := transcripts.Scan(t.path, lag.Cursor, lag.Cursor.PrefixSize > 0, transcripts.ScanOptions{Budget: sweep, SkipOversize: true}, parse)
 		if err != nil {
-			ix.report.FileErrors = append(ix.report.FileErrors, fmt.Sprintf("%s: beats: %v", t.path, err))
+			ix.report.FileErrors = append(ix.report.FileErrors, fmt.Sprintf("%s: %s: %v", t.path, mode, err))
 			break
 		}
 		if res.Skipped {
@@ -914,7 +1085,7 @@ func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64) (
 	if t.codex {
 		lag.State = &cs
 		var ts codexState
-		if cs.Human != nil && row.state != "" && json.Unmarshal([]byte(row.state), &ts) == nil && ts.Human == nil && ts.Owner == cs.Owner {
+		if mode == readBeats && cs.Human != nil && row.state != "" && json.Unmarshal([]byte(row.state), &ts) == nil && ts.Human == nil && ts.Owner == cs.Owner {
 			ts.Human = cs.Human
 			raw, _ := json.Marshal(ts)
 			row.state = string(raw)
@@ -1006,14 +1177,42 @@ func (ix *indexer) commit(tx *sql.Tx) error {
 			return fail(err)
 		}
 	}
+	var points int64
+	if len(ix.points) > 0 {
+		stmt, err := tx.Prepare(`INSERT OR IGNORE INTO limit_points(id, ts, thread, plan, model, input, cached, cache_write, output, reasoning, windows)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fail(err)
+		}
+		for key, p := range ix.points {
+			res, err := stmt.Exec(key, p.ts, p.thread, p.plan, p.model, p.u.Input, p.u.Cached, p.u.CacheWrite, p.u.Output, p.u.Reasoning, p.windows)
+			var n int64
+			if err == nil {
+				n, err = res.RowsAffected()
+			}
+			if err != nil {
+				stmt.Close()
+				return fail(err)
+			}
+			points += n
+		}
+		stmt.Close()
+	}
+	// A row is inserted only by its first read, which records its points as
+	// it goes; after that only the points backlog moves the column.
 	for path, row := range ix.files {
 		raw, err := json.Marshal(row.cur)
 		if err != nil {
 			return fail(err)
 		}
-		if _, err := tx.Exec(`INSERT INTO files(path, cursor, state, tail, beats) VALUES(?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO files(path, cursor, state, tail, beats, points) VALUES(?, ?, ?, ?, ?, ?)
 			ON CONFLICT(path) DO UPDATE SET cursor = excluded.cursor, state = excluded.state, tail = excluded.tail, beats = excluded.beats`,
-			path, string(raw), row.state, row.tail, row.beats); err != nil {
+			path, string(raw), row.state, row.tail, row.beats, pointsDone); err != nil {
+			return fail(err)
+		}
+	}
+	for path, debt := range ix.debts {
+		if _, err := tx.Exec("UPDATE files SET points = ? WHERE path = ?", debt, path); err != nil {
 			return fail(err)
 		}
 	}
@@ -1025,6 +1224,7 @@ func (ix *indexer) commit(tx *sql.Tx) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	ix.report.Points += points
 	ix.reset()
 	return nil
 }

@@ -106,8 +106,13 @@ func (f fixture) index(t *testing.T, s *Store) IndexReport {
 
 var prague, _ = time.LoadLocation("Europe/Prague")
 
-// dropBeats leaves a store as the schema 3 binary did: no beats, no backlog column.
-const dropBeats = "DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; "
+// dropPoints leaves a store as the schema 4 binary did: no limit points, no
+// points backlog column.
+const dropPoints = "DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; "
+
+// dropBeats leaves a store as the schema 3 binary did: no beats, no backlog
+// column, nothing later.
+const dropBeats = dropPoints + "DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; "
 
 func rollupOf(t *testing.T, s *Store, days, hours int) Rollup {
 	t.Helper()
@@ -493,6 +498,7 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 		ddl      string
 		readable bool
 	}{
+		{4, dropPoints + "PRAGMA user_version=4", true},
 		{3, dropBeats + "PRAGMA user_version=3", true},
 		{2, dropBeats + "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},
 		{1, dropBeats + "ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1", false},

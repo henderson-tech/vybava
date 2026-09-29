@@ -12,8 +12,10 @@ tokentime rollup --json --days 14 --hours 48 --no-index
 cd <repo> && tokentime project --from 2026-09-01 --to 2026-09-24 --json   # this repository
 tokentime project --project FixIt --from 2026-09-01 --to 2026-09-24 --json  # any project, by its rollup name
 tokentime beats --from 2026-09-01 --to 2026-09-30 --json   # minutes you prompted / agents answered, per project
+tokentime limits --since 1790550000000 --json   # Codex rate-limit readings, one per response
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
+tokentime prices --json --model "claude-opus-5-5[1m]"   # + how the rollup prices that name
 ```
 
 `--state-dir` (default `~/.local/share/vybava/tokentime`), `--claude-root`
@@ -29,7 +31,9 @@ every verb. Every verb prints one runx envelope under `--json`.
   `memory/usage.jsonl` and `*.meta.json` are not transcripts.
 - **Codex** — `~/.codex/sessions` and `archived_sessions` rollouts:
   `session_meta` (owner, cwd), `turn_context` (model), `token_usage_record`
-  receipts (CLI 0.153+) and, for older files, `token_count` events.
+  receipts (CLI 0.153+) and, for older files, `token_count` events. A recent
+  CLI's `token_count` also carries the account's rate-limit reading
+  (`rate_limits`), recorded as a limit point.
 
 Nothing is written outside the state directory, no network call is made, no
 credential and no message content is read beyond what decoding a line needs.
@@ -120,7 +124,10 @@ tokens. A row merges over the built-in one field by field, so overriding
 one rate keeps the others; a row for a model the table does not know that
 leaves a rate out is reported as `PRICE_INCOMPLETE` (those components price at
 $0). Model names are compared without `[1m]`, a date suffix or `-latest`;
-OpenAI's Daybreak aliases bill as the model behind them.
+OpenAI's Daybreak aliases bill as the model behind them. `prices --model <name>` (repeatable)
+adds `resolved`: each name as given → `{model, input, output, cacheWrite5m,
+cacheWrite1h, cacheRead}` with the canonical model it prices as, or `null` when
+no row does — so a caller never re-implements that matching.
 
 ## One project across a range
 
@@ -251,3 +258,61 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
 - **Migrations** add one column each, and only when it is missing: a pass
   killed between a migration and the version bump leaves the column behind,
   and the next pass finishes the migration rather than failing on it.
+
+## Limits — Codex rate-limit readings, one per response
+
+```sh
+tokentime limits --since <unix-ms> --json
+```
+
+Every Codex `token_count` carrying `rate_limits` with at least one window is a
+limit point: what the account's windows read right after a response, and the
+call that response was. The JSON is a contract with claude-switcheroo's Arcade
+accounts:
+
+```json
+{ "points": [ { "ts": 1790549822427, "thread": "01a0e2a5-…", "plan": "pro", "model": "gpt-6-astra",
+                "input": 120499, "cached": 114560, "cacheWrite": 0, "output": 996, "reasoning": 127,
+                "windows": [ { "minutes": 10080, "resetsAt": 1791058036, "pct": 49.0 } ] } ],
+  "cursor": 1790549822427,
+  "backfill": { "done": true, "pendingBytes": 0 } }
+```
+
+- **Fields.** `ts` is unix milliseconds, `thread` the rollout's owner (its
+  first `session_meta`), `plan` the reading's `plan_type`, `model` the last
+  `turn_context` model (`codex-unknown` before one). The counts are
+  `last_token_usage` as Codex writes it: **`input` INCLUDES `cached` and
+  `cacheWrite`**, and `reasoning` is part of `output` — unlike the rollup,
+  which splits them apart. `windows` are `primary` then `secondary` (some plans
+  report a 5-hour window beside the week): length in minutes, `resetsAt` in
+  unix seconds, `pct` used.
+- **Refreshes keep their reading.** A `token_count` with a null `info`, or one
+  repeating the previous `total_token_usage`, is a rate-limit refresh, not a
+  call: it is a point with every count 0. So are counters the charge rejects.
+  Rollouts older than the readings record none.
+- **Each reading once.** Copied fork history (older than its thread) belongs
+  to the ancestor that recorded it. A point's identity is its thread, `ts`,
+  `total_token_usage` and windows, so an archived copy of a rollout, a re-read
+  after a lost cursor or the backlog meeting what a token read recorded is kept
+  once. Points are permanent, like buckets.
+- **The read.** Points strictly after `--since` (default 0: all of them),
+  oldest first; `cursor` is the newest `ts` returned, or `--since` when there
+  is none. Read-only like `beats`: no index pass, no lock, `mode=ro`; `NO_STORE`
+  before any pass, `STALE_SCHEMA` for a store without points (schema 4 or
+  older) until one `tokentime index` migrates it, `BAD_FLAG` for a negative
+  `--since`. A cursor is not a watermark: a later pass can still add points
+  older than it — the backlog below, and records a budget left unread (see
+  `status` `pendingBytes`) — so resume with some overlap while either is owed.
+- **The backlog.** A store indexed before points existed has read its
+  rollouts without them. Each rollout owes the bytes read before
+  (`files.points`, fixed at the cursor the first pass after the upgrade
+  starts from; the token read records everything after it), and each pass
+  pays it after the token reads and the beats backlog, from the budget they
+  left — newest rollouts first. It reads points only: no token charged, no
+  beat, no `seen` identity, and it never touches `files.beats` or beats
+  coverage. A rollout that vanishes or shrinks under its debt takes the owed
+  points with it; nothing moves. `index --json` and `status --json` report the
+  rest as `pointsPendingBytes` (and the beats backlog as `beatsPendingBytes`),
+  and name `tokentime index` next while either is owed (`index` adds a
+  `BACKLOG_PENDING` info diagnostic); `backfill` is the last completed pass's figure,
+  `done` once nothing is owed.
