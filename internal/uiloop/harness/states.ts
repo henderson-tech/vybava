@@ -131,12 +131,13 @@ export function listStates(
       full: false,
       before: all(base.before, LIST_STATE_MOCKS[state](url)),
     };
-    // A state keeps the base's drive into its overlay (`open`) but never its
-    // `ready`: the content it waits for is exactly what the mock withholds.
+    // A state keeps the base's drive into its overlay (`open`) and its
+    // `destructive` guard (the mocks answer GETs only, so a writing recipe
+    // still writes), but never its `ready`: the content it waits for is
+    // exactly what the mock withholds.
     delete child.ready;
     delete child.knownIssues;
     delete child.variantOf;
-    delete child.destructive;
     return child;
   });
 }
