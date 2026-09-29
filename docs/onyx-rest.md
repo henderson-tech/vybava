@@ -13,6 +13,8 @@ onyx-rest --base https://<host>/ [--basic-user <user>] <METHOD> <PATH> [--data <
 - `--basic-user` → HTTP Basic `base64(user:token)`; without it, `Bearer <token>`.
 - Methods: GET POST PUT PATCH DELETE. `--data` must be valid JSON (inline or `@file`).
 - `--out` gets `{"status": <int>, "body": <JSON, raw string or null>}`, truncated, mode `0600`.
+  A body that is not valid UTF-8 (an attachment, an image) comes as `"body": null` plus
+  `"body_base64"`, byte-exact: `jq -r .body_base64 out.json | base64 -d > file`.
 - Exit 0 on 2xx, 1 on any other HTTP status (`--out` still written), 2 on a refused
   invocation, a missing token or a transport failure (nothing written). 60 s timeout.
 

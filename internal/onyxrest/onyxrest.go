@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TokenEnv is the only place the secret is read from.
@@ -49,10 +50,13 @@ type Request struct {
 	Out       string
 }
 
-// Response is the --out file's shape.
+// Response is the --out file's shape. A body that is not valid UTF-8 (an
+// attachment, an image) rides in BodyBase64 instead: JSON strings would turn
+// its bytes into U+FFFD.
 type Response struct {
-	Status int `json:"status"`
-	Body   any `json:"body"`
+	Status     int    `json:"status"`
+	Body       any    `json:"body"`
+	BodyBase64 string `json:"body_base64,omitempty"`
 }
 
 func usagef(format string, args ...any) error {
@@ -202,7 +206,11 @@ func Do(ctx context.Context, client *http.Client, req Request, token string) (in
 	out := Response{Status: res.StatusCode}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		var parsed any
-		if json.Unmarshal(raw, &parsed) == nil {
+		// UTF-8 first: json.Unmarshal accepts invalid bytes inside strings and
+		// would decode them to U+FFFD just the same.
+		if !utf8.Valid(raw) {
+			out.BodyBase64 = base64.StdEncoding.EncodeToString(raw)
+		} else if json.Unmarshal(raw, &parsed) == nil {
 			out.Body = parsed
 		} else {
 			out.Body = string(raw)
