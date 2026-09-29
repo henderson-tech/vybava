@@ -180,6 +180,7 @@ type HistoryEntry struct {
 	Applied     []string  `json:"applied,omitempty"`
 	Pending     []string  `json:"pending,omitempty"`
 	Held        []string  `json:"held,omitempty"`
+	CertHeld    []string  `json:"cert_held,omitempty"`
 	Errors      []Issue   `json:"errors,omitempty"`
 	RollNotes   []string  `json:"roll_manually,omitempty"`
 	RollSteps   []string  `json:"roll_steps,omitempty"`
