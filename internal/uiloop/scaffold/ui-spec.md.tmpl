@@ -1,0 +1,32 @@
+# UI spec
+
+The written design spec the ui-loop reviewers judge every screen against. Keep
+it short and decidable: a reviewer must be able to say "met" or "not met" from
+a screenshot plus its lint numbers. Owner decisions are logged at the end and
+never re-litigated.
+
+## Principles
+
+- One painter per background: a surface is drawn once; a region inside a card
+  is a section divided by a hairline and space, never a second card.
+- Every count and its name are one object; an empty state says what to do next.
+- Text never clips mid-glyph; truncation is deliberate and has the full text
+  one hover or tap away.
+
+## Tokens and grid
+
+- Spacing, control heights and icon sizes sit on the {{.Grid}}px grid.
+- Touch targets are at least {{.TouchTarget}}×{{.TouchTarget}}px on coarse pointers.
+- Colours come from tokens only; text meets WCAG AA in both themes.
+
+## Primitives
+
+<!-- The shared components a fix lands in first, and the contract each keeps. -->
+
+## Screen recipes
+
+<!-- Per screen kind (list page, detail, dialog, sheet, empty state): what it must show. -->
+
+## Decisions
+
+<!-- Date · decision · who decided. Never re-litigated. -->

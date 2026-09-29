@@ -1,0 +1,27 @@
+// One area's screens. Every route × tab × overlay × state gets an entry with a
+// recipe that reaches it; `vybava ui-loop map` renders them into the app map.
+
+import { defineScreens } from '../vendor/manifest';
+// import { listStates } from '../vendor/states';
+
+export const screens = defineScreens([
+  {
+    id: 'example',
+    area: '{{.Area}}',
+    kind: 'page',
+    title: 'Example — replace with the first real screen',
+    route: '/',
+    sourceFiles: [],
+    unreachable: 'scaffold entry: replace it with a real screen and its sourceFiles',
+  },
+  // {
+  //   id: 'tasks',
+  //   area: '{{.Area}}',
+  //   kind: 'page',
+  //   title: 'Tasks',
+  //   route: '#/tasks/{TASK_ID}',
+  //   sourceFiles: ['apps/web/src/tasks/tasks.page.ts'],
+  //   open: [{ clickRole: { role: 'button', name: 'Filter' } }, { waitFor: '[role=dialog]' }],
+  // },
+  // ...listStates(tasks, /\/api\/tasks\?/),
+]);

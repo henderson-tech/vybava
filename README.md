@@ -1,4 +1,5 @@
 # Výbava
+| `ui-loop` | applet | The UI polish loop's deterministic layer: syncs the TypeScript/Playwright capture harness (typed screen manifest, capture + lint, app map) into a repo with a drift gate, runs passes from the `vybava.config.ts` `uiLoop` section (on a Devbox too), split-publishes them to vitrinka and scores the review backlog. The vitrinka map / review-loop workflows drive it. → [docs/uiloop.md](docs/uiloop.md) |
 
 Výbava is FixIt Technologies' portable engineering environment: small tools,
 agent skills, and workstation diagnostics, distributed as one catalog where

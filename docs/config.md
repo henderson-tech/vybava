@@ -143,3 +143,13 @@ skill, read by the `readiness` applet ([readiness.md](readiness.md)). It covers:
 
 Command strings take `{token}` placeholders, and `readiness check` rejects a
 token its field does not define.
+
+## UI loop settings
+
+The `uiLoop` section configures the `ui-loop` applet ([uiloop.md](uiloop.md)):
+- where the manifest, the vendored harness, the passes and the app map live;
+- how the repo runs Playwright and TypeScript;
+- the areas, the apps (base URL, env override, viewports, themes) and extra viewports;
+- the lint knobs, the vitrinka project and board prefix, and the publish limits.
+
+`ui-loop check` validates it together with the vendored harness and the manifest.

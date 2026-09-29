@@ -176,6 +176,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "readiness" {
 		return rt.readinessApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "ui-loop" {
+		return rt.uiLoopApplet(), nil
+	}
 
 	root := &cobra.Command{
 		Use:           "vybava",
@@ -204,6 +207,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.hotfixCommand("hotfix"),
 		rt.blipCommand("blip"),
 		rt.readinessCommand("readiness"),
+		rt.uiLoopCommand("ui-loop"),
 		rt.codexsyncCommand("codexsync"),
 		rt.codexusageCommand("codexusage"),
 		rt.tokentimeCommand("tokentime"),
