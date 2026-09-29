@@ -65,7 +65,7 @@ func (s *sweep) certsPresent(rp, src string) bool {
 	if s.certProbeExpired {
 		if !s.certSkipLogged {
 			s.certSkipLogged = true
-			e.logErr("certificate probe skipped for %s and every later TLS vhost of this sweep (an earlier probe hit its deadline) — held", rp)
+			e.logErr("certificate probe skipped for %s and every later TLS vhost of this sweep (an earlier probe did not answer) — held", rp)
 		}
 		return false
 	}
@@ -78,6 +78,11 @@ func (s *sweep) certsPresent(rp, src string) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		s.certProbeExpired = true
 		e.logErr("certificate probe for %s did not answer within %s — held until it answers", rp, timeout)
+		return false
+	}
+	if errors.Is(err, errProbeOrphaned) {
+		s.certProbeExpired = true
+		e.logErr("certificate probe for %s exited but left a child holding its output — held until it answers", rp)
 		return false
 	}
 	// runQuiet returns the bare *exec.ExitError only when the probe wrote nothing
@@ -95,10 +100,16 @@ func (s *sweep) certsPresent(rp, src string) bool {
 // stderr pipe cannot keep the sweep blocked.
 const certProbeWaitDelay = time.Second
 
+// errProbeOrphaned: the probe exited, but a descendant outlived it (and was
+// killed) — Wait sat out certProbeWaitDelay on its pipes whatever the exit code,
+// so the sweep's breaker trips as on expiry.
+var errProbeOrphaned = errors.New("certificate probe left a child running")
+
 // runProbe runs the certs_present probe under a deadline; an expired probe is
-// context.DeadlineExceeded, anything else is runQuiet's error shape. The probe
-// gets its own process group so expiry kills `docker compose exec` together
-// with the compose plugin it runs as a child (procgroup_unix.go).
+// context.DeadlineExceeded, one that outlived its own exit is errProbeOrphaned,
+// anything else is runQuiet's error shape. The probe gets its own process group
+// so expiry kills `docker compose exec` together with the compose plugin it
+// runs as a child (procgroup_unix.go). Worst case: timeout + certProbeWaitDelay.
 func runProbe(dir string, argv []string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -109,6 +120,11 @@ func runProbe(dir string, argv []string, timeout time.Duration) error {
 	err := runQuiet(cmd)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return context.DeadlineExceeded
+	}
+	// reap first, whatever the error says: an exit-0 probe past a live child is
+	// ErrWaitDelay, and its child must not outlive the sweep either
+	if orphaned := killSurvivors(cmd); orphaned || errors.Is(err, exec.ErrWaitDelay) {
+		return errProbeOrphaned
 	}
 	return err
 }

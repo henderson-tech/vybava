@@ -22,3 +22,10 @@ func killGroupOnCancel(cmd *exec.Cmd) {
 		return os.ErrProcessDone
 	}
 }
+
+// killSurvivors SIGKILLs whatever is left of cmd's process group once cmd has
+// exited, and reports whether anything was: a descendant that outlived the
+// probe (and held its pipes through WaitDelay) must not keep running either.
+func killSurvivors(cmd *exec.Cmd) bool {
+	return cmd.Process != nil && syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) == nil
+}

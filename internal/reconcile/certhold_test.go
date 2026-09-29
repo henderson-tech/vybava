@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -168,7 +169,8 @@ func TestCertProbeDeadline(t *testing.T) {
 	const statusBound, tickBound = 2 * deadline, deadline + 5*time.Second
 	const hang = "sleep 30; :" // sleep is sh's child: it holds the probe's pipes after sh dies
 	expired := "certificate probe for nginx/a.conf did not answer within 400ms — held until it answers"
-	skipped := "certificate probe skipped for nginx/b.conf and every later TLS vhost of this sweep (an earlier probe hit its deadline) — held"
+	skipped := "certificate probe skipped for nginx/b.conf and every later TLS vhost of this sweep (an earlier probe did not answer) — held"
+	orphaned := "certificate probe for nginx/a.conf exited but left a child holding its output — held until it answers"
 	for _, tc := range []struct {
 		name     string
 		probe    string   // runs after the call is recorded
@@ -178,11 +180,18 @@ func TestCertProbeDeadline(t *testing.T) {
 		certHeld []string
 		probes   [2]int   // run, then status (an in-sync vhost is not probed)
 		logs     []string // the sweep's certificate-probe stderr lines, in order
+		grace    bool     // the case sits out certProbeWaitDelay on a held pipe, under a deadline that outlasts it (as 3s does in production)
 	}{
 		{name: "probe past the deadline", probe: hang, vhosts: []string{"a"},
 			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf"}, probes: [2]int{1, 1}, logs: []string{expired}},
 		{name: "two vhosts cost one deadline", probe: hang, vhosts: []string{"a", "b"},
 			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf", "nginx/b.conf"}, probes: [2]int{1, 1}, logs: []string{expired, skipped}},
+		// a background child keeps the pipes after sh exits: exit 0 surfaces as
+		// exec.ErrWaitDelay, exit 1 as a plain ExitError only the group check catches
+		{name: "a probe exiting 0 past a live child costs one grace", probe: "sleep 30 & echo $! >> kids; exit 0", vhosts: []string{"a", "b"}, grace: true,
+			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf", "nginx/b.conf"}, probes: [2]int{1, 1}, logs: []string{orphaned, skipped}},
+		{name: "a probe exiting 1 past a live child costs one grace", probe: "sleep 30 & echo $! >> kids; exit 1", vhosts: []string{"a", "b"}, grace: true,
+			live: []string{"site.conf"}, certHeld: []string{"nginx/a.conf", "nginx/b.conf"}, probes: [2]int{1, 1}, logs: []string{orphaned, skipped}},
 		{name: "an answering probe classifies every vhost", probe: `for p; do [ -e "$p" ] || exit 1; done`, vhosts: []string{"a", "b"}, certs: []string{"a.pem"},
 			live: []string{"a.conf", "site.conf"}, certHeld: []string{"nginx/b.conf"}, probes: [2]int{2, 1}},
 	} {
@@ -200,9 +209,15 @@ func TestCertProbeDeadline(t *testing.T) {
 			b.m.Hooks.Nginx.CertsPresent = []string{"sh", "-c", `echo "$*" >> probes; ` + tc.probe, "sh"}
 			e := b.engine()
 			e.CertProbeTimeout = deadline
+			if tc.grace {
+				e.CertProbeTimeout = 2 * certProbeWaitDelay
+			}
 
 			sweep := func(name string, bound time.Duration, probed int, run func() []string) {
 				t.Helper()
+				if tc.grace {
+					bound += certProbeWaitDelay
+				}
 				b.out.Reset()
 				_ = os.Remove(filepath.Join(b.root, "probes"))
 				start := time.Now()
@@ -238,6 +253,19 @@ func TestCertProbeDeadline(t *testing.T) {
 				mustT(t, err)
 				return rep.CertHeld
 			})
+			// every sweep's orphan is killed, not left running: a signal-0 probe
+			// succeeds on a live process (and briefly on a zombie init has yet to reap)
+			kids, _ := os.ReadFile(filepath.Join(b.root, "kids"))
+			for _, f := range strings.Fields(string(kids)) {
+				pid, _ := strconv.Atoi(f)
+				p, err := os.FindProcess(pid)
+				for end := time.Now().Add(time.Second); err == nil && p.Signal(syscall.Signal(0)) == nil; {
+					if time.Now().After(end) {
+						t.Fatalf("the probe's child %d outlived its sweep", pid)
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
 		})
 	}
 }
