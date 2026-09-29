@@ -3,10 +3,11 @@
 // synced by `vybava ui-loop sync` and must never be edited.
 
 import { defineProject } from './vendor/project';
-import { screens as example } from './screens/example';
-
+{{if .Example}}import { screens as example } from './screens/example';
+{{end}}
 export default defineProject({
-  screens: [...example],
+  // Every screens/*.ts file's list, spread in.
+  screens: [{{if .Example}}...example{{end}}],
 
   // The identity a screen without `as` is shot as (needs `login`).
   // defaultAs: 'admin',

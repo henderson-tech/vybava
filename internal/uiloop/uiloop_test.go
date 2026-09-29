@@ -197,3 +197,38 @@ func TestSyncWritesStampAndCheckSeesEveryDriftKind(t *testing.T) {
 		t.Errorf("vendor after forced sync: %+v", rep)
 	}
 }
+
+func TestInitNeverImportsAnExampleItDidNotCreate(t *testing.T) {
+	fresh := newTool(t, testConfig())
+	if _, err := fresh.Init(); err != nil {
+		t.Fatal(err)
+	}
+	project, _ := os.ReadFile(filepath.Join(fresh.Root, "tests/ui-loop/project.ts"))
+	example, _ := os.ReadFile(filepath.Join(fresh.Root, "tests/ui-loop/screens/example.ts"))
+	if !strings.Contains(string(project), "from './screens/example'") || !strings.Contains(string(example), "area: 'tasks'") {
+		t.Errorf("a fresh init scaffolds and imports the example:\n%s", project)
+	}
+	ignore, _ := os.ReadFile(filepath.Join(fresh.Root, ".gitignore"))
+	if string(ignore) != "/.ui-loop/\n" {
+		t.Errorf(".gitignore: %q", ignore)
+	}
+
+	adopter := newTool(t, testConfig())
+	screens := filepath.Join(adopter.Root, "tests/ui-loop/screens")
+	if err := os.MkdirAll(screens, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(screens, "tasks.ts"), []byte("export const screens = [];\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adopter.Init(); err != nil {
+		t.Fatal(err)
+	}
+	project, _ = os.ReadFile(filepath.Join(adopter.Root, "tests/ui-loop/project.ts"))
+	if strings.Contains(string(project), "example") || !strings.Contains(string(project), "screens: [],") {
+		t.Errorf("with screens already present, project.ts imports nothing it lacks:\n%s", project)
+	}
+	if _, err := os.Stat(filepath.Join(screens, "example.ts")); err == nil {
+		t.Error("no example.ts beside existing screens")
+	}
+}

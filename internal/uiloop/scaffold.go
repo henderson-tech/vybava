@@ -27,7 +27,10 @@ type InitData struct {
 func (t *Tool) Init() (Result, error) {
 	data := InitData{Created: []string{}, Kept: []string{}}
 	c := t.Config
-	vars := map[string]any{"Area": c.Areas[0], "Grid": c.Lint.Grid, "TouchTarget": c.Lint.TouchTarget}
+	// project.ts imports the example only when init creates it: a repo that
+	// already has screens/*.ts gets a project.ts that imports nothing it lacks.
+	screens, _ := filepath.Glob(t.abs(c.Dir + "/screens/*.ts"))
+	vars := map[string]any{"Area": c.Areas[0], "Grid": c.Lint.Grid, "TouchTarget": c.Lint.TouchTarget, "Example": len(screens) == 0}
 	write := func(rel, tmpl string) error {
 		target := t.abs(rel)
 		if _, err := os.Stat(target); err == nil {
@@ -60,7 +63,6 @@ func (t *Tool) Init() (Result, error) {
 	if err := write(c.Dir+"/project.ts", "project.ts.tmpl"); err != nil {
 		return Result{}, err
 	}
-	screens, _ := filepath.Glob(t.abs(c.Dir + "/screens/*.ts"))
 	if len(screens) == 0 {
 		if err := write(c.Dir+"/screens/example.ts", "example.ts.tmpl"); err != nil {
 			return Result{}, err
