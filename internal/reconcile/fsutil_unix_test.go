@@ -81,6 +81,69 @@ func TestApplyFileCreatesMissingDestinationAtomically(t *testing.T) {
 	}
 }
 
+// A destination that is missing at writeLive's Lstat but appears before the
+// new file is published is never replaced: a symlink or FIFO there is refused
+// with nothing written anywhere, a regular file takes the in-place path, and
+// no temp file is left behind.
+func TestApplyFileNeverReplacesADestinationThatAppearsBeforePublish(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		appear   func(t *testing.T, dest, victim string)
+		wantType fs.FileMode
+		wantKind string // "" = the write lands in place
+	}{
+		{name: "symlink", appear: func(t *testing.T, dest, victim string) { mustT(t, os.Symlink(victim, dest)) },
+			wantType: fs.ModeSymlink, wantKind: "symlink"},
+		{name: "named pipe", appear: func(t *testing.T, dest, _ string) { mustT(t, syscall.Mkfifo(dest, 0o644)) },
+			wantType: fs.ModeNamedPipe, wantKind: "write"},
+		{name: "regular file", appear: func(t *testing.T, dest, _ string) { mustT(t, os.WriteFile(dest, []byte("hand\n"), 0o644)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src.conf")
+			dest := filepath.Join(dir, "live", "x.conf")
+			victim := filepath.Join(dir, "victim")
+			mustT(t, os.MkdirAll(filepath.Dir(dest), 0o755))
+			mustT(t, os.WriteFile(src, []byte("repo\n"), 0o644))
+			mustT(t, os.WriteFile(victim, []byte("secret\n"), 0o600))
+			beforeNewPublish = func(d string) {
+				if d == dest {
+					tc.appear(t, dest, victim)
+				}
+			}
+			t.Cleanup(func() { beforeNewPublish = nil })
+
+			var err error
+			within(t, func() { err = applyFile(src, dest) })
+
+			var ref *refusedDest
+			if tc.wantKind == "" {
+				mustT(t, err)
+				b, rerr := os.ReadFile(dest)
+				mustT(t, rerr)
+				if string(b) != "repo\n" {
+					t.Fatalf("content = %q, want the repo file landed in place", b)
+				}
+			} else if !errors.As(err, &ref) || ref.kind != tc.wantKind {
+				t.Fatalf("err = %v, want a %q refusal", err, tc.wantKind)
+			}
+			fi, lerr := os.Lstat(dest)
+			mustT(t, lerr)
+			if fi.Mode().Type() != tc.wantType {
+				t.Fatalf("dest type = %v, want %v: the appeared file must not be replaced", fi.Mode().Type(), tc.wantType)
+			}
+			if b, _ := os.ReadFile(victim); string(b) != "secret\n" {
+				t.Fatalf("victim = %q: written through the symlink", b)
+			}
+			entries, rerr := os.ReadDir(filepath.Dir(dest))
+			mustT(t, rerr)
+			if len(entries) != 1 {
+				t.Fatalf("want only dest in its directory, got %d entries (a temp file left behind?)", len(entries))
+			}
+		})
+	}
+}
+
 // within fails the test instead of hanging when fn blocks — a FIFO opened
 // without O_NONBLOCK never returns.
 func within(t *testing.T, fn func()) {

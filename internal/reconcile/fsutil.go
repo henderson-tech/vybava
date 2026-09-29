@@ -100,8 +100,9 @@ func applyFile(src, dest string) error {
 // pgbouncer.ini`) has the mount pinned to the inode, so a temp + rename swap
 // leaves the container reading the OLD content forever and a HUP or reload
 // "sees" nothing (2026-09-14, fixit-prod pgbouncer, both boxes). A new file
-// still lands via same-directory temp + rename so no reader ever opens a
-// half-written file.
+// lands from a complete same-directory temp file via link (publishNew), so no
+// reader ever opens a half-written file and nothing that appeared meanwhile is
+// replaced.
 //
 // The in-place write never goes THROUGH the final component (bash's
 // `install -D` never does either): a symlink or a non-regular file there is
@@ -112,7 +113,12 @@ func applyFile(src, dest string) error {
 func writeLive(dest string, content []byte, mode fs.FileMode) error {
 	fi, err := os.Lstat(dest)
 	if errors.Is(err, fs.ErrNotExist) {
-		return atomicWrite(dest, content, mode)
+		if err = publishNew(dest, content, mode); !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		// something appeared at dest after the Lstat: the guarded existing-file
+		// path below decides what it is
+		fi, err = os.Lstat(dest)
 	}
 	if err != nil {
 		return err
@@ -148,6 +154,40 @@ func writeLive(dest string, content []byte, mode fs.FileMode) error {
 // beforeInPlaceOpen runs between writeLive's type check and its open — the
 // window a swapped-in symlink targets. A test seam; nil in production.
 var beforeInPlaceOpen func(dest string)
+
+// beforeNewPublish runs between writeLive's missing-destination Lstat and
+// publishNew's link — the same window for a new file. A test seam; nil in
+// production.
+var beforeNewPublish func(dest string)
+
+// publishNew lands a NEW destination from a complete same-directory temp file
+// via link(2), not rename(2): a link never replaces what is already at dest, so
+// a symlink, FIFO or file that appeared after writeLive's Lstat fails it with
+// fs.ErrExist instead of being silently replaced. Readers still never see a
+// half-written file.
+func publishNew(dest string, content []byte, mode fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if beforeNewPublish != nil {
+		beforeNewPublish(dest)
+	}
+	return os.Link(name, dest)
+}
 
 // refusedDest is a live destination the reconciler will not write through:
 // kind "symlink" (the kind of the static symlinked-component refusal) or

@@ -665,7 +665,7 @@ func (e *Engine) Force(rp string) error {
 		}
 		bak = f.Name()
 		f.Close()
-		content, err := os.ReadFile(t.Dest)
+		content, err := readRegular(t.Dest) // a symlink or FIFO swapped in since isRegular is refused, never read through
 		if err != nil {
 			return err
 		}
