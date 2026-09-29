@@ -206,10 +206,12 @@ func Do(ctx context.Context, client *http.Client, req Request, token string) (in
 	out := Response{Status: res.StatusCode}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		var parsed any
-		if json.Unmarshal(raw, &parsed) == nil {
-			out.Body = parsed
-		} else if !utf8.Valid(raw) {
+		// UTF-8 first: json.Unmarshal accepts invalid bytes inside strings and
+		// would decode them to U+FFFD just the same.
+		if !utf8.Valid(raw) {
 			out.BodyBase64 = base64.StdEncoding.EncodeToString(raw)
+		} else if json.Unmarshal(raw, &parsed) == nil {
+			out.Body = parsed
 		} else {
 			out.Body = string(raw)
 		}
