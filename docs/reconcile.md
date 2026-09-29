@@ -127,8 +127,8 @@ naming no certificate always moves; any probe failure holds (one that is more
 than a silent exit 1 is logged on stderr). Each probe has a 3s deadline plus a
 1s grace for pipes still held after it ends — at most 4s, under the hub's 5s
 poll (`Engine.CertProbeTimeout`; expiry kills its process group, holds the vhost and
-logs it; a probe that exits but leaves a child running counts as expired and the
-child is killed), and once one expires the rest of that sweep holds every later TLS
+logs it; on unix a probe that exits but leaves a child running counts as expired
+and the child is killed), and once one expires the rest of that sweep holds every later TLS
 vhost unprobed, so a hung `docker compose exec` costs a tick, `status` or the
 page one deadline, never one per vhost. No `certs_present` = no hold
 (webulinka's bash has none).
