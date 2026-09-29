@@ -1,0 +1,38 @@
+// This repo's glue for the ui-loop harness (`vybava ui-loop`, docs/uiloop.md in
+// Výbava). Everything app-specific lives here and in ./screens; ./vendor is
+// synced by `vybava ui-loop sync` and must never be edited.
+
+import { defineProject } from './vendor/project';
+import { screens as example } from './screens/example';
+
+export default defineProject({
+  screens: [...example],
+
+  // The identity a screen without `as` is shot as (needs `login`).
+  // defaultAs: 'admin',
+
+  // Resolves {PARAM} placeholders once per run: read ids out of the running app
+  // (open a list, take the first row) or a fixture. Cached in <pass>/params.json.
+  async params() {
+    return {};
+  },
+
+  // Signs `as` in on `app` once per run; the harness saves the storage state.
+  // async login(page, as, app, run) {
+  //   await page.goto(run.baseUrls[app] + '/login');
+  //   ...
+  // },
+
+  // Puts the app into a theme before navigation (default: prefers-color-scheme).
+  // async theme(context, theme) {
+  //   await context.addInitScript((t) => localStorage.setItem('theme', t), theme);
+  // },
+
+  // App-specific idle after the harness's own settle: spinners gone, lazy chunks in.
+  // async settle(page) {
+  //   await page.locator('.app-loader').waitFor({ state: 'hidden' });
+  // },
+
+  // App chrome that paints its own background (sticky bars, docks): the lint lets it carry glass.
+  chrome: [],
+});
