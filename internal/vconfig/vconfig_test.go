@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gitDir answers what `git rev-parse --absolute-git-dir` would — in a main
@@ -175,5 +176,53 @@ export default defineConfig({ lok: { catalogs: { mobile: englishAsKey('apps/clie
 	}
 	if err := CheckHelpers(root); err != ErrHelperDrift {
 		t.Fatalf("want drift, got %v", err)
+	}
+}
+
+// A rewrite the file's size and mtime cannot see — same length, landing
+// inside one mtime tick (Chtimes forces the tie a coarse filesystem clock
+// produces) — must still reach the next Load, for both config files.
+func TestLoadSeesSameSizeRewriteWithinOneMtimeTick(t *testing.T) {
+	for _, tc := range []struct{ file, old, new string }{
+		{FileJSON, `{"guards":{"cap":4}}`, `{"guards":{"cap":0}}`},
+		{FileTS, `export default { guards: { cap: 4 } };`, `export default { guards: { cap: 0 } };`},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			if tc.file == FileTS {
+				if _, err := exec.LookPath("bun"); err != nil {
+					t.Skip("bun not installed")
+				}
+			}
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+				t.Fatal(err) // keeps the cache inside the temp dir
+			}
+			path := filepath.Join(root, tc.file)
+			load := func(body string) int {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				tick := time.Unix(1_700_000_000, 0)
+				if err := os.Chtimes(path, tick, tick); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := Load(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var guards struct{ Cap int }
+				if err := cfg.Section("guards", &guards); err != nil {
+					t.Fatal(err)
+				}
+				return guards.Cap
+			}
+			if got := load(tc.old); got != 4 {
+				t.Fatalf("first load: cap %d, want 4", got)
+			}
+			if got := load(tc.new); got != 0 {
+				t.Fatalf("same-size rewrite served the cached old document: cap %d, want 0", got)
+			}
+		})
 	}
 }

@@ -38,12 +38,17 @@ export default defineConfig({
 });
 ```
 
-Evaluation is cached next to the git metadata (`<git-dir>/vybava-config-cache.json`)
-keyed by the file's size and mtime, so hooks and repeated calls pay bun's
-~0.5 s once per edit. Sections use `DisallowUnknownFields`: a typo in a key
-is a diagnostic, never a silently ignored setting. Adding a section for a
-new applet means a Go struct in that applet's package, its TypeScript twin
-in `internal/vconfig/config-helpers.ts`, and nothing else.
+TypeScript evaluation is cached next to the git metadata
+(`<git-dir>/vybava-config-cache.json`) keyed by a SHA-256 of the file's
+bytes, so hooks and repeated calls pay bun's ~50 ms (~0.5 s cold) once per
+edit. Size+mtime is not a safe key: a same-size rewrite inside one mtime tick
+(coarse Linux filesystem clocks) would keep serving the old document. A
+`vybava.config.json` is read directly, uncached.
+
+Sections use `DisallowUnknownFields`: a typo in a key is a diagnostic, never a
+silently ignored setting. Adding a section for a new applet means a Go struct
+in that applet's package, its TypeScript twin in
+`internal/vconfig/config-helpers.ts`, and nothing else.
 
 ## Guard settings and discovery
 

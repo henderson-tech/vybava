@@ -3,13 +3,18 @@
 // truth) or vybava.config.json (the same shape, for machines without bun).
 // Applets read their own section and never parse the file themselves.
 //
-// The evaluated document is cached next to the repo's git metadata, keyed by
-// the config file's size+mtime, so hooks and repeated CLI calls pay the bun
-// evaluation (~0.5 s cold) once per edit, not once per call.
+// The evaluated TypeScript document is cached next to the repo's git
+// metadata, keyed by a SHA-256 of the config file's bytes, so hooks and
+// repeated CLI calls pay the bun evaluation (~50 ms warm, ~0.5 s cold) once
+// per edit, not once per call. Never key it on size+mtime: a same-size
+// rewrite inside one mtime tick would serve the old document. A JSON config
+// is its own document and is read directly.
 package vconfig
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,9 +150,8 @@ func Load(dir string) (*Config, error) {
 }
 
 type cacheEntry struct {
-	Size    int64           `json:"size"`
-	ModTime int64           `json:"mtime"`
-	Doc     json.RawMessage `json:"doc"`
+	SHA256 string          `json:"sha256"` // of the config file's bytes
+	Doc    json.RawMessage `json:"doc"`
 }
 
 func cachePath(root, path string) string {
@@ -199,23 +203,26 @@ func gitDir(dir string) string {
 }
 
 func evaluate(root, path string) (json.RawMessage, error) {
-	st, err := os.Stat(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	if strings.HasSuffix(path, ".json") {
+		if !json.Valid(src) {
+			return nil, fmt.Errorf("%s: not valid JSON", path)
+		}
+		return src, nil
+	}
+	sum := sha256.Sum256(src)
+	key := hex.EncodeToString(sum[:])
 	cp := cachePath(root, path)
 	if raw, err := os.ReadFile(cp); err == nil {
 		var e cacheEntry
-		if json.Unmarshal(raw, &e) == nil && e.Size == st.Size() && e.ModTime == st.ModTime().UnixNano() {
+		if json.Unmarshal(raw, &e) == nil && e.SHA256 == key {
 			return e.Doc, nil
 		}
 	}
-	var doc json.RawMessage
-	if strings.HasSuffix(path, ".json") {
-		doc, err = os.ReadFile(path)
-	} else {
-		doc, err = evaluateTS(path)
-	}
+	doc, err := evaluateTS(path)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +230,7 @@ func evaluate(root, path string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("%s: evaluation did not produce JSON", path)
 	}
 	_ = os.MkdirAll(filepath.Dir(cp), 0o755)
-	if raw, err := json.Marshal(cacheEntry{Size: st.Size(), ModTime: st.ModTime().UnixNano(), Doc: doc}); err == nil {
+	if raw, err := json.Marshal(cacheEntry{SHA256: key, Doc: doc}); err == nil {
 		_ = os.WriteFile(cp, raw, 0o644)
 	}
 	return doc, nil
