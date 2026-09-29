@@ -265,6 +265,12 @@ items:
     description: Deterministic layer of the release-readiness skill — validates the vybava.config.ts readiness section, freezes each repo's production..integration range, seeds a run directory with scripts and ledgers, and renders lane rules, lane bodies and agent briefs from the run's manifests (drift-checked).
     applet: readiness
 
+  - id: ui-loop
+    kind: applet
+    status: experimental
+    description: Deterministic layer of the UI polish loop — syncs the TypeScript/Playwright capture harness (screen manifest, capture, lint, app map) into a repo with a drift gate, runs passes from vybava.config.ts uiLoop, split-publishes them to vitrinka and folds the review backlog into a scoreboard.
+    applet: ui-loop
+
   - id: release-readiness
     kind: skill
     status: experimental
@@ -443,6 +449,7 @@ groups:
       - polish
       - readiness
       - release-readiness
+      - ui-loop
       - reclaim
       - macwatch
       - plugin-gc
@@ -546,6 +553,7 @@ groups:
       - polish
       - readiness
       - release-readiness
+      - ui-loop
       - operator
       - memorylint
       - memo
