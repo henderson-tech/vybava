@@ -92,10 +92,10 @@ func Invoke(root, name string, request Request) (Receipt, error) {
 	runErr := cmd.Run()
 	var receipt Receipt
 	if err = Decode(out.Bytes(), &receipt); err != nil {
-		return receipt, problem("ADAPTER_PROTOCOL", "adapter did not return a valid receipt; raw output withheld")
+		return Receipt{}, problem("ADAPTER_PROTOCOL", "adapter did not return a valid receipt; raw output withheld")
 	}
 	if receipt.Version != 1 || receipt.Operation != request.Operation {
-		return receipt, problem("ADAPTER_PROTOCOL", "adapter receipt version/operation mismatch")
+		return Receipt{}, problem("ADAPTER_PROTOCOL", "adapter receipt version/operation mismatch")
 	}
 	if runErr != nil || !receipt.OK {
 		return receipt, problem("CAPABILITY_MISSING", "adapter operation blocked; inspect diagnostics")
