@@ -189,7 +189,7 @@ func (t *Tool) Infer(changed []string, explicit []Target) PlanData {
 			byTarget[target] = append(byTarget[target], f)
 		}
 	}
-	var ordered []PlanTarget
+	ordered := []PlanTarget{}
 	seen := map[Target]bool{}
 	push := func(id Target, reason string) {
 		if seen[id] {

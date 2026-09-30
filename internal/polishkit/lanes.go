@@ -141,10 +141,13 @@ func (t *Tool) needTool(name string) error {
 	return nil
 }
 
-// simctl list shapes.
+// simList is `xcrun simctl list -j` (one call; simctl takes at most ONE
+// type filter, so `-j devices,runtimes` is a usage error). Devices are
+// keyed by runtime identifier; devicetypes maps a type name to its identifier.
 type simList struct {
-	Devices  map[string][]simDevice `json:"devices"`
-	Runtimes []simRuntime           `json:"runtimes"`
+	Devices     map[string][]simDevice `json:"devices"`
+	DeviceTypes []simDeviceType        `json:"devicetypes"`
+	Runtimes    []simRuntime           `json:"runtimes"`
 }
 
 type simDevice struct {
@@ -175,9 +178,13 @@ func versionMatches(prefix, version string) bool {
 	return version == prefix || strings.HasPrefix(version, prefix+".")
 }
 
-// matchSim finds the lane's simulator in a simctl list: the newest matching
-// runtime that has the device (a booted one first), else lane-missing with
-// the exact create command, else runtime-missing.
+// matchSim finds the lane's simulator: the newest matching runtime that has
+// a device of the lane's type (matched by deviceTypeIdentifier, since a sim
+// is named per persona, "FixIt template iPhone 17 Pro"), else lane-missing
+// with the exact create command, else runtime-missing. Among the type's
+// devices the pinned `device` (udid or name) wins, then a name equal to or
+// ending in the type name, then any shutdown one; a booted sim that the
+// lane did not name comes last, it is usually another session's.
 func matchSim(list simList, l Lane) (simDevice, simRuntime, error) {
 	var runtimes []simRuntime
 	for _, rt := range list.Runtimes {
@@ -197,40 +204,82 @@ func matchSim(list simList, l Lane) (simDevice, simRuntime, error) {
 			"Xcode > Settings > Components > install the iOS "+l.Runtime+" simulator runtime")
 	}
 	sort.SliceStable(runtimes, func(i, j int) bool { return runtimes[i].Version > runtimes[j].Version })
+	typeID := list.deviceTypeID(l.DeviceType, runtimes)
+	rank := func(d simDevice) int {
+		switch {
+		case l.Device != "" && (strings.EqualFold(d.UDID, l.Device) || strings.EqualFold(d.Name, l.Device)):
+			return 0
+		case l.Device != "":
+			return 5 // the lane pins another sim; never pick this one over it
+		case strings.EqualFold(d.Name, l.DeviceType):
+			return 1
+		case strings.HasSuffix(strings.ToLower(d.Name), strings.ToLower(l.DeviceType)) && d.State != "Booted":
+			return 2
+		case d.State != "Booted":
+			return 3
+		}
+		return 4
+	}
 	for _, rt := range runtimes {
 		var found []simDevice
 		for _, d := range list.Devices[rt.Identifier] {
-			if d.IsAvailable && (strings.EqualFold(d.Name, l.DeviceType) || strings.EqualFold(d.DeviceTypeIdentifier, deviceTypeID(l.DeviceType))) {
+			if d.IsAvailable && (strings.EqualFold(d.DeviceTypeIdentifier, typeID) || strings.EqualFold(d.Name, l.DeviceType)) {
 				found = append(found, d)
 			}
 		}
-		if len(found) > 0 {
-			sort.SliceStable(found, func(i, j int) bool { return found[i].State == "Booted" && found[j].State != "Booted" })
-			return found[0], rt, nil
+		if l.Device != "" {
+			found = slices.DeleteFunc(found, func(d simDevice) bool { return rank(d) != 0 })
 		}
+		if len(found) == 0 {
+			continue
+		}
+		sort.SliceStable(found, func(i, j int) bool {
+			ri, rj := rank(found[i]), rank(found[j])
+			if ri != rj {
+				return ri < rj
+			}
+			return found[i].Name < found[j].Name
+		})
+		return found[0], rt, nil
 	}
 	rt := runtimes[0]
-	typeID := deviceTypeID(l.DeviceType)
-	for _, dt := range rt.SupportedDeviceTypes {
-		if strings.EqualFold(dt.Name, l.DeviceType) {
-			typeID = dt.Identifier
-		}
+	if l.Device != "" {
+		return simDevice{}, rt, diag(DiagLaneMissing,
+			fmt.Sprintf("no %q simulator named or with udid %q on %s", l.DeviceType, l.Device, rt.Name),
+			fmt.Sprintf("xcrun simctl create %q %q %q", l.Device, typeID, rt.Identifier))
 	}
 	return simDevice{}, rt, diag(DiagLaneMissing,
 		fmt.Sprintf("no %q simulator on %s", l.DeviceType, rt.Name),
 		fmt.Sprintf("xcrun simctl create %q %q %q", l.DeviceType, typeID, rt.Identifier))
 }
 
-// deviceTypeID is CoreSimulator's identifier for a device type name.
-func deviceTypeID(name string) string {
-	return "com.apple.CoreSimulator.SimDeviceType." + strings.ReplaceAll(strings.ReplaceAll(name, " ", "-"), "(", "")
+// deviceTypeID resolves a device type name to CoreSimulator's identifier:
+// the devicetypes list first, then the runtimes' supported types, then a
+// guess from the name (spaces to dashes, parentheses dropped).
+func (list simList) deviceTypeID(name string, runtimes []simRuntime) string {
+	if strings.HasPrefix(name, "com.apple.CoreSimulator.SimDeviceType.") {
+		return name
+	}
+	for _, dt := range list.DeviceTypes {
+		if strings.EqualFold(dt.Name, name) {
+			return dt.Identifier
+		}
+	}
+	for _, rt := range runtimes {
+		for _, dt := range rt.SupportedDeviceTypes {
+			if strings.EqualFold(dt.Name, name) {
+				return dt.Identifier
+			}
+		}
+	}
+	return "com.apple.CoreSimulator.SimDeviceType." + strings.NewReplacer(" ", "-", "(", "", ")", "").Replace(name)
 }
 
 func (t *Tool) resolveIOSSim(ctx context.Context, l Lane, st *LaneState) error {
 	if err := t.needTool("xcrun"); err != nil {
 		return err
 	}
-	out, err := t.run(ctx, 20*time.Second, "xcrun", "simctl", "list", "-j", "devices,runtimes")
+	out, err := t.run(ctx, 20*time.Second, "xcrun", "simctl", "list", "-j")
 	if err != nil {
 		return err
 	}

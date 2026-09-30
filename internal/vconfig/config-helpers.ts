@@ -238,7 +238,7 @@ export interface PolishLane {
   runtime?: string;
   /** Simulator device type name, e.g. 'iPhone 17 Pro' (ios-sim / android-emulator AVD name). */
   deviceType?: string;
-  /** Physical device: devicectl name/udid (ios-device) or adb serial (android-device). */
+  /** Physical device: devicectl name/udid (ios-device) or adb serial (android-device); ios-sim: pin the one simulator (name/udid) of the type, else any shutdown sim of the type is taken. */
   device?: string;
   /** Android navigation modes the lane must be shot in (default: ['gesture']). */
   nav?: ('gesture' | '3button')[];

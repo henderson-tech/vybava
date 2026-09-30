@@ -43,9 +43,17 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   theme, fix, boot, url, status}`; a lane with a problem carries its
   diagnostic (exit 2 when any lane has one). `next` is the boot command of
   the first ready-but-not-booted lane.
-  - `ios-sim`: `xcrun simctl list -j devices,runtimes`. The newest available
-    runtime whose version starts with `runtime` (`26` matches 26.0 and 26.5,
-    `18.6` only 18.6), a device named `deviceType` on it, a booted one first.
+  - `ios-sim`: one `xcrun simctl list -j` (simctl takes at most one type
+    filter, so devices, devicetypes and runtimes come from the single call).
+    The newest available runtime whose version starts with `runtime` (`26`
+    matches 26.0 and 26.5, `18.6` only 18.6) holding a device whose
+    `deviceTypeIdentifier` is `deviceType`'s (resolved through the
+    devicetypes list: `iPhone SE (3rd generation)` →
+    `com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation`); sims
+    are named per persona, so the display name is never required to match.
+    Among the type's devices: the pinned `device` (name or udid) wins, then a
+    name equal to or ending in the type name, then any shutdown sim; a booted
+    sim the lane did not pin comes last (it is usually another session's).
     `theme` is read from `simctl ui <udid> appearance` when booted.
   - `ios-device`: `xcrun devicectl list devices --json-output <tmp>`; the
     device by name, udid or identifier (or the only one); ready when paired

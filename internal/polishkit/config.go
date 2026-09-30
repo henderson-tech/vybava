@@ -62,7 +62,9 @@ type Lane struct {
 	Runtime string `json:"runtime,omitempty"`
 	// DeviceType is the simulator device type name or the emulator AVD name.
 	DeviceType string `json:"deviceType,omitempty"`
-	// Device is a devicectl name/udid (ios-device) or an adb serial (android-device).
+	// Device is a devicectl name/udid (ios-device), an adb serial
+	// (android-device) or, on ios-sim, the name/udid of the one simulator of
+	// the type to use (unpinned, any shutdown sim of the type is taken).
 	Device string `json:"device,omitempty"`
 	// Nav lists the Android navigation modes to shoot (default gesture).
 	Nav    []string `json:"nav,omitempty"`

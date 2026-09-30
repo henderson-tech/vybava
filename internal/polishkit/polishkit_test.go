@@ -151,6 +151,11 @@ func TestInferOrdersByWeightCwdAndFlag(t *testing.T) {
 	if !slices.Equal(plan.ScreensTouched, []string{"inquiry-new"}) {
 		t.Fatalf("screensTouched: %v", plan.ScreensTouched)
 	}
+	// nothing under a glob: empty lists, never null in the envelope
+	plan = tool.Infer([]string{"scripts/x.ts"}, nil)
+	if plan.Targets == nil || len(plan.Targets) != 0 || plan.Lanes == nil || plan.ScreensTouched == nil {
+		t.Fatalf("empty plan must hold [] not null: %+v", plan)
+	}
 	// no derivable screen: every screen of the target
 	plan = tool.Infer([]string{"apps/client/lib/util.ts"}, nil)
 	if !slices.Equal(plan.ScreensTouched, []string{"home", "inquiry-new"}) {
@@ -554,21 +559,29 @@ func TestScalersAndFont(t *testing.T) {
 	}
 }
 
+// simctlFixture is the shape of one `xcrun simctl list -j` on this Mac
+// (2026-09-30): devices keyed by runtime and named per persona, the
+// devicetypes list, runtimes with their supported types; no device on 18.6.
 const simctlFixture = `{
+  "devicetypes": [
+    {"name": "iPhone SE (3rd generation)", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation", "productFamily": "iPhone"},
+    {"name": "iPhone 17 Pro", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "productFamily": "iPhone"}
+  ],
   "devices": {
-    "com.apple.CoreSimulator.SimRuntime.iOS-26-0": [
-      {"udid": "AAAA-26", "name": "iPhone 17 Pro", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"},
-      {"udid": "BBBB-26", "name": "iPhone 17 Pro", "state": "Booted", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}
+    "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+      {"udid": "BBBB-26", "name": "FixIt wt other-branch customer", "state": "Booted", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "dataPath": "/x", "logPath": "/y"},
+      {"udid": "AAAA-26", "name": "FixIt template iPhone 17 Pro", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "dataPath": "/x", "logPath": "/y"},
+      {"udid": "DDDD-26", "name": "FixIt QA customer 2026-09-25", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"},
+      {"udid": "EEEE-26", "name": "FixIt template iPhone SE (3rd generation)", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"}
     ],
-    "com.apple.CoreSimulator.SimRuntime.iOS-18-6": [
-      {"udid": "CCCC-18", "name": "iPhone 16", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-16"}
-    ]
+    "com.apple.CoreSimulator.SimRuntime.iOS-18-6": []
   },
+  "pairs": {},
   "runtimes": [
-    {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-6", "version": "18.6", "name": "iOS 18.6", "platform": "iOS", "isAvailable": true,
-     "supportedDeviceTypes": [{"name": "iPhone 16", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-16"}, {"name": "iPhone 17 Pro", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}]},
-    {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-0", "version": "26.0", "name": "iOS 26.0", "platform": "iOS", "isAvailable": true,
-     "supportedDeviceTypes": [{"name": "iPhone 17 Pro", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}]}
+    {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-6", "version": "18.6", "name": "iOS 18.6", "platform": "iOS", "isAvailable": true, "isInternal": false,
+     "supportedDeviceTypes": [{"name": "iPhone SE (3rd generation)", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"}]},
+    {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5", "version": "26.5", "name": "iOS 26.5", "platform": "iOS", "isAvailable": true, "isInternal": false,
+     "supportedDeviceTypes": [{"name": "iPhone 17 Pro", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}, {"name": "iPhone SE (3rd generation)", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"}]}
   ]
 }`
 
@@ -577,18 +590,40 @@ func TestSimctlParsing(t *testing.T) {
 	if err := json.Unmarshal([]byte(simctlFixture), &list); err != nil {
 		t.Fatal(err)
 	}
+	// matched by deviceTypeIdentifier, never by display name; the template
+	// (name ends in the type) beats the QA persona, and a shutdown sim beats
+	// the booted one another session owns
 	dev, rt, err := matchSim(list, Lane{ID: "ios26", Runtime: "26", DeviceType: "iPhone 17 Pro"})
-	if err != nil || dev.UDID != "BBBB-26" || rt.Version != "26.0" {
-		t.Fatalf("booted device first: %+v %+v %v", dev, rt, err)
+	if err != nil || dev.UDID != "AAAA-26" || rt.Version != "26.5" {
+		t.Fatalf("shutdown template first: %+v %+v %v", dev, rt, err)
 	}
-	_, rt, err = matchSim(list, Lane{ID: "ios18", Runtime: "18.6", DeviceType: "iPhone 17 Pro"})
+	// a pinned device wins, booted or not
+	dev, _, err = matchSim(list, Lane{ID: "ios26", Runtime: "26", DeviceType: "iPhone 17 Pro", Device: "FixIt wt other-branch customer"})
+	if err != nil || dev.UDID != "BBBB-26" {
+		t.Fatalf("pinned by name: %+v %v", dev, err)
+	}
+	if dev, _, err = matchSim(list, Lane{ID: "ios26", Runtime: "26", DeviceType: "iPhone 17 Pro", Device: "dddd-26"}); err != nil || dev.UDID != "DDDD-26" {
+		t.Fatalf("pinned by udid: %+v %v", dev, err)
+	}
+	if _, _, err = matchSim(list, Lane{ID: "ios26", Runtime: "26", DeviceType: "iPhone 17 Pro", Device: "ghost"}); diagCode(t, err) != DiagLaneMissing {
+		t.Fatalf("pinned sim absent: %v", err)
+	}
+	// the SE exists on 26.5 only: runtime "18" holds none -> the exact create command with the identifier from devicetypes
+	_, rt, err = matchSim(list, Lane{ID: "ios18", Runtime: "18", DeviceType: "iPhone SE (3rd generation)"})
 	if diagCode(t, err) != DiagLaneMissing || rt.Version != "18.6" {
 		t.Fatalf("want lane-missing on 18.6: %v", err)
 	}
 	var de runx.DiagError
 	errors.As(err, &de)
-	if de.Diag.Fix != `xcrun simctl create "iPhone 17 Pro" "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" "com.apple.CoreSimulator.SimRuntime.iOS-18-6"` {
+	if de.Diag.Fix != `xcrun simctl create "iPhone SE (3rd generation)" "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation" "com.apple.CoreSimulator.SimRuntime.iOS-18-6"` {
 		t.Fatalf("create fix: %s", de.Diag.Fix)
+	}
+	if dev, _, err := matchSim(list, Lane{ID: "se26", Runtime: "26", DeviceType: "iPhone SE (3rd generation)"}); err != nil || dev.UDID != "EEEE-26" {
+		t.Fatalf("SE on 26.5: %+v %v", dev, err)
+	}
+	// a type the lists do not know still gets a well-formed guess
+	if id := list.deviceTypeID("iPad mini (A17 Pro)", nil); id != "com.apple.CoreSimulator.SimDeviceType.iPad-mini-A17-Pro" {
+		t.Fatalf("guessed identifier: %s", id)
 	}
 	_, _, err = matchSim(list, Lane{ID: "ios17", Runtime: "17", DeviceType: "iPhone 15"})
 	if diagCode(t, err) != DiagRuntimeMissing {
@@ -657,7 +692,7 @@ func TestDevicectlAndAdbParsing(t *testing.T) {
 
 func TestLanesVerbResolvesEveryKind(t *testing.T) {
 	fx := &fakeExec{rules: []rule{
-		{prefix: "xcrun simctl list -j devices,runtimes", out: CmdOut{Stdout: simctlFixture}},
+		{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}},
 		{prefix: "xcrun simctl ui BBBB-26 appearance", out: CmdOut{Stdout: "dark\n"}},
 		{prefix: "adb devices -l", out: CmdOut{Stdout: "List of devices attached\nR5CT30ABC device model:SM_S911B\n"}},
 		{prefix: "adb -s R5CT30ABC shell settings get secure navigation_mode", out: CmdOut{Stdout: "2\n"}},
@@ -685,8 +720,11 @@ func TestLanesVerbResolvesEveryKind(t *testing.T) {
 	for _, l := range lanes {
 		byID[l.ID] = l
 	}
-	if s := byID["ios26"]; !s.Ready || !s.Booted || s.UDID != "BBBB-26" || s.Theme != "dark" || s.Runtime != "26.0" {
+	if s := byID["ios26"]; !s.Ready || s.Booted || s.UDID != "AAAA-26" || s.Theme != "" || s.Runtime != "26.5" || s.Boot != "xcrun simctl boot AAAA-26 && open -a Simulator" {
 		t.Fatalf("ios26: %+v", s)
+	}
+	if !fx.ran("xcrun simctl list -j") || fx.ran("xcrun simctl list -j devices") {
+		t.Fatalf("simctl takes one type filter at most; calls: %v", fx.calls)
 	}
 	if s := byID["android"]; !s.Ready || s.Serial != "R5CT30ABC" || s.Nav != "gesture" || s.Theme != "light" {
 		t.Fatalf("android: %+v", s)
@@ -703,12 +741,17 @@ func TestLanesVerbResolvesEveryKind(t *testing.T) {
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagDeviceUnavailable {
 		t.Fatalf("diagnostics: %+v", res.Diagnostics)
 	}
-	// a shutdown sim's boot command leads next
-	fx.rules[0].out = CmdOut{Stdout: strings.Replace(simctlFixture, `"state": "Booted"`, `"state": "Shutdown"`, 1)}
-	res, _ = tool.Lanes(context.Background(), LanesOptions{Lane: "ios26"})
+	// the shutdown sim's boot command leads next
 	if res.Next[0] != "xcrun simctl boot AAAA-26 && open -a Simulator" {
 		t.Fatalf("boot next: %v", res.Next)
 	}
+	// pinned to the booted sim: booted, theme read
+	tool.Config.Lanes[0].Device = "FixIt wt other-branch customer"
+	res, _ = tool.Lanes(context.Background(), LanesOptions{Lane: "ios26"})
+	if s := res.Data.(LanesData).Lanes[0]; !s.Booted || s.UDID != "BBBB-26" || s.Theme != "dark" || res.Next[0] != "polish-kit run init --pass 1 --json" {
+		t.Fatalf("pinned booted sim: %+v next %v", s, res.Next)
+	}
+	tool.Config.Lanes[0].Device = ""
 	tool.LookPath = func(string) (string, error) { return "", errors.New("nope") }
 	res, _ = tool.Lanes(context.Background(), LanesOptions{Targets: []string{"app"}})
 	if len(res.Diagnostics) != 3 || res.Diagnostics[0].Code != DiagToolMissing || !strings.Contains(res.Diagnostics[1].Fix, "android-platform-tools") || res.Diagnostics[2].Detail != "xcrun is not on PATH" {
@@ -720,8 +763,10 @@ func TestLanesVerbResolvesEveryKind(t *testing.T) {
 }
 
 func TestLanesSetAndUnsupported(t *testing.T) {
-	fx := &fakeExec{rules: []rule{{prefix: "xcrun simctl list -j devices,runtimes", out: CmdOut{Stdout: simctlFixture}}}}
-	tool := newTool(t, testConfig(), fx)
+	fx := &fakeExec{rules: []rule{{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}}}}
+	cfg := testConfig()
+	cfg.Lanes[0].Device = "BBBB-26" // the booted one
+	tool := newTool(t, cfg, fx)
 	ctx := context.Background()
 	res, err := tool.Set(ctx, SetOptions{Lane: "ios26", Theme: "dark", Text: "accessibility-medium"})
 	if err != nil {
@@ -836,9 +881,11 @@ func TestShootAndroidWritesShotsAndRestoresState(t *testing.T) {
 
 func TestShootIOSSimUsesSimctl(t *testing.T) {
 	fx := &fakeExec{rules: append(gitRules("apps/client/app/home.tsx"),
-		rule{prefix: "xcrun simctl list -j devices,runtimes", out: CmdOut{Stdout: simctlFixture}},
+		rule{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}},
 	)}
-	tool := newTool(t, testConfig(), fx)
+	cfg := testConfig()
+	cfg.Lanes[0].Device = "FixIt wt other-branch customer" // the booted one
+	tool := newTool(t, cfg, fx)
 	ctx := context.Background()
 	if _, err := tool.Init(ctx, InitOptions{Lanes: []string{"ios26"}, Screens: []string{"inquiry-new"}}); err != nil {
 		t.Fatal(err)
