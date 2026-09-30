@@ -190,6 +190,12 @@ func (rt *runtime) journeysCommand(use string) *cobra.Command {
 			if err := journeys.ReadJSON(coveragePlan, p); err != nil {
 				return finish("coverage", nil, err)
 			}
+			if err := p.Validate(l); err != nil {
+				return finish("coverage", nil, err)
+			}
+			if err := p.CheckSeal(); err != nil {
+				return finish("coverage", nil, err)
+			}
 			s, err = store()
 			if err != nil {
 				return finish("coverage", nil, err)

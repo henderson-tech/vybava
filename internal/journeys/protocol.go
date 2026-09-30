@@ -263,6 +263,9 @@ func (s Store) CoverageAt(l *Library, p *Plan, current *Snapshot) (Coverage, err
 	if err := p.Validate(l); err != nil {
 		return r, err
 	}
+	if err := p.CheckSeal(); err != nil {
+		return r, err
+	}
 	r.Selected = len(p.Cells)
 	r.Applicable = r.Selected
 	fresh := current != nil && sameSnapshot(p.Snapshot, *current)
