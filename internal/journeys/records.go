@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/secretscan"
@@ -255,22 +254,14 @@ func (s Store) dir(id string) (string, error) {
 	return p, nil
 }
 func lock(dir string) (func(), error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := mkdirDurable(dir); err != nil {
 		return nil, err
 	}
 	p := filepath.Join(dir, "writer.lock")
 	if st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {
 		return nil, problem("TARGET_UNSAFE", "lock is a symlink")
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, problem("WRITER_BUSY", "attempt has an active writer")
-	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+	return acquireJournalLock(p)
 }
 func (p Plan) computedHash() string { p.Hash = ""; b, _ := json.Marshal(p); return Digest(b) }
 func (p Plan) CheckSeal() error {
@@ -592,7 +583,7 @@ func (s Store) Append(id string, e Event) (Event, error) {
 	if err != nil {
 		return e, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
+	f, err := openJournalAppend(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		return e, err
 	}

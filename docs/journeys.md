@@ -12,6 +12,10 @@ UiAutomator2 on the device. The consumer adapter must verify both pins.
 `journeys` is an experimental multicall applet. Markdown describes human
 intent; no document can execute shell commands or perform app actions.
 
+Private journal operations currently require macOS or Linux OS locking.
+Windows builds retain document commands but reject journal access explicitly;
+there is no unlocked write fallback.
+
 Implemented: `lint`, `list`, `show`, `fmt`, `index`, `coverage`, `plan`, `case`,
 `observe`, `verify`, `verdict`, `resume`, `finish`, `publish`, and the typed
 `doctor`/`devices`/`start` adapter boundary. Live seed, native build and
