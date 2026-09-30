@@ -346,8 +346,9 @@ func readJournal(path string) ([]Event, []byte, []byte, error) {
 	end := bytes.LastIndexByte(b, '\n') + 1
 	complete, tail := b[:end], b[end:]
 	events := []Event{}
+	lineCount := bytes.Count(complete, []byte("\n"))
 	for i, line := range bytes.Split(complete, []byte("\n")) {
-		if i == bytes.Count(complete, []byte("\n")) {
+		if i == lineCount {
 			break
 		}
 		var e Event
@@ -396,9 +397,32 @@ func readAttempt(dir string, recoverTail bool) (Attempt, []Event, int, error) {
 			return a, events, len(tail), err
 		}
 	}
+	// Retain only the evidence needed for the next contract check per cell:
+	// latest checks, evidenced actor observations, intervention and final verdict.
+	// Raw events remain intact; replay no longer rescans every prior prefix.
+	state := map[string]map[string]Event{}
 	for i, e := range events {
-		if err := validateEvent(a, events[:i], e); err != nil {
+		cell := state[e.Cell]
+		prior := make([]Event, 0, len(cell))
+		for _, value := range cell {
+			prior = append(prior, value)
+		}
+		if err := validateEvent(a, prior, e); err != nil {
 			return a, nil, 0, problem("JOURNAL_CORRUPT", fmt.Sprintf("invalid event contract at %d", i+1))
+		}
+		if cell == nil {
+			cell = map[string]Event{}
+			state[e.Cell] = cell
+		}
+		switch e.Kind {
+		case "verification":
+			cell["check:"+e.Check] = e
+		case "observation":
+			if len(e.Evidence) > 0 && (e.Actor == "customer" || e.Actor == "worker") {
+				cell["actor:"+e.Actor] = e
+			}
+		case "intervention", "verdict":
+			cell[e.Kind] = e
 		}
 	}
 	return a, events, len(tail), nil
