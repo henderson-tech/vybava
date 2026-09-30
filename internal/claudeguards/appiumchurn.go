@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -126,7 +128,7 @@ func churnsAppiumSession(abs string) bool {
 // default allowlist.
 func appiumChurnMatch(cmd, cwd string, dirs []string) string {
 	allow := append(append([]string{}, defaultAppiumSessionDirs...), dirs...)
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}

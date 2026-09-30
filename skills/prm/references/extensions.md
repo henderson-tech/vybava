@@ -8,7 +8,7 @@ the merge. Nothing here is project-specific: the repo's file says what to do.
 
 ## Declare
 
-`.claude/.claude.git.config` (the key block in `merge.md`):
+`.claude/.claude.git.config` (the key block in `config.md`):
 
 ```
 PR_EXTENSIONS=.claude/prm/*.md

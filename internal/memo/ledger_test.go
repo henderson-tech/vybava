@@ -49,6 +49,14 @@ func TestRowRoundTrip(t *testing.T) {
 	if r, _ := ParseRow(cases[3]); r.Retires() != 46 || !strings.HasPrefix(r.Sentence, "retires #46.") {
 		t.Errorf("Retires() = %d", r.Retires())
 	}
+	// Either separator marks the row: `retires #N:` rows written through
+	// `memo add --retires N "retires #N: why."` must retire their target.
+	if r, _ := ParseRow("- #63 feedback/git retires #47: the rule moved into claude-guards. ^m63"); r.Retires() != 47 {
+		t.Errorf("colon form: Retires() = %d", r.Retires())
+	}
+	if r, _ := ParseRow("- #64 feedback/git supersedes #48. stash is fine inside `.worktrees/`. ^m64"); r.Supersedes() != 48 {
+		t.Errorf("period form: Supersedes() = %d", r.Supersedes())
+	}
 }
 
 func TestParseRowRefusals(t *testing.T) {

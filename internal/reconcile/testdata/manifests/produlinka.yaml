@@ -67,12 +67,32 @@ mappings:
     hook: compose
     require_live_dir: true
 
+# Bind-mounted DB config `docker compose up -d` does not apply: each converge
+# prints its exact step instead of the generic ROLL MANUALLY. Same arms as
+# map-paths.sh roll_note (roll-notes.sh pg_conf_note / pgbouncer_ini_note).
+roll_notes:
+  - match: [apps/fixit-prod/postgresql.conf]
+    grammar: postgresql
+    restart: "RESTART REQUIRED: fixit-prod postgres ({params}) — use /opt/scripts/pg-safe-restart.sh fixit-prod, never a bare `docker compose restart postgres`"
+    reload: "RELOAD postgres: docker kill -s HUP fixit-prod-postgres"
+  - match: [apps/fixit-prod/pg_hba.conf]
+    grammar: raw
+    reload: "RELOAD postgres: docker kill -s HUP fixit-prod-postgres"
+  - match: [apps/fixit-prod/pgbouncer/pgbouncer.ini]
+    grammar: pgbouncer
+    restart: "RESTART REQUIRED: fixit-prod pgbouncer ({params}) — a RELOAD ignores these and a restart drops every client connection; plan it"
+    reload: "RELOAD pgbouncer: docker kill -s HUP fixit-prod-pgbouncer"
+
 # nginx runs in the proxy container on this box.
 hooks:
   nginx:
     workdir: /opt/nginx-proxy
     test: [docker, compose, exec, -T, nginx, nginx, -t]
     reload: [docker, compose, exec, -T, nginx, nginx, -s, reload]
+    # map-paths.sh hook_nginx_certs_present: a TLS vhost moves only once every
+    # ssl_certificate{,_key} path exists INSIDE the proxy container (the vhost's
+    # paths are appended); otherwise it is HELD and every other file lands.
+    certs_present: [docker, compose, exec, -T, nginx, sh, -c, 'for p; do [ -e "$p" ] || exit 1; done', sh]
   compose: [docker, compose, up, -d]
 
 alerts:

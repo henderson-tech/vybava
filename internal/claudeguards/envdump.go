@@ -3,6 +3,8 @@ package claudeguards
 import (
 	"regexp"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -160,12 +162,12 @@ func envDumpMatch(cmd string) string {
 	// /proc/…/environ is checked against the whole command (minus literal
 	// quoted-heredoc bodies): command substitution in the path — a real usage,
 	// `/proc/$(pgrep app)/environ` — splits it across segments otherwise.
-	live := stripQuotedHeredocs(cmd)
+	live := shellseg.StripQuotedHeredocs(cmd)
 	procHit := reProcEnviron.MatchString(live)
 	// The sanctioned name-only projection anywhere in the pipeline clears the
 	// whole command: values never reach the transcript.
 	filtered := reNameOnlyFilter.MatchString(cmd)
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if envTextOnly(seg) {
 			continue
 		}

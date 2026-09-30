@@ -1,4 +1,4 @@
-package claudeguards
+package shellseg
 
 import (
 	"slices"
@@ -56,15 +56,15 @@ func TestSegmentsQuoting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := segments(tc.cmd)
+			got := Segments(tc.cmd)
 			for _, want := range tc.present {
 				if !slices.Contains(got, want) {
-					t.Errorf("segments(%q) = %q, missing %q", tc.cmd, got, want)
+					t.Errorf("Segments(%q) = %q, missing %q", tc.cmd, got, want)
 				}
 			}
 			for _, bad := range tc.absent {
 				if slices.Contains(got, bad) {
-					t.Errorf("segments(%q) = %q, must not contain %q", tc.cmd, got, bad)
+					t.Errorf("Segments(%q) = %q, must not contain %q", tc.cmd, got, bad)
 				}
 			}
 		})
@@ -86,8 +86,8 @@ func TestRunnerPayloads(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := runnerPayloads(tc.seg); !slices.Equal(got, tc.want) {
-				t.Errorf("runnerPayloads(%q) = %q, want %q", tc.seg, got, tc.want)
+			if got := RunnerPayloads(tc.seg); !slices.Equal(got, tc.want) {
+				t.Errorf("RunnerPayloads(%q) = %q, want %q", tc.seg, got, tc.want)
 			}
 		})
 	}
@@ -113,8 +113,8 @@ func TestTrimAssignments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := trimAssignments(tc.in); got != tc.want {
-				t.Errorf("trimAssignments(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := TrimAssignments(tc.in); got != tc.want {
+				t.Errorf("TrimAssignments(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -124,7 +124,7 @@ func TestTrimAssignments(t *testing.T) {
 // a real incident uses.
 func TestSegmentsNestedRunnerDepth(t *testing.T) {
 	cmd := `ssh a 'ssh b "sudo docker exec c env"'`
-	if got := segments(cmd); !slices.Contains(got, "sudo docker exec c env") {
-		t.Errorf("segments(%q) = %q, missing the innermost command", cmd, got)
+	if got := Segments(cmd); !slices.Contains(got, "sudo docker exec c env") {
+		t.Errorf("Segments(%q) = %q, missing the innermost command", cmd, got)
 	}
 }

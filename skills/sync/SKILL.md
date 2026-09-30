@@ -195,4 +195,4 @@ RUN_AFTER_SYNC=bun gen:types               # optional final step
 `**/openapi*.{json,yaml,yml}`, `**/schema.graphql`, `**/graphql.schema.json`,
 `**/prisma/client/**`). The same file carries prm's keys (`MERGE_POLICY`, `MERGE_METHOD`, `AFTER_MERGE_CMD`,
 `BEFORE_REVIEW_CMD`, `REQUIRED_BOT_REVIEWERS`) — see
-the `prm` skill's `references/merge.md`.
+the `prm` skill's `references/config.md`.

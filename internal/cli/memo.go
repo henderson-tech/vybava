@@ -123,16 +123,19 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if memo.TypeKind[typ] == memo.KindTeam {
 			prefix = "t"
 		}
-		if supersedes > 0 && !strings.HasPrefix(sentence, "supersedes #") {
-			sentence = fmt.Sprintf("supersedes #%s%d: %s", prefix, supersedes, sentence)
-		}
-		if retires > 0 && !strings.HasPrefix(sentence, "retires #") {
-			sentence = fmt.Sprintf("retires #%s%d. %s", prefix, retires, sentence)
+		sentence, problem, fix := markSentence(sentence, prefix, args[0], supersedes, retires)
+		if problem != "" {
+			return finish(s, nil, nil, nil, usage(problem, fix))
 		}
 		env := memoEnv()
 		homes, d, err := env.Resolve(homeSpec, typ)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		}
+		if memo.TypeKind[typ] == memo.KindTeam {
+			if d, err := memo.MainCheckoutTeamHome(homes[0].Path, "chore/memory-"+topic); d != nil || err != nil {
+				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
 		}
 		if d := memo.LegacyHome(homes[0].Path); d != nil {
 			return finish(s, nil, nil, nil, d)
@@ -398,6 +401,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		if memo.TypeKind[rows[0].Type] == memo.KindTeam {
+			if d, err := memo.MainCheckoutTeamHome(homes[0].Path, "chore/memory-import"); d != nil || err != nil {
+				return finish(s, nil, nil, nil, diagOrErr(d, err))
+			}
+		}
 		l, d, err := env.Open(homes[0], true)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
@@ -628,6 +636,30 @@ func flagIf(home string) string {
 		return ""
 	}
 	return " --home " + home
+}
+
+// markSentence prepends the --supersedes / --retires marker unless the
+// sentence already opens with one. A marker the author wrote must name the
+// flag's row: the flag is then not prepended, so a typo or an unparseable
+// marker would leave the target silently active. A refusal returns the
+// problem and the corrected invocation.
+func markSentence(sentence, prefix, head string, supersedes, retires int) (marked, problem, fix string) {
+	if supersedes > 0 && !strings.HasPrefix(sentence, "supersedes #") {
+		sentence = fmt.Sprintf("supersedes #%s%d: %s", prefix, supersedes, sentence)
+	}
+	if retires > 0 && !strings.HasPrefix(sentence, "retires #") {
+		sentence = fmt.Sprintf("retires #%s%d. %s", prefix, retires, sentence)
+	}
+	row := memo.Row{Sentence: sentence}
+	if supersedes > 0 && row.Supersedes() != supersedes {
+		return "", fmt.Sprintf("the sentence opens with a supersedes marker that is not #%s%d; drop it and let --supersedes write it", prefix, supersedes),
+			fmt.Sprintf("memo add %s --supersedes %d \"<the corrected fact>.\"", head, supersedes)
+	}
+	if retires > 0 && row.Retires() != retires {
+		return "", fmt.Sprintf("the sentence opens with a retires marker that is not #%s%d; drop it and let --retires write it", prefix, retires),
+			fmt.Sprintf("memo add %s --retires %d \"<why it no longer holds>.\"", head, retires)
+	}
+	return sentence, "", ""
 }
 
 func matchesAll(r memo.Row, words []string) bool {

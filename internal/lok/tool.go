@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/shellword"
 	"github.com/henderson-tech/vybava/internal/vconfig"
 )
 
@@ -280,7 +281,7 @@ func (c *Catalog) has(key string) bool {
 // only scopes the search to those locales (`rm --locale`); tail carries the
 // rest of the command, the scope included, so a fix never widens it.
 func keyMissing(detail, key string, cats []*Catalog, verb, tail string, only []string) *Diag {
-	d := &Diag{Code: DiagKeyMissing, Detail: detail, Fix: "lok grep " + shellQuote(key)}
+	d := &Diag{Code: DiagKeyMissing, Detail: detail, Fix: "lok grep " + shellword.Quote(key)}
 	var hits []string
 	hitCatalog := ""
 	for _, c := range cats {
@@ -293,8 +294,8 @@ func keyMissing(detail, key string, cats []*Catalog, verb, tail string, only []s
 		}
 	}
 	if len(hits) == 1 {
-		d.Detail += fmt.Sprintf(`; did you mean %s? A dot inside a path segment is escaped as \. - single-quote the key so the shell keeps the backslash`, shellQuote(hits[0]))
-		d.Fix = "lok " + verb + " " + shellQuote(hits[0]) + " --catalog=" + hitCatalog + tail
+		d.Detail += fmt.Sprintf(`; did you mean %s? A dot inside a path segment is escaped as \. - single-quote the key so the shell keeps the backslash`, shellword.Quote(hits[0]))
+		d.Fix = "lok " + verb + " " + shellword.Quote(hits[0]) + " --catalog=" + hitCatalog + tail
 	}
 	return d
 }
@@ -493,7 +494,7 @@ func (t *Tool) Add(catalogID, key string, tr map[string]string) (WriteResult, er
 		return WriteResult{}, err
 	}
 	if c.has(key) {
-		return WriteResult{}, &Diag{Code: DiagKeyExists, Detail: fmt.Sprintf("%s already exists in %s", quoteKey(key), c.ID), Fix: "lok set " + shellQuote(key) + " --tr <locale>=<value>"}
+		return WriteResult{}, &Diag{Code: DiagKeyExists, Detail: fmt.Sprintf("%s already exists in %s", quoteKey(key), c.ID), Fix: "lok set " + shellword.Quote(key) + " --tr <locale>=<value>"}
 	}
 	return t.write(c, key, tr, true)
 }
@@ -509,8 +510,8 @@ func (t *Tool) Set(catalogID, key string, tr map[string]string) (WriteResult, er
 	}
 	if !c.has(key) {
 		d := keyMissing(quoteKey(key)+" is not in "+c.ID, key, []*Catalog{c}, "set", " --tr <locale>=<value>", nil)
-		if d.Fix == "lok grep "+shellQuote(key) {
-			d.Fix = "lok add " + shellQuote(key) + " --tr <locale>=<value>"
+		if d.Fix == "lok grep "+shellword.Quote(key) {
+			d.Fix = "lok add " + shellword.Quote(key) + " --tr <locale>=<value>"
 		}
 		return WriteResult{}, d
 	}
@@ -546,7 +547,7 @@ func (t *Tool) write(c *Catalog, key string, tr map[string]string, requireAll bo
 			for _, m := range missing {
 				flags = append(flags, "--tr "+m+"=<value>")
 			}
-			return WriteResult{}, &Diag{Code: DiagLocaleRequired, Detail: fmt.Sprintf("%s requires %s", c.ID, strings.Join(missing, ", ")), Fix: "lok add " + shellQuote(key) + " " + strings.Join(flags, " ")}
+			return WriteResult{}, &Diag{Code: DiagLocaleRequired, Detail: fmt.Sprintf("%s requires %s", c.ID, strings.Join(missing, ", ")), Fix: "lok add " + shellword.Quote(key) + " " + strings.Join(flags, " ")}
 		}
 	}
 	if len(tr) == 0 {
@@ -831,16 +832,6 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-// shellQuote renders s as one shell word for a Fix line: an english-as-key
-// key such as `Delete?` or `Done!` is a glob or history word unquoted (zsh:
-// "no matches found"), so every metacharacter forces quoting.
-func shellQuote(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n'\"$`\\{};&|<>()!#*?[]~") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ensure os is used on all platforms

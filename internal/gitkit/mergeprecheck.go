@@ -296,6 +296,17 @@ func parseStopServers(cfg gitConfig) policy {
 	return parseEnum(cfg, "AFTER_MERGE_STOP_SERVERS", []string{"worktree", "repo", "none"}, "worktree")
 }
 
+// AFTER_MERGE_DEVBOX: what teardown does to the branch's devbox workspace —
+// down (default: a merged branch's stack never outlives it) stops its apps and
+// releases its hold so the reap always lands; reap retires it only when gc
+// would (idle, unheld). A typo → reap, never a silently widened stop.
+func parseDevbox(cfg gitConfig) policy {
+	if strings.TrimSpace(cfg["AFTER_MERGE_DEVBOX"]) == "" {
+		return policy{value: "down"}
+	}
+	return parseEnum(cfg, "AFTER_MERGE_DEVBOX", []string{"reap", "down"}, "reap")
+}
+
 // MERGE_METHOD: which `gh pr merge` flag lands the PR — merge (a merge
 // commit), squash, rebase. The server refuses a method on two layers: the
 // repository's merge buttons, and the base branch's rules — a ruleset (or
@@ -784,6 +795,8 @@ type Precheck struct {
 	ResolvedAfterMergeCmd   *string         `json:"resolvedAfterMergeCmd"`
 	StopServers             string          `json:"stopServers"`
 	StopServersInvalid      *string         `json:"stopServersInvalid"`
+	Devbox                  string          `json:"devbox"`
+	DevboxInvalid           *string         `json:"devboxInvalid"`
 	BeforeReviewCmd         *string         `json:"beforeReviewCmd"`
 	ResolvedBeforeReviewCmd *string         `json:"resolvedBeforeReviewCmd"`
 	Labels                  []string        `json:"labels"`
@@ -945,6 +958,8 @@ func runMergePrecheck(args []string, stdout, stderr io.Writer) int {
 	out.AfterMergeCmd, out.ResolvedAfterMergeCmd = afterMergeHook(cfg, paths, hook)
 	stop := parseStopServers(cfg)
 	out.StopServers, out.StopServersInvalid = stop.value, stop.invalid
+	devbox := parseDevbox(cfg)
+	out.Devbox, out.DevboxInvalid = devbox.value, devbox.invalid
 	// BEFORE_REVIEW_CMD: the pre-review quiesce hook, run on loop entry and
 	// each round — idempotent and cheap by contract.
 	if cmd, ok := cfg.get("BEFORE_REVIEW_CMD"); ok {

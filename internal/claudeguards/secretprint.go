@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/henderson-tech/vybava/internal/secretscan"
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,10 +89,10 @@ func secretPrintMatch(cmd string) string {
 	// code: every shell segment as written but comments and commit messages
 	// (quoted heredoc bodies are already gone) — the shell runs the
 	// $expansions in an echo's words and in a bare `x="${!v}"` assignment,
-	// which segments() sets aside as text or trims away.
+	// which shellseg.Segments() sets aside as text or trims away.
 	var code []string
-	for _, p := range shellSegments(cmd) {
-		s := strings.TrimSpace(p.text)
+	for _, p := range shellseg.SplitScript(cmd) {
+		s := strings.TrimSpace(p.Text)
 		if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "git commit") {
 			continue
 		}
@@ -128,11 +129,11 @@ func secretPrintMatch(cmd string) string {
 	if fragmentOfSecret(codeText, secretNamed) {
 		return "secret-fragment"
 	}
-	// echo/printf are prose to segments(), so they are read from the whole
+	// echo/printf are prose to shellseg.Segments(), so they are read from the whole
 	// command: one expanding a secret prints it — unless its output is piped
 	// on (into the consumer), redirected away, or it sits in a { …; } group or
 	// function body, whose output goes wherever the group is piped.
-	stripped := stripQuotedHeredocs(cmd)
+	stripped := shellseg.StripQuotedHeredocs(cmd)
 	for _, m := range reEchoExpansion.FindAllStringSubmatchIndex(stripped, -1) {
 		args := stripped[m[2]:m[3]]
 		if reStdoutRedirect.MatchString(args) || consumed(stripped[m[4]:]) || groupConsumed(stripped, m[0]) {
@@ -222,9 +223,9 @@ func consumed(rest string) bool {
 	// The pipeline's stages through the shared quote-aware splitter — a `|`
 	// inside `cat 'a|b'` is an argument, not a stage.
 	last := ""
-	for _, p := range splitShell(rest[1:]) {
-		last = p.text
-		if p.sep != "|" {
+	for _, p := range shellseg.Split(rest[1:]) {
+		last = p.Text
+		if p.Sep != "|" {
 			break
 		}
 	}
@@ -236,7 +237,7 @@ func consumed(rest string) bool {
 		return true
 	}
 	for name := range printerCommands {
-		if commandChainHas(last, name) { // through sudo, xargs, env, …
+		if shellseg.ChainHas(last, name) { // through sudo, xargs, env, …
 			return false
 		}
 	}
@@ -311,18 +312,18 @@ type printingSegment struct {
 // Comments, commit messages and echo/printf are prose here: what an echo
 // expands is secret-echo's to judge.
 func printingSegments(cmd string) []printingSegment {
-	segs := shellSegments(cmd)
+	segs := shellseg.SplitScript(cmd)
 	var out []printingSegment
 	prints := []bool{true} // does the current substitution level reach the transcript?
 	for i, p := range segs {
-		s := trimAssignments(trimSubshell(strings.TrimSpace(p.text)))
+		s := shellseg.TrimAssignments(shellseg.TrimSubshell(strings.TrimSpace(p.Text)))
 		level := prints[len(prints)-1]
 		pipedAway := false
-		if p.sep == "|" {
+		if p.Sep == "|" {
 			var rest strings.Builder
-			rest.WriteString(p.sep)
+			rest.WriteString(p.Sep)
 			for _, q := range segs[i+1:] {
-				rest.WriteString(q.text + q.sep)
+				rest.WriteString(q.Text + q.Sep)
 			}
 			pipedAway = consumed(rest.String())
 		}
@@ -330,12 +331,12 @@ func printingSegments(cmd string) []printingSegment {
 			out = append(out, printingSegment{text: s, prints: level && !reStdoutRedirect.MatchString(s) && !pipedAway})
 		}
 		switch {
-		case p.sep == "$(" || p.sep == "`" && !inBacktick(segs[:i+1]):
-			opener := strings.TrimSpace(p.text)
+		case p.Sep == "$(" || p.Sep == "`" && !inBacktick(segs[:i+1]):
+			opener := strings.TrimSpace(p.Text)
 			echoes := strings.HasPrefix(opener, "echo ") || strings.HasPrefix(opener, "printf ") ||
 				strings.Contains(opener, " echo ") || strings.Contains(opener, " printf ")
 			prints = append(prints, level && echoes)
-		case (p.sep == ")" || p.sep == "`") && len(prints) > 1:
+		case (p.Sep == ")" || p.Sep == "`") && len(prints) > 1:
 			prints = prints[:len(prints)-1]
 		}
 	}
@@ -344,10 +345,10 @@ func printingSegments(cmd string) []printingSegment {
 
 // inBacktick reports whether the last backtick among segs closes one: an
 // even count of earlier backtick separators means this one opens.
-func inBacktick(segs []shellSegment) bool {
+func inBacktick(segs []shellseg.Segment) bool {
 	n := 0
 	for _, p := range segs[:len(segs)-1] {
-		if p.sep == "`" {
+		if p.Sep == "`" {
 			n++
 		}
 	}
@@ -355,7 +356,7 @@ func inBacktick(segs []shellSegment) bool {
 }
 
 // consumedInPayload reports a printenv inside a runner payload's escaped
-// substitution — `sh -c "x=\$(printenv \$v)"` — which splitShell leaves
+// substitution — `sh -c "x=\$(printenv \$v)"` — which shellseg.Split leaves
 // whole: captured unless the command opening it is an echo/printf, or its
 // stdout is redirected right after.
 func consumedInPayload(text string, start, end int) bool {

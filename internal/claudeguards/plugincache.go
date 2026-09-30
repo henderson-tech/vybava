@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,15 +56,15 @@ func pluginInstallMatch(cmd, cwd, home string) (manager, target string) {
 	// `cd` moves the target for every later segment of the same command, so
 	// the segments are walked in order with a running directory.
 	here := cwd
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}
-		fields := strings.Fields(trimAssignments(trimSubshell(seg)))
+		fields := strings.Fields(shellseg.TrimAssignments(shellseg.TrimSubshell(seg)))
 		if len(fields) == 0 {
 			continue
 		}
-		word := commandWord(seg)
+		word := shellseg.CommandWord(seg)
 		if word == "cd" && len(fields) > 1 {
 			here = resolveDir(unquote(fields[1]), here, home)
 			continue

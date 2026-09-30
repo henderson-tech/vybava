@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,18 +67,18 @@ type devboxWalk struct {
 // the commands after the runner.
 func (w *devboxWalk) scan(cmd, dir string, possible []string, certain bool, depth int) {
 	cursor := 0 // segments come in order: each is located after the previous one
-	for _, p := range shellSegments(cmd) {
-		raw := trimAssignments(trimSubshell(strings.Trim(p.text, " \t\r")))
-		if raw == "" || remoteRunners[commandWord(raw)] {
+	for _, p := range shellseg.SplitScript(cmd) {
+		raw := shellseg.TrimAssignments(shellseg.TrimSubshell(strings.Trim(p.Text, " \t\r")))
+		if raw == "" || shellseg.RemoteRunners[shellseg.CommandWord(raw)] {
 			continue
 		}
-		text := strings.TrimSpace(trimAssignments(trimSubshell(raw)))
+		text := strings.TrimSpace(shellseg.TrimAssignments(shellseg.TrimSubshell(raw)))
 		pos := -1
 		if at := strings.Index(cmd[cursor:], text); text != "" && at >= 0 {
 			pos = cursor + at
 			cursor = pos + len(text)
 		}
-		if target, ok := cdTarget(shellFields(text)); ok {
+		if target, ok := cdTarget(shellseg.Fields(text)); ok {
 			if target == "-" {
 				continue // the previous directory: already possible, and cdsCertain gives up
 			}
@@ -115,8 +118,8 @@ func (w *devboxWalk) scan(cmd, dir string, possible []string, certain bool, dept
 			w.hits = append(w.hits, hit)
 			break
 		}
-		if depth < maxRunnerDepth {
-			for _, payload := range runnerPayloads(raw) {
+		if depth < shellseg.MaxRunnerDepth {
+			for _, payload := range shellseg.RunnerPayloads(raw) {
 				w.scan(payload, dir, slices.Clone(possible), here, depth+1)
 			}
 		}
@@ -146,7 +149,7 @@ func cdTarget(fields []string) (target string, ok bool) {
 // maxDevboxCandidates bounds the directories one command is judged in.
 const maxDevboxCandidates = 32
 
-// assignmentTail is the `VAR=value ` run right before a command (localSegments
+// assignmentTail is the `VAR=value ` run right before a command (shellseg.LocalSegments
 // strips it), so a rerun keeps NODE_OPTIONS=… and the like.
 var assignmentTail = regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s'"]*)[ \t]+)+$`)
 
@@ -162,7 +165,7 @@ func cdsCertain(prefix string) bool {
 	var seg strings.Builder
 	var quote byte
 	endSegment := func(sep string) bool {
-		s := strings.TrimSpace(trimAssignments(seg.String()))
+		s := strings.TrimSpace(shellseg.TrimAssignments(seg.String()))
 		seg.Reset()
 		if target, ok := cdTarget(strings.Fields(s)); ok {
 			if sep != "&&" || target == "-" {
@@ -225,8 +228,8 @@ func cdsCertain(prefix string) bool {
 
 // bunCwd is dir moved by a bun `--cwd <dir>` / `--cwd=<dir>` in the segment.
 func bunCwd(seg, dir, home string) string {
-	f := shellFields(seg)
-	if len(f) == 0 || commandWord(f[0]) != "bun" {
+	f := shellseg.Fields(seg)
+	if len(f) == 0 || shellseg.CommandWord(f[0]) != "bun" {
 		return dir
 	}
 	for i, a := range f {
@@ -254,7 +257,7 @@ func devboxRerun(h devboxHit, dir, sessionCwd, flags string) string {
 			payload = "cd " + shellArg(rel) + " && " + payload
 		}
 	}
-	line := "devbox run" + flags + " -- " + shellSingleQuote(payload)
+	line := "devbox run" + flags + " -- " + shellword.Quote(payload)
 	if dest != "" && dest != checkoutRoot(sessionCwd) {
 		line = "(cd " + shellArg(dest) + " && " + line + ")"
 	}
@@ -269,7 +272,7 @@ func shellArg(s string) string {
 	if plainWord.MatchString(s) {
 		return s
 	}
-	return shellSingleQuote(s)
+	return shellword.Quote(s)
 }
 
 // plainWord is a path the shell reads verbatim, needing no quotes.
@@ -280,10 +283,10 @@ var plainWord = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
 // result is fields rejoined with single spaces: good enough to match, never
 // shown to the user.
 func unwrapRunners(s string) string {
-	f := shellFields(s)
-	for len(f) > 0 && commandRunners[commandWord(f[0])] {
+	f := shellseg.Fields(s)
+	for len(f) > 0 && shellseg.Runners[shellseg.CommandWord(f[0])] {
 		f = f[1:]
-		for len(f) > 0 && (strings.HasPrefix(f[0], "-") || assignPrefix.MatchString(f[0]) || isDigits(f[0])) {
+		for len(f) > 0 && (strings.HasPrefix(f[0], "-") || shellseg.AssignPrefix.MatchString(f[0]) || isDigits(f[0])) {
 			f = f[1:]
 		}
 	}
@@ -308,7 +311,7 @@ func guardDevboxOnly(in *HookInput) *Denial {
 
 runs on this Mac; this repo's guards.devboxOnly routes it to the Devbox:
     %s
-From a worktree without a workspace, /devbox resolves-or-creates one. The
-Mac keeps simulators, Appium specs and native builds; everything else that
-serves or tests apps/api, apps/web and apps/admin-web runs on the box.`, hit.seg, devboxRerun(hit, hit.runs[0], in.CWD, "")), devboxOnlyEscape)
+From a worktree without a workspace, /devbox resolves-or-creates one. What
+stays on this Mac (simulators, Metro, native builds, …) is listed beside
+guards.devboxOnly in the repo's vybava.config.ts.`, hit.seg, devboxRerun(hit, hit.runs[0], in.CWD, "")), devboxOnlyEscape)
 }

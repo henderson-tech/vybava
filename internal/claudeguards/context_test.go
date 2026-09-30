@@ -2,6 +2,7 @@ package claudeguards
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,6 +188,49 @@ func TestDumpBudgetSumsUnmeasuredFilesWithoutWrapping(t *testing.T) {
 	}
 }
 
+// `git show <rev>:<path>` is a file read at another revision: budgeted by the
+// blob's own length like cat, never refused as an unbounded diff (300 of 304
+// git-show denials in the 2026-09-25 field audit were this shape).
+func TestGitShowBlobIsAFileRead(t *testing.T) {
+	root, _, _, _ := fixture(t) // small.ts 50 lines, big.ts 995
+	for name, body := range map[string]string{"gen.ts": "x\n", "vybava.config.json": `{"guards":{"noRead":["**/gen.ts"]}}`} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "-q"}, {"add", "small.ts", "big.ts", "gen.ts"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "c1"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	elsewhere := t.TempDir()
+	for _, tc := range []struct{ cmd, cwd, want string }{
+		{"git show HEAD:small.ts", root, ""},
+		{"git show origin/nope:small.ts", root, ""}, // unresolvable: passes like a missing file
+		{"git show HEAD:big.ts", root, "context:whole-file-dump"},
+		{"git show HEAD:big.ts | grep line", root, ""},
+		{"git show HEAD:big.ts | cat", root, "context:whole-file-dump"},
+		{"git -C " + root + " show HEAD:big.ts", elsewhere, "context:whole-file-dump"},
+		{"git --git-dir=" + root + "/.git show HEAD:big.ts", elsewhere, "context:whole-file-dump"},                  // measured in the repo it names
+		{"git show HEAD:gen.ts", root, "context:no-read"},                                                           // protected-file rules apply as for cat
+		{"git --git-dir=" + root + "/.git show HEAD:projects/slug/abc.jsonl", elsewhere, "context:transcript-dump"}, // the selected repo's path, not the cwd's
+		{"git show HEAD HEAD:small.ts", root, "context:unbounded-output"},
+		{"git show --textconv HEAD:small.ts", root, "context:unbounded-output"}, // a converter's output, not the blob
+		{"git show HEAD", root, "context:unbounded-output"},
+	} {
+		got := ""
+		if d := contextBashMatch(tc.cmd, tc.cwd); d != nil {
+			got = d.Rule
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+}
+
 // A pipe is only an exemption when the downstream command shrinks its input.
 func TestPipeExemptionNeedsAReducingSink(t *testing.T) {
 	root := t.TempDir()
@@ -215,9 +259,6 @@ func TestPipeExemptionNeedsAReducingSink(t *testing.T) {
 	}
 	if d := contextBashMatch("git show HEAD:settings.json | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))'", root); d != nil {
 		t.Errorf("git show into an inline program must pass, got %v", d)
-	}
-	if d := contextBashMatch("git show HEAD:settings.json | cat", root); d == nil || d.Rule != "context:unbounded-output" {
-		t.Errorf("git show into cat must still be capped, got %v", d)
 	}
 	// None of these bound anything — `sort` and `sed -n p` reproduce every
 	// input line, and an interpreter can do whatever it likes.

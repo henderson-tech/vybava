@@ -12,9 +12,11 @@ import (
 	"strings"
 )
 
-// fileSHA is `sha256sum`; "" when the file is unreadable/absent.
+// fileSHA is `sha256sum` of a regular file; "" when it is absent, unreadable
+// or not a regular file — a FIFO at a destination must never block the sweep
+// (and the lock it holds) on an open, and a symlink is never read through.
 func fileSHA(path string) string {
-	f, err := os.Open(path)
+	f, err := openRegular(path, os.O_RDONLY)
 	if err != nil {
 		return ""
 	}
@@ -98,14 +100,44 @@ func applyFile(src, dest string) error {
 // pgbouncer.ini`) has the mount pinned to the inode, so a temp + rename swap
 // leaves the container reading the OLD content forever and a HUP or reload
 // "sees" nothing (2026-09-14, fixit-prod pgbouncer, both boxes). A new file
-// still lands via same-directory temp + rename so no reader ever opens a
-// half-written file.
+// lands from a complete same-directory temp file via link (publishNew), so no
+// reader ever opens a half-written file and nothing that appeared meanwhile is
+// replaced.
+//
+// The in-place write never goes THROUGH the final component (bash's
+// `install -D` never does either): a symlink or a non-regular file there is
+// refused (*refusedDest, nothing written), also when it is swapped in after
+// the sweep's canonical check — the open itself refuses a symlink
+// (O_NOFOLLOW) and the opened descriptor must be a regular file. Truncation
+// happens only after that proof.
 func writeLive(dest string, content []byte, mode fs.FileMode) error {
-	if !isRegular(dest) {
-		return atomicWrite(dest, content, mode)
+	fi, err := os.Lstat(dest)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err = publishNew(dest, content, mode); !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		// something appeared at dest after the Lstat: the guarded existing-file
+		// path below decides what it is
+		fi, err = os.Lstat(dest)
 	}
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
+		return err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		return &refusedDest{kind: "symlink", dest: dest, why: "is a symlink"}
+	}
+	if !fi.Mode().IsRegular() {
+		return notRegular(dest, fi.Mode())
+	}
+	if beforeInPlaceOpen != nil {
+		beforeInPlaceOpen(dest)
+	}
+	f, err := openRegular(dest, os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(0); err != nil {
+		f.Close()
 		return err
 	}
 	if _, err := f.Write(content); err != nil {
@@ -119,13 +151,117 @@ func writeLive(dest string, content []byte, mode fs.FileMode) error {
 	return f.Close()
 }
 
-// copyPreserve is `cp -p src dest` for the rollback snapshots.
-func copyPreserve(src, dest string) error {
-	fi, err := os.Stat(src)
+// beforeInPlaceOpen runs between writeLive's type check and its open — the
+// window a swapped-in symlink targets. A test seam; nil in production.
+var beforeInPlaceOpen func(dest string)
+
+// beforeNewPublish runs between writeLive's missing-destination Lstat and
+// publishNew's link — the same window for a new file. A test seam; nil in
+// production.
+var beforeNewPublish func(dest string)
+
+// publishNew lands a NEW destination from a complete same-directory temp file
+// via link(2), not rename(2): a link never replaces what is already at dest, so
+// a symlink, FIFO or file that appeared after writeLive's Lstat fails it with
+// fs.ErrExist instead of being silently replaced. Readers still never see a
+// half-written file.
+func publishNew(dest string, content []byte, mode fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	content, err := os.ReadFile(src)
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if beforeNewPublish != nil {
+		beforeNewPublish(dest)
+	}
+	return os.Link(name, dest)
+}
+
+// refusedDest is a live destination the reconciler will not write through:
+// kind "symlink" (the kind of the static symlinked-component refusal) or
+// "write" for anything but a regular file. Nothing was written.
+type refusedDest struct {
+	kind, dest, why string
+}
+
+func (r *refusedDest) Error() string { return r.dest + " " + r.why + " — refused" }
+
+func notRegular(dest string, m fs.FileMode) error {
+	what := "not a regular file"
+	switch {
+	case m.IsDir():
+		what = "a directory, not a regular file"
+	case m&fs.ModeNamedPipe != 0:
+		what = "a named pipe, not a regular file"
+	case m&fs.ModeSocket != 0:
+		what = "a socket, not a regular file"
+	case m&fs.ModeDevice != 0:
+		what = "a device, not a regular file"
+	}
+	return &refusedDest{kind: "write", dest: dest, why: "is " + what}
+}
+
+// openRegular opens path's final component without following a symlink or
+// blocking on a FIFO (openNoFollow), then proves on the opened descriptor
+// that it is a regular file — a type swapped in after an earlier Lstat is
+// caught here, not written through. Parent components still resolve: the
+// sweep's canonical-destination check owns them, as it does for bash's
+// `install -D`.
+func openRegular(path string, flag int) (*os.File, error) {
+	f, err := openNoFollow(path, flag)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, notRegular(path, fi.Mode())
+	}
+	return f, nil
+}
+
+// readRegular is os.ReadFile through openRegular: a symlink is never read
+// through and a FIFO never blocks the caller.
+func readRegular(path string) ([]byte, error) {
+	f, err := openRegular(path, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// copyPreserve is `cp -p src dest` for the rollback snapshots. src (the live
+// file an nginx snapshot copies) is read through openRegular like every other
+// live read: a symlink or FIFO swapped in after the sweep's checks is refused,
+// never read through or blocked on.
+func copyPreserve(src, dest string) error {
+	f, err := openRegular(src, os.O_RDONLY)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	content, err := io.ReadAll(f)
 	if err != nil {
 		return err
 	}
@@ -135,10 +271,15 @@ func copyPreserve(src, dest string) error {
 	return writeLive(dest, content, fi.Mode().Perm())
 }
 
-// classifyWriteError turns a failed write into an Issue: EACCES/EPERM become
-// a `permission` issue naming the destination owner (the deploy-user gap),
-// everything else a plain `write` issue.
+// classifyWriteError turns a failed write into an Issue: a refused
+// destination keeps its own kind (`symlink`, like the static refusal), EACCES/
+// EPERM become a `permission` issue naming the destination owner (the
+// deploy-user gap), everything else a plain `write` issue.
 func classifyWriteError(rp, dest, ownerHint string, err error) Issue {
+	var refused *refusedDest
+	if errors.As(err, &refused) {
+		return Issue{Kind: refused.kind, Path: rp, Message: fmt.Sprintf("%s -> %s %s — refused", rp, dest, refused.why)}
+	}
 	if errors.Is(err, fs.ErrPermission) {
 		msg := fmt.Sprintf("%s -> %s (permission denied", rp, dest)
 		if owner := pathOwner(dest); owner != "" {

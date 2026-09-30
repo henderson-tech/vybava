@@ -37,6 +37,7 @@ const (
 	escapeWorkers    = "CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1"
 	escapeLocalStack = "CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1"
 	escapeMachineCap = "CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1"
+	escapeDesktopUI  = "CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1"
 	escapeProdMerge  = prodMergeEscapeVar + "=1"
 )
 
@@ -46,6 +47,7 @@ var Rules = []Rule{
 	{"browser:screenshot-dir", "browser", eventBrowser, "a browser screenshot written anywhere but .vitrinka/mcp/", escapeNone},
 	{"commit-secrets", "commit-secrets", eventBash, "git commit when any change it could take (staged, unstaged, or untracked with git add) holds key files, secret-shaped lines or private infra strings", escapeCommit},
 	{"context:budget-read", "context", eventBoth, "a read above the remaining context budget", escapeDump},
+	{"context:heavy-walk", "context", eventBash, "find/bfs (or fd -u/-I) descending into an unpruned node_modules, build cache or, above the repos, a nested .git", escapeNone},
 	{"context:heredoc-overwrite", "context", eventBash, "cat/tee heredoc over an existing file instead of Edit", escapeShellEdit},
 	{"context:inline-script-write", "context", eventBash, "an inline python/node script that writes files", escapeShellEdit},
 	{"context:locale-catalog", "context", eventBoth, "a raw read of a lok locale catalog; use lok get/grep/add", escapeDump},
@@ -65,11 +67,14 @@ var Rules = []Rule{
 	{"e2e:raw-png-read", "e2e", eventRead, "Read of a raw PNG under .e2e/; snap makes a JPEG first", escapeNone},
 	{"e2e:raw-screenshot", "e2e", eventBash, "raw xcrun simctl screenshot inside /e2e; use snap", escapeNone},
 	{"e2e:screencapture", "e2e", eventBash, "screencapture inside /e2e; use snap", escapeNone},
+	{"machine:desktop-ui-tests", "machine", eventBash, "xcodebuild/tuist test on this Mac not narrowed to non-UI bundles; XCUITest drives the real cursor and focus", escapeDesktopUI},
 	{"machine:dev-server-cap", "machine", eventBash, "a Metro/next/API dev server start while guards.devServerCap already run", escapeMachineCap},
 	{"machine:devbox-only", "machine", eventBash, "a command a repo's guards.devboxOnly routes to the Devbox ran locally", escapeLocalStack},
+	{"machine:devbox-ssh-exec", "machine", eventBash, "ssh <host> … docker (compose) exec into a devbox-… workspace container; use devbox run -- 'docker compose exec -T <svc> …'", escapeNone},
 	{"machine:devbox-workspace", "machine", eventBash, "a command a repo's guards.devboxWhenWorkspace routes to the Devbox ran locally in a checkout that has a workspace", escapeLocalStack},
 	{"machine:sim-cap", "machine", eventBash, "a simulator boot while guards.simCap simulators are already booted", escapeMachineCap},
 	{"machine:test-worker-cap", "machine", eventBash, "playwright/vitest/jest on this Mac with no worker cap or one above guards.testWorkerCap", escapeWorkers},
+	{"memo:ledger-hand-write", "memo", eventBash, "a shell write (redirect, tee, sed -i, cp/mv, rm) to a memo home's LEDGER.md, MEMORY.md or usage.jsonl; use memo add/render/touch", escapeNone},
 	{"plugincache:package-install", "plugincache", eventBash, "a package install targeting ~/.claude/plugins/cache", escapeNone},
 	{"prod-merge:merge", "prod-merge", eventBash, "gh pr merge / gh api merge or ref write / git push landing on a branch the repo's PROD_BRANCHES names", escapeProdMerge},
 	{"secrets:env-dump", "secrets", eventBash, "env/printenv/export with no name-only projection", escapeDangerous},

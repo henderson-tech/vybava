@@ -49,6 +49,9 @@ go run ./cmd/vybava doctor
 ```
 
 Run `go fmt ./...` after Go edits. Utilities are Go — never Python helpers.
+A package whose tests, or the code they drive, commit/merge/fetch/push in a
+`t.TempDir` repo calls `gittest.NoDaemons()` from its TestMain: git's detached
+auto maintenance otherwise writes into `.git` while the cleanup deletes it.
 
 Run verification remotely with `devbox run verify` using `devbox.yaml`. Its
 `repo` app holds the CLI test workspace open; its reserved port serves no UI.
@@ -96,19 +99,29 @@ builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract
 with claude-switcheroo (`src/arcade/contract.ts`), the beats JSON with its
-timesheet (`src/timesheet/contract.ts`). Beats (per-minute human/ai presence)
-backfill through a beats-only backlog read that never charges. Rules: `docs/tokentime.md`.
+timesheet (`src/timesheet/contract.ts`), the limits JSON with its Arcade
+accounts. Beats (per-minute human/ai presence) and Codex limit points backfill
+through their own backlog reads (`files.beats`, `files.points`) that never charge. Rules: `docs/tokentime.md`.
+
+`internal/readeff` measures agent navigation from the same transcripts,
+stateless: it scans on demand and keeps only counts and paths, never command
+text or output. Tool-call decoding (Claude `tool_use`/`toolUseResult`, Codex
+`exec` programs) lives in `internal/transcripts`, shell classification goes
+through `internal/shellseg`. A scan decodes on a few workers and folds one
+session at a time — never collect every session first (a week is several
+GB). Rules: `docs/readeff.md`.
 
 `internal/plaud` reads the Plaud account directly (PKCE login, vault-injected
 refresh token, cached access token only); the manual-only skill is
 `skills/plaud/`. `docs/plaud.md` has the auth model and the API map.
 
-`internal/vconfig` loads the shared per-repo `vybava.config.ts` (bun-evaluated, cached by mtime beside the git dir) or `vybava.config.json`; applets read their section through `Config.Section` with unknown fields rejected. The TypeScript helpers are embedded (`config-helpers.ts`) and drift-checked by `vybava config check`. `internal/lok` owns locale catalogs (order-preserving JSON, alphabetical inserts, per-locale parity); `internal/claudeguards` refuses raw reads of configured catalogs. `internal/configdiscover` proposes `guards.noRead` and `lok.catalogs` from the tracked tree and backs `config check`'s drift warnings; it lives outside `vconfig` to keep a `vconfig → lok → vconfig` cycle from forming, only ever fills sections absent from the config, and is advisory — tracked files only, so a gitignored generated tree is invisible to it. Docs: `docs/config.md`, `docs/lok.md`.
+`internal/vconfig` loads the shared per-repo `vybava.config.ts` (bun-evaluated, cached by content hash beside the git dir — never by size+mtime, which misses a same-size rewrite within one mtime tick) or `vybava.config.json`; applets read their section through `Config.Section` with unknown fields rejected. The TypeScript helpers are embedded (`config-helpers.ts`) and drift-checked by `vybava config check`. `internal/lok` owns locale catalogs (order-preserving JSON, alphabetical inserts, per-locale parity); `internal/claudeguards` refuses raw reads of configured catalogs. `internal/configdiscover` proposes `guards.noRead` and `lok.catalogs` from the tracked tree and backs `config check`'s drift warnings; it lives outside `vconfig` to keep a `vconfig → lok → vconfig` cycle from forming, only ever fills sections absent from the config, and is advisory — tracked files only, so a gitignored generated tree is invisible to it. Docs: `docs/config.md`, `docs/lok.md`.
 
-`internal/claudeguards/input.go` owns the ONE definition of "what commands does
-this string run" — `splitShell` (quote-aware), `trimAssignments`,
-`runnerPayloads`, reached through `segments()`. Every rule family goes through
-it; never re-derive segmentation locally. The 2026-09-14 field audit found five
+`internal/shellseg` owns the ONE definition of "what commands does this string
+run" — `Split` (quote-aware), `TrimAssignments`, `RunnerPayloads`, reached
+through `Segments()`. It is a dependency-free leaf: every claude-guards rule
+family, memo's hook and readeff's classifier go through it; never re-derive
+segmentation locally. The 2026-09-14 field audit found five
 rule families each doing their own, which let quoted text be scanned as
 commands in 18 of 25 rules and let a bare `FOO=1` prefix disarm 9 — hard bans
 included. Quoting asymmetry is load-bearing: single quotes suppress everything,
@@ -155,6 +168,8 @@ differs between Claude and Codex. `init` never overwrites run.json, a ledger or
 a copied script. `slot` and `uniq-shots.sh` are workarounds with named retirement
 conditions (`docs/readiness.md`).
 
+`internal/uiloop` is the `ui-loop` applet: it embeds the TypeScript/Playwright polish-loop harness (`internal/uiloop/harness/`) and syncs it verbatim into each repo's `<dir>/vendor` with a sha256 stamp; `check` fails on drift, so a harness change is made HERE and synced, never edited in a repo. The capture reads only `<pass>/run.json`, never the vybava binary, so it runs in a Devbox container that has just the repo. Run.json and the shot record are a Go↔TS contract (`run.go`/`record.go` ↔ `run.ts`/`capture.ts`): bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change. `BUILTIN_VIEWPORTS` and `LINT_RULES` are mirrored in Go and held equal by a test. The harness must keep the GPU launch flags and type-check under TS 5.3 strict in CJS and ESM packages. There is no skill: the vitrinka map / review-loop workflows drive the CLI. Rules: `docs/uiloop.md`.
+
 `internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
 state), install goes through the product's own channel, and credentials never
 pass through Výbava — guided steps run with a terminal or come back as `next`.
@@ -196,3 +211,9 @@ never a substring; an `always()`-style job behind guarded needs is an
 precedent; `pull_request_target` is outside the standard); repolicy's default policy carries the labels; `gitkit admin-labels` puts them on a PR and
 cancels the runs the push already queued; `merge-precheck` waives only the CI
 gate (`ciWaived`) for a `skip-ci` PR, which still needs `--admin` to land.
+
+`internal/blip` is the polish skill's chaos proxy (`docs/blip.md`): one daemon per
+name, http (path/method-scoped faults, `error`, `record`/`authz` replay) or raw
+tcp; ONE fault at a time behind an atomic pointer, `set` replaces it; every
+verb goes through the control socket, never the state file, and `authz`
+substitutes only the identity given by `--as` — it never guesses credentials.

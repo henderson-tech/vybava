@@ -48,6 +48,10 @@ type Manifest struct {
 	Mappings []Mapping `yaml:"mappings" json:"mappings"`
 	// AutoRollApps opt into `docker compose up -d` after a compose converge.
 	AutoRollApps []string `yaml:"auto_roll_apps,omitempty" json:"auto_roll_apps,omitempty"`
+	// RollNotes claim converged files `docker compose up -d` does not apply
+	// (bind-mounted DB config) and name their exact step instead of the
+	// generic ROLL MANUALLY — rollnotes.go.
+	RollNotes []RollNote `yaml:"roll_notes,omitempty" json:"roll_notes,omitempty"`
 
 	Hooks  Hooks       `yaml:"hooks,omitempty" json:"hooks"`
 	Alerts []Alert     `yaml:"alerts,omitempty" json:"alerts,omitempty"`
@@ -87,6 +91,11 @@ type NginxHook struct {
 	Workdir string   `yaml:"workdir,omitempty" json:"workdir,omitempty"`
 	Test    []string `yaml:"test,omitempty" json:"test,omitempty"`
 	Reload  []string `yaml:"reload,omitempty" json:"reload,omitempty"`
+	// CertsPresent probes a TLS vhost's certificates before it may move: the
+	// vhost's ssl_certificate / ssl_certificate_key paths are appended as
+	// arguments, exit 0 = every one exists where nginx will look (inside the
+	// proxy container). Absent = no certificate hold — certhold.go.
+	CertsPresent []string `yaml:"certs_present,omitempty" json:"certs_present,omitempty"`
 }
 
 // Alert is one digest channel; both keep their own dedup marker.
@@ -254,6 +263,11 @@ func (m *Manifest) Finalize(base string) error {
 		}
 		if *mp.RequireLiveDir && mp.Hook != HookCompose {
 			return fmt.Errorf("mappings[%d]: require_live_dir needs hook: compose", i)
+		}
+	}
+	for i, r := range m.RollNotes {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("roll_notes[%d]: %w", i, err)
 		}
 	}
 	return nil

@@ -83,7 +83,7 @@ placeholders and RFC 5737 IPs, never a real repo or host.
 `.claude.git.config.local` (gitignored) carries `DEFAULT_BRANCH`,
 `MERGE_POLICY`, `REQUIRED_BOT_REVIEWERS`, `AFTER_MERGE_CMD`,
 `BEFORE_REVIEW_CMD`, `GENERATED_PATHS` and the rest; the `prm` skill's
-`references/merge.md` documents every key.
+`references/config.md` documents every key.
 
 ### `PR_EXTENSIONS` — a repo's own steps inside prm
 

@@ -49,7 +49,7 @@ const (
 
 var (
 	reBadFile    = regexp.MustCompile(`(^|/)(id_rsa|id_ed25519|id_ecdsa|id_dsa)[^/]*$|\.(pem|key|p12|pfx|crt|cer|der|jks|keystore|ppk|kubeconfig)$|(^|/)\.env(\..*)?$|(^|/)(\.netrc|known_hosts|authorized_keys)$`)
-	reEnvExample = regexp.MustCompile(`\.env\.example$`)
+	reEnvExample = regexp.MustCompile(`(^|/)\.env(\.[^/]+)?\.(example|sample|template|dist)$`) // env templates, per stage too (apps/api/.env.e2e.example); content is still scanned
 
 	reIPv4 = regexp.MustCompile(`\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b`)
 	// Also never routable: the RFC 5737 documentation nets fixtures are meant to use.

@@ -278,13 +278,14 @@ var boxPage = template.Must(template.New("box").Funcs(pageFuncs).Parse(`<!doctyp
 · <a href="/status.json">status.json</a></p>
 {{if .Errors}}<h2>Errors ({{len .Errors}})</h2><table>{{range .Errors}}<tr><td><span class="pill errors">{{.Kind}}</span></td><td>{{.Message}}</td></tr>{{end}}</table>{{end}}
 {{if .Held}}<h2>HELD — hand-edited live, never overwritten ({{len .Held}})</h2><table>{{range .Held}}<tr><td><code>{{.}}</code></td><td><a href="/diff?path={{.}}">diff</a></td></tr>{{end}}</table>{{end}}
+{{if .CertHeld}}<h2>HELD — TLS vhost, certificate missing on this box: issue it, the next tick lands it ({{len .CertHeld}})</h2><table>{{range .CertHeld}}<tr><td><code>{{.}}</code></td><td><a href="/diff?path={{.}}">diff</a></td></tr>{{end}}</table>{{end}}
 {{if .Pending}}<h2>Pending ({{len .Pending}})</h2><table>{{range .Pending}}<tr><td><code>{{.}}</code></td></tr>{{end}}</table>{{end}}
 {{if .SkippedApps}}<h2>Repo apps with no live dir</h2><p class="muted">{{range .SkippedApps}}<code>{{.}}</code> {{end}}</p>{{end}}
 <h2>History</h2>
 <table><tr><th>when</th><th>action</th><th>commit</th><th>mode</th><th>result</th><th>detail</th></tr>
 {{range .History}}<tr><td>{{.Time.Format "01-02 15:04:05"}}</td><td>{{.Action}}{{if .Path}} <code>{{.Path}}</code>{{end}}</td><td><code>{{short .Commit}}</code></td><td>{{.Mode}}</td>
 <td>{{if .OK}}<span class="pill in-sync">ok</span>{{else}}<span class="pill errors">failed</span>{{end}}</td>
-<td class="muted">{{if .Applied}}applied {{len .Applied}} {{end}}{{if .Pending}}pending {{len .Pending}} {{end}}{{if .Held}}held {{len .Held}} {{end}}{{if .Errors}}errors {{len .Errors}} {{end}}{{if .RollNotes}}roll: {{range .RollNotes}}{{.}} {{end}}{{end}}</td></tr>{{end}}
+<td class="muted">{{if .Applied}}applied {{len .Applied}} {{end}}{{if .Pending}}pending {{len .Pending}} {{end}}{{if .Held}}held {{len .Held}} {{end}}{{if .CertHeld}}tls-held {{len .CertHeld}} {{end}}{{if .Errors}}errors {{len .Errors}} {{end}}{{if .RollNotes}}roll: {{range .RollNotes}}{{.}} {{end}}{{end}}{{range .RollSteps}}<br><strong>{{.}}</strong>{{end}}</td></tr>{{end}}
 </table>`))
 
 var hubPage = template.Must(template.New("hub").Funcs(pageFuncs).Parse(`<!doctype html><meta charset="utf-8">
@@ -295,7 +296,7 @@ var hubPage = template.Must(template.New("hub").Funcs(pageFuncs).Parse(`<!doctyp
 {{if .Report}}<td><span class="pill {{.Report.Sync}}">{{.Report.Sync}}</span>{{if .Report.Pin}} <span class="pill held">pinned</span>{{end}}{{if .Report.VersionMismatch}} <span class="pill errors">version</span>{{end}}</td>
 <td>{{.Report.Mode}}</td><td><code>{{short .Report.Commit}}</code></td><td><code>{{if .Report.LastGood}}{{short .Report.LastGood}}{{else}}—{{end}}</code></td>
 <td>{{if .Report.LastTick}}{{since .Report.LastTick.Time}}{{if not .Report.LastTick.OK}} <span class="pill errors">failed</span>{{end}}{{else}}never{{end}}</td>
-<td>{{len .Report.Pending}}</td><td>{{len .Report.Held}}</td><td>{{len .Report.Errors}}</td>
+<td>{{len .Report.Pending}}</td><td>{{len .Report.Held}}{{if .Report.CertHeld}} <span class="muted">+{{len .Report.CertHeld}} tls</span>{{end}}</td><td>{{len .Report.Errors}}</td>
 {{else}}<td><span class="pill unknown">unreachable</span></td><td colspan="7" class="muted">{{.Error}}</td>{{end}}
 <td><a href="{{.URL}}">open</a> <span class="muted">{{.Latency}}</span></td></tr>{{end}}
 </table>`))

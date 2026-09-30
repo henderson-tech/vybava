@@ -95,6 +95,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "hotfix" {
 		return rt.hotfixApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "blip" {
+		return rt.blipApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "codexsync" {
 		return rt.codexsyncApplet(), nil
 	}
@@ -103,6 +106,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	}
 	if filepath.Base(invokedAs) == "tokentime" {
 		return rt.tokentimeApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "readeff" {
+		return rt.readeffApplet(), nil
 	}
 	if filepath.Base(invokedAs) == "worktime" {
 		return rt.worktimeApplet(), nil
@@ -155,6 +161,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "posta" {
 		return rt.postaApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "onyx-rest" {
+		return rt.onyxRestApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "vpn" {
 		return rt.vpnApplet(), nil
 	}
@@ -169,6 +178,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	}
 	if filepath.Base(invokedAs) == "readiness" {
 		return rt.readinessApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "ui-loop" {
+		return rt.uiLoopApplet(), nil
 	}
 
 	root := &cobra.Command{
@@ -196,10 +208,13 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.pressCommand("press"),
 		rt.ingressgenCommand("ingressgen"),
 		rt.hotfixCommand("hotfix"),
+		rt.blipCommand("blip"),
 		rt.readinessCommand("readiness"),
+		rt.uiLoopCommand("ui-loop"),
 		rt.codexsyncCommand("codexsync"),
 		rt.codexusageCommand("codexusage"),
 		rt.tokentimeCommand("tokentime"),
+		rt.readeffCommand("readeff"),
 		rt.worktimeCommand("worktime"),
 		rt.reconcileCommand("reconcile"),
 		rt.menubarCommand("menubar-doctor"),
@@ -220,6 +235,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.mergeAssistCommand("merge-assist"),
 		rt.memoCommand("memo"),
 		rt.postaCommand("posta"),
+		rt.onyxRestCommand("onyx-rest"),
 		rt.repolicyCommand("repolicy"),
 		rt.vpnCommand(),
 		rt.configCommand(),

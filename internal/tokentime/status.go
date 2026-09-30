@@ -14,12 +14,15 @@ type Status struct {
 	CodexDir     string `json:"codexDir"`
 	LastIndexAt  string `json:"lastIndexAt"`
 	PendingBytes int64  `json:"pendingBytes"`
-	Files        int64  `json:"files"`
-	Projects     int64  `json:"projects"`
-	Sessions     int64  `json:"sessions"`
-	Buckets      int64  `json:"buckets"`
-	Responses    int64  `json:"responses"`
-	DBBytes      int64  `json:"dbBytes"`
+	// BeatsPendingBytes and PointsPendingBytes are the backlogs the last pass left.
+	BeatsPendingBytes  int64 `json:"beatsPendingBytes"`
+	PointsPendingBytes int64 `json:"pointsPendingBytes"`
+	Files              int64 `json:"files"`
+	Projects           int64 `json:"projects"`
+	Sessions           int64 `json:"sessions"`
+	Buckets            int64 `json:"buckets"`
+	Responses          int64 `json:"responses"`
+	DBBytes            int64 `json:"dbBytes"`
 }
 
 // Status reads the index bookkeeping without touching any transcript. A store
@@ -41,6 +44,12 @@ func (s *Store) Status() (Status, error) {
 		return st, err
 	}
 	st.PendingBytes, _ = strconv.ParseInt(pending, 10, 64)
+	for key, dst := range map[string]*int64{"beats_pending_bytes": &st.BeatsPendingBytes, "points_pending_bytes": &st.PointsPendingBytes} {
+		if pending, err = meta(tx, key); err != nil {
+			return st, err
+		}
+		*dst, _ = strconv.ParseInt(pending, 10, 64)
+	}
 	for _, q := range []struct {
 		sql string
 		dst *int64

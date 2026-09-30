@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -15,7 +17,7 @@ import (
 //   - Read: block reading raw PNGs under .e2e/ — huge, context-hostile.
 // ---------------------------------------------------------------------------
 
-// The `xcrun` and `screencapture` words are identified by commandWord (see
+// The `xcrun` and `screencapture` words are identified by shellseg.CommandWord (see
 // e2eScreenshotMatch), so these only have to recognise the rest of the argv.
 var reRawSimShot = regexp.MustCompile(`simctl[[:space:]]+io[[:space:]][^|;&]*screenshot`)
 
@@ -23,16 +25,16 @@ var reRawSimShot = regexp.MustCompile(`simctl[[:space:]]+io[[:space:]][^|;&]*scr
 // unit-testable. Matching runs per segment of the command, skipping segments
 // that merely mention text, so a quoted mention (an echoed warning, a commit
 // message, `grep -rn screencapture`) cannot fire a rule, and a leading `FOO=1`
-// cannot disarm one: commandWord sees through environment assignments.
+// cannot disarm one: shellseg.CommandWord sees through environment assignments.
 func e2eScreenshotMatch(cmd string) string {
 	// The downsizing exemptions are pipeline-wide: `… screenshot - | sips -Z`
 	// puts sips in a later segment, and it still makes the shot cheap.
 	exempt := strings.Contains(cmd, "sips -Z") || strings.Contains(cmd, "snap ")
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}
-		switch commandWord(seg) {
+		switch shellseg.CommandWord(seg) {
 		case "xcrun":
 			if !exempt && reRawSimShot.MatchString(seg) {
 				return "raw-screenshot"

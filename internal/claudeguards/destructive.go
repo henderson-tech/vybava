@@ -3,6 +3,8 @@ package claudeguards
 import (
 	"regexp"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -226,7 +228,7 @@ func destructiveMatch(cmd, cwd string) *destructiveRule {
 		!strings.Contains(cmd, "docker") && !strings.Contains(cmd, "security") {
 		return nil
 	}
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}

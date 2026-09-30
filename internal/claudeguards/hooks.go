@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,6 +57,13 @@ var Hooks = []HookWiring{
 	{Event: "SessionEnd", Command: hookBin + " reap", Timeout: 20},
 	// Last, and the longest budget: a multi-hundred-MB session takes seconds.
 	{Event: "SessionEnd", Command: hookBin + " redact-session", Timeout: 60},
+}
+
+// CodexHooks is the wiring claude-guards keeps in Codex's hooks.json, which
+// has settings.json's `hooks` shape. The matcher names both spellings of
+// Codex's shell tool, as memo's Codex hook does.
+var CodexHooks = []HookWiring{
+	{Event: "PreToolUse", Matcher: "Bash|shell", Command: hookBin + " codex", Timeout: 10},
 }
 
 // retiredHook is a wiring an older manifest installed and the verb of the
@@ -115,7 +123,7 @@ func MissingHooks(settingsPath string) ([]HookWiring, error) {
 	if err != nil {
 		return nil, err
 	}
-	return missingHooks(groups), nil
+	return missingHooks(groups, Hooks), nil
 }
 
 func readSettings(path string) (map[string]json.RawMessage, map[string][]hookGroup, error) {
@@ -136,9 +144,9 @@ func readSettings(path string) (map[string]json.RawMessage, map[string][]hookGro
 	return top, groups, nil
 }
 
-func missingHooks(groups map[string][]hookGroup) []HookWiring {
+func missingHooks(groups map[string][]hookGroup, manifest []HookWiring) []HookWiring {
 	var out []HookWiring
-	for _, w := range Hooks {
+	for _, w := range manifest {
 		if !hookPresent(groups, w) {
 			out = append(out, w)
 		}
@@ -179,7 +187,7 @@ func Doctor(settingsPath string, fix bool, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "claude-guards doctor: cannot check hooks: %v\n", err)
 		return nil
 	}
-	missing, retired := missingHooks(groups), retiredWired(groups)
+	missing, retired := missingHooks(groups, Hooks), retiredWired(groups)
 	if len(missing) == 0 && len(retired) == 0 {
 		return nil
 	}
@@ -244,6 +252,75 @@ func Doctor(settingsPath string, fix bool, stdout, stderr io.Writer) error {
 		}
 	}
 	fmt.Fprintf(stdout, "   settings.json is git-tracked: review with `git -C %s diff settings.json`\n", filepath.Dir(settingsPath))
+	return nil
+}
+
+// DefaultCodexHooksPath is $CODEX_HOME/hooks.json (~/.codex by default), or
+// "" when that Codex home does not exist.
+func DefaultCodexHooksPath() string {
+	dir := os.Getenv("CODEX_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".codex")
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return filepath.Join(dir, "hooks.json")
+}
+
+// DoctorCodex holds Codex's hooks.json to CodexHooks with Doctor's contract:
+// never fails the session, reports to stdout, inserts only with fix. A
+// symlinked hooks.json (switcheroo's per-account Codex homes all link to
+// ~/.codex/hooks.json) is rewritten at its target, so the link survives. New
+// groups are appended: Codex keys each hook's trust by its position, so no
+// existing hook moves, and it asks to trust the new one before running it.
+func DoctorCodex(path string, fix bool, stdout, stderr io.Writer) error {
+	if path == "" {
+		if path = DefaultCodexHooksPath(); path == "" {
+			return nil
+		}
+	}
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	} else if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		// A dangling link: writing here would replace the link with a file.
+		fmt.Fprintf(stderr, "claude-guards doctor: cannot check Codex hooks: %s is a symlink to a missing file\n", path)
+		return nil
+	}
+	top, groups, err := readSettings(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		top, groups, err = map[string]json.RawMessage{}, map[string][]hookGroup{}, nil
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "claude-guards doctor: cannot check Codex hooks: %v\n", err)
+		return nil
+	}
+	missing := missingHooks(groups, CodexHooks)
+	if len(missing) == 0 {
+		return nil
+	}
+	if !fix {
+		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — Codex sessions run unguarded. Fix: claude-guards doctor --fix\n", len(missing), path)
+		for _, w := range missing {
+			fmt.Fprintf(stdout, "   %s\n", w.describe())
+		}
+		return nil
+	}
+	for _, w := range missing {
+		groups[w.Event] = insertHook(groups[w.Event], w)
+	}
+	if err := writeSettings(path, top, groups); err != nil {
+		fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s and the fix failed: %v\n", len(missing), path, err)
+		return nil
+	}
+	fmt.Fprintf(stdout, "ℹ️ claude-guards: wired %d hook(s) into %s; Codex asks to trust a new hook on its next start:\n", len(missing), path)
+	for _, w := range missing {
+		fmt.Fprintf(stdout, "   %s\n", w.describe())
+	}
 	return nil
 }
 
@@ -338,9 +415,28 @@ func writeSettings(path string, top map[string]json.RawMessage, groups map[strin
 		b.WriteString("\n")
 	}
 	b.WriteString("}\n")
+	// The rewrite keeps the file's own mode: a private (0600) hooks file must
+	// not come back world-readable.
+	mode, existed := fs.FileMode(0o644), false
+	if fi, err := os.Stat(path); err == nil {
+		mode, existed = fi.Mode().Perm(), true
+	}
 	tmp := path + ".claude-guards.tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	// WriteFile keeps an existing file's mode: a temp file a failed run left
+	// behind must not decide this one's.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
+	}
+	if err := os.WriteFile(tmp, []byte(b.String()), mode); err != nil {
+		return err
+	}
+	// WriteFile's mode passes through the umask, which a new file keeps; a
+	// file that existed keeps exactly the bits it had.
+	if existed {
+		if err := os.Chmod(tmp, mode); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

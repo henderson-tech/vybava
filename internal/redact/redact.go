@@ -34,6 +34,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -374,9 +375,11 @@ func applyPatches(f *File, patches []patch) {
 		return
 	}
 	sort.Slice(patches, func(i, j int) bool { return patches[i].off < patches[j].off })
-	cur := make([]byte, 0, 256)
+	var cur []byte
 	for _, p := range patches {
-		cur = cur[:len(p.orig)]
+		// A span has no length bound (a PEM block is kilobytes): grow to hold
+		// all of it, so the compare covers every byte the write replaces.
+		cur = slices.Grow(cur[:0], len(p.orig))[:len(p.orig)]
 		if _, err := fh.ReadAt(cur, p.off); err != nil || !bytes.Equal(cur, p.orig) {
 			f.Changed++
 			continue

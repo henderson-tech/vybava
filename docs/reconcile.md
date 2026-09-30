@@ -32,9 +32,11 @@ root). Unknown subcommands are rejected, never run.
 | repo app dir with no `<apps_root>/<app>` on the box | skipped — never materializes a new stack |
 | committed symlink, symlinked destination component, write escaping the app dir | refused with a classified error |
 | nginx conf converged | `nginx -t` via the manifest hook; reload only on pass; **transactional** — every nginx file the tick touched is restored (and its applied record re-pointed) when the test or any copy fails |
+| TLS vhost whose certificate is not on the box yet (`certs_present` probe fails) | **HELD (TLS vhost)** — only that vhost stays unmoved, every other file lands; the tick after the issue lands it (below) |
 | compose file converged | file only + `ROLL MANUALLY: <app>`; `auto_roll_apps` opt-in runs `docker compose up -d` |
+| bind-mounted config converged (a `roll_notes` arm claims it: `postgresql.conf`, `pg_hba.conf`, `pgbouncer.ini`) | its exact step instead of `ROLL MANUALLY` — the `restart` text for a restart-only setting, `reload` otherwise, nothing for a comment-only edit (below) |
 | write refused (EACCES) | `permission` error naming the destination owner, the running user and the mapping's `owner` hint |
-| existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename |
+| existing live file converged | rewritten **in place on the same inode** — a container bind-mounting that single file (`./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini`) sees the new content; a temp + rename swap would leave the mount on the old inode. New files land via temp + rename. The rewrite never goes through the final component: a symlink there — also one swapped in after the canonical check (`O_NOFOLLOW` open) — is a `symlink` error, a FIFO, directory, socket or device (fstat of the opened descriptor) a `write` error, both `{kind, path: <repo path>}` under `.errors`, nothing written; a FIFO never blocks the sweep's reads (`O_NONBLOCK`) |
 | mode = `report` (default) | computes + alerts everything, changes **nothing** on disk |
 
 `run`, `force` and `rollback` serialize behind one flock-style lock
@@ -80,7 +82,14 @@ hooks:
     workdir: /opt/nginx-proxy
     test:   [docker, compose, exec, -T, nginx, nginx, -t]
     reload: [docker, compose, exec, -T, nginx, nginx, -s, reload]
+    # optional TLS certificate hold: the vhost's cert paths are appended
+    certs_present: [docker, compose, exec, -T, nginx, sh, -c, 'for p; do [ -e "$p" ] || exit 1; done', sh]
   compose: [docker, compose, up, -d]    # auto-roll command, run inside <apps_root>/<app>
+roll_notes:                             # ordered arms, first match wins (see "Roll notes")
+  - match: [apps/fixit-prod/postgresql.conf]
+    grammar: postgresql                 # postgresql | pgbouncer | raw
+    restart: "RESTART REQUIRED: fixit-prod postgres ({params}) — use /opt/scripts/pg-safe-restart.sh fixit-prod"
+    reload: "RELOAD postgres: docker kill -s HUP fixit-prod-postgres"
 alerts:
   - type: telegram                      # sources `lib` and calls notify_telegram
     lib: /opt/scripts/lib/telegram-notify.sh
@@ -100,9 +109,77 @@ telegram library / eve config means "channel off", not "failure".
 `EVE_MONITOR_CURL_OPTS` from the bash config is not supported and is logged as
 ignored.
 
+## TLS certificate hold
+
+A TLS vhost merged before its certificate is issued fails `nginx -t` for the
+whole proxy — and the nginx transaction would then roll back every conf file
+the tick touched, unrelated vhosts included, every tick until the issue
+(2026-09-14 `semafor.dev`, 2026-09-24 `reservine-sk`). Port of the bash twins'
+`nginx_certs_present`: before an nginx-hook file moves (new, changed or
+hand-edited — an in-sync vhost is never probed), its `ssl_certificate` /
+`ssl_certificate_key` paths are read from the repo copy with bash's exact rule
+(`sed -nE 's/^[[:space:]]*ssl_certificate(_key)?[[:space:]]+([^;[:space:]]+)[[:space:]]*;.*/\2/p'`:
+one literal path per directive line — no include is followed, no variable is
+expanded) and `hooks.nginx.certs_present` runs in `hooks.nginx.workdir` with
+them appended. The probe runs inside the proxy container because nginx
+resolves the paths there and the host copy is root 0700 on devulinka. A vhost
+naming no certificate always moves; any probe failure holds (one that is more
+than a silent exit 1 is logged on stderr). Each probe has a 3s deadline plus a
+1s grace for pipes still held after it ends — at most 4s, under the hub's 5s
+poll (`Engine.CertProbeTimeout`; expiry kills its process group, holds the vhost and
+logs it; on unix a probe that exits but leaves a child running counts as expired
+and the child is killed), and once one expires the rest of that sweep holds every later TLS
+vhost unprobed, so a hung `docker compose exec` costs a tick, `status` or the
+page one deadline, never one per vhost. No `certs_present` = no hold
+(webulinka's bash has none).
+
+A held vhost is logged exactly like bash —
+`HELD (TLS vhost, certificate missing on this box — issue it first) (N): …` —
+joins the digest (and alerts) under "HELD (TLS vhost without its certificate —
+issue it, next tick lands it)", and lands in `cert_held` (`--json`, `status
+--json`, `history.jsonl`, the page) plus `infra_reconcile_cert_held`; it is
+never in `pending` or `held` and never an error. Report mode and `status`
+probe too, so the parity script's `pending` / `held` sets stay comparable with
+bash's (which also leaves the vhost out of both). `force` does not probe: its
+own `nginx -t` gate restores the previous state.
+
 The three real box manifests (ported from each repo's `map-paths.sh`) live in
 `internal/reconcile/testdata/manifests/{produlinka,devulinka,webulinka}.yaml`
 with a contract test each; the infra repos adopt them in their own PRs.
+
+## Roll notes
+
+`postgresql.conf`, `pg_hba.conf` and `pgbouncer.ini` are single-file bind
+mounts: `docker compose up -d` (the generic `ROLL MANUALLY` step) applies none
+of them — only a HUP or a restart does. On 2026-09-27 a
+`shared_preload_libraries` change got the generic line, a bare
+`docker compose restart postgres` followed, and PgBouncer's cached login
+failure stalled FixIt for 15 s. A `roll_notes` arm claims such a file and
+prints its exact step instead, classified from the live → repo diff before the
+rewrite (port of produlinka-infra `roll-notes.sh` + `map-paths.sh` `roll_note`):
+
+| `grammar` | reads the file as | `restart` when a changed setting is |
+|---|---|---|
+| `postgresql` | guc-file.l: `#` comments anywhere outside a quoted value, case-insensitive keys | postmaster-context (PostgreSQL 16 list + `pg_stat_statements.max`) |
+| `pgbouncer` | libusual cfparser: only a line starting with `#` / `;` is a comment (`#` inside a value is data), `* = …` and quoted keys, `[section]` scoped | a `[pgbouncer]` setting RELOAD ignores (1.25 `CF_NO_RELOAD`) |
+| `raw` | no settings — any converge | never: always `reload` |
+
+`{params}` in `restart` is the changed restart-only settings, sorted. A line
+the grammar cannot parse counts as a change on its own, so a real edit never
+passes as comment-only; a comment-only edit prints nothing and the file stays
+claimed. Two edge cases are stricter than `roll-notes.sh`: a quoted
+postgresql value ends at its closing quote (a quote in a trailing comment never
+extends it), and a quoted pgbouncer key (`'…'`, or `"…"` with `""` escapes) is
+unquoted before classifying. A claimed file drops its app from
+`ROLL MANUALLY` only when every file the tick converged for that app is
+claimed. Steps print one log line each
+(after the `ROLL MANUALLY` line), join the digest under "Config converged that
+`docker compose up -d` does not apply — run the step:", and land in
+`roll_steps` (`--json`, `history.jsonl`, the page's history). `force` prints a
+claimed file's step as `force: <step>`. The report-mode sweep (`status`, the
+parity script's input) computes none: pending / HELD / errors are unchanged.
+The parameter lists are per server major version — regenerate them on an
+upgrade (`SELECT name FROM pg_settings WHERE context = 'postmaster'`).
 
 ## State directory
 
@@ -142,6 +219,7 @@ Written atomically to `metrics_file` on every `run`/`rollback` tick:
 infra_reconcile_last_tick_timestamp <unix>
 infra_reconcile_pending <n>
 infra_reconcile_held <n>
+infra_reconcile_cert_held <n>           # TLS vhosts waiting for their certificate
 infra_reconcile_errors <n>              # errors + failed hooks
 infra_reconcile_mode_info{mode="report"} 1
 infra_reconcile_last_good_commit_info{sha="…"} 1

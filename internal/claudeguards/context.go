@@ -2,13 +2,18 @@ package claudeguards
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -127,7 +132,6 @@ func linesLabel(n int) string {
 }
 
 // lineCount counts newlines in a regular file; (0, false) when it is not one.
-// Reads at most 4 MiB — anything past that is over budget regardless.
 func lineCount(abs string) (int, bool) {
 	st, err := os.Stat(abs)
 	if err != nil || !st.Mode().IsRegular() {
@@ -138,6 +142,39 @@ func lineCount(abs string) (int, bool) {
 		return 0, false
 	}
 	defer f.Close()
+	return countLines(f)
+}
+
+// blobLines counts the lines `git show <spec>` prints for a <rev>:<path>
+// spec: the blob as it is at that revision, which the working tree may not
+// even hold. (0, false) when git cannot resolve it — a tree, a typo — which
+// passes, as a missing file does for cat. Bounded at 2 s so a partial clone
+// fetching the blob can never hang the hook. repo carries the command's own
+// --git-dir/--work-tree/--namespace, so the blob comes from the same repository.
+func blobLines(dir string, repo []string, spec string) (int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	args := append(append([]string{"-C", dir}, repo...), "cat-file", "blob", spec)
+	c := exec.CommandContext(ctx, "git", args...)
+	out, err := c.StdoutPipe()
+	if err != nil || c.Start() != nil {
+		return 0, false
+	}
+	n, ok := countLines(out)
+	if n >= unboundedLines {
+		_ = c.Process.Kill() // past 4 MiB: over budget whatever the rest holds
+		_ = c.Wait()
+		return n, true
+	}
+	if err := c.Wait(); err != nil || !ok {
+		return 0, false
+	}
+	return n, true
+}
+
+// countLines counts newlines in r. Reads at most 4 MiB — anything past that
+// is over budget regardless.
+func countLines(f io.Reader) (int, bool) {
 	n := 0
 	last := byte('\n')
 	buf := make([]byte, 64<<10)
@@ -165,40 +202,6 @@ func lineCount(abs string) (int, bool) {
 	return n, true
 }
 
-// shellFields splits a segment on whitespace, honouring single and double
-// quotes (kept out of the field). Good enough for argv-shaped commands.
-func shellFields(s string) []string {
-	var out []string
-	var cur strings.Builder
-	inField, q := false, byte(0)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case q != 0:
-			if c == q {
-				q = 0
-			} else {
-				cur.WriteByte(c)
-			}
-		case c == '\'' || c == '"':
-			q, inField = c, true
-		case c == ' ' || c == '\t' || c == '\r':
-			if inField {
-				out = append(out, cur.String())
-				cur.Reset()
-				inField = false
-			}
-		default:
-			cur.WriteByte(c)
-			inField = true
-		}
-	}
-	if inField {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
 // dumpSegment is one shell segment plus whether its stdout goes somewhere
 // other than the tool result (a pipe into the next segment, or a redirect).
 type dumpSegment struct {
@@ -206,7 +209,7 @@ type dumpSegment struct {
 	consumed bool
 }
 
-// dumpSegments splits like segments() but remembers when a segment's output
+// dumpSegments splits like shellseg.Segments() but remembers when a segment's output
 // is consumed by a pipe. `cat f | grep x` never reaches context; `cat f` does.
 // reducingSinks shrink what a pipe delivers, so a read feeding one never
 // reaches context whole. `cat`, `tee`, `less` and `more` reproduce their input
@@ -261,7 +264,7 @@ func inlineProgramSink(name string, args []string) bool {
 // to within budget. head and tail are sinks only when their own limit says so:
 // `head -1000` and `tail -n +1` are reducing in name alone.
 func reducesOutput(seg string, budget int) bool {
-	f := shellFields(strings.TrimLeft(seg, "( \t"))
+	f := shellseg.Fields(strings.TrimLeft(seg, "( \t"))
 	for len(f) > 0 && strings.Contains(f[0], "=") {
 		f = f[1:]
 	}
@@ -376,16 +379,16 @@ func dumpSegments(cmd string, budget int) []dumpSegment {
 	// separator inside a grep pattern or a commit message is not read as a
 	// pipeline here either. sep carries the separator that FOLLOWS a segment,
 	// which is what the pipe walk below needs.
-	parts := shellSegments(cmd)
+	parts := shellseg.SplitScript(cmd)
 	texts := make([]string, len(parts))
 	piped := make([]bool, len(parts))
 	for i, p := range parts {
-		texts[i], piped[i] = p.text, p.sep == "|"
+		texts[i], piped[i] = p.Text, p.Sep == "|"
 	}
 
 	var out []dumpSegment
 	for i, raw := range texts {
-		s := trimAssignments(trimSubshell(strings.Trim(raw, " \t\r")))
+		s := shellseg.TrimAssignments(shellseg.TrimSubshell(strings.Trim(raw, " \t\r")))
 		if s == "" {
 			continue
 		}
@@ -433,8 +436,9 @@ func dumpBudget(seg, cwd string, cfg Config) (verdict dumpVerdict, file string, 
 }
 
 func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpVerdict, file string, lines, total int) {
-	fields := shellFields(seg)
-	if len(fields) == 0 || !dumpCommands[fields[0]] {
+	fields := shellseg.Fields(seg)
+	gitDir, gitRepo, blobs := gitShowBlobs(fields, cwd)
+	if blobs == nil && (len(fields) == 0 || !dumpCommands[fields[0]]) {
 		return dumpOK, "", 0, 0
 	}
 	limit := -1 // -1 = whole file
@@ -499,6 +503,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 				paths = append(paths, a)
 			}
 		}
+	case "git": // `git show <rev>:<path>`: its blobs were gathered above
 	default: // cat, less, more, bat
 		for _, a := range args {
 			if !strings.HasPrefix(a, "-") {
@@ -534,6 +539,38 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 	if windowed && budget == maxDumpLines {
 		allowance = budget + 1
 	}
+	charge := func(name string, n int) {
+		printed := n
+		if limit >= 0 && limit < n {
+			printed = limit
+		}
+		total += printed
+		if total > unboundedLines {
+			total = unboundedLines // saturate: several unmeasured files must not wrap
+		}
+		if total > allowance && file == "" {
+			file, lines = name, n
+		}
+	}
+	for _, spec := range blobs {
+		if abs := blobPath(spec, gitDir, gitRepo); abs != "" {
+			if cfg.noRead(abs) {
+				return dumpNoRead, abs, 0, 0
+			}
+			if isTranscript(abs) {
+				return dumpTranscript, abs, 0, 0
+			}
+			if isLokCatalog(abs, cfg) {
+				return dumpCatalog, abs, 0, 0
+			}
+		}
+		if total > allowance {
+			continue // already denied: no more git spawns, only the rules above
+		}
+		if n, ok := blobLines(gitDir, gitRepo, spec); ok {
+			charge(spec, n)
+		}
+	}
 	for _, p := range paths {
 		abs := resolvePath(p, cwd)
 		if cfg.noRead(abs) {
@@ -545,20 +582,8 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 		if isLokCatalog(abs, cfg) {
 			return dumpCatalog, abs, 0, 0
 		}
-		n, ok := lineCount(abs)
-		if !ok {
-			continue
-		}
-		printed := n
-		if limit >= 0 && limit < n {
-			printed = limit
-		}
-		total += printed
-		if total > unboundedLines {
-			total = unboundedLines // saturate: several unmeasured files must not wrap
-		}
-		if total > allowance && file == "" {
-			file, lines = abs, n
+		if n, ok := lineCount(abs); ok {
+			charge(abs, n)
 		}
 	}
 	if total > allowance {
@@ -574,7 +599,7 @@ func dumpBudgetWithLimit(seg, cwd string, cfg Config, budget int) (verdict dumpV
 // the next attempt from missing the same way. Anything further over budget is
 // a genuinely different read and gets no hint.
 func sedWindowHint(seg string, budget int) string {
-	f := shellFields(seg)
+	f := shellseg.Fields(seg)
 	if len(f) == 0 || f[0] != "sed" {
 		return ""
 	}

@@ -8,13 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/henderson-tech/vybava/internal/gittest"
 	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // TestMain keeps every test from spawning the detached visibility refresh: it
-// re-executes os.Executable(), which under `go test` is the test binary.
+// re-executes os.Executable(), which under `go test` is the test binary. The
+// git the fixtures commit with must not leave auto maintenance running either
+// (see gittest).
 func TestMain(m *testing.M) {
 	spawnVisibilityRefresh = func(string, string) {}
+	gittest.NoDaemons()
 	os.Exit(m.Run())
 }
 
@@ -23,9 +27,10 @@ func TestBadFilePatterns(t *testing.T) {
 		"id_rsa", "keys/id_ed25519.bak", "cert.pem", "server.key", "app.p12",
 		"deploy.pfx", "site.crt", "ca.cer", "x.der", "release.jks", "app.keystore",
 		"putty.ppk", "cluster.kubeconfig", ".env", ".env.local", "api/.netrc",
-		"ssh/known_hosts", "ssh/authorized_keys",
+		"ssh/known_hosts", "ssh/authorized_keys", ".env.example.local",
 	}
-	pass := []string{".env.example", "src/main.go", "docs/keys.md", "monkey.ts", "envelope.env.example"}
+	pass := []string{".env.example", "src/main.go", "docs/keys.md", "monkey.ts", "envelope.env.example",
+		"apps/api/.env.e2e.example", ".env.sample", ".env.local.template", "web/.env.dist"}
 	for _, f := range block {
 		if !reBadFile.MatchString(f) || reEnvExample.MatchString(f) {
 			t.Errorf("should block staged file %q", f)

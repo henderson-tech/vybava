@@ -22,7 +22,7 @@ items:
   - id: claude-guards
     kind: applet
     status: experimental
-    description: PreToolUse guard hooks for Claude Code — block destructive git/docker calls, secret and environment dumps, host-input automation, commit-time secrets, whole-disk find/bfs/fd walks, per-look Appium sessions, uncapped local playwright/vitest/jest runs, and the context-budget sinks (shell-rewritten files, whole-file dumps, transcript reads); every block names the sanctioned alternative.
+    description: PreToolUse guard hooks for Claude Code — block destructive git/docker calls, secret and environment dumps, host-input automation, commit-time secrets, whole-disk find/bfs/fd walks and finds through node_modules or build caches, per-look Appium sessions, uncapped local playwright/vitest/jest runs, and the context-budget sinks (shell-rewritten files, whole-file dumps, transcript reads); every block names the sanctioned alternative.
     applet: claude-guards
 
   - id: lok
@@ -48,6 +48,12 @@ items:
     status: experimental
     description: Transfer named environment values through a private, expiring Unix socket without secret-bearing files; read output stays inside the consuming process.
     applet: envbridge
+
+  - id: onyx-rest
+    kind: applet
+    status: experimental
+    description: One REST call with a secret Onyx injects as ONYX_REST_TOKEN — Bearer or HTTP Basic, the response in a 0600 --out file (Onyx suppresses the stdout of secret-injected children); a strict argv (--base first and once, PATH pinned to the base host) makes an Onyx allowed_commands prefix a real host pin.
+    applet: onyx-rest
 
   - id: operator
     kind: applet
@@ -115,6 +121,12 @@ items:
     description: Where your AI tokens went — Claude Code transcripts and Codex rollouts indexed incrementally into permanent hour × project × model buckets (worktrees fold into their repo), rolled up by day, hour, project and model with an API-equivalent USD value.
     applet: tokentime
 
+  - id: readeff
+    kind: applet
+    status: experimental
+    description: How agents navigate code — what Claude Code and Codex reads and searches put into context against what they changed, with re-reads, whole-file reads of big files, search hit rates and the most-read files, per repository, session and file. Scans on demand; stores nothing.
+    applet: readeff
+
   - id: repolicy
     kind: applet
     status: experimental
@@ -132,6 +144,12 @@ items:
     status: experimental
     description: Release-lineage hotfix lane for trunk-based repos — cut a branch from the tag production runs in an isolated worktree, open the PR that is both CI gate and forward-port, deploy production FROM the branch, merge once shipped; state re-derived from git + gh, every verb idempotent with a JSON envelope.
     applet: hotfix
+
+  - id: blip
+    kind: applet
+    status: experimental
+    description: Chaos proxy for polish passes — an HTTP-aware or raw-TCP proxy per name (app→API, server→Postgres) whose faults (delay, drop, error, timeout, slow, flap, cut) are toggled live from the CLI, scoped by path/method/count/duration, plus an access-control replay (record the flow, replay it as another identity, list what still succeeds); never touches the machine's network.
+    applet: blip
 
   - id: reclaim
     kind: applet
@@ -247,11 +265,23 @@ items:
     description: Thin wrapper skill for the hotfix applet — the ordered verbs and the hard laws (never merge main into a hotfix branch, deploy only from the branch).
     source: skills/hotfix-lane
 
+  - id: polish
+    kind: skill
+    status: experimental
+    description: Manual-only protocol — fix a branch's findings in its existing PR, then run the adverse-condition matrix (network, app lifecycle, web, backend, DB) with blip until a clean pass.
+    source: skills/polish
+
   - id: readiness
     kind: applet
     status: experimental
     description: Deterministic layer of the release-readiness skill — validates the vybava.config.ts readiness section, freezes each repo's production..integration range, seeds a run directory with scripts and ledgers, and renders lane rules, lane bodies and agent briefs from the run's manifests (drift-checked).
     applet: readiness
+
+  - id: ui-loop
+    kind: applet
+    status: experimental
+    description: Deterministic layer of the UI polish loop — syncs the TypeScript/Playwright capture harness (screen manifest, capture, lint, app map) into a repo with a drift gate, runs passes from vybava.config.ts uiLoop, split-publishes them to vitrinka and folds the review backlog into a scoreboard.
+    applet: ui-loop
 
   - id: release-readiness
     kind: skill
@@ -415,18 +445,23 @@ groups:
       - menubar-doctor
       - claude-guards
       - envbridge
+      - onyx-rest
       - posta
       - codexsync
       - codexusage
       - tokentime
+      - readeff
       - repolicy
       - skipci
       - redact
       - tsgate
       - hotfix
       - hotfix-lane
+      - blip
+      - polish
       - readiness
       - release-readiness
+      - ui-loop
       - reclaim
       - macwatch
       - plugin-gc
@@ -516,18 +551,23 @@ groups:
       - menubar-doctor
       - claude-guards
       - envbridge
+      - onyx-rest
       - posta
       - codexsync
       - codexusage
       - tokentime
+      - readeff
       - repolicy
       - skipci
       - redact
       - tsgate
       - hotfix
       - hotfix-lane
+      - blip
+      - polish
       - readiness
       - release-readiness
+      - ui-loop
       - operator
       - memorylint
       - memo

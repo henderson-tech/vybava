@@ -207,6 +207,29 @@ func TestApplyLeavesBytesThatChangedUnderTheScan(t *testing.T) {
 	}
 }
 
+// A whole PEM block is one span far past 256 bytes; the compare-before-write
+// read must hold all of it (the first cut panicked on such a span).
+func TestApplyRedactsASpanLongerThan256Bytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-a1.jsonl")
+	pem, kind := fake("MIIE", 1600), "PRIVATE "+"KEY"
+	write(t, path, jsonLine(t, map[string]any{"type": "user", "content": "-----BEGIN " + kind + "-----\n" + pem + "\n-----END " + kind + "-----\n"}))
+	res := scanFile(path, detect{})
+	if res.Spans != 1 || len(res.patches[0].orig) <= 256 {
+		t.Fatalf("spans %d, want one span past 256 bytes", res.Spans)
+	}
+	applyPatches(&res.File, res.patches)
+	if res.Redacted != 1 || res.Changed != 0 || res.Error != "" {
+		t.Fatalf("redacted %d changed %d error %q, want 1/0/none", res.Redacted, res.Changed, res.Error)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(pem[:32])) || !json.Valid(bytes.TrimSpace(data)) {
+		t.Error("the key block is not wholly redacted into a valid record")
+	}
+}
+
 func TestLiveAppendIsKeptAndAPartialRecordIsLeftToItsWriter(t *testing.T) {
 	f := newFixture(t)
 	res := scanFile(f.subagent, detect{})

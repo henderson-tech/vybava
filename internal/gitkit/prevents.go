@@ -18,10 +18,10 @@ import (
 // the PR and prints ONE event line per state delta, then EXITS when the PR is
 // merged or closed. Event vocabulary (the prm loop maps each to an action):
 //
-//	comment <id>              new review-thread OR conversation comment
+//	comment <id>              new review-thread OR conversation comment (never the viewer's own)
 //	ci <prev>-><curr>         CI rollup flip
 //	review <STATE> by <login> reviewer verdict change
-//	push <sha7>               the PR head moved (incl. force-push)
+//	push <sha7>               the PR head moved (incl. force-push), unless to the checkout's own HEAD
 //	mergeable <prev>-><curr>  MERGEABLE <-> CONFLICTING (UNKNOWN suppressed)
 //	draft / ready             draft state flips
 //	merged / closed           terminal — the watcher exits
@@ -40,6 +40,9 @@ type Snapshot struct {
 	HeadSha    *string
 	Mergeable  *string // MERGEABLE | CONFLICTING (UNKNOWN is carried over, never stored)
 	IsDraft    *bool
+	// LocalHead is the watched checkout's HEAD, read only when the PR head
+	// moved: a head equal to it is the session's own push. "" when unknown.
+	LocalHead string
 }
 
 // reviewStates is a login → state map iterated in JavaScript object order:
@@ -121,6 +124,21 @@ func openThreadCommentIDs(threads []threadNode, self string) []int {
 	return ids
 }
 
+func headMoved(prev *Snapshot, curr Snapshot) bool {
+	return prev != nil && prev.HeadSha != nil && curr.HeadSha != nil && *prev.HeadSha != *curr.HeadSha
+}
+
+// localHead is the checkout's HEAD; "" with a warning when git cannot say,
+// which keeps the push event rather than dropping a foreign one.
+func localHead(root string, stderr io.Writer) string {
+	out, err := execFile(execOpts{dir: root, echo: stderr, timeout: 30 * time.Second}, "git", "rev-parse", "HEAD")
+	if err != nil {
+		fmt.Fprintf(stderr, "warn: local HEAD unreadable (%s); push reported\n", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // computeEvents diffs two polls. The baseline poll (prev nil) is silent —
 // the session already handled the backlog — unless the PR is terminal.
 func computeEvents(prev *Snapshot, curr Snapshot) ([]string, bool) {
@@ -148,7 +166,7 @@ func computeEvents(prev *Snapshot, curr Snapshot) ([]string, bool) {
 			events = append(events, fmt.Sprintf("review %s by %s", state, who))
 		}
 	}
-	if prev.HeadSha != nil && curr.HeadSha != nil && *prev.HeadSha != *curr.HeadSha {
+	if headMoved(prev, curr) && *curr.HeadSha != curr.LocalHead {
 		events = append(events, "push "+string(jsSlice(*curr.HeadSha, 7).s))
 	}
 	// Only real MERGEABLE <-> CONFLICTING flips: fetchSnapshot carries the
@@ -183,7 +201,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
       headRefOid
       mergeable
       isDraft
-      comments(last: 50) { nodes { databaseId } }
+      comments(last: 50) { nodes { databaseId author { login } } }
     }
   }
 }`
@@ -223,7 +241,8 @@ func shapeSnapshot(out []byte, prevMergeable *string) (Snapshot, error) {
 					IsDraft    any     `json:"isDraft"`
 					Comments   *struct {
 						Nodes []struct {
-							DatabaseID *int `json:"databaseId"`
+							DatabaseID *int   `json:"databaseId"`
+							Author     *login `json:"author"`
 						} `json:"nodes"`
 					} `json:"comments"`
 				} `json:"pullRequest"`
@@ -252,8 +271,11 @@ func shapeSnapshot(out []byte, prevMergeable *string) (Snapshot, error) {
 		s.CommentIDs = openThreadCommentIDs(d.ReviewThreads.Nodes, self)
 	}
 	if d.Comments != nil {
+		// The viewer's own conversation comments (an @eve mention, a round
+		// summary) are round output, as its thread replies are: waking the
+		// session on them cost a turn each.
 		for _, c := range d.Comments.Nodes {
-			if c.DatabaseID != nil {
+			if c.DatabaseID != nil && (c.Author == nil || c.Author.Login != self) {
 				s.CommentIDs = append(s.CommentIDs, *c.DatabaseID)
 			}
 		}
@@ -419,6 +441,11 @@ func runPREvents(args []string, stdout, stderr io.Writer) int {
 		}
 		failures = 0
 		prevMergeable = curr.Mergeable
+		// A pinned owner/name has no checkout to compare against: every
+		// push is reported, as before.
+		if root != "" && headMoved(prev, curr) {
+			curr.LocalHead = localHead(root, stderr)
+		}
 		events, done := computeEvents(prev, curr)
 		for _, e := range events {
 			fmt.Fprintln(stdout, e)

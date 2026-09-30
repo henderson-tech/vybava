@@ -1,6 +1,10 @@
 package claudeguards
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/henderson-tech/vybava/internal/shellseg"
+)
 
 // ---------------------------------------------------------------------------
 // guardHostInput — host-level mouse/keyboard automation is banned (ruled
@@ -12,7 +16,7 @@ import "regexp"
 // appium/adhoc drivers, appium/support/ios-alerts.ts).
 // ---------------------------------------------------------------------------
 
-// Both commands are identified through commandChainHas (see hostInputMatch), so
+// Both commands are identified through shellseg.ChainHas (see hostInputMatch), so
 // a privilege or arch wrapper in front of them still matches while a quoted
 // mention does not. This regex only qualifies WHAT the osascript does.
 var reOsascriptInput = regexp.MustCompile(
@@ -32,16 +36,16 @@ Drive the iOS simulator through Appium/XCUITest instead:
 // unit-testable. Matching runs per segment, skipping segments that merely
 // mention text, so a quoted mention (`grep -rn cliclick`, an echoed warning, a
 // commit message) cannot fire it, and a leading `FOO=1` cannot disarm it:
-// commandWord sees through environment assignments.
+// shellseg.CommandWord sees through environment assignments.
 func hostInputMatch(cmd string) bool {
-	for _, seg := range segments(cmd) {
+	for _, seg := range shellseg.Segments(cmd) {
 		if textOnly(seg) {
 			continue
 		}
-		if commandChainHas(seg, "cliclick") {
+		if shellseg.ChainHas(seg, "cliclick") {
 			return true
 		}
-		if commandChainHas(seg, "osascript") && reOsascriptInput.MatchString(seg) {
+		if shellseg.ChainHas(seg, "osascript") && reOsascriptInput.MatchString(seg) {
 			return true
 		}
 	}

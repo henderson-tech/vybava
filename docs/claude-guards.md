@@ -98,6 +98,22 @@ SessionEnd            claude-guards reap
 SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
+Codex speaks the same hook contract (`cwd` and `tool_input.command` on stdin,
+exit 2 blocks), so `doctor` also holds `$CODEX_HOME/hooks.json` (`~/.codex`,
+skipped when absent) to one entry:
+
+```text
+PreToolUse    Bash|shell    claude-guards codex   # destructive, secrets, simulator, machine,
+                                                  # root/heavy walk, prod-merge, commit-secrets
+```
+
+`codex` leaves out the context-budget rules (they read a Claude transcript) and
+the /e2e rules (a Claude skill's). The fix appends a new group and rewrites a
+symlinked hooks.json at its target (switcheroo's Codex homes link to
+`~/.codex/hooks.json`): Codex keys each hook's trust by its position, so no
+trusted hook moves, and Codex asks to trust the new one before it runs.
+`claude-guards check codex '<command>'` evaluates that subset.
+
 `claude-guards hooks` prints this wiring as JSON and `doctor` checks the live
 file against it; `doctor --fix` also removes wirings an older manifest
 installed (`retiredHooks` — the separate SessionStart `weather` and `reap`
@@ -130,13 +146,24 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   ssh and devbox payloads, bun test, --version/--help/--list
                   and playwright install/codegen/show-report pass
                   (escape: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1) ·
+                  xcodebuild / tuist test on this Mac not narrowed to non-UI
+                  bundles (-only-testing, -skip-testing:…UITests,
+                  --skip-ui-tests) (escape: CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1) ·
                   a command matching a repo's guards.devboxOnly run outside
                   devbox run / ssh (escape: CLAUDE_GUARDS_ALLOW_LOCAL_STACK=1) ·
                   a command matching guards.devboxWhenWorkspace run locally in
                   a checkout that has a Devbox workspace (same escape) ·
+                  `ssh <host> … docker (compose) exec` into a devbox-…
+                  container or compose project, around `devbox run -- 'docker
+                  compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
                   (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
+                  destination, rm) to a memo home's LEDGER.md, MEMORY.md or
+                  usage.jsonl — memo's own RefuseHandWrite, run here so memo's
+                  hook does not spawn per Bash call; the stderr names the memo
+                  verb that owns the file
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
@@ -161,13 +188,27 @@ context:*         inline python/node scripts that write files · cat/tee over an
                   locale catalog declared in vybava.config.ts (lok.catalogs) —
                   ranges included; the message points at lok get/grep/add ·
                   find/bfs/fd rooted at /, ~, /Users, /Users/<name>, /Volumes
-                  or /Library (or run there with no root) without -maxdepth
+                  or /Library (or run there with no root) without -maxdepth ·
+                  find/bfs (fd -u/-I) descending into an unpruned node_modules,
+                  build cache (.next, Pods, DerivedData, .turbo, .gradle, …)
+                  or, rooted above the repos, a nested .git
 ```
 
 The two `simulator:`/`context:` machine-health rules are incident-born
 (2026-09-19, the day a `bfs /` crawl plus a per-look Appium probe pushed the
 Mac to load 680). `context:root-walk` accepts a scoped root, `-maxdepth N`
 (`fd -d N`), and points a whole-disk name lookup at `mdfind -name`.
+`context:heavy-walk` is its sibling for walks that are not whole-disk (2026-09-27:
+a Codex session's `find ~/Work/Projects -path '*/.worktrees/*' -prune -o -name
+devbox.yaml -print` crawled every repo's node_modules for minutes; `rg --files
+-g devbox.yaml ~/Work/Projects` answers in ~2 s). find and bfs ignore
+.gitignore, so the rule probes the root breadth-first (depth 4, at most 1500
+directories and 50,000 entries read in batches, symlinks never followed) for a
+heavy directory the command does not `-prune` (`-exclude` for bfs, `-E` for
+fd); `-not -path` still descends and does not count, nor does a `-prune`
+closing some other test. A root inside a heavy directory, a `-maxdepth` and fd
+honouring .gitignore all pass; an undecided probe allows. The message points at
+`rg --files -g` and `git ls-files`.
 `simulator:appium-session-churn` reads the script the command would run and
 fires only when the file both imports `remote` from `webdriverio` and calls
 `deleteSession(`; every fresh XCUITest session relaunches WebDriverAgent
@@ -193,6 +234,27 @@ command carried by `ssh` or `devbox run` runs on the box and is never read.
 Unlike its two siblings this rule HAS an escape, because a deliberate
 full-parallel run on a quiet Mac is legitimate:
 `CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1 <command>` as the command's env prefix.
+
+`machine:desktop-ui-tests` is `simulator:host-input` through the `xcodebuild`
+door. A macOS XCUITest run synthesizes real mouse and keyboard events on the
+Mac the user is working on, and testmanagerd attaches an automation session to
+whatever app is in front: on 2026-09-27 a background `xcodebuild … build test`
+of SwitcherooBar ran its UI bundle, and the session's teardown crashed Warp
+(SIGSEGV in XCTAutomationSupport) with every Claude session inside it. The rule
+reads `xcodebuild` (also behind `xcrun`, `nice`, `timeout`, `cd … &&`) and
+`tuist test`, and blocks a `test` / `test-without-building` run aimed at this
+Mac — a `platform=macOS` or Mac Catalyst destination, or none and no non-macOS
+`-sdk` — unless it is narrowed to non-UI bundles: `-only-testing` naming no
+`…UITests` bundle, `-skip-testing` naming one, `tuist test --skip-ui-tests`,
+`--skip-test-targets …UITests` or `--test-targets` without one. Simulator and
+device destinations (`platform=iOS Simulator`, `id=<udid>`, `-sdk
+iphonesimulator`, `tuist test --platform ios` / `-d`) pass: they do not touch
+the host's cursor. UI bundles are recognised by Xcode's `…UITests` naming, so
+a UI bundle named otherwise slips through a narrowing flag, and a bare
+`xcodebuild test` in a project with no UI bundle is refused once — the retry
+adds `-only-testing:<UnitTarget>`. A script that runs the tests inside itself
+is not read. When the user has said the Mac is free for a UI run:
+`CLAUDE_GUARDS_ALLOW_DESKTOP_UI=1 <command>`.
 
 `machine:devbox-only` is config-driven: a repo lists RE2 patterns under
 `guards.devboxOnly` and any local command segment matching one (through
@@ -443,7 +505,13 @@ environment variable for Read, a leading assignment for Bash).
 `context:unbounded-output` requests caps for `docker logs`, GitHub run logs,
 `git log` and unspecialized `git diff/show`. Examples: `docker logs --tail 200
 app`, `git log -n 20`, `git diff --stat`. The suggested form keeps the
-arguments you typed. Test runners are deliberately not covered: a passing suite
+arguments you typed. `git show <rev>:<path>` is not a diff but a file read at
+another revision: it skips this rule and is judged like `cat` — noRead,
+transcript and lok-catalog rules on the working-tree path it names, the budget
+on the blob's own length (`git cat-file` in the repository the command selects,
+2 s bound; an unresolvable spec passes). `--textconv`/`--filters` print a
+converter's output, so they stay under this rule. It was 300
+of the 304 git-show denials in the 2026-09-25 field audit. Test runners are deliberately not covered: a passing suite
 prints little, a failing one puts what matters at the end, and every repo here
 documents a bare `go test ./...` / `bun test` as its verify step — a guard that
 refuses the documented command only teaches people to route around it. List one

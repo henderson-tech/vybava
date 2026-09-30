@@ -7,6 +7,7 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/lok"
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/shellword"
 	"github.com/spf13/cobra"
 )
 
@@ -53,7 +54,7 @@ func (f *rewriteFlags) options(catalog string) lok.SubOptions {
 func (f *rewriteFlags) command(verb string, args []string, catalog string) []string {
 	parts := []string{"lok", verb}
 	for _, a := range args {
-		parts = append(parts, quoteArg(a))
+		parts = append(parts, shellword.Quote(a))
 	}
 	if catalog != "" {
 		parts = append(parts, "--catalog="+catalog)
@@ -62,10 +63,10 @@ func (f *rewriteFlags) command(verb string, args []string, catalog string) []str
 		parts = append(parts, "--locale", strings.Join(f.locales, ","))
 	}
 	if f.key != "" {
-		parts = append(parts, "--key", quoteArg(f.key))
+		parts = append(parts, "--key", shellword.Quote(f.key))
 	}
 	if f.exclude != "" {
-		parts = append(parts, "--exclude-key", quoteArg(f.exclude))
+		parts = append(parts, "--exclude-key", shellword.Quote(f.exclude))
 	}
 	for _, b := range []struct {
 		on   bool

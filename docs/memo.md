@@ -151,7 +151,11 @@ home; `--home` or an alias overrides that.
 `memo add` refuses `LEGACY_HOME` in a v2 home, meaning a hand-written
 `MEMORY.md` and no `LEDGER.md`: a first render would replace that index, and
 nothing snapshots a personal home before its ledger exists. `memo migrate`
-+ `memo import` convert the home first. Elsewhere,
++ `memo import` convert the home first. `memo add` and `memo import` also
+refuse `MAIN_CHECKOUT`: a team row whose home is in a repository's main
+checkout would sit there as uncommitted dirt on the default branch, so it is
+written from a worktree and lands through a PR; `WORKTREE_POLICY=never` in
+the repo's `.claude/.claude.git.config` opts a repo out. Elsewhere,
 `memo add` creates the ledger on first use: the row's type decides the kind
 (`user`/`feedback` personal, else team), the alias is the repo basename
 lowercased (`-team` suffix for the team home), and a personal ledger records
@@ -194,10 +198,13 @@ registered alias wins over the alias in a ledger's frontmatter.
 - **PreToolUse**: refuses Edit/Write/MultiEdit/NotebookEdit on `LEDGER.md`,
   `MEMORY.md` or `usage.jsonl` in any home, and Bash commands that write
   them (`>`/`>>` redirects, heredocs, `tee`, `sed -i`/`perl -i`, `cp`/`mv`
-  destinations, `rm`). Exit 2; stderr names the memo verb that owns the file
+  destinations, `rm`). In Claude Code the Bash half runs inside `claude-guards
+  bash` (`memo:ledger-hand-write`, the same `RefuseHandWrite`), so memo is not
+  wired on Bash and spawns on no shell call; Codex still sends its shell tool
+  here. Exit 2; stderr names the memo verb that owns the file
   (`memo add`, `memo render`, `memo touch`). Files under `notes/` stay under
-  memorylint's hook. Shell segmentation is claudeguards' one definition
-  (`claudeguards.Segments`), so quoted mentions never trip it.
+  memorylint's hook. Shell segmentation is the one definition
+  (`shellseg.Segments`), so quoted mentions never trip it.
 - **Stop / SessionEnd**: opens `transcript_path`, collects citations from
   assistant text and tool inputs (`#NN` / `^mNN` / `[[LEDGER#^mNN]]` credit
   the personal home, `#tNN` / `^tNN` / `[[LEDGER#^tNN]]` the team home,
@@ -213,12 +220,14 @@ registered alias wins over the alias in a ledger's frontmatter.
   stderr (a tracked team `MEMORY.md` is one, carrying its `SURFACE_TRACKED`
   fix), the other homes still render, exit 0.
 
-Claude Code `settings.json`:
+Claude Code `settings.json` (a bare `exec "$HOME/.local/bin/memo" hook` is
+enough: a build without `hook` fails visibly with `unknown command`, so no
+`--help | grep` probe wrapper):
 
 ```json
 {"hooks": {
   "SessionStart": [{"hooks": [{"type": "command", "command": "memo hook"}]}],
-  "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": "memo hook"}]}],
+  "PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "memo hook"}]}],
   "Stop": [{"hooks": [{"type": "command", "command": "memo hook"}]}]
 }}
 ```
@@ -294,6 +303,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `REF_AMBIGUOUS` | 2 | bare id exists in more than one session home |
 | `RENDER_DRIFT` | 2 | `render --check`: MEMORY.md differs |
 | `LEGACY_HOME` | 2 | `add` into a v2 home (hand-written `MEMORY.md`, no `LEDGER.md`); the row is not written; fix `memo migrate <home>`, then `memo import` |
+| `MAIN_CHECKOUT` | 2 | `add`/`import` of a team row into a repo's main checkout; the row is not written; fix adds a worktree to re-run from; `WORKTREE_POLICY=never` opts out |
 | `SURFACE_TRACKED` | 0 | warning, a team `MEMORY.md` is tracked by git and was left as committed; fix untracks a render or migrates a hand-written index |
 | `IMPORT_INVALID` | 2 | import file line outside the id-less grammar |
 | `REGISTRY_INVALID` | 2 | homes.json malformed or with unknown fields |

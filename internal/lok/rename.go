@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,7 +91,7 @@ func (t *Tool) Mv(catalogID, oldKey, newKey string, o SubOptions) (SubResult, er
 	}
 	for _, c := range cats {
 		if base, plural := c.Config.BaseKey(from); plural && c.Config.Style == StyleEnglishAsKey && c.has(base) {
-			return res, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%q is a plural variant; mv moves the whole family - pass its base key", from), Fix: "lok mv " + shellQuote(base) + " <new base key>"}
+			return res, &Diag{Code: DiagConfigInvalid, Detail: fmt.Sprintf("%q is a plural variant; mv moves the whole family - pass its base key", from), Fix: "lok mv " + shellword.Quote(base) + " <new base key>"}
 		}
 	}
 	ks := keySub{explicit: true, mv: from, worded: func(s string) string { return s }, rename: func(base string) (string, bool) {
@@ -230,7 +232,7 @@ func (t *Tool) renameKeys(res SubResult, p *subPlan, cats []*Catalog, o SubOptio
 		}
 	}
 	if len(plans) == 0 && ks.mv != "" {
-		return res, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is no base key of an english-as-key catalog in scope", ks.mv), Fix: "lok grep " + shellQuote(ks.mv)}
+		return res, &Diag{Code: DiagKeyMissing, Detail: fmt.Sprintf("%q is no base key of an english-as-key catalog in scope", ks.mv), Fix: "lok grep " + shellword.Quote(ks.mv)}
 	}
 	if err := validateRenames(plans, o, ks); err != nil {
 		return res, err

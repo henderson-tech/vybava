@@ -160,10 +160,67 @@ export interface ReadinessConfig {
   plumbing?: string[];
 }
 
+/** One app the UI loop shoots. */
+export interface UiLoopApp {
+  baseUrl: string;
+  /** Env var that overrides baseUrl wherever it is set; the capture machine's value wins last. */
+  env?: string;
+  /** Viewport ids (built-ins: phone, phone-320, phone-360, phone-landscape, tablet, laptop, desktop). */
+  viewports: string[];
+  themes: ('light' | 'dark')[];
+}
+
+/** A capture viewport (DPR 2); `mobile` = coarse pointer, touch UA, touch-target lint. */
+export interface UiLoopViewport {
+  width: number;
+  height: number;
+  mobile?: boolean;
+  insets?: { top: number; right: number; bottom: number; left: number };
+}
+
+/** ui-loop: the UI polish loop's capture harness, passes, publish and scoreboard (docs/uiloop.md). */
+export interface UiLoopConfig {
+  /** Holds project.ts, screens/ and the synced vendor/ (repo-relative). */
+  dir: string;
+  /** Gitignored run root; one directory per pass (<out>/pass-<n>). */
+  out: string;
+  /** The rendered app map, drift-checked by `ui-loop check`. */
+  appMap: string;
+  /** The written design spec reviewers judge against. */
+  spec?: string;
+  /** How the repo runs Playwright: 'pnpm exec playwright test', 'bunx playwright test'. */
+  runner: string;
+  /** Runs a TypeScript file (check, app map): 'pnpm exec tsx', 'bun'. Default: bun in a bun repo, else 'npx --yes tsx'. */
+  tsRunner?: string;
+  /** Capture and publish order. */
+  areas: string[];
+  apps: Record<string, UiLoopApp>;
+  /** Adds or overrides viewport ids. */
+  viewports?: Record<string, UiLoopViewport>;
+  lint?: {
+    /** Spacing grid in px (default 4). */
+    grid?: number;
+    /** Minimum coarse-pointer target in px (default 44). */
+    touchTarget?: number;
+    /** Rule ids switched off. */
+    off?: string[];
+    /** The type ramp in px; the type-ramp rule runs only when set. */
+    ramp?: number[];
+  };
+  vitrinka: { project: string; boardPrefix: string };
+  publish?: {
+    /** Files per set (default 96, at most 100: vitrinka rejects larger set directories). */
+    maxFiles?: number;
+    /** Source bytes per set (default 4_000_000: pushes time out at 30 s on a shared uplink). */
+    maxBytes?: number;
+  };
+}
+
 export interface VybavaConfig {
   lok?: LokConfig;
   merge?: MergeConfig;
   readiness?: ReadinessConfig;
+  uiLoop?: UiLoopConfig;
   guards?: {
     /** Repository-relative globs; ** spans directories. Query these files with rg. */
     noRead?: string[];

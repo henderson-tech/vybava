@@ -268,7 +268,7 @@ func TestDoctorFixRetiresSupersededHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m, r := missingHooks(groups), retiredWired(groups); len(m) != 0 || len(r) != 0 {
+	if m, r := missingHooks(groups, Hooks), retiredWired(groups); len(m) != 0 || len(r) != 0 {
 		t.Errorf("after fix: missing %v, retired %v", verbs(m), r)
 	}
 }
@@ -280,5 +280,68 @@ func TestCheckHooks(t *testing.T) {
 	missing, err := CheckHooks(fullSettings(t, "~/.claude/hooks/claude-guards", "browser"))
 	if err != ErrHooksMissing || len(missing) != 1 {
 		t.Errorf("got %v, %v", verbs(missing), err)
+	}
+}
+
+// Codex keys each hook's trust by its position, and switcheroo's Codex homes
+// link their hooks.json to one file: the fix appends a group, leaves every
+// existing hook where it was and rewrites the link's target, not the link.
+func TestDoctorCodexAppendsThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "hooks.json")
+	existing := `{"hooks":{"PreToolUse":[{"matcher":"apply_patch|Edit|Write","hooks":[{"type":"command","command":"memorylint hook","statusMessage":"Checking…"}]},{"matcher":"Bash","hooks":[{"type":"command","command":"e2e-gate"}]}]}}`
+	if err := os.WriteFile(target, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "profile-hooks.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := DoctorCodex(link, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the profile link must survive the fix: %v", err)
+	}
+	if fi, err := os.Stat(target); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("a private hooks file must stay 0600: %v", fi.Mode())
+	}
+	_, groups, err := readSettings(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := groups["PreToolUse"]
+	if len(pre) != 3 || pre[0].Matcher != "apply_patch|Edit|Write" || pre[1].Matcher != "Bash" || len(pre[1].Hooks) != 1 || pre[2].Matcher != "Bash|shell" {
+		t.Fatalf("existing groups must keep their positions, the guard appended last: %+v", pre)
+	}
+	var kept bytes.Buffer
+	if err := json.Compact(&kept, pre[0].Hooks[0]); err != nil || kept.String() != `{"type":"command","command":"memorylint hook","statusMessage":"Checking…"}` {
+		t.Errorf("an existing entry must keep every field in order: %s", pre[0].Hooks[0])
+	}
+	if !strings.Contains(out.String(), "Codex asks to trust") {
+		t.Errorf("fix report must say Codex asks for trust:\n%s", out.String())
+	}
+	out.Reset()
+	if err := DoctorCodex(link, false, &out, &errOut); err != nil || out.Len() != 0 {
+		t.Errorf("a wired file reports nothing, got %q (%v)", out.String(), err)
+	}
+}
+
+// A dangling hooks.json link is reported, never replaced by a regular file.
+func TestDoctorCodexKeepsDanglingSymlink(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "hooks.json")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone.json"), link); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := DoctorCodex(link, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the dangling link must stay a link: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "symlink to a missing file") {
+		t.Errorf("expected a warning, got %q", errOut.String())
 	}
 }

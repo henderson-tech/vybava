@@ -91,7 +91,7 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 		}
 		return v
 	}
-	schema("DROP TABLE beats; ALTER TABLE files DROP COLUMN beats; ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1")
+	schema("DROP TABLE limit_points; DROP TABLE beats; ALTER TABLE files DROP COLUMN points; ALTER TABLE files DROP COLUMN beats; ALTER TABLE files DROP COLUMN tail; PRAGMA user_version=1")
 	env, took = run("rollup", "--days", "1", "--hours", "1")
 	stale := false
 	for _, d := range env["diagnostics"].([]any) {
@@ -109,8 +109,8 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 	if env, _ = run("rollup", "--days", "1", "--hours", "1"); env["ok"] != true {
 		t.Fatalf("rollup with the lock free = %v", env)
 	}
-	if v := schema(""); v != 4 {
-		t.Fatalf("schema after a rollup with the lock free = %d, want 4", v)
+	if v := schema(""); v != 5 {
+		t.Fatalf("schema after a rollup with the lock free = %d, want 5", v)
 	}
 }
 
@@ -378,5 +378,174 @@ func TestTokentimeBeatsReadsUnderTheLockAndRefusesBadRanges(t *testing.T) {
 	data, _ := env["data"].(map[string]any)
 	if got, _ := json.Marshal(data["projects"]); err != nil || string(got) != want {
 		t.Fatalf("beats under a held lock = %v, %v; want %s", env, err, want)
+	}
+}
+
+// `limits` reads like `beats`: a negative --since is BAD_FLAG and a store
+// never indexed NO_STORE — exit 2, no data, no state directory made — and an
+// indexed store answers while a pass holds the lock, strictly after --since.
+func TestTokentimeLimitsReadsUnderTheLockAfterSince(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state, codex := filepath.Join(base, "state"), filepath.Join(base, "codex")
+	run := func(args ...string) (map[string]any, error) {
+		t.Helper()
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json", "--state-dir", state, "--claude-root", filepath.Join(base, "claude"), "--codex-dir", codex))
+		err = cmd.Execute()
+		var env map[string]any
+		if jsonErr := json.Unmarshal(out.Bytes(), &env); jsonErr != nil {
+			t.Fatalf("%v: not an envelope: %s", args, out.String())
+		}
+		return env, err
+	}
+	for _, c := range []struct{ since, code string }{{"-1", diagBadFlag}, {"0", diagNoStore}} {
+		env, err := run("limits", "--since", c.since)
+		var exit runx.ExitCoder
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil || !strings.Contains(fmt.Sprint(env["diagnostics"]), c.code) {
+			t.Fatalf("limits --since %s = %v, %v; want exit 2, no data and %s", c.since, env, err, c.code)
+		}
+		if _, statErr := os.Stat(state); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("state dir after limits --since %s: %v, want it never created", c.since, statErr)
+		}
+	}
+
+	reading := func(ts string, pct float64) string {
+		return fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":%v,"window_minutes":10080,"resets_at":1791058036},"secondary":null,"plan_type":"pro"}}}`+"\n", ts, pct)
+	}
+	day := filepath.Join(codex, "sessions", "2026", "09", "27")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(day, "rollout-2026-09-27T22-00-00-t1.jsonl"), []byte(
+		`{"timestamp":"2026-09-27T22:00:00Z","type":"session_meta","payload":{"id":"t1","timestamp":"2026-09-27T22:00:00Z","cwd":"`+base+`"}}`+"\n"+
+			reading("2026-09-27T22:57:02.427Z", 49)+reading("2026-09-27T22:58:00Z", 49.5)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if env, _ := run("index"); env["ok"] != true {
+		t.Fatalf("seeding index = %v", env)
+	}
+	lock, err := os.OpenFile(filepath.Join(state, "index.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	env, err := run("limits", "--since", "1790549822427") // 22:57:02.427Z itself: strictly after it
+	want := `{"backfill":{"done":true,"pendingBytes":0},"cursor":1790549880000,"points":[{"cacheWrite":0,"cached":0,"input":0,"model":"codex-unknown","output":0,` +
+		`"plan":"pro","reasoning":0,"thread":"t1","ts":1790549880000,"windows":[{"minutes":10080,"pct":49.5,"resetsAt":1791058036}]}]}`
+	if got, _ := json.Marshal(env["data"]); err != nil || string(got) != want {
+		t.Fatalf("limits under a held lock = %s, %v; want %s", got, err, want)
+	}
+}
+
+// `prices --model` resolves each name as given the way the rollup prices it,
+// null when nothing does.
+func TestTokentimePricesResolvesModels(t *testing.T) {
+	var out bytes.Buffer
+	cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetArgs([]string{"prices", "--model", "claude-opus-5-5[1m]", "--model", "gpt-daybreak-blue", "--model", "Claude-Fable-5-1-20260801",
+		"--model", "mystery-model", "--json", "--state-dir", t.TempDir()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Data struct {
+			Resolved map[string]*struct {
+				Model string  `json:"model"`
+				Input float64 `json:"input"`
+				Read  float64 `json:"cacheRead"`
+			} `json:"resolved"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not an envelope: %s", out.String())
+	}
+	got := map[string]string{}
+	for name, p := range env.Data.Resolved {
+		got[name] = "null"
+		if p != nil {
+			got[name] = fmt.Sprintf("%s %v/%v", p.Model, p.Input, p.Read)
+		}
+	}
+	want := map[string]string{"claude-opus-5-5[1m]": "claude-opus-5-5 4/0.2", "gpt-daybreak-blue": "gpt-5.6-sol 4/0.4",
+		"Claude-Fable-5-1-20260801": "claude-fable-5-1 10/0.25", "mystery-model": "null"}
+	if fmt.Sprint(got) != fmt.Sprint(want) || !strings.Contains(out.String(), `"mystery-model": null`) {
+		t.Fatalf("resolved = %v, want %v:\n%s", got, want, out.String())
+	}
+}
+
+// A pass that reads every new record but leaves a backlog owed — the limit
+// points, or the beats, of a rollout indexed before they existed — is not
+// finished: `index` and `status` both report it and name `tokentime index` next.
+func TestTokentimeABacklogStillOwedAsksForAnotherPass(t *testing.T) {
+	for _, c := range []struct{ backlog, owed, ddl string }{
+		// As the schema 4 binary left it: read, with no points.
+		{"points", "pointsPendingBytes", "DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; PRAGMA user_version=4"},
+		// Read before beats existed, its points already recorded.
+		{"beats", "beatsPendingBytes", "UPDATE files SET beats = ''"},
+	} {
+		t.Run(c.backlog, func(t *testing.T) { backlogStillOwed(t, c.owed, c.ddl) })
+	}
+}
+
+func backlogStillOwed(t *testing.T, owed, ddl string) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	state, codex := filepath.Join(base, "state"), filepath.Join(base, "codex")
+	run := func(args ...string) map[string]any {
+		t.Helper()
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("tokentime")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json", "--state-dir", state, "--claude-root", filepath.Join(base, "claude"), "--codex-dir", codex))
+		_ = cmd.Execute()
+		var env map[string]any
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("%v: not an envelope: %s", args, out.String())
+		}
+		return env
+	}
+	day := filepath.Join(codex, "sessions", "2026", "09", "27")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := `{"timestamp":"2026-09-27T22:00:00Z","type":"session_meta","payload":{"id":"t1","timestamp":"2026-09-27T22:00:00Z","cwd":"` + base + `"}}` + "\n"
+	for _, ts := range []string{"22:01", "22:02", "22:03"} {
+		rollout += `{"timestamp":"2026-09-27T` + ts + `:00Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":1,"window_minutes":10080,"resets_at":1791058036},"plan_type":"pro"}}}` + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(day, "rollout-2026-09-27T22-00-00-t1.jsonl"), []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if env := run("index"); env["ok"] != true {
+		t.Fatalf("seeding index = %v", env)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(state, "tokentime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ddl); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	env := run("index", "--budget", "1") // one record of the backlog, nothing new to read
+	data, _ := env["data"].(map[string]any)
+	if data["pendingBytes"] != 0.0 || data[owed] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" ||
+		!strings.Contains(fmt.Sprint(env["diagnostics"]), diagBacklog) {
+		t.Fatalf("index leaving only %s = %v; want pendingBytes 0, it owed, %s and tokentime index next", owed, env, diagBacklog)
+	}
+	env = run("status")
+	if data, _ := env["data"].(map[string]any); data[owed] == 0.0 || fmt.Sprint(env["next"]) != "[tokentime index]" {
+		t.Fatalf("status with %s owed = %v; want it reported and tokentime index next", owed, env)
 	}
 }

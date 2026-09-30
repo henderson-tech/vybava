@@ -18,7 +18,9 @@ import (
 // survive those operations anyway. Stopping first beats recovering after.
 // resolvedBeforeReviewCmd null means "no hook — skip the step", never an error.
 
-// BeforeReview is before-review's output, keys in wire order.
+// BeforeReview is before-review's output, keys in wire order. mergePolicy is
+// merge-precheck's, readable before a PR exists: ensure-pr labels a `self`
+// repo's new PR eve-ignore from it.
 type BeforeReview struct {
 	ConfigFound             bool    `json:"configFound"`
 	ConfigPath              string  `json:"configPath"`
@@ -29,6 +31,7 @@ type BeforeReview struct {
 	Worktree                string  `json:"worktree"`
 	MainClone               string  `json:"mainClone"`
 	IsWorktree              bool    `json:"isWorktree"`
+	MergePolicy             string  `json:"mergePolicy"`
 }
 
 // beforeReviewArgs: --pr fills the hook's {pr} token; there are no
@@ -90,6 +93,7 @@ func runBeforeReview(args []string, stdout, stderr io.Writer) int {
 		Worktree:    worktree,
 		MainClone:   mainClone,
 		IsWorktree:  worktree != mainClone,
+		MergePolicy: parseMergePolicy(cfg).value,
 	}
 	if cmd, ok := cfg.get("BEFORE_REVIEW_CMD"); ok {
 		out.BeforeReviewCmd = &cmd

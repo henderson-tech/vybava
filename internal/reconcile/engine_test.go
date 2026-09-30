@@ -148,6 +148,67 @@ func TestComposeRollNoteAndAutoRoll(t *testing.T) {
 	}
 }
 
+// produlinka-infra test-reconcile-roll-notes.sh part 2: a claimed file's step
+// replaces the generic roll only for its own app; force prints it too.
+func TestRollNotesReplaceGenericRoll(t *testing.T) {
+	base := map[string]string{
+		"apps/demo/postgresql.conf":    "max_connections = 150\nstatement_timeout = 60000\n",
+		"apps/demo/docker-compose.yml": "services: {}\n",
+	}
+	b := newBox(t, base)
+	b.m.RollNotes = []RollNote{{Match: []string{"apps/demo/postgresql.conf"}, Grammar: GrammarPostgres,
+		Restart: "RESTART REQUIRED: demo postgres ({params}) — use /opt/scripts/pg-safe-restart.sh demo",
+		Reload:  "RELOAD postgres: docker kill -s HUP demo-postgres"}}
+	for p, c := range base { // live copies in sync: the first tick adopts them
+		mustT(t, os.MkdirAll(filepath.Dir(filepath.Join(b.root, "opt", p)), 0o755))
+		mustT(t, os.WriteFile(filepath.Join(b.root, "opt", p), []byte(c), 0o644))
+	}
+	e := b.engine()
+	_, err := e.Run()
+	mustT(t, err)
+
+	restart := "RESTART REQUIRED: demo postgres (shared_preload_libraries) — use /opt/scripts/pg-safe-restart.sh demo"
+	commitFiles(t, b.seed, "preload", map[string]string{"apps/demo/postgresql.conf": "max_connections = 150\nstatement_timeout = 60000\nshared_preload_libraries = 'pg_stat_statements'\n"})
+	b.out.Reset()
+	res, err := e.Run()
+	mustT(t, err)
+	if len(res.Applied) != 1 || len(res.RollSteps) != 1 || res.RollSteps[0] != restart {
+		t.Fatalf("applied = %v, roll steps = %q", res.Applied, res.RollSteps)
+	}
+	if len(res.RollNotes) != 0 || strings.Contains(b.out.String(), "ROLL MANUALLY") {
+		t.Fatalf("a claimed-only tick still says ROLL MANUALLY:\n%s", b.out.String())
+	}
+	if !strings.Contains(b.out.String(), "] "+restart+"\n") || !strings.Contains(res.Digest, "run the step:\n  "+restart+"\n") {
+		t.Fatalf("no RESTART REQUIRED line:\n%s\ndigest:\n%s", b.out.String(), res.Digest)
+	}
+	if !strings.Contains(b.live("apps/demo/postgresql.conf"), "shared_preload_libraries") {
+		t.Fatal("live postgresql.conf not converged")
+	}
+
+	commitFiles(t, b.seed, "reload-plus-compose", map[string]string{
+		"apps/demo/postgresql.conf":    "max_connections = 150\nstatement_timeout = 30000\nshared_preload_libraries = 'pg_stat_statements'\n",
+		"apps/demo/docker-compose.yml": "services: {x: {}}\n",
+	})
+	b.out.Reset()
+	res, err = e.Run()
+	mustT(t, err)
+	if len(res.RollSteps) != 1 || res.RollSteps[0] != "RELOAD postgres: docker kill -s HUP demo-postgres" {
+		t.Fatalf("roll steps = %q", res.RollSteps)
+	}
+	if len(res.RollNotes) != 1 || res.RollNotes[0] != "demo" {
+		t.Fatalf("an unclaimed compose file lost its ROLL MANUALLY: %v\n%s", res.RollNotes, b.out.String())
+	}
+
+	// force: the live hand-edit is backed up, the step replaces the roll line
+	mustT(t, os.WriteFile(filepath.Join(b.root, "opt/apps/demo/postgresql.conf"), []byte("max_connections = 300\n"), 0o644))
+	b.out.Reset()
+	mustT(t, e.Force("apps/demo/postgresql.conf"))
+	if !strings.Contains(b.out.String(), "force: RESTART REQUIRED: demo postgres (max_connections shared_preload_libraries)") ||
+		strings.Contains(b.out.String(), "roll manually") {
+		t.Fatalf("force output:\n%s", b.out.String())
+	}
+}
+
 func TestAlertsDedupPerChannel(t *testing.T) {
 	b := newBox(t, map[string]string{"scripts/a.sh": "a\n"})
 	var eveHits int
@@ -310,6 +371,11 @@ func TestManifestValidation(t *testing.T) {
 		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], skip: true, dest: /x}]\n",
 		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x, require_live_dir: true}]\n",
 		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nalerts: [{type: pager}]\n",
+		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nroll_notes: [{match: [a], grammar: mysql, reload: r, restart: s}]\n",
+		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nroll_notes: [{match: [a], grammar: postgresql, restart: s}]\n",
+		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nroll_notes: [{match: [a], grammar: pgbouncer, reload: r}]\n",
+		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nroll_notes: [{match: [a], grammar: raw, reload: r, restart: s}]\n",
+		"schema_version: 1\nrepo: r\nhost_label: h\nmappings: [{match: [a], dest: /x}]\nroll_notes: [{match: [], grammar: raw, reload: r}]\n",
 	}
 	for i, raw := range bad {
 		if _, err := Parse([]byte(raw)); err == nil {
