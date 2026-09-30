@@ -191,8 +191,12 @@ recreated with `run init --pass <n> --force`; it is never silently re-read.
 Additive fields (a new optional key) do not bump it. Every writer (`run
 init`, `run add-cell`, `cell`, `shoot` after each shot) is one
 load-modify-save transaction under the pass's interprocess lock
-(`<pass>/run.lock`, `flock`), so a verdict recorded from another terminal
-while a shoot runs survives; the file is written to a uniquely named temp
+(`<pass>/run.lock`: `flock` on unix, `LockFileEx` on Windows, both
+OS-managed and released when the holder's handle or process dies, so a
+crashed command never leaves a stale lock), so a verdict recorded from
+another terminal while a shoot runs survives. The wait for the lock is
+bounded (30 s), then the verb answers `ledger-locked` naming the lock path
+instead of hanging; the file is written to a uniquely named temp
 file (pid + random suffix) and renamed into place, so a crash mid-shoot
 leaves the last saved shot recorded and never a half-written ledger.
 
@@ -230,6 +234,7 @@ The closed code enum (`internal/polishkit/diag.go`):
 | `cell-unknown` | the cell id is not in the pass | `status` |
 | `run-version` | run.json is another `RunVersion` or does not parse | `run init --pass <n> --force` |
 | `usage` | a flag, argument or verb the applet does not accept | the corrected invocation |
+| `ledger-locked` | the pass's `run.lock` stayed held by another polish-kit command for the whole 30 s wait | "wait for the other polish-kit command, or delete `<path>` if no polish-kit process is running" |
 
 ## Testing
 

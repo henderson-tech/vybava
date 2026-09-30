@@ -1259,7 +1259,7 @@ func TestDiagnosticCodesAreClosedAndKebab(t *testing.T) {
 		}
 		seen[c] = true
 	}
-	if len(Codes) != 15 {
+	if len(Codes) != 16 {
 		t.Fatalf("the closed enum changed size (%d); update docs/polish-kit.md", len(Codes))
 	}
 }

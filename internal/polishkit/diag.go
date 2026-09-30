@@ -49,13 +49,17 @@ const (
 	// DiagUsage: a flag, argument or verb the applet does not accept; the
 	// fix is the corrected invocation.
 	DiagUsage = "usage"
+	// DiagLedgerLocked: the pass's run.lock stayed held by another
+	// polish-kit command for the whole LockWait; the fix is to wait for it,
+	// or delete the lock file when no polish-kit process is running.
+	DiagLedgerLocked = "ledger-locked"
 )
 
 // Codes lists the closed enum (docs and tests walk it).
 var Codes = []string{
 	DiagNoConfigSection, DiagNoChanges, DiagUnknownTarget, DiagUnknownLane, DiagUnknownScreen,
 	DiagLaneMissing, DiagRuntimeMissing, DiagDeviceUnavailable, DiagLaneUnsupported, DiagToolMissing,
-	DiagShotRequired, DiagPassMissing, DiagCellUnknown, DiagRunVersion, DiagUsage,
+	DiagShotRequired, DiagPassMissing, DiagCellUnknown, DiagRunVersion, DiagUsage, DiagLedgerLocked,
 }
 
 func diag(code, detail, fix string) runx.DiagError {

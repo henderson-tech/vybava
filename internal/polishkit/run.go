@@ -219,7 +219,7 @@ func (t *Tool) Update(pass int, fn func(run *RunFile) error) (*RunFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := lockFile(filepath.Join(t.PassDir(pass), LockName))
+	unlock, err := t.takeLock(filepath.Join(t.PassDir(pass), LockName))
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func (t *Tool) Init(ctx context.Context, opts InitOptions) (Result, error) {
 	if err := os.MkdirAll(run.PassDir, 0o755); err != nil {
 		return Result{}, err
 	}
-	unlock, err := lockFile(filepath.Join(run.PassDir, LockName))
+	unlock, err := t.takeLock(filepath.Join(run.PassDir, LockName))
 	if err != nil {
 		return Result{}, err
 	}
