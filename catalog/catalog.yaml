@@ -163,6 +163,18 @@ items:
     description: Find and redact secrets leaked into agent conversation history — Claude Code sessions with their subagents, workflow journals, persisted tool results and task output, Codex rollouts, prompt history. Reports file · line · detector · masked shape, never a value; --apply overwrites each span in place with a same-length [REDACTED:<detector>] so JSONL stays valid, cursors hold and a live session keeps appending. --known-env / --known-dotenv add exact values no pattern would catch.
     applet: redact
 
+  - id: journeys
+    kind: applet
+    status: experimental
+    description: Validate human journey libraries, compose reading lists, report explicit coverage and preserve immutable observation attempts with typed startup adapters.
+    applet: journeys
+
+  - id: journey-campaign
+    kind: skill
+    status: experimental
+    description: Sustained real-device user-journey testing and session handoff with explicit coverage, actor bindings and independent evidence.
+    source: skills/journey-campaign
+
   - id: tsgate
     kind: applet
     status: experimental
@@ -482,6 +494,8 @@ groups:
   - id: everything
     description: Every package currently published by Výbava.
     items:
+      - journeys
+      - journey-campaign
       - node
       - bun
       - helium

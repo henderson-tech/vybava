@@ -1,0 +1,4 @@
+interface:
+  display_name: "Journey Campaign"
+  short_description: "Resume real-device QA without losing evidence or state"
+  default_prompt: "Use $journey-campaign to resume the current user-journey campaign from its latest checkpoint."

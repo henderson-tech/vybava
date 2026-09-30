@@ -71,6 +71,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		catalog: c, stdout: a.Stdout, stderr: a.Stderr, stdin: a.Stdin, version: a.Version,
 		installer: installer.Installer{Payload: assets.FS, Store: store},
 	}
+	if filepath.Base(invokedAs) == "journeys" {
+		return rt.journeysApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "memorylint" {
 		return rt.memorylintApplet(), nil
 	}
@@ -207,6 +210,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.skipCICommand("skipci"),
 		rt.redactCommand("redact"),
 		rt.tsgateCommand("tsgate"),
+		rt.journeysCommand("journeys"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
 		rt.plaudCommand("plaud"),
