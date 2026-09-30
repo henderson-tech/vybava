@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/uiloop"
@@ -118,6 +119,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		pass, previous, retries       int
 		passGiven                     bool
 		dryRun, forcePublish, noDelta bool
+		follow                        bool
+		from                          string
+		interval, untilIdle           time.Duration
 	)
 	runCmd := &cobra.Command{
 		Use:   "run",
@@ -153,7 +157,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	splitCmd := &cobra.Command{
 		Use:   "split",
-		Short: "Plan a pass's vitrinka sets: area × viewport × theme, ≤ publish.maxFiles and ≤ publish.maxBytes each",
+		Short: "Plan a pass's vitrinka sets: one per area (so one board), sectioned by viewport × theme",
 		Args:  cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
 			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
@@ -167,11 +171,24 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	publishCmd := &cobra.Command{
 		Use:   "publish",
-		Short: "Adopt and push each planned set with the vitrinka CLI (retry, then halve)",
-		Args:  cobra.NoArgs,
+		Short: "Adopt and push each planned set with the vitrinka CLI (retried on failure); --follow publishes beside a running capture",
+		Long: "publish adopts each planned set and pushes it. With --follow it runs on the\n" +
+			"Mac beside a capture on a box: every --interval it rsyncs the pass back\n" +
+			"(--from, default publish.from + /<out>/pass-<n>/), publishes each shot that\n" +
+			"became final, and stops once the run's done.json has arrived and nothing\n" +
+			"new has for --until-idle.",
+		Args: cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
 			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
 				return uiloop.Result{}, err
+			}
+			if follow {
+				if sets != "" || forcePublish || dryRun {
+					return uiloop.Result{}, uiloop.SelectionError("--follow publishes whole sets as they fill: drop --sets, --force and --dry-run", "vybava ui-loop publish --follow")
+				}
+				return t.Follow(context.Background(), uiloop.FollowOptions{
+					Pass: pass, Areas: uiloop.SplitList(areas), From: from, Interval: interval, UntilIdle: untilIdle, Retries: retries,
+				})
 			}
 			return t.Publish(context.Background(), uiloop.PublishOptions{
 				Pass: pass, Areas: uiloop.SplitList(areas), Sets: uiloop.SplitList(sets),
@@ -182,9 +199,13 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
 	publishCmd.Flags().StringVar(&areas, "areas", "", "only these areas (comma-separated)")
 	publishCmd.Flags().StringVar(&sets, "sets", "", "only these set keys (comma-separated)")
-	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set before it is halved")
+	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set")
 	publishCmd.Flags().BoolVar(&forcePublish, "force", false, "re-push sets the index records as pushed")
 	publishCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the vitrinka commands without running them")
+	publishCmd.Flags().BoolVar(&follow, "follow", false, "publish beside a running capture: fetch, publish what became final, repeat")
+	publishCmd.Flags().StringVar(&from, "from", "", "--follow: the pass directory on the box, user@host:path (default: publish.from + /<out>/pass-<n>/)")
+	publishCmd.Flags().DurationVar(&interval, "interval", 30*time.Second, "--follow: time between fetches")
+	publishCmd.Flags().DurationVar(&untilIdle, "until-idle", 10*time.Minute, "--follow: stop this long after the last new shot once the run is done")
 
 	scoreboardCmd := &cobra.Command{
 		Use:   "scoreboard",

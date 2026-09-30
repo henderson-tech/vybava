@@ -227,6 +227,9 @@ async function capture(browser: Browser, shot: PlannedShot, run: RunFile, files:
         health = await readBuildHealth(page);
       }
     }
+    if (!health.red && as !== undefined && p.signedOut && !page.isClosed() && (await p.signedOut(page, as, app).catch((error: unknown) => { record.settleNotes.push(`signed-out probe failed: ${firstLine(error)}`); return false; }))) {
+      failure = { step: null, stepIndex: null, error: `signed out: the ${app}/${as} session expired — a --resume signs in again` };
+    }
     lap('recipe');
     if (health.red) fail('build-error', health.error ?? 'build red');
     else if (failure) fail('recipe-failed', failure.error, failure);

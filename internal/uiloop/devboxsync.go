@@ -19,7 +19,7 @@ import (
 func DevboxSyncIgnores(out string) []string {
 	out = "/" + strings.Trim(path.Clean(out), "/")
 	var ignores []string
-	for _, name := range []string{"shots", ".auth", "auth.json", "params.json", "report.json", "report.md", "review", "fix", "*.tmp-*", "playwright"} {
+	for _, name := range []string{"shots", ".auth", "auth.json", "params.json", "report.json", "report.md", "done.json", "review", "fix", "*.tmp-*", "playwright"} {
 		ignores = append(ignores, out+"/*/"+name)
 	}
 	return ignores
