@@ -17,7 +17,10 @@ import (
 // PlanFile is one capture to adopt into its area's set.
 type PlanFile struct {
 	// Path is relative to the pass directory.
-	Path  string `json:"path"`
+	Path string `json:"path"`
+	// Stamp is the record's capturedAt: a --resume retake keeps the path
+	// but changes the stamp, so publish adopts the new image.
+	Stamp string `json:"stamp"`
 	Shot  string `json:"shot"`
 	Full  bool   `json:"full"`
 	Label string `json:"label"`
@@ -302,10 +305,15 @@ func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []
 			}
 			s.Files = append(s.Files, unit...)
 		}
-		// +1: the set's manifest.json counts toward vitrinka's cap too.
-		if len(s.Files)+1 > setFileCap {
+		// The root is shared by every pass, so the files other passes adopted
+		// into it count too; +1: the set's manifest.json counts toward the cap.
+		earlier, err := t.adoptedByOtherPasses(pass, s.Key)
+		if err != nil {
+			return Plan{}, nil, err
+		}
+		if earlier+len(s.Files)+1 > setFileCap {
 			diags = append(diags, errDiag(DiagSetTooLarge,
-				fmt.Sprintf("area %s holds %d captures; a vitrinka set holds at most %d files, its manifest included", area, len(s.Files), setFileCap),
+				fmt.Sprintf("area %s holds %d captures this pass and %d from other passes; a vitrinka set holds at most %d files, its manifest included", area, len(s.Files), earlier, setFileCap),
 				"split the area into smaller ones in the uiLoop config, then re-run the pass's split"))
 			plan.Skipped = append(plan.Skipped, s.Key+" (too many files)")
 			continue
@@ -358,7 +366,7 @@ func (t *Tool) planFiles(pass int, passDir string, r Record) ([]PlanFile, error)
 			return PlanFile{}, fmt.Errorf("%s: %w", rel, err)
 		}
 		f := PlanFile{
-			Path: rel, Shot: r.Key(), Full: full,
+			Path: rel, Stamp: r.CapturedAt, Shot: r.Key(), Full: full,
 			Label: fit(label, "", maxLabel), Title: fmt.Sprintf("%s · %s · %s", r.Title, r.Viewport, r.Theme),
 			Note: note(pass, r), Route: route, URL: r.URL, State: state,
 			Viewport: r.Viewport, Theme: r.Theme, Size: fmt.Sprintf("%dx%d@%d", w, h, DPR), Src: src,

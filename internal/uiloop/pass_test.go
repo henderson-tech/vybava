@@ -160,6 +160,44 @@ func TestSplitRefusesAnAreaAboveTheSetFileCap(t *testing.T) {
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagSetTooLarge || res.Diagnostics[0].Severity != "error" {
 		t.Errorf("diagnostics: %+v", res.Diagnostics)
 	}
+
+	// The root is shared by every pass: pass 1's two adopted admin files leave
+	// no room for pass 2's one.
+	ledger := filepath.Join(tool.passAbs(1), "publish", "adopted", "ui-polish-admin")
+	if err := os.MkdirAll(filepath.Dir(ledger), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledger, []byte("shots/users/desktop.dark.png\tT1\nshots/users/desktop.dark.png\tT2\nshots/users/desktop.dark.full.png\tT1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePass(t, tool, 2, []shot{{order: 0, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 10}})
+	res, err = tool.Split(SplitOptions{Pass: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan := res.Data.(Plan); len(plan.Sets) != 0 || fmt.Sprint(plan.Skipped) != "[ui-polish-admin (too many files)]" {
+		t.Errorf("other passes' files count toward the cap (a retake's path once): %v %v", plan.Sets, plan.Skipped)
+	}
+}
+
+// A --resume retake keeps the path; its new capturedAt re-adopts it.
+func TestPublishReadoptsARetakenShot(t *testing.T) {
+	tool := newTool(t, testConfig())
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) { return v.exec(c.Args[1:]), nil }
+	for _, at := range []string{"2026-09-30T10:00:00.000Z", "2026-09-30T10:00:00.000Z", "2026-09-30T12:00:00.000Z"} {
+		writePass(t, tool, 1, []shot{
+			{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: at},
+			{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: "2026-09-30T10:00:00.000Z"},
+		})
+		if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fmt.Sprint(v.captures) != "[P1-A-PHONE-LIGHT P1-B-PHONE-LIGHT P1-A-PHONE-LIGHT]" || v.pushes["ui-polish-tasks"] != 2 {
+		t.Errorf("an unchanged pass is skipped, a retake re-adopted alone: %v %v", v.captures, v.pushes)
+	}
 }
 
 func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {

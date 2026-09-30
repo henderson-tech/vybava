@@ -1,9 +1,11 @@
 // Playwright globalTeardown: the pass summary, written after every run (a
 // filtered or resumed run re-summarizes the whole pass directory), then the
-// done marker.
+// done marker. The run's storage states go with it: every run signs in fresh,
+// so a signed-in session never outlives the run that made it.
 
+import { rmSync } from 'node:fs';
 import { writeReport } from './report';
-import { loadRun, passPath, writeJson } from './run';
+import { AUTH_FILE, loadRun, passPath, writeJson } from './run';
 
 /**
  * `<pass>/done.json`: this run is over (internal/uiloop/follow.go DoneFile).
@@ -21,6 +23,8 @@ export interface DoneFile {
 
 export default async function teardown(): Promise<void> {
   const run = loadRun();
+  rmSync(passPath(run, '.auth'), { recursive: true, force: true });
+  rmSync(passPath(run, AUTH_FILE), { force: true });
   const report = writeReport(run);
   const failed = report.rows.length - (report.totals.byStatus['ok'] ?? 0);
   console.log(`ui-loop: report.json · ${report.rows.length} shots · ${failed} not ok · ${report.totals.defects} lint defects`);

@@ -79,7 +79,7 @@ var boardURLRe = regexp.MustCompile(`https://\S+/boards/\S+`)
 func setDigest(s Set) string {
 	var b strings.Builder
 	for _, f := range s.Files {
-		b.WriteString(f.Path)
+		b.WriteString(ledgerLine(f))
 		b.WriteByte('\n')
 	}
 	return digest(b.String(), 12)
@@ -195,7 +195,8 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		}
 	}
 	for _, f := range s.Files {
-		if have[f.Path] {
+		// A bare-path line is an older publish's; it stands for any stamp.
+		if have[ledgerLine(f)] || have[f.Path] {
 			continue
 		}
 		vp, err := p.viewportOf(f)
@@ -215,7 +216,7 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		if err != nil {
 			return refused, err
 		}
-		_, werr := lf.WriteString(f.Path + "\n")
+		_, werr := lf.WriteString(ledgerLine(f) + "\n")
 		if cerr := lf.Close(); werr == nil {
 			werr = cerr
 		}
@@ -244,6 +245,37 @@ func ledgerFor(passDir, root string) (string, error) {
 		}
 	}
 	return ledger, nil
+}
+
+// adoptedByOtherPasses counts the files every pass but this one adopted into
+// the set root of key — their ledgers, since the root is shared by every pass.
+func (t *Tool) adoptedByOtherPasses(pass int, key string) (int, error) {
+	passes, err := t.Passes()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, other := range passes {
+		if other == pass {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(t.passAbs(other), "publish", "adopted", key))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		// A retake adds a line for a path already in the root: count paths.
+		paths := map[string]bool{}
+		for _, line := range strings.Split(string(b), "\n") {
+			if p, _, _ := strings.Cut(line, "\t"); p != "" {
+				paths[p] = true
+			}
+		}
+		n += len(paths)
+	}
+	return n, nil
 }
 
 func release(root string) error {
@@ -461,3 +493,7 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 	res.Next = []string{fmt.Sprintf("vybava ui-loop scoreboard --pass %d --json", pass)}
 	return res, nil
 }
+
+// ledgerLine is a file's line in an adopted ledger and its setDigest entry:
+// path and stamp, so a retaken image at the same path is adopted again.
+func ledgerLine(f PlanFile) string { return f.Path + "\t" + f.Stamp }
