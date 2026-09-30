@@ -35,11 +35,19 @@ const (
 	DiagRunFailed = "RUN_FAILED"
 	// DiagShotsNotOk: the pass holds shots whose status is not ok (info).
 	DiagShotsNotOk = "SHOTS_NOT_OK"
-	// DiagFileTooLarge: a single capture exceeds publish.maxBytes and gets a
-	// set of its own (warning).
-	DiagFileTooLarge = "FILE_TOO_LARGE"
-	// DiagPublishFailed: a set could not be pushed even after retries and
-	// halving; its row in publish/index.json says why.
+	// DiagSetTooLarge: an area holds more captures than one vitrinka set takes
+	// (ingest.MaxSetFiles, 20,000 files); its set is not planned — split the
+	// area in the config.
+	DiagSetTooLarge = "SET_TOO_LARGE"
+	// DiagConfigDeprecated: the config sets a key that is still accepted but
+	// ignored (publish.maxFiles, publish.maxBytes) — delete it (warning).
+	DiagConfigDeprecated = "CONFIG_DEPRECATED"
+	// DiagLegacySets: publish/index.json lists sets an older publish of this
+	// pass chunked by viewport × theme; they are kept under `legacy` and never
+	// re-adopted — delete their boards when the area sets replace them (info).
+	DiagLegacySets = "LEGACY_SETS"
+	// DiagPublishFailed: a set could not be pushed even after retries; its row
+	// in publish/index.json says why.
 	DiagPublishFailed = "PUBLISH_FAILED"
 	// DiagVitrinkaMissing: the vitrinka CLI is not on PATH.
 	DiagVitrinkaMissing = "VITRINKA_MISSING"

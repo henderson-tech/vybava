@@ -114,7 +114,9 @@ func finalRecords(passDir string, records []Record, run RunFile, done bool) []Re
 // Follow publishes a pass while a box captures it: each tick rsyncs the pass
 // back (never its .auth/ storage states or playwright/ output), publishes
 // every shot that became final — the same plan, ledger and index as
-// Publish, without halving — and sleeps. It stops once the run's done.json
+// Publish — and sleeps. Each adopted shot rides vitrinka's detached per-file
+// push onto its area's board at once; the tick then pushes every area set
+// that gained files, the backstop that records its URL and status. It stops once the run's done.json
 // has arrived and no new shot has for --until-idle.
 func (t *Tool) Follow(ctx context.Context, o FollowOptions) (Result, error) {
 	pass, err := t.ResolvePass(o.Pass, true)
@@ -193,7 +195,7 @@ func (t *Tool) Follow(ctx context.Context, o FollowOptions) (Result, error) {
 		// Every tick, not only one with new shots: a set whose push failed is
 		// retried on the next.
 		if len(final) > 0 {
-			if last, err = t.publishRecords(ctx, pass, final, PublishOptions{Areas: o.Areas, Retries: o.Retries}, false); err != nil {
+			if last, err = t.publishRecords(ctx, pass, final, PublishOptions{Areas: o.Areas, Retries: o.Retries}); err != nil {
 				return Result{}, err
 			}
 		}

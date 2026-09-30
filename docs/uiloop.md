@@ -59,7 +59,7 @@ uiLoop: {
     allow: { grid: ['ui-button', '.ui-badge-small', '[role=menuitem]'] },
   },
   vitrinka: { project: 'powerflow', boardPrefix: 'ui-polish' },
-  publish: { maxFiles: 96, maxBytes: 4_000_000, from: 'devops:ws/pwf/pwf-ui' },  // from: the repo on the capture box, for publish --follow
+  publish: { from: 'devops:ws/pwf/pwf-ui' },  // the repo on the capture box, for publish --follow
 }
 ```
 
@@ -143,12 +143,12 @@ The capture must run next to the app, never on the Mac. The container needs the 
 
 1. **Print the command.** On the Mac, in the repo: `vybava ui-loop check && vybava ui-loop run --print --json`. This writes run.json into the synced tree. The `--print` output also shows the `devbox run -- '<cmd>'` line.
 2. **Run it in the workspace.** Use `vybava ui-loop run --wrap "devbox run --max-wait 45m -- {cmd}"`, or run the printed line yourself. Set the app's `env` var inside the command when the container reaches the app on another address.
-3. **Publish beside the capture.** Devbox sync is one-way (Mac → box), and the box has no vitrinka CLI or token, so on the Mac, next to the running capture, run `vybava ui-loop publish --follow`. Every `--interval` (30 s) it rsyncs the pass back from `--from` (default `publish.from` + `/<out>/pass-<n>/`, e.g. `devops:ws/<workspace>/<app-dir>/.ui-loop/pass-3/`, with `<workspace>` from `devbox url --json`). It never fetches `.auth/` (storage states), `playwright/` or `run.json`. It then adopts and pushes every shot that became final, one push per set that gained files. It stops once the run's `done.json` has arrived and no new shot has for `--until-idle` (10 min). It is idempotent through the ledgers and the index, so a re-run after a stop or a crash picks up where it left off. Without `done.json` (a capture killed before its teardown) it gives up after 3 × `--until-idle` with no new shot (`RUN_UNFINISHED`); finish with `run --resume` and follow again.
+3. **Publish beside the capture.** Devbox sync is one-way (Mac → box), and the box has no vitrinka CLI or token, so on the Mac, next to the running capture, run `vybava ui-loop publish --follow`. Every `--interval` (30 s) it rsyncs the pass back from `--from` (default `publish.from` + `/<out>/pass-<n>/`, e.g. `devops:ws/<workspace>/<app-dir>/.ui-loop/pass-3/`, with `<workspace>` from `devbox url --json`). It never fetches `.auth/` (storage states), `playwright/` or `run.json`. It then adopts and pushes every shot that became final, one push per area set that gained files. It stops once the run's `done.json` has arrived and no new shot has for `--until-idle` (10 min). It is idempotent through the ledgers and the index, so a re-run after a stop or a crash picks up where it left off. Without `done.json` (a capture killed before its teardown) it gives up after 3 × `--until-idle` with no new shot (`RUN_UNFINISHED`); finish with `run --resume` and follow again.
 4. **Score on the Mac:** `ui-loop scoreboard`. `split` and a plain `publish` still work on a pass fetched by hand (`rsync -a devops:ws/<workspace>/<app>/<out>/pass-<n>/ <out>/pass-<n>/`).
 
 A shot is **final** when its captures are on disk and the running capture will not rewrite it: it was taken by this run (`capturedAt` at or after run.json's `createdAt`, so keep the box's clock in sync), it has a status `--resume` keeps (`ok`, `unreachable`), or the run is done. A `--resume` re-run writes a new run.json, so the previous run's `done.json` no longer counts.
 
-Follow does not rely on vitrinka's detached per-shot push (the one `board capture` fires when the root holds its descriptor). That push reports no exit status or URL, so the index could not tell a pushed set from a failed one. It would also start one upload per adopted shot on the uplink that already times out. The descriptor stays held during adoption, as in a plain publish. A failed push is retried on the next tick. Follow never halves a set, because its sets are still growing; a plain `publish` afterwards halves what still fails.
+Follow is progressive through vitrinka's own detached push. The set root keeps its `.vitrinka` descriptor, so every `board capture` fires a detached `board push` that uploads only the files the deployment lacks, and the shot joins its area's board within seconds. That push reports no exit status or URL, so after adopting, each tick also pushes every area set that gained files. This backstop push commits the set's metadata and records its URL and status in the index. The two pushes coexist by vitrinka's design. Both read the server's have-list and only add. A detached push that is still running re-pushes for every capture that marked the root, so the last push to land always holds every shot. An overlap costs at most a re-upload of the files in flight at that moment. A failed push is retried on the next tick.
 
 #### The sync trap: ignore the capture's output
 
@@ -172,25 +172,30 @@ A `login` that types a password reads it from the environment. Getting it there 
 
 ## Split and publish
 
-`split` plans one vitrinka set per area × viewport × theme, in config area order.
+`split` plans **one vitrinka set per area per pass**, in config area order. A set key is a board, so a pass makes one board per area. Every viewport × theme of the area goes into that one set.
 
 - **Images and notes:** only `ok`, `theme-mismatch` and `build-error` shots become images. Every other status (`recipe-failed`, `unreachable`, `error`) is listed per area under `notes` in the plan and in `publish/index.json` (`id`, `viewport`, `theme`, `status`, `step`, `error`), for the review-loop publisher to render as a text card. A `recipe-failed` shot is a picture of wherever the recipe died, usually the same sign-in page.
-- **Limits:** each set is chunked at `publish.maxFiles` (default 96, the hard cap; vitrinka rejects a set directory of more than 100 files) and at `publish.maxBytes` of **upload** bytes (default 4 MB; pushes time out at 30 s on a shared uplink). An adopted file counts at the size of the WebP `board capture` made of it, read from the set root. A file not adopted yet counts at `min(PNG bytes, 0.1 × pixels)`. PNG bytes predict the WebP badly: on pwf-ui pass 1 a noisy 4 MB desktop PNG became 7 % of that, and a small flat one 93 %. Bytes per pixel held (p99 0.089, max 0.136), and the estimate came out at p99 0.89 of the real size. Sizing by PNG bytes had split that pass into 302 sets. The estimate plans 144 for its 1,208 image shots (42 area × viewport × theme groups), and measured packing tightens that further.
-- **Adoption is sticky:** a file already adopted stays in its set. `board push` only adds, so a file that moved would sit on two boards. A shot that arrives late (a resume retake, a slower worker) joins the group's open set instead of shifting the pushed ones. Without adoptions the plan is plain greedy in manifest order.
-- **Pairs:** a shot's viewport and full captures stay in one chunk.
-- **Keys** are `<boardPrefix>-p<n>-<area>-<viewport>-<theme>-<chunk>`, capped at 62 characters with a digest. vitrinka keys cap at 64, and the halving `b` needs room.
+- **Keys** are `<boardPrefix>-p<n>-<area>`, capped at 64 characters with a digest. **Titles** are `<boardPrefix> · <area> · pass <n>`.
+- **Order:** files are grouped by viewport, then theme, in the order `apps.<app>.viewports` × `themes` lists them. Inside each group they follow screen (manifest) order, with a shot's full capture right after its viewport capture. A plain `publish` adopts in this order, so the set's manifest follows it too. Under `--follow` shots are adopted as they become final, so the manifest is in arrival order, and the sections below carry the layout.
+- **Sections:** each set in `plan.json` and each row in `publish/index.json` carries `sections: [{title: "<viewport> · <theme>", viewport, theme, labels: [...]}]`, in set order. The review-loop publisher lays out one board section per entry from its labels.
+- **Size:** vitrinka 5.13 syncs a screenshot set file by file (the per-file door), so a set has no byte cap and holds up to 20,000 files, its manifest included (`ingest.MaxSetFiles`). An area above that is not planned: `split` reports `SET_TOO_LARGE`. Split the area in the config.
 - **Labels** are `P<n>-<ID>-<VIEWPORT>-<THEME>[-FULL]`, capped at 40 characters.
+- **Captures** carry `--device <viewport>`, `--viewport <W>x<H>@2` and `--state <theme>[ · as <user>][ · <app>]`, so every shot names its section on the board.
 - **Captions** carry the status and the lint defects, worst first.
-- **Determinism:** the plan is identical for an identical pass and set of ledgers. It goes to `<pass>/publish/plan.json`. Before a publish it shows the estimates; after one it shows the measured sets.
+- **Determinism:** the plan is identical for an identical pass. It goes to `<pass>/publish/plan.json` (`v: 2`).
 
-`publish` adopts each set under `<pass>/publish/sets/<key>`, one set at a time. After each set it re-plans with the WebP sizes it just measured, so shots join the set while it has room, and only then pushes:
+`publish` adopts each set under `<pass>/publish/sets/<key>`, then pushes it:
 
 1. `vitrinka board init --root --key --title --project`.
-2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. A ledger at `publish/adopted/<key>` makes a re-run adopt only what is missing. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`.
-3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`.
-4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. The parent's root and ledger are removed, because the halves re-adopt every file. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
+2. `board capture web --file … --label --title --route --url --note --src --state --device --viewport` adopts each file. The descriptor stays in place, so each capture fires vitrinka's detached per-file push and the shot shows up on the board while the rest adopt. A ledger at `publish/adopted/<key>` makes a re-run adopt only what is missing. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`.
+3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`. This commits the set and records its status.
+4. A failed push is retried (`--retries`, default 3). A set that still fails is `failed` in the index, and `--sets <key>` retries it.
 
 Outcomes go to `<pass>/publish/index.json`, with the notes beside the sets. A set already pushed with the same files is skipped unless `--force`.
+
+**A pass published before one set per area** (chunked by area × viewport × theme into `…-<viewport>-<theme>-<n>` sets) is not re-adopted into those chunks. `publish` plans fresh area sets and adopts every file into them. Index rows whose key is no area's set move to `legacy` (`key`, `title`, `files`, `status`, `url`), and publish reports `LEGACY_SETS`. Their boards are never deleted here: that cleanup is the owner's call, and `legacy` is its list.
+
+`publish.maxFiles` and `publish.maxBytes` are deprecated. An older config that still sets them decodes, and they are ignored with a `CONFIG_DEPRECATED` warning from `check`, `split` and `publish`. Delete them.
 
 ## Scoreboard and the review backlog
 

@@ -62,10 +62,9 @@ func TestConfigRejectsUnknownKeysAndReportsEveryProblem(t *testing.T) {
 	bad.Apps = map[string]App{"portal": {BaseURL: "ftp://x", Env: "lower", Viewports: []string{"watch"}, Themes: []string{"sepia"}}}
 	bad.Lint.Off = []string{"no-such-rule"}
 	bad.Lint.Allow = map[string][]string{"grid": {"ui-button", " "}, "truncated": {".x"}, "nope": {".y"}, "contrast": {}}
-	bad.Publish.MaxFiles = 101
 	problems := strings.Join(bad.Validate(), "\n")
 	for _, want := range []string{"dir \"../elsewhere\"", "not kebab-case", "listed twice", "not an http(s) URL", "not an env var",
-		"unknown viewport \"watch\"", "\"sepia\" is not light or dark", "unknown rule \"no-such-rule\"", "publish.maxFiles",
+		"unknown viewport \"watch\"", "\"sepia\" is not light or dark", "unknown rule \"no-such-rule\"",
 		"lint.allow.grid holds an empty selector", "\"truncated\" is informational already", "lint.allow: unknown rule \"nope\"", "lint.allow.contrast must list at least one selector"} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("Validate misses %q in:\n%s", want, problems)
@@ -73,7 +72,7 @@ func TestConfigRejectsUnknownKeysAndReportsEveryProblem(t *testing.T) {
 	}
 
 	c := testConfig().WithDefaults()
-	if c.Lint.Grid != 4 || c.Lint.TouchTarget != 44 || c.Publish.MaxFiles != 96 || c.Publish.MaxBytes != 4_000_000 || c.TSRunner != "npx --yes tsx" {
+	if c.Lint.Grid != 4 || c.Lint.TouchTarget != 44 || c.TSRunner != "npx --yes tsx" {
 		t.Errorf("defaults: %+v %+v %q", c.Lint, c.Publish, c.TSRunner)
 	}
 	c.Runner, c.TSRunner = "bunx playwright test", ""

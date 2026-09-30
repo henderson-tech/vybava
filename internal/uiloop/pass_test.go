@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/png"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -72,29 +69,20 @@ func writePass(t *testing.T, tool *Tool, pass int, shots []shot) {
 	}
 }
 
-func TestSplitIsDeterministicAndHonoursBothLimits(t *testing.T) {
+func TestSplitPlansOneSetPerAreaSectionedByViewportAndTheme(t *testing.T) {
 	cfg := testConfig()
-	cfg.Publish = Publish{MaxFiles: 3, MaxBytes: 1000}
+	cfg.Publish = Publish{MaxFiles: 96} // an older config: accepted, ignored, warned about
 	tool := newTool(t, cfg)
-	var shots []shot
-	// admin before tasks in the manifest; the config's area order must still win.
-	shots = append(shots, shot{order: 0, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 100})
-	for i := 1; i <= 5; i++ {
-		// The third shot's pair would overflow 3 files: it opens chunk 2 whole.
-		full := 0
-		if i == 3 {
-			full = 100
-		}
-		shots = append(shots, shot{order: i, id: fmt.Sprintf("task-%d", i), area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 100, full: full})
-	}
-	shots = append(shots,
-		shot{order: 6, id: "big-a", area: "tasks", vp: "desktop", theme: "light", status: "ok", bytes: 600},
-		shot{order: 7, id: "big-b", area: "tasks", vp: "desktop", theme: "light", status: "ok", bytes: 600},
-		shot{order: 8, id: "dark-only", area: "tasks", vp: "phone", theme: "dark", status: "ok", bytes: 10},
-		shot{order: 9, id: "gone", area: "tasks", vp: "phone", theme: "light", status: "unreachable"},
-	)
-	writePass(t, tool, 1, shots)
-
+	// Manifest order mixes viewports and themes, and admin comes first; the
+	// config's area, viewport and theme order must still win.
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 100},
+		{order: 1, id: "list", area: "tasks", vp: "desktop", theme: "light", status: "ok", bytes: 100},
+		{order: 2, id: "list", area: "tasks", vp: "phone", theme: "dark", status: "ok", bytes: 100},
+		{order: 3, id: "list", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 100, full: 100},
+		{order: 4, id: "detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 100},
+		{order: 5, id: "gone", area: "tasks", vp: "phone", theme: "light", status: "unreachable"},
+	})
 	res, err := tool.Split(SplitOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -102,35 +90,39 @@ func TestSplitIsDeterministicAndHonoursBothLimits(t *testing.T) {
 	plan := res.Data.(Plan)
 	var got []string
 	for _, s := range plan.Sets {
-		var files []string
-		for _, f := range s.Files {
-			files = append(files, filepath.Base(filepath.Dir(f.Path))+"/"+filepath.Base(f.Path))
+		got = append(got, s.Key+" | "+s.Title)
+		for _, sec := range s.Sections {
+			got = append(got, "  "+sec.Title+" "+strings.Join(sec.Labels, ","))
 		}
-		got = append(got, fmt.Sprintf("%s %d/%d %s", s.Key, s.Chunk, s.Chunks, strings.Join(files, ",")))
 	}
 	want := []string{
-		"ui-polish-p1-tasks-phone-light-1 1/3 task-1/phone.light.png,task-2/phone.light.png",
-		"ui-polish-p1-tasks-phone-light-2 2/3 task-3/phone.light.png,task-3/phone.light.full.png,task-4/phone.light.png",
-		"ui-polish-p1-tasks-phone-light-3 3/3 task-5/phone.light.png",
-		"ui-polish-p1-tasks-phone-dark-1 1/1 dark-only/phone.dark.png",
-		"ui-polish-p1-tasks-desktop-light-1 1/2 big-a/desktop.light.png",
-		"ui-polish-p1-tasks-desktop-light-2 2/2 big-b/desktop.light.png",
-		"ui-polish-p1-admin-desktop-dark-1 1/1 users/desktop.dark.png",
+		"ui-polish-p1-tasks | ui-polish · tasks · pass 1",
+		"  phone · light P1-LIST-PHONE-LIGHT,P1-LIST-PHONE-LIGHT-FULL,P1-DETAIL-PHONE-LIGHT",
+		"  phone · dark P1-LIST-PHONE-DARK",
+		"  desktop · light P1-LIST-DESKTOP-LIGHT",
+		"ui-polish-p1-admin | ui-polish · admin · pass 1",
+		"  desktop · dark P1-USERS-DESKTOP-DARK",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("plan:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	for _, s := range plan.Sets {
-		if len(s.Files) > 3 || s.Bytes > 1000 {
-			t.Errorf("%s breaks a limit: %d files, %d bytes", s.Key, len(s.Files), s.Bytes)
-		}
+	// The files follow the sections, so the manifest a publish builds does too.
+	var labels []string
+	for _, f := range plan.Sets[0].Files {
+		labels = append(labels, f.Label)
 	}
-	if len(plan.Skipped) != 0 || len(plan.Notes) != 1 || plan.Notes[0].Area != "tasks" || fmt.Sprint(plan.Notes[0].Shots) != "[{gone phone light unreachable  }]" {
+	if strings.Join(labels, ",") != "P1-LIST-PHONE-LIGHT,P1-LIST-PHONE-LIGHT-FULL,P1-DETAIL-PHONE-LIGHT,P1-LIST-PHONE-DARK,P1-LIST-DESKTOP-LIGHT" {
+		t.Errorf("file order: %v", labels)
+	}
+	full := plan.Sets[0].Files[1]
+	if full.Route != "/portal/#/list" || full.Viewport != "phone" || full.Theme != "light" || full.Size != "390x844@2" || !strings.HasPrefix(full.Note, "full content · pass 1 · clean") {
+		t.Errorf("full companion: %+v", full)
+	}
+	if len(plan.Skipped) != 0 || len(plan.Notes) != 1 || fmt.Sprint(plan.Notes[0].Shots) != "[{gone phone light unreachable  }]" {
 		t.Errorf("an unreachable shot is a note, never an image: skipped %v, notes %+v", plan.Skipped, plan.Notes)
 	}
-	full := plan.Sets[1].Files[1]
-	if full.Label != "P1-TASK-3-PHONE-LIGHT-FULL" || full.Route != "/portal/#/task-3" || full.Viewport != "390x844@2" || !strings.HasPrefix(full.Note, "full content · pass 1 · clean") {
-		t.Errorf("full companion: %+v", full)
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagConfigDeprecated {
+		t.Errorf("publish.maxFiles is ignored with a warning: %+v", res.Diagnostics)
 	}
 
 	again, err := tool.Split(SplitOptions{})
@@ -142,115 +134,122 @@ func TestSplitIsDeterministicAndHonoursBothLimits(t *testing.T) {
 	if string(a) != string(b) {
 		t.Error("split is not deterministic")
 	}
-
-	if k := fit(strings.Repeat("area-", 20), "-12", maxKey); len(k) > maxKey || !strings.HasSuffix(k, "-12") || k == fit(strings.Repeat("area-", 19)+"x", "-12", maxKey) {
-		t.Errorf("fit must cap, keep the suffix and stay unique: %q", k)
+	if k := areaKey("ui-polish", 12, strings.Repeat("area-", 20)); len(k) > maxKey || k == areaKey("ui-polish", 12, strings.Repeat("area-", 19)+"x") {
+		t.Errorf("an area key must cap at 64 and stay unique: %q", k)
 	}
 }
 
-func TestPublishRetriesThenHalves(t *testing.T) {
-	cfg := testConfig()
-	tool := newTool(t, cfg)
+func TestSplitRefusesAnAreaAboveTheSetFileCap(t *testing.T) {
+	defer func(n int) { setFileCap = n }(setFileCap)
+	setFileCap = 3 // two captures and the manifest fit; three do not
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 10, full: 10},
+		{order: 1, id: "list", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, full: 10},
+		{order: 2, id: "detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+	})
+	res, err := tool.Split(SplitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := res.Data.(Plan)
+	if len(plan.Sets) != 1 || plan.Sets[0].Key != "ui-polish-p1-admin" || fmt.Sprint(plan.Skipped) != "[ui-polish-p1-tasks (too many files)]" {
+		t.Errorf("the oversized area is refused, the rest planned: %v %v", plan.Sets, plan.Skipped)
+	}
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagSetTooLarge || res.Diagnostics[0].Severity != "error" {
+		t.Errorf("diagnostics: %+v", res.Diagnostics)
+	}
+}
+
+func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
+	tool := newTool(t, testConfig())
 	writePass(t, tool, 1, []shot{
 		{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
-		{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
-		{order: 2, id: "c", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+		{order: 1, id: "a", area: "tasks", vp: "desktop", theme: "dark", status: "ok", bytes: 10},
+		{order: 2, id: "u", area: "admin", vp: "phone", theme: "light", status: "ok", bytes: 10},
 	})
+	// Pass 1 was published the old way: a chunk set, its ledger and its index row.
+	pub := filepath.Join(tool.passAbs(1), "publish")
+	old := "ui-polish-p1-tasks-phone-light-1"
+	if err := os.MkdirAll(filepath.Join(pub, "adopted"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pub, "adopted", old), []byte("shots/a/phone.light.png\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ := json.Marshal(PublishIndex{Pass: 1, Sets: []PublishedSet{{Key: old, Title: "old", Files: 1, Status: "pushed", URL: "https://app.vitrinka.ai/w/fixit/boards/" + old}}, Notes: []AreaNotes{}})
+	if err := os.WriteFile(filepath.Join(pub, "index.json"), idx, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
 	tool.Sleep = func(time.Duration) {}
-	pushes := map[string]int{}
-	tailDown := true // the tail half fails on the first run, then recovers
-	var captures []string
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	tasksDown := true // the tasks push fails on the first run, then recovers
+	var devices []string
 	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
 		args := c.Args[1:]
-		root := args[slices.Index(args, "--root")+1]
-		switch strings.Join(args[:2], " ") {
-		case "board init":
-			return CmdOut{}, os.WriteFile(filepath.Join(root, ".vitrinka"), []byte(`{}`), 0o644)
-		case "board capture":
-			if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err == nil {
-				t.Error("capture ran with the descriptor in place: it would fire a push per shot")
-			}
-			captures = append(captures, filepath.Base(root)+" "+args[slices.Index(args, "--label")+1])
-			return CmdOut{}, nil
-		case "board push":
-			key := filepath.Base(root)
-			pushes[key]++
-			// vitrinka 5.13 refuses a root holding anything but screenshot-set content.
-			entries, _ := os.ReadDir(root)
-			for _, e := range entries {
-				if e.Name() != ".vitrinka" {
-					t.Errorf("%s holds %s at push: board push refuses non-screenshot content", key, e.Name())
-				}
-			}
-			if key == "ui-polish-p1-tasks-phone-light-1" || (key == "ui-polish-p1-tasks-phone-light-1b" && tailDown) {
-				return CmdOut{Code: 1, Stderr: "push timed out after 30s"}, nil
-			}
-			return CmdOut{Stdout: `{"v":1,"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + key + `","files":2}}`}, nil
+		if strings.Join(args[:2], " ") == "board capture" {
+			devices = append(devices, args[slices.Index(args, "--device")+1]+" "+args[slices.Index(args, "--state")+1])
 		}
-		t.Fatalf("unexpected command %v", c.Args)
-		return CmdOut{}, nil
+		if strings.Join(args[:2], " ") == "board push" && tasksDown && strings.HasSuffix(args[slices.Index(args, "--root")+1], "ui-polish-p1-tasks") {
+			v.pushes["ui-polish-p1-tasks"]++
+			return CmdOut{Code: 1, Stderr: "push failed: 503"}, nil
+		}
+		return v.exec(args), nil
 	}
 	res, err := tool.Publish(context.Background(), PublishOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
 	var got []string
-	for _, s := range sets {
-		got = append(got, fmt.Sprintf("%s %s %d %v", s.Key, s.Status, s.Files, s.HalvedInto))
+	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
+		got = append(got, fmt.Sprintf("%s %s %d %d", s.Key, s.Status, s.Files, len(s.Sections)))
 	}
-	want := []string{
-		"ui-polish-p1-tasks-phone-light-1 halved 3 [ui-polish-p1-tasks-phone-light-1a ui-polish-p1-tasks-phone-light-1b]",
-		"ui-polish-p1-tasks-phone-light-1a pushed 2 []",
-		"ui-polish-p1-tasks-phone-light-1b failed 1 []",
+	if !slices.Equal(got, []string{"ui-polish-p1-tasks failed 2 2", "ui-polish-p1-admin pushed 1 1"}) {
+		t.Errorf("publish: %v", got)
 	}
-	if !slices.Equal(got, want) {
-		t.Errorf("publish:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	if v.pushes["ui-polish-p1-tasks"] != 3 || v.pushes[old] != 0 {
+		t.Errorf("3 plain tries, no halving; the chunk set is never pushed: %v", v.pushes)
 	}
-	if pushes["ui-polish-p1-tasks-phone-light-1"] != 3 || pushes["ui-polish-p1-tasks-phone-light-1b"] != 3 {
-		t.Errorf("3 tries per set, a half is never halved again: %v", pushes)
+	// The chunk ledger never re-adopts a into its old set: the area set takes every file.
+	if fmt.Sprint(v.captures) != "[P1-A-PHONE-LIGHT P1-A-DESKTOP-DARK P1-U-PHONE-LIGHT]" || fmt.Sprint(devices) != "[phone light desktop dark phone light]" {
+		t.Errorf("captures: %v %v", v.captures, devices)
 	}
-	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Fix, "--sets ui-polish-p1-tasks-phone-light-1b") {
-		t.Errorf("the failed half is retried by its own key: %+v", res.Diagnostics)
+	codes := map[string]string{}
+	for _, d := range res.Diagnostics {
+		codes[d.Code] = d.Fix
 	}
-	if sets[1].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-p1-tasks-phone-light-1a" {
-		t.Errorf("url from the --json envelope: %q", sets[1].URL)
+	if !strings.Contains(codes[DiagPublishFailed], "--sets ui-polish-p1-tasks") || codes[DiagLegacySets] == "" {
+		t.Errorf("diagnostics: %+v", res.Diagnostics)
 	}
-	if len(captures) != 6 || captures[5] != "ui-polish-p1-tasks-phone-light-1b P1-C-PHONE-LIGHT" {
-		t.Errorf("captures: %v", captures)
+	var index PublishIndex
+	b, _ := os.ReadFile(filepath.Join(pub, "index.json"))
+	if err := json.Unmarshal(b, &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Legacy) != 1 || index.Legacy[0].Key != old || index.Legacy[0].URL == "" || len(index.Sets) != 2 {
+		t.Errorf("the chunk row moves to legacy: %+v", index)
+	}
+	if s := index.Sets[0].Sections; len(s) != 2 || s[0].Title != "phone · light" || s[1].Title != "desktop · dark" || fmt.Sprint(s[1].Labels) != "[P1-A-DESKTOP-DARK]" {
+		t.Errorf("sections in the index: %+v", s)
 	}
 
-	// Retrying by the half's key pushes that half only; the pushed head is left alone.
-	tailDown = false
-	before := len(captures)
-	res, err = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks-phone-light-1b"}})
+	// Retrying by key pushes the set again without re-adopting it.
+	tasksDown = false
+	v.captures = nil
+	res, err = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got = got[:0]
-	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
-		got = append(got, s.Key+" "+s.Status)
+	sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
+	if len(sets) != 1 || sets[0].Status != "pushed" || len(v.captures) != 0 || sets[0].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-p1-tasks" {
+		t.Errorf("retry: %+v, captures %v", sets, v.captures)
 	}
-	if !slices.Equal(got, []string{"ui-polish-p1-tasks-phone-light-1 halved", "ui-polish-p1-tasks-phone-light-1b pushed"}) || len(res.Diagnostics) != 0 {
-		t.Errorf("retry: %v %+v", got, res.Diagnostics)
-	}
-	if len(captures) != before {
-		t.Errorf("the tail was already adopted; only its push is retried: %v", captures[before:])
-	}
-	// --force re-pushes the named half, never the whole parent.
-	res, _ = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks-phone-light-1b"}, Force: true})
-	got = got[:0]
-	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
-		got = append(got, fmt.Sprintf("%s %s %d", s.Key, s.Status, s.Files))
-	}
-	if !slices.Equal(got, []string{"ui-polish-p1-tasks-phone-light-1 halved 3", "ui-polish-p1-tasks-phone-light-1b pushed 1"}) {
-		t.Errorf("forced half retry: %v", got)
-	}
-	// A plain re-run finds both halves pushed and does nothing.
+	// A plain re-run finds both pushed and does nothing.
 	res, _ = tool.Publish(context.Background(), PublishOptions{})
 	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
-		if s.Status != "halved" && s.Status != "skipped" {
+		if s.Status != "skipped" {
 			t.Errorf("re-run touched %s (%s)", s.Key, s.Status)
 		}
 	}
@@ -470,11 +469,9 @@ func TestCheckWarnsWhenADevboxRecipeSyncsTheOutDir(t *testing.T) {
 	}
 }
 
-// fakeVitrinka answers board init / capture / push like vitrinka 5.13: a
-// capture writes a WebP of webp bytes (0: none) and its manifest row.
+// fakeVitrinka answers board init / capture / push like vitrinka 5.13.
 type fakeVitrinka struct {
 	t        *testing.T
-	webp     int
 	captures []string
 	pushes   map[string]int
 }
@@ -487,29 +484,20 @@ func (v *fakeVitrinka) exec(args []string) CmdOut {
 			v.t.Fatal(err)
 		}
 	case "board capture":
-		if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err == nil {
-			v.t.Error("capture ran with the descriptor in place")
+		// The descriptor stays in place: the capture fires vitrinka's detached push.
+		if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err != nil {
+			v.t.Error("capture ran without the descriptor: no detached push would carry the shot")
 		}
-		label := args[slices.Index(args, "--label")+1]
-		v.captures = append(v.captures, label)
-		if v.webp > 0 {
-			var m struct {
-				Shots []map[string]string `json:"shots"`
-			}
-			b, _ := os.ReadFile(filepath.Join(root, "manifest.json"))
-			_ = json.Unmarshal(b, &m)
-			file := strings.ToLower(label) + ".webp"
-			m.Shots = append(m.Shots, map[string]string{"file": file, "label": label})
-			b, _ = json.Marshal(m)
-			if err := os.WriteFile(filepath.Join(root, "manifest.json"), b, 0o644); err != nil {
-				v.t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(root, file), make([]byte, v.webp), 0o644); err != nil {
-				v.t.Fatal(err)
-			}
-		}
+		v.captures = append(v.captures, args[slices.Index(args, "--label")+1])
 	case "board push":
 		v.pushes[filepath.Base(root)]++
+		// vitrinka 5.13 refuses a root holding anything but screenshot-set content.
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			if e.Name() != ".vitrinka" && e.Name() != "manifest.json" && filepath.Ext(e.Name()) != ".webp" {
+				v.t.Errorf("%s holds %s at push: board push refuses non-screenshot content", root, e.Name())
+			}
+		}
 		return CmdOut{Stdout: `{"v":1,"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + filepath.Base(root) + `"}}`}
 	default:
 		v.t.Fatalf("unexpected vitrinka %v", args)
@@ -594,8 +582,9 @@ func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
 			writePass(t, box, 1, []shot{
 				{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: "2026-09-30T10:02:00.000Z"},
 				{order: 2, id: "c", area: "tasks", vp: "phone", theme: "light", status: "recipe-failed", bytes: 10, at: "2026-09-30T10:04:00.000Z", failure: "no Sign in button"},
+				{order: 4, id: "u", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 10, at: "2026-09-30T10:04:00.000Z"},
 			})
-			done, _ := json.Marshal(DoneFile{V: 1, Pass: 1, Run: created, Shots: 4})
+			done, _ := json.Marshal(DoneFile{V: 1, Pass: 1, Run: created, Shots: 5})
 			if err := os.WriteFile(filepath.Join(box.passAbs(1), "done.json"), done, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -609,15 +598,15 @@ func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
 	}
 	perTick = append(perTick, v.captures)
 	data := res.Data.(FollowData)
-	// Tick 2 adopts b alone (a is in the ledger); c and d never become images.
-	if got := fmt.Sprint(perTick); got != "[[] [P1-A-PHONE-LIGHT] [P1-B-PHONE-LIGHT] [] []]" {
+	// Tick 2 adopts b and u alone (a is in the ledger); c and d never become images.
+	if got := fmt.Sprint(perTick); got != "[[] [P1-A-PHONE-LIGHT] [P1-B-PHONE-LIGHT P1-U-DESKTOP-DARK] [] []]" {
 		t.Errorf("captures per tick: %s", got)
 	}
-	if !data.Done || data.Ticks != 4 || data.Final != 4 {
+	if !data.Done || data.Ticks != 4 || data.Final != 5 {
 		t.Errorf("stops on done + a minute idle: %+v", data)
 	}
-	if v.pushes["ui-polish-p1-tasks-phone-light-1"] != 2 {
-		t.Errorf("one push per tick that grew the set: %v", v.pushes)
+	if v.pushes["ui-polish-p1-tasks"] != 2 || v.pushes["ui-polish-p1-admin"] != 1 || len(v.pushes) != 2 {
+		t.Errorf("one push per tick per area set that grew: %v", v.pushes)
 	}
 	if _, err := os.Stat(filepath.Join(tool.passAbs(1), ".auth")); err == nil {
 		t.Error("storage states came to the Mac")
@@ -626,69 +615,7 @@ func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
 	if notes != "[{tasks [{c phone light recipe-failed step 2 clickText no Sign in button} {d phone light unreachable  }]}]" {
 		t.Errorf("failures are notes in the index: %s", notes)
 	}
-	if len(data.Sets) != 1 || data.Sets[0].Status != "pushed" || data.Sets[0].Files != 2 {
+	if len(data.Sets) != 2 || data.Sets[0].Key != "ui-polish-p1-tasks" || data.Sets[0].Status != "pushed" || data.Sets[0].Files != 2 || data.Sets[1].Files != 1 {
 		t.Errorf("sets: %+v", data.Sets)
-	}
-}
-
-func TestPublishSizesSetsByUploadBytes(t *testing.T) {
-	cfg := testConfig()
-	cfg.Publish = Publish{MaxFiles: 96, MaxBytes: 1000}
-	tool := newTool(t, cfg)
-	var shots []shot
-	for i := range 10 {
-		shots = append(shots, shot{order: i, id: fmt.Sprintf("s%d", i), area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1})
-	}
-	writePass(t, tool, 1, shots)
-	// Noise PNGs: 40×40 px is ~6.4 KB of PNG, each alone above maxBytes, but
-	// estimated at 0.1 B/px = 160 upload bytes.
-	rng := rand.New(rand.NewPCG(1, 2))
-	for _, s := range shots {
-		img := image.NewNRGBA(image.Rect(0, 0, 40, 40))
-		for i := range img.Pix {
-			img.Pix[i] = uint8(rng.IntN(256))
-		}
-		f, err := os.Create(filepath.Join(tool.passAbs(1), "shots", s.id, "phone.light.png"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := png.Encode(f, img); err != nil {
-			t.Fatal(err)
-		}
-		f.Close()
-	}
-	res, err := tool.Split(SplitOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sizes []string
-	for _, s := range res.Data.(Plan).Sets {
-		sizes = append(sizes, fmt.Sprintf("%d/%d", len(s.Files), s.Bytes))
-	}
-	if fmt.Sprint(sizes) != "[6/960 4/640]" {
-		t.Errorf("estimated plan: %v", sizes)
-	}
-
-	// Each adopted WebP is 100 bytes: the first set takes shots until the
-	// measured bytes plus the next estimate would pass 1000.
-	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
-	v := &fakeVitrinka{t: t, webp: 100, pushes: map[string]int{}}
-	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) { return v.exec(c.Args[1:]), nil }
-	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(v.captures) != 10 || v.pushes["ui-polish-p1-tasks-phone-light-1"] != 1 || v.pushes["ui-polish-p1-tasks-phone-light-2"] != 1 {
-		t.Errorf("each shot adopted once, each set pushed once: %d captures, %v", len(v.captures), v.pushes)
-	}
-	res, err = tool.Split(SplitOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sizes = sizes[:0]
-	for _, s := range res.Data.(Plan).Sets {
-		sizes = append(sizes, fmt.Sprintf("%d/%d/%v", len(s.Files), s.Bytes, s.Files[0].Measured))
-	}
-	if fmt.Sprint(sizes) != "[9/900/true 1/100/true]" {
-		t.Errorf("measured plan: %v", sizes)
 	}
 }

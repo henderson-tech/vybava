@@ -157,7 +157,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	splitCmd := &cobra.Command{
 		Use:   "split",
-		Short: "Plan a pass's vitrinka sets: area × viewport × theme, ≤ publish.maxFiles and ≤ publish.maxBytes each",
+		Short: "Plan a pass's vitrinka sets: one per area (so one board), sectioned by viewport × theme",
 		Args:  cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
 			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
@@ -171,7 +171,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	publishCmd := &cobra.Command{
 		Use:   "publish",
-		Short: "Adopt and push each planned set with the vitrinka CLI (retry, then halve); --follow publishes beside a running capture",
+		Short: "Adopt and push each planned set with the vitrinka CLI (retried on failure); --follow publishes beside a running capture",
 		Long: "publish adopts each planned set and pushes it. With --follow it runs on the\n" +
 			"Mac beside a capture on a box: every --interval it rsyncs the pass back\n" +
 			"(--from, default publish.from + /<out>/pass-<n>/), publishes each shot that\n" +
@@ -199,7 +199,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
 	publishCmd.Flags().StringVar(&areas, "areas", "", "only these areas (comma-separated)")
 	publishCmd.Flags().StringVar(&sets, "sets", "", "only these set keys (comma-separated)")
-	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set before it is halved")
+	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set")
 	publishCmd.Flags().BoolVar(&forcePublish, "force", false, "re-push sets the index records as pushed")
 	publishCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the vitrinka commands without running them")
 	publishCmd.Flags().BoolVar(&follow, "follow", false, "publish beside a running capture: fetch, publish what became final, repeat")
