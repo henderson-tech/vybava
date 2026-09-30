@@ -33,9 +33,11 @@ type LaneState struct {
 	// Fix is the exact command that makes the lane ready or boots it.
 	Fix  string `json:"fix,omitempty"`
 	Boot string `json:"boot,omitempty"`
-	// URL for browser/server lanes, with the status the probe got.
-	URL    string `json:"url,omitempty"`
-	Status int    `json:"status,omitempty"`
+	// URL for browser/server lanes (resolved through URLCommand when set),
+	// with the status the probe got.
+	URL        string `json:"url,omitempty"`
+	URLCommand string `json:"urlCommand,omitempty"`
+	Status     int    `json:"status,omitempty"`
 	// problem is the diagnostic a not-ready lane reports.
 	problem *runx.Diagnostic
 }
@@ -115,7 +117,7 @@ func (t *Tool) Resolve(ctx context.Context, l Lane) LaneState {
 	case KindAndroidEmulator:
 		err = t.resolveAndroidEmulator(ctx, l, &st)
 	case KindBrowser, KindServer:
-		t.resolveURL(l, &st)
+		err = t.resolveURL(ctx, l, &st)
 	}
 	if err != nil {
 		var de runx.DiagError
@@ -580,24 +582,50 @@ func (t *Tool) resolveAndroidEmulator(ctx context.Context, l Lane, st *LaneState
 	return nil
 }
 
-func (t *Tool) resolveURL(l Lane, st *LaneState) {
-	st.URL = l.URL
-	status, err := t.HTTPGet(l.URL, 3*time.Second)
+// resolveURL probes a browser or server lane. With URLCommand the base URL
+// is the command's first output line (sh -c, from the repo root) and `url`
+// is a path appended to it (an absolute url is used as is).
+func (t *Tool) resolveURL(ctx context.Context, l Lane, st *LaneState) error {
+	st.URLCommand = l.URLCommand
+	target := l.URL
+	if l.URLCommand != "" && !isHTTPURL(l.URL) {
+		fix := "start the workspace app the command names, then: polish-kit lanes --lane " + l.ID + " --json"
+		out, err := t.run(ctx, 60*time.Second, "sh", "-c", l.URLCommand)
+		if err != nil {
+			return err
+		}
+		base := strings.TrimSpace(strings.SplitN(strings.TrimSpace(out.Stdout), "\n", 2)[0])
+		switch {
+		case out.Code != 0:
+			return diag(DiagDeviceUnavailable, fmt.Sprintf("urlCommand %q exited %d: %s", l.URLCommand, out.Code, stderrTail(CmdOut{Code: out.Code, Stderr: out.Stderr})), fix)
+		case base == "":
+			return diag(DiagDeviceUnavailable, fmt.Sprintf("urlCommand %q printed no URL (exit 0)", l.URLCommand), fix)
+		case !isHTTPURL(base):
+			return diag(DiagDeviceUnavailable, fmt.Sprintf("urlCommand %q printed %q, not an http(s) URL", l.URLCommand, base), fix)
+		}
+		target = base
+		if l.URL != "" {
+			target = strings.TrimRight(base, "/") + l.URL
+		}
+	}
+	st.URL = target
+	status, err := t.HTTPGet(target, 3*time.Second)
 	st.Status = status
 	fix := "start the server the lane points at, then: polish-kit lanes --lane " + l.ID + " --json"
 	if l.Kind == KindBrowser {
 		fix = "start the web app the lane points at (a Devbox app or the dev server), then: polish-kit lanes --lane " + l.ID + " --json"
 	}
+	if l.URLCommand != "" {
+		fix = "start the workspace app the command names, then: polish-kit lanes --lane " + l.ID + " --json"
+	}
 	switch {
 	case err != nil:
-		d := errDiag(DiagDeviceUnavailable, fmt.Sprintf("%s does not answer within 3 s: %v", l.URL, sanitizeErr(err)), fix)
-		st.problem, st.Fix = &d, fix
+		return diag(DiagDeviceUnavailable, fmt.Sprintf("%s does not answer within 3 s: %v", target, sanitizeErr(err)), fix)
 	case status >= 500:
-		d := errDiag(DiagDeviceUnavailable, fmt.Sprintf("%s answers %d", l.URL, status), fix)
-		st.problem, st.Fix = &d, fix
-	default:
-		st.Ready, st.Booted = true, true
+		return diag(DiagDeviceUnavailable, fmt.Sprintf("%s answers %d", target, status), fix)
 	}
+	st.Ready, st.Booted = true, true
+	return nil
 }
 
 // sanitizeErr keeps a transport error short and free of the URL's query.

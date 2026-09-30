@@ -248,8 +248,10 @@ export interface PolishLane {
   textSizes?: string[];
   /** e.g. 'cs'. */
   locale?: string;
-  /** browser lane: base URL; server lane: health URL. */
+  /** browser lane: base URL; server lane: health URL. With urlCommand: a path (starting with /) appended to the command's output, or an absolute URL used as is. */
   url?: string;
+  /** Shell command (sh -c, from the repo root) whose first output line is the lane's base URL, for an app whose address is leased per run: 'devbox url <ws> api'. Exactly one of url / urlCommand for browser and server lanes. */
+  urlCommand?: string;
 }
 
 /** One screen a chrome cell shoots (polish-kit shoot). */

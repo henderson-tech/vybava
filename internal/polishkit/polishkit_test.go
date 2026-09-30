@@ -762,6 +762,87 @@ func TestLanesVerbResolvesEveryKind(t *testing.T) {
 	}
 }
 
+func TestURLCommandLane(t *testing.T) {
+	cfg := testConfig()
+	cfg.Lanes[4] = Lane{ID: "api", Target: TargetAPI, Kind: KindServer, URLCommand: "devbox url fixit-polish api", URL: "/health"}
+	// validation: exactly one of url / urlCommand, url with urlCommand is a path or absolute
+	bad := testConfig()
+	bad.Lanes = append(bad.Lanes,
+		Lane{ID: "a", Target: TargetUI, Kind: KindBrowser},
+		Lane{ID: "b", Target: TargetUI, Kind: KindBrowser, URLCommand: "   "},
+		Lane{ID: "c", Target: TargetUI, Kind: KindBrowser, URLCommand: "echo x", URL: "health"},
+		Lane{ID: "d", Target: TargetApp, Kind: KindIOSSim, Runtime: "26", DeviceType: "x", URLCommand: "echo x"},
+	)
+	problems := bad.Validate()
+	for _, want := range []string{"lane a: a browser lane needs an http(s) url or a urlCommand", "lane b: urlCommand is empty", "lane c: with urlCommand, url is a path", "lane d: urlCommand applies to browser and server lanes only"} {
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, want) }) {
+			t.Errorf("missing %q in %v", want, problems)
+		}
+	}
+	if p := cfg.Validate(); len(p) != 0 {
+		t.Fatalf("urlCommand lane must validate: %v", p)
+	}
+
+	fx := &fakeExec{rules: []rule{{prefix: "sh -c devbox url fixit-polish api", out: CmdOut{Stdout: "http://10.8.0.10:21793/\nsome trailing chatter\n"}}}}
+	tool := newTool(t, cfg, fx)
+	var got string
+	tool.HTTPGet = func(url string, _ time.Duration) (int, error) { got = url; return 200, nil }
+	ctx := context.Background()
+	// success: first line trimmed, trailing slash folded, path appended; run from the repo root
+	res, err := tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := res.Data.(LanesData).Lanes[0]
+	if !st.Ready || st.URL != "http://10.8.0.10:21793/health" || got != st.URL || st.URLCommand != "devbox url fixit-polish api" || len(res.Diagnostics) != 0 {
+		t.Fatalf("%+v got %s diags %+v", st, got, res.Diagnostics)
+	}
+	if c := fx.calls[0]; !slices.Equal(c, []string{"sh", "-c", "devbox url fixit-polish api"}) {
+		t.Fatalf("command: %v", c)
+	}
+	// no url: the command's output as is
+	tool.Config.Lanes[4].URL = ""
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if st := res.Data.(LanesData).Lanes[0]; st.URL != "http://10.8.0.10:21793/" {
+		t.Fatalf("bare base: %+v", st)
+	}
+	// absolute url: used as is, the command never runs
+	tool.Config.Lanes[4].URL = "http://127.0.0.1:9/health"
+	fx.calls = nil
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if st := res.Data.(LanesData).Lanes[0]; st.URL != "http://127.0.0.1:9/health" || len(fx.calls) != 0 {
+		t.Fatalf("absolute url: %+v calls %v", st, fx.calls)
+	}
+	tool.Config.Lanes[4].URL = "/health"
+	// non-zero exit: command, exit code and the last stderr line in detail
+	fx.rules[0].out = CmdOut{Code: 3, Stderr: "resolving workspace\nworkspace fixit-polish is parked: no address\n"}
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	st = res.Data.(LanesData).Lanes[0]
+	d := res.Diagnostics
+	if st.Ready || len(d) != 1 || d[0].Code != DiagDeviceUnavailable || d[0].Detail != `urlCommand "devbox url fixit-polish api" exited 3: workspace fixit-polish is parked: no address` || d[0].Fix != "start the workspace app the command names, then: polish-kit lanes --lane api --json" || st.Fix != d[0].Fix {
+		t.Fatalf("non-zero exit: %+v %+v", st, d)
+	}
+	// empty output
+	fx.rules[0].out = CmdOut{Stdout: "\n  \n"}
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if d := res.Diagnostics; len(d) != 1 || d[0].Code != DiagDeviceUnavailable || !strings.Contains(d[0].Detail, "printed no URL (exit 0)") {
+		t.Fatalf("empty output: %+v", d)
+	}
+	// not a URL
+	fx.rules[0].out = CmdOut{Stdout: "parked\n"}
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if d := res.Diagnostics; len(d) != 1 || !strings.Contains(d[0].Detail, `printed "parked", not an http(s) URL`) {
+		t.Fatalf("not a url: %+v", d)
+	}
+	// the resolved URL failing the probe names the resolved URL and the workspace fix
+	fx.rules[0].out = CmdOut{Stdout: "http://10.8.0.10:21793\n"}
+	tool.HTTPGet = func(string, time.Duration) (int, error) { return 0, errors.New("dial tcp: connection refused") }
+	res, _ = tool.Lanes(ctx, LanesOptions{Lane: "api"})
+	if d := res.Diagnostics; len(d) != 1 || !strings.HasPrefix(d[0].Detail, "http://10.8.0.10:21793/health does not answer") || !strings.HasPrefix(d[0].Fix, "start the workspace app") {
+		t.Fatalf("probe failure: %+v", d)
+	}
+}
+
 func TestLanesSetAndUnsupported(t *testing.T) {
 	fx := &fakeExec{rules: []rule{{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}}}}
 	cfg := testConfig()

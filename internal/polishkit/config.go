@@ -72,8 +72,14 @@ type Lane struct {
 	// TextSizes are content-size names (iOS) or font-scale numbers as strings (Android) shot besides the default.
 	TextSizes []string `json:"textSizes,omitempty"`
 	Locale    string   `json:"locale,omitempty"`
-	// URL is a browser lane's base URL or a server lane's health URL.
+	// URL is a browser lane's base URL or a server lane's health URL. With
+	// URLCommand it may instead hold a path (starting with /) appended to
+	// the command's output; an absolute URL is used as is.
 	URL string `json:"url,omitempty"`
+	// URLCommand is a shell command (sh -c, from the repo root) whose first
+	// output line is the lane's base URL, for an app whose address is leased
+	// per run (a Devbox workspace: `devbox url <ws> api`).
+	URLCommand string `json:"urlCommand,omitempty"`
 }
 
 // Screen is one screen a chrome cell shoots.
@@ -197,9 +203,17 @@ func (c Config) Validate() []string {
 				add(fmt.Sprintf("lane %s: an android-emulator lane needs deviceType (the AVD name)", l.ID))
 			}
 		case KindBrowser, KindServer:
-			if u, err := url.Parse(l.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				add(fmt.Sprintf("lane %s: a %s lane needs an http(s) url", l.ID, l.Kind))
+			switch {
+			case l.URLCommand == "" && !isHTTPURL(l.URL):
+				add(fmt.Sprintf("lane %s: a %s lane needs an http(s) url or a urlCommand", l.ID, l.Kind))
+			case l.URLCommand != "" && strings.TrimSpace(l.URLCommand) == "":
+				add(fmt.Sprintf("lane %s: urlCommand is empty", l.ID))
+			case l.URLCommand != "" && l.URL != "" && !strings.HasPrefix(l.URL, "/") && !isHTTPURL(l.URL):
+				add(fmt.Sprintf("lane %s: with urlCommand, url is a path (starting with /) appended to the command's output, or an absolute http(s) url used as is", l.ID))
 			}
+		}
+		if l.URLCommand != "" && l.Kind != KindBrowser && l.Kind != KindServer {
+			add(fmt.Sprintf("lane %s: urlCommand applies to browser and server lanes only", l.ID))
 		}
 		for _, n := range l.Nav {
 			if !slices.Contains(NavModes, n) {
@@ -244,6 +258,12 @@ func (c Config) Validate() []string {
 		}
 	}
 	return problems
+}
+
+// isHTTPURL reports an absolute http(s) URL with a host.
+func isHTTPURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 func joinKinds() string {

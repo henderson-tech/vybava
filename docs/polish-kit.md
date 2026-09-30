@@ -64,7 +64,17 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   - `android-emulator`: `emulator -list-avds` holds `deviceType`; running
     when an `emulator-*` serial answers `adb emu avd name` with it.
   - `browser` / `server`: GET of `url` with a 3 s timeout; any answer
-    below 500 is ready.
+    below 500 is ready. With `urlCommand` the base URL is resolved at run
+    time: the command runs through `sh -c` from the repo root, its output is
+    trimmed and the first line is the base (nothing appended); `url` may
+    then hold a path starting with `/` that is appended to it (an absolute
+    `url` is used as is and the command is not run). A command that exits
+    non-zero, prints nothing or prints something that is not an http(s) URL
+    answers `device-unavailable` with the command, its exit code and the
+    last stderr line in `detail`, fix = "start the workspace app the
+    command names, then: polish-kit lanes --lane <id> --json". This is how
+    a Devbox-leased app is reached (`devbox url <ws> api` moves per run; a
+    parked workspace has no address).
 - **lanes set** applies device state: iOS sim `simctl ui <udid> appearance`
   / `content_size`; Android `cmd uimode night yes|no`, `cmd overlay
   enable-exclusive --category com.android.internal.systemui.navbar.gestural`
@@ -134,7 +144,8 @@ polish: {
     { id: 'android', target: 'app', kind: 'android-device', nav: ['gesture', '3button'], textSizes: ['1.3'] },
     { id: 'phone', target: 'app', kind: 'ios-device', device: 'Lukas iPhone' },
     { id: 'web', target: 'ui', kind: 'browser', url: 'http://10.8.0.10:3111' },
-    { id: 'api', target: 'api', kind: 'server', url: 'http://10.8.0.10:3000/health' },
+    // A Devbox-leased app: the command's first output line is the base, url the path appended to it.
+    { id: 'api', target: 'api', kind: 'server', urlCommand: 'devbox url fixit-polish api', url: '/health' },
   ],
   screens: [
     { id: 'home', title: 'Home', target: 'app', url: 'fixit://home', area: 'home' },
@@ -198,7 +209,7 @@ The closed code enum (`internal/polishkit/diag.go`):
 | `unknown-screen` | a screen id the config or the pass does not have | `status` / `run init` |
 | `lane-missing` | the runtime exists but no simulator / AVD of `deviceType` does | the exact `xcrun simctl create "<name>" "<deviceTypeIdentifier>" "<runtimeIdentifier>"` / `avdmanager create avd …` |
 | `runtime-missing` | no installed iOS runtime matches `runtime` | Xcode > Settings > Components, naming the version |
-| `device-unavailable` | a phone unpaired or disconnected, an adb device offline/unauthorized, several devices with none named, an emulator or simulator not booted when a verb needs it, a URL that does not answer | reconnect / boot / start command |
+| `device-unavailable` | a phone unpaired or disconnected, an adb device offline/unauthorized, several devices with none named, an emulator or simulator not booted when a verb needs it, a URL that does not answer, a `urlCommand` that exits non-zero or prints no URL (detail: command, exit code, last stderr line) | reconnect / boot / start command; "start the workspace app the command names, then: polish-kit lanes --lane <id> --json" |
 | `lane-unsupported` | `set` on ios-device or a URL lane; `shoot` on ios-device, browser or server | the alternative (hand shot + drop directory, `ui-loop run`, `run add-cell`) |
 | `tool-missing` | xcrun, adb or emulator is not on PATH | the install |
 | `shot-required` | `cell … fail` without a shot, `--shot` names a missing file, `sheet` on a pass without shots (warning on `report` while cells are pending) | `cell <id> fail --shot <path>` / `shoot` |
