@@ -13,6 +13,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"memorylint", "memorylint"},
 		{"fontfreeze", "fontfreeze"},
 		{"perfrig", "perfrig"},
+		{"framestats", "framestats"},
 		{"shrt", "shrt"},
 		{"press", "press"},
 		{"ingressgen", "ingressgen"},

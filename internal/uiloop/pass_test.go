@@ -533,6 +533,10 @@ func TestScoreboardMathAndDelta(t *testing.T) {
 	if admin := row(sb, "admin"); admin.NeedsWork != 1 || admin.Partly != 1 || admin.Clean != 0 {
 		t.Errorf("admin row: %+v", admin)
 	}
+	// No "reviewed" (an older review-loop): no finding still means clean, with a warning.
+	if sb.ReviewedKnown || len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagReviewedMissing {
+		t.Errorf("old-format backlog: reviewedKnown %v, diagnostics %+v", sb.ReviewedKnown, res.Diagnostics)
+	}
 	if sb.Totals.Screens != 3 || sb.Totals.LintDefects != 8 || sb.Delta != nil {
 		t.Errorf("totals: %+v", sb.Totals)
 	}
@@ -572,6 +576,46 @@ func TestScoreboardMathAndDelta(t *testing.T) {
 		if !strings.Contains(problems, want) {
 			t.Errorf("backlog Validate misses %q:\n%s", want, problems)
 		}
+	}
+}
+
+func TestScoreboardCleanNeedsAReviewer(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 1, id: "task-detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 2, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 1},
+		{order: 3, id: "roles", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 1},
+	})
+	// Only tasks and users were judged: task-detail and roles have no finding, but nobody looked.
+	backlog := `{"v":1,"pass":1,"reviewed":["tasks","users"],"findings":[
+		{"key":"k1","screen":"users","area":"admin","severity":"polish","status":"open","title":"t","files":["u.ts"],"acceptance":"x"}]}`
+	review := filepath.Join(tool.passAbs(1), "review")
+	if err := os.MkdirAll(review, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "backlog.json"), []byte(backlog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Scoreboard(ScoreboardOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := res.Data.(Scoreboard)
+	if !sb.ReviewedKnown || len(res.Diagnostics) != 0 {
+		t.Errorf("reviewedKnown %v, diagnostics %+v", sb.ReviewedKnown, res.Diagnostics)
+	}
+	for _, a := range sb.Areas {
+		if a.Unreviewed != 1 || a.Clean+a.Polish != 1 {
+			t.Errorf("%s row: %+v", a.Area, a)
+		}
+	}
+	if sb.Totals.Clean != 1 || sb.Totals.Unreviewed != 2 || sb.Totals.Polish != 1 {
+		t.Errorf("totals: %+v", sb.Totals)
+	}
+	md, _ := os.ReadFile(filepath.Join(tool.passAbs(1), "scoreboard.md"))
+	if !strings.Contains(string(md), "| **all** | 4 | 0 | 0 | 1 | 1 | 2 |") || !strings.Contains(string(md), "2 screens were never judged") {
+		t.Errorf("markdown:\n%s", md)
 	}
 }
 
@@ -646,7 +690,7 @@ func TestScoreboardCountsUniqueDefectsAndRepeatedOffenders(t *testing.T) {
 		t.Errorf("offenders: %+v", sb.Offenders)
 	}
 	md, _ := os.ReadFile(filepath.Join(tool.passAbs(1), "scoreboard.md"))
-	if !strings.Contains(string(md), "| **all** | 2 | — | — | — | — | — | 6 | 3 |") || !strings.Contains(string(md), "`grid` 5, 2 unique") ||
+	if !strings.Contains(string(md), "| **all** | 2 | — | — | — | — | — | — | 6 | 3 |") || !strings.Contains(string(md), "`grid` 5, 2 unique") ||
 		!strings.Contains(string(md), "· 2 screens, 3 shots") {
 		t.Errorf("markdown:\n%s", md)
 	}
