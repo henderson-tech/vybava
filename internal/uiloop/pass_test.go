@@ -3,6 +3,7 @@ package uiloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -496,6 +497,98 @@ func TestPublishPass2AddsToPass1Boards(t *testing.T) {
 	}
 	if !slices.Equal(v.captures, []string{"P1-A-PHONE-LIGHT", "P2-A-PHONE-LIGHT"}) {
 		t.Errorf("pass 2 adopts its own shot despite the repeated path: %v", v.captures)
+	}
+}
+
+// A full-content companion is narrower than DPR × the page viewport, so it
+// passes its own CSS size (from the PNG header) as --viewport, hi-dpi kept on.
+func TestPublishPassesAFullShotItsOwnViewport(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, full: 10}})
+	fulls, _ := filepath.Glob(filepath.Join(tool.passAbs(1), "shots", "*", "*.full.png"))
+	if len(fulls) != 1 {
+		t.Fatalf("full files: %v", fulls)
+	}
+	hdr := append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"), 0, 0, 0x02, 0xee, 0, 0, 0x0b, 0xb9) // 750 × 3001
+	if err := os.WriteFile(fulls[0], hdr, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	viewports := map[string]string{}
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		if strings.Join(args[:2], " ") == "board capture" {
+			if slices.Contains(args, "--hidpi=false") {
+				t.Error("a full shot keeps the hi-dpi check")
+			}
+			viewports[filepath.Base(args[slices.Index(args, "--file")+1])] = args[slices.Index(args, "--viewport")+1]
+		}
+		return v.exec(args), nil
+	}
+	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if viewports[filepath.Base(fulls[0])] != "375x1500@2" || viewports[strings.TrimSuffix(filepath.Base(fulls[0]), ".full.png")+".png"] != "390x844@2" {
+		t.Errorf("viewports: %v", viewports)
+	}
+}
+
+// One refused file never aborts its set: the rest is adopted and pushed, the
+// refusal is recorded and reported, and the next publish retries only it.
+func TestPublishRecordsARefusedFileAndPushesTheRest(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+		{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+	})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	refuse := true
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		if refuse && strings.Join(args[:2], " ") == "board capture" && args[slices.Index(args, "--label")+1] == "P1-A-PHONE-LIGHT" {
+			return CmdOut{Code: 1, Stderr: "vitrinka config hidpi off"}, nil
+		}
+		return v.exec(args), nil
+	}
+	res, err := tool.Publish(context.Background(), PublishOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := res.Data.(map[string]any)["sets"].([]PublishedSet)[0]
+	if s.Status != "pushed" || len(s.Refused) != 1 || !strings.HasSuffix(s.Refused[0].Path, ".png") || !strings.Contains(s.Refused[0].Error, "hidpi off") {
+		t.Errorf("set: %+v", s)
+	}
+	if fmt.Sprint(v.captures) != "[P1-B-PHONE-LIGHT]" || v.pushes["ui-polish-tasks"] != 1 {
+		t.Errorf("the rest is adopted and pushed: %v %v", v.captures, v.pushes)
+	}
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagPublishRefused || !strings.Contains(res.Diagnostics[0].Detail, "refused 1 of 2") {
+		t.Errorf("diagnostics: %+v", res.Diagnostics)
+	}
+	var index PublishIndex
+	b, _ := os.ReadFile(filepath.Join(tool.passAbs(1), "publish", "index.json"))
+	if err := json.Unmarshal(b, &index); err != nil || len(index.Sets[0].Refused) != 1 {
+		t.Errorf("index records the refusal: %v %+v", err, index.Sets)
+	}
+
+	refuse = false
+	res, err = tool.Publish(context.Background(), PublishOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Data.(map[string]any)["sets"].([]PublishedSet)[0]; s.Status != "pushed" || len(s.Refused) != 0 || fmt.Sprint(v.captures) != "[P1-B-PHONE-LIGHT P1-A-PHONE-LIGHT]" {
+		t.Errorf("a set with refusals is never skipped; only the refused file is retried: %+v %v", s, v.captures)
+	}
+
+	// Vitrinka failing to run at all still aborts the set.
+	tool.Exec = func(context.Context, Cmd) (CmdOut, error) { return CmdOut{}, errors.New("exec: vitrinka: not found") }
+	res, err = tool.Publish(context.Background(), PublishOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Data.(map[string]any)["sets"].([]PublishedSet)[0]; s.Status != "failed" {
+		t.Errorf("an exec failure aborts: %+v", s)
 	}
 }
 

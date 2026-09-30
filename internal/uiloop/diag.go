@@ -49,6 +49,10 @@ const (
 	// DiagPublishFailed: a set could not be pushed even after retries; its row
 	// in publish/index.json says why.
 	DiagPublishFailed = "PUBLISH_FAILED"
+	// DiagPublishRefused: `board capture` refused some files of a set; the rest
+	// were adopted and the set pushed. The row's `refused` in
+	// publish/index.json names each file and why (warning).
+	DiagPublishRefused = "PUBLISH_REFUSED"
 	// DiagVitrinkaMissing: the vitrinka CLI is not on PATH.
 	DiagVitrinkaMissing = "VITRINKA_MISSING"
 	// DiagBacklogInvalid: the review backlog JSON does not decode or validate.

@@ -2,9 +2,11 @@ package uiloop
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,9 +39,18 @@ type PublishedSet struct {
 	URL      string `json:"url,omitempty"`
 	Attempts int    `json:"attempts,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// Refused are the files `board capture` refused; the rest of the set was
+	// adopted and pushed. A later publish retries them.
+	Refused []RefusedFile `json:"refused,omitempty"`
 	// Sections are the viewport × theme blocks the set's board should get.
 	Sections []BoardSection `json:"sections,omitempty"`
 	Commands [][]string     `json:"commands,omitempty"`
+}
+
+// RefusedFile is one file of a set that `board capture` refused.
+type RefusedFile struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // PublishIndex is <passDir>/publish/index.json.
@@ -88,11 +99,47 @@ func (p *publisher) vitrinka(args ...string) (CmdOut, error) {
 	return p.t.Exec(p.ctx, Cmd{Dir: p.t.Root, Args: append([]string{"vitrinka"}, args...), Timeout: 5 * time.Minute})
 }
 
-func (p *publisher) captureArgs(root string, f PlanFile) []string {
+func (p *publisher) file(f PlanFile) string {
+	return filepath.Join(p.passDir, filepath.FromSlash(f.Path))
+}
+
+// viewportOf is a file's --viewport. A full-content companion is an element
+// screenshot of the scroller, narrower than DPR × the page viewport, which
+// vitrinka's hi-dpi check refuses; so it passes its own CSS size, read from
+// the PNG header. --hidpi stays on for it.
+func (p *publisher) viewportOf(f PlanFile) (string, error) {
+	if !f.Full {
+		return f.Size, nil
+	}
+	w, h, err := pngSize(p.file(f))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%dx%d@%d", w/DPR, h/DPR, DPR), nil
+}
+
+// pngSize reads a PNG's pixel size from its IHDR chunk (bytes 16–23).
+func pngSize(file string) (w, h int, err error) {
+	fh, err := os.Open(file)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer fh.Close()
+	var hdr [24]byte
+	if _, err := io.ReadFull(fh, hdr[:]); err != nil {
+		return 0, 0, fmt.Errorf("%s: reading the PNG header: %w", file, err)
+	}
+	if string(hdr[:8]) != "\x89PNG\r\n\x1a\n" || string(hdr[12:16]) != "IHDR" {
+		return 0, 0, fmt.Errorf("%s: not a PNG", file)
+	}
+	return int(binary.BigEndian.Uint32(hdr[16:20])), int(binary.BigEndian.Uint32(hdr[20:24])), nil
+}
+
+func (p *publisher) captureArgs(root string, f PlanFile, viewport string) []string {
 	args := []string{"board", "capture", "web", "--root", root,
-		"--file", filepath.Join(p.passDir, filepath.FromSlash(f.Path)),
+		"--file", p.file(f),
 		"--label", f.Label, "--title", f.Title, "--route", f.Route, "--note", f.Note,
-		"--state", f.State, "--device", f.Viewport, "--viewport", f.Size, "--no-input", "--yes"}
+		"--state", f.State, "--device", f.Viewport, "--viewport", viewport, "--no-input", "--yes"}
 	if f.URL != "" {
 		args = append(args, "--url", f.URL)
 	}
@@ -115,27 +162,31 @@ func failed(what string, out CmdOut) error {
 // place, so every `board capture` fires vitrinka's detached per-file push and
 // the shot joins the board within seconds; publish's own push afterwards is
 // the backstop that commits the set and reports its URL and status.
-func (p *publisher) adopt(root string, s Set) error {
+//
+// A file `board capture` refuses (it exits non-zero) is returned in refused
+// and stays out of the ledger, so a later publish retries it; the rest of the
+// set is still adopted. Only a failure to run vitrinka at all aborts.
+func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	// An older publish held the descriptor aside while it adopted; put it back.
 	if err := release(root); err != nil {
-		return err
+		return nil, err
 	}
 	_, errD := os.Stat(filepath.Join(root, descriptor))
 	if errors.Is(errD, fs.ErrNotExist) {
 		out, err := p.vitrinka("board", "init", "--root", root, "--key", s.Key, "--title", s.Title, "--project", p.project, "--no-input", "--yes")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if out.Code != 0 {
-			return failed("vitrinka board init", out)
+			return nil, failed("vitrinka board init", out)
 		}
 	}
 	ledger, err := ledgerFor(p.passDir, root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	have := map[string]bool{}
 	if b, err := os.ReadFile(ledger); err == nil {
@@ -147,26 +198,32 @@ func (p *publisher) adopt(root string, s Set) error {
 		if have[f.Path] {
 			continue
 		}
-		out, err := p.vitrinka(p.captureArgs(root, f)...)
+		vp, err := p.viewportOf(f)
 		if err != nil {
-			return err
+			refused = append(refused, RefusedFile{Path: f.Path, Error: err.Error()})
+			continue
+		}
+		out, err := p.vitrinka(p.captureArgs(root, f, vp)...)
+		if err != nil {
+			return refused, err
 		}
 		if out.Code != 0 {
-			return failed("vitrinka board capture "+f.Path, out)
+			refused = append(refused, RefusedFile{Path: f.Path, Error: failed("vitrinka board capture", out).Error()})
+			continue
 		}
 		lf, err := os.OpenFile(ledger, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			return err
+			return refused, err
 		}
 		_, werr := lf.WriteString(f.Path + "\n")
 		if cerr := lf.Close(); werr == nil {
 			werr = cerr
 		}
 		if werr != nil {
-			return werr
+			return refused, werr
 		}
 	}
-	return nil
+	return refused, nil
 }
 
 // ledgerFor is the adopted-files ledger of a set root in one pass:
@@ -233,12 +290,19 @@ func (p *publisher) publishSet(s Set) PublishedSet {
 		rec.Status = "planned"
 		rec.Commands = append(rec.Commands, append([]string{"vitrinka"}, "board", "init", "--root", root, "--key", s.Key, "--title", s.Title, "--project", p.project, "--no-input", "--yes"))
 		for _, f := range s.Files {
-			rec.Commands = append(rec.Commands, append([]string{"vitrinka"}, p.captureArgs(root, f)...))
+			vp, err := p.viewportOf(f)
+			if err != nil {
+				// Listed as planned; a real publish records the file as refused.
+				vp = f.Size
+			}
+			rec.Commands = append(rec.Commands, append([]string{"vitrinka"}, p.captureArgs(root, f, vp)...))
 		}
 		rec.Commands = append(rec.Commands, []string{"vitrinka", "board", "push", "--root", root, "--title", s.Title, "--yes", "--no-input", "--no-render", "--json"})
 		return rec
 	}
-	if err := p.adopt(root, s); err != nil {
+	refused, err := p.adopt(root, s)
+	rec.Refused = refused
+	if err != nil {
 		rec.Status, rec.Error = "failed", err.Error()
 		return rec
 	}
@@ -325,7 +389,7 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 		if len(o.Sets) > 0 && !slices.Contains(o.Sets, s.Key) {
 			continue
 		}
-		if was, ok := prior[s.Key]; ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s) {
+		if was, ok := prior[s.Key]; ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s) && len(was.Refused) == 0 {
 			was.Status, was.Sections = "skipped", s.Sections
 			results = append(results, was)
 			continue
@@ -382,6 +446,11 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 	for _, r := range results {
 		if r.Status == "failed" {
 			res.Diagnostics = append(res.Diagnostics, errDiag(DiagPublishFailed, r.Key+": "+r.Error, fmt.Sprintf("vybava ui-loop publish --pass %d --sets %s", pass, r.Key)))
+		}
+		if n := len(r.Refused); n > 0 {
+			res.Diagnostics = append(res.Diagnostics, warn(DiagPublishRefused,
+				fmt.Sprintf("%s: vitrinka board capture refused %d of %d files (first: %s: %s); see refused in %s", r.Key, n, r.Files, r.Refused[0].Path, r.Refused[0].Error, filepath.Join(t.PassDir(pass), "publish", "index.json")),
+				fmt.Sprintf("vybava ui-loop publish --pass %d --sets %s", pass, r.Key)))
 		}
 	}
 	if len(index.Legacy) > 0 {
