@@ -14,48 +14,85 @@ import (
 	"strings"
 )
 
-// PlanFile is one capture to adopt into a set.
+// PlanFile is one capture to adopt into its area's set.
 type PlanFile struct {
 	// Path is relative to the pass directory.
-	Path     string   `json:"path"`
-	Shot     string   `json:"shot"`
-	Full     bool     `json:"full"`
-	Bytes    int64    `json:"bytes"`
-	SHA256   string   `json:"sha256"`
-	Label    string   `json:"label"`
-	Title    string   `json:"title"`
-	Note     string   `json:"note"`
-	Route    string   `json:"route"`
-	URL      string   `json:"url,omitempty"`
-	State    string   `json:"state"`
+	Path string `json:"path"`
+	// Stamp is the record's capturedAt: a --resume retake keeps the path
+	// but changes the stamp, so publish adopts the new image.
+	Stamp  string `json:"stamp"`
+	SHA256 string `json:"sha256"`
+	Shot   string `json:"shot"`
+	Full   bool   `json:"full"`
+	Label  string `json:"label"`
+	Title  string `json:"title"`
+	Note   string `json:"note"`
+	Route  string `json:"route"`
+	URL    string `json:"url,omitempty"`
+	State  string `json:"state"`
+	// Viewport and Theme name the file's section (board capture --device and
+	// the head of --state); Size is its CSS viewport and scale (--viewport).
 	Viewport string   `json:"viewport"`
+	Theme    string   `json:"theme"`
+	Size     string   `json:"size"`
 	Src      []string `json:"src"`
 }
 
-// Set is one vitrinka set: an area × viewport × theme chunk.
-type Set struct {
-	Key      string     `json:"key"`
-	Title    string     `json:"title"`
-	Area     string     `json:"area"`
-	Viewport string     `json:"viewport"`
-	Theme    string     `json:"theme"`
-	Chunk    int        `json:"chunk"`
-	Chunks   int        `json:"chunks"`
-	Bytes    int64      `json:"bytes"`
-	Files    []PlanFile `json:"files"`
+// BoardSection is one viewport × theme block of a set's board: the labels of its
+// captures, in set order.
+type BoardSection struct {
+	Title    string   `json:"title"` // "<viewport> · <theme>"
+	Viewport string   `json:"viewport"`
+	Theme    string   `json:"theme"`
+	Labels   []string `json:"labels"`
 }
 
-// Plan is split's deterministic output: the same pass and limits always
-// produce the same sets, keys and order.
+// Set is one vitrinka set, and so one board: every image capture of one area
+// in one pass, grouped by viewport then theme (config order), then screen order.
+type Set struct {
+	Key      string         `json:"key"`
+	Title    string         `json:"title"`
+	Area     string         `json:"area"`
+	Sections []BoardSection `json:"sections"`
+	Files    []PlanFile     `json:"files"`
+}
+
+// Plan is split's deterministic output: the same pass always produces the
+// same sets, keys and order.
 type Plan struct {
-	V        int      `json:"v"`
-	Pass     int      `json:"pass"`
-	PassDir  string   `json:"passDir"`
-	Project  string   `json:"project"`
-	MaxFiles int      `json:"maxFiles"`
-	MaxBytes int64    `json:"maxBytes"`
-	Sets     []Set    `json:"sets"`
-	Skipped  []string `json:"skipped"`
+	V       int      `json:"v"`
+	Pass    int      `json:"pass"`
+	PassDir string   `json:"passDir"`
+	Project string   `json:"project"`
+	Sets    []Set    `json:"sets"`
+	Skipped []string `json:"skipped"`
+	// Notes are the shots published as text, per area in config order.
+	Notes []AreaNotes `json:"notes"`
+}
+
+// PlanVersion is plan.json's v: 2 is one set per area (1 chunked area ×
+// viewport × theme).
+const PlanVersion = 2
+
+// imageStatuses are the shot statuses published as images. Every other one
+// (recipe-failed, unreachable, error) is a note: a recipe-failed shot is a
+// picture of wherever the recipe died, usually the same sign-in page.
+var imageStatuses = []string{"ok", "theme-mismatch", "build-error"}
+
+// ShotNote is a shot listed as text instead of uploaded.
+type ShotNote struct {
+	ID       string `json:"id"`
+	Viewport string `json:"viewport"`
+	Theme    string `json:"theme"`
+	Status   string `json:"status"`
+	Step     string `json:"step,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// AreaNotes are one area's text-only shots, in manifest order.
+type AreaNotes struct {
+	Area  string     `json:"area"`
+	Shots []ShotNote `json:"shots"`
 }
 
 // SplitOptions narrow a split.
@@ -65,10 +102,20 @@ type SplitOptions struct {
 }
 
 const (
-	// maxKey leaves room for the "b" a halved set appends (vitrinka keys cap at 64).
-	maxKey   = 62
+	// maxKey: vitrinka set keys cap at 64.
+	maxKey   = 64
 	maxLabel = 40
 )
+
+// setFileCap is MaxSetFiles; a test lowers it.
+var setFileCap = MaxSetFiles
+
+// areaKey is the set key of an area: ONE set, so one board, per area across
+// every pass. A set key is a board in vitrinka; each pass adds its shots and
+// its sections to the same board instead of minting a board per pass.
+func areaKey(prefix string, area string) string {
+	return fit(fmt.Sprintf("%s-%s", prefix, area), "", maxKey)
+}
 
 func digest(s string, n int) string {
 	h := sha256.Sum256([]byte(s))
@@ -133,11 +180,11 @@ func note(pass int, r Record) string {
 	return prefix + strings.Join(parts, " · ")
 }
 
-// Split plans the vitrinka sets of a pass: one per area × viewport × theme,
-// chunked at publish.maxFiles files and publish.maxBytes source bytes (the
-// adopted WebP is smaller, so the bound is conservative). A shot's viewport
-// and full captures stay in one chunk. The plan is written to
-// <passDir>/publish/plan.json.
+// Split plans the vitrinka sets of a pass: one per area, so one board per
+// area per pass, holding every viewport × theme of it in sections. vitrinka
+// syncs a set file by file (its per-file door), so a set is bounded only by
+// ingest.MaxSetFiles; an area above that is refused (SET_TOO_LARGE). The plan
+// is written to <passDir>/publish/plan.json.
 func (t *Tool) Split(o SplitOptions) (Result, error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -162,7 +209,6 @@ func (t *Tool) Split(o SplitOptions) (Result, error) {
 }
 
 func (t *Tool) plan(pass int, areas []string) (Plan, []runxDiagnostic, error) {
-	c := t.Config
 	passDir := t.passAbs(pass)
 	if _, err := os.Stat(passDir); err != nil {
 		return Plan{}, nil, diag(DiagPassMissing, t.PassDir(pass)+" does not exist", "vybava ui-loop run")
@@ -171,90 +217,117 @@ func (t *Tool) plan(pass int, areas []string) (Plan, []runxDiagnostic, error) {
 	if err != nil {
 		return Plan{}, nil, err
 	}
+	return t.planRecords(pass, records, areas)
+}
+
+// sortAreas orders area names as the config lists them, the rest by name.
+func sortAreas(order, areas []string) {
+	sort.Slice(areas, func(i, j int) bool {
+		if x, y := orderOf(order, areas[i]), orderOf(order, areas[j]); x != y {
+			return x < y
+		}
+		return areas[i] < areas[j]
+	})
+}
+
+// planRecords plans the given records of a pass (publish --follow passes
+// only the final ones).
+func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []runxDiagnostic, error) {
+	c := t.Config
+	passDir := t.passAbs(pass)
 	if len(records) == 0 {
 		return Plan{}, nil, diag(DiagPassMissing, t.PassDir(pass)+" holds no shot records", fmt.Sprintf("vybava ui-loop run --resume --pass %d", pass))
 	}
-	plan := Plan{V: 1, Pass: pass, PassDir: t.PassDir(pass), Project: c.Vitrinka.Project, MaxFiles: c.Publish.MaxFiles, MaxBytes: c.Publish.MaxBytes, Sets: []Set{}, Skipped: []string{}}
-	var diags []runxDiagnostic
+	plan := Plan{V: PlanVersion, Pass: pass, PassDir: t.PassDir(pass), Project: c.Vitrinka.Project, Sets: []Set{}, Skipped: []string{}, Notes: []AreaNotes{}}
+	diags := c.Deprecations()
 
-	type group struct {
-		area, viewport, theme string
-		records               []Record
-	}
-	groups := map[string]*group{}
+	byArea := map[string][]Record{}
+	notes := map[string][]ShotNote{}
 	for _, r := range records {
 		if len(areas) > 0 && !slices.Contains(areas, r.Area) {
+			continue
+		}
+		if !slices.Contains(imageStatuses, r.Status) {
+			n := ShotNote{ID: r.ID, Viewport: r.Viewport, Theme: r.Theme, Status: r.Status}
+			if r.Failure != nil {
+				n.Step, n.Error = r.Failure.Step, r.Failure.Error
+				if r.Failure.StepIndex != nil && n.Step != "" {
+					n.Step = fmt.Sprintf("step %d %s", *r.Failure.StepIndex, n.Step)
+				}
+			}
+			notes[r.Area] = append(notes[r.Area], n)
 			continue
 		}
 		if r.Files.Viewport == "" {
 			plan.Skipped = append(plan.Skipped, r.Key()+" ("+r.Status+")")
 			continue
 		}
-		k := r.Area + "\x00" + r.Viewport + "\x00" + r.Theme
-		g := groups[k]
-		if g == nil {
-			g = &group{area: r.Area, viewport: r.Viewport, theme: r.Theme}
-			groups[k] = g
-		}
-		g.records = append(g.records, r)
+		byArea[r.Area] = append(byArea[r.Area], r)
 	}
-	ordered := make([]*group, 0, len(groups))
-	for _, g := range groups {
-		ordered = append(ordered, g)
+	planned := make([]string, 0, len(byArea))
+	for a := range byArea {
+		planned = append(planned, a)
 	}
-	vpOrder := c.ViewportOrder()
-	themes := []string{"light", "dark"}
-	sort.Slice(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if x, y := orderOf(c.Areas, a.area), orderOf(c.Areas, b.area); x != y {
-			return x < y
+	sortAreas(c.Areas, planned)
+	vpOrder, themeOrder := c.ViewportOrder(), c.ThemeOrder()
+	for _, area := range planned {
+		// Viewport, then theme, in config order; the stable sort keeps the
+		// records' screen order inside each section.
+		rs := byArea[area]
+		sort.SliceStable(rs, func(i, j int) bool {
+			a, b := rs[i], rs[j]
+			if x, y := orderOf(vpOrder, a.Viewport), orderOf(vpOrder, b.Viewport); x != y {
+				return x < y
+			}
+			if a.Viewport != b.Viewport {
+				return a.Viewport < b.Viewport
+			}
+			if x, y := orderOf(themeOrder, a.Theme), orderOf(themeOrder, b.Theme); x != y {
+				return x < y
+			}
+			return a.Theme < b.Theme
+		})
+		s := Set{
+			Key:   areaKey(c.Vitrinka.BoardPrefix, area),
+			Title: fmt.Sprintf("%s · %s", c.Vitrinka.BoardPrefix, area),
+			Area:  area, Sections: []BoardSection{}, Files: []PlanFile{},
 		}
-		if a.area != b.area {
-			return a.area < b.area
-		}
-		if x, y := orderOf(vpOrder, a.viewport), orderOf(vpOrder, b.viewport); x != y {
-			return x < y
-		}
-		if a.viewport != b.viewport {
-			return a.viewport < b.viewport
-		}
-		return orderOf(themes, a.theme) < orderOf(themes, b.theme)
-	})
-
-	for _, g := range ordered {
-		base := fmt.Sprintf("%s-p%d-%s-%s-%s", c.Vitrinka.BoardPrefix, pass, g.area, g.viewport, g.theme)
-		var chunks []Set
-		cur := Set{Files: []PlanFile{}}
-		for _, r := range g.records {
+		for _, r := range rs {
 			unit, err := t.planFiles(pass, passDir, r)
 			if err != nil {
 				return Plan{}, nil, err
 			}
-			var ub int64
+			if n := len(s.Sections); n == 0 || s.Sections[n-1].Viewport != r.Viewport || s.Sections[n-1].Theme != r.Theme {
+				s.Sections = append(s.Sections, BoardSection{Title: fmt.Sprintf("Pass %d · %s · %s", pass, r.Viewport, r.Theme), Viewport: r.Viewport, Theme: r.Theme, Labels: []string{}})
+			}
+			sec := &s.Sections[len(s.Sections)-1]
 			for _, f := range unit {
-				ub += f.Bytes
-				if f.Bytes > c.Publish.MaxBytes {
-					diags = append(diags, warn(DiagFileTooLarge, fmt.Sprintf("%s is %d bytes, above publish.maxBytes %d", f.Path, f.Bytes, c.Publish.MaxBytes), ""))
-				}
+				sec.Labels = append(sec.Labels, f.Label)
 			}
-			if len(cur.Files) > 0 && (len(cur.Files)+len(unit) > c.Publish.MaxFiles || cur.Bytes+ub > c.Publish.MaxBytes) {
-				chunks = append(chunks, cur)
-				cur = Set{Files: []PlanFile{}}
-			}
-			cur.Files = append(cur.Files, unit...)
-			cur.Bytes += ub
+			s.Files = append(s.Files, unit...)
 		}
-		chunks = append(chunks, cur)
-		for i := range chunks {
-			s := &chunks[i]
-			s.Area, s.Viewport, s.Theme, s.Chunk, s.Chunks = g.area, g.viewport, g.theme, i+1, len(chunks)
-			s.Key = fit(base, fmt.Sprintf("-%d", i+1), maxKey)
-			s.Title = fmt.Sprintf("%s · %s · pass %d · %s · %s", c.Vitrinka.BoardPrefix, g.area, pass, g.viewport, g.theme)
-			if len(chunks) > 1 {
-				s.Title += fmt.Sprintf(" (%d/%d)", i+1, len(chunks))
-			}
+		// The root is shared by every pass, so the files other passes adopted
+		// into it count too; +1: the set's manifest.json counts toward the cap.
+		earlier, err := t.adoptedByOtherPasses(pass, s.Key)
+		if err != nil {
+			return Plan{}, nil, err
 		}
-		plan.Sets = append(plan.Sets, chunks...)
+		if earlier+len(s.Files)+1 > setFileCap {
+			diags = append(diags, errDiag(DiagSetTooLarge,
+				fmt.Sprintf("area %s holds %d captures this pass and %d from other passes; a vitrinka set holds at most %d files, its manifest included", area, len(s.Files), earlier, setFileCap),
+				"split the area into smaller ones in the uiLoop config, then re-run the pass's split"))
+			plan.Skipped = append(plan.Skipped, s.Key+" (too many files)")
+			continue
+		}
+		plan.Sets = append(plan.Sets, s)
+	}
+	noted := make([]string, 0, len(notes))
+	for a := range notes {
+		noted = append(noted, a)
+	}
+	sortAreas(c.Areas, noted)
+	for _, a := range noted {
+		plan.Notes = append(plan.Notes, AreaNotes{Area: a, Shots: notes[a]})
 	}
 	return plan, diags, nil
 }
@@ -295,10 +368,10 @@ func (t *Tool) planFiles(pass int, passDir string, r Record) ([]PlanFile, error)
 			return PlanFile{}, fmt.Errorf("%s: %w", rel, err)
 		}
 		f := PlanFile{
-			Path: rel, Shot: r.Key(), Full: full, Bytes: int64(len(body)), SHA256: digest(string(body), 64),
+			Path: rel, Stamp: r.CapturedAt, SHA256: digest(string(body), 64), Shot: r.Key(), Full: full,
 			Label: fit(label, "", maxLabel), Title: fmt.Sprintf("%s · %s · %s", r.Title, r.Viewport, r.Theme),
 			Note: note(pass, r), Route: route, URL: r.URL, State: state,
-			Viewport: fmt.Sprintf("%dx%d@%d", w, h, DPR), Src: src,
+			Viewport: r.Viewport, Theme: r.Theme, Size: fmt.Sprintf("%dx%d@%d", w, h, DPR), Src: src,
 		}
 		if full {
 			f.Label = fit(label, "-FULL", maxLabel)

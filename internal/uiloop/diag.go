@@ -35,12 +35,24 @@ const (
 	DiagRunFailed = "RUN_FAILED"
 	// DiagShotsNotOk: the pass holds shots whose status is not ok (info).
 	DiagShotsNotOk = "SHOTS_NOT_OK"
-	// DiagFileTooLarge: a single capture exceeds publish.maxBytes and gets a
-	// set of its own (warning).
-	DiagFileTooLarge = "FILE_TOO_LARGE"
-	// DiagPublishFailed: a set could not be pushed even after retries and
-	// halving; its row in publish/index.json says why.
+	// DiagSetTooLarge: an area holds more captures than one vitrinka set takes
+	// (ingest.MaxSetFiles, 20,000 files); its set is not planned — split the
+	// area in the config.
+	DiagSetTooLarge = "SET_TOO_LARGE"
+	// DiagConfigDeprecated: the config sets a key that is still accepted but
+	// ignored (publish.maxFiles, publish.maxBytes) — delete it (warning).
+	DiagConfigDeprecated = "CONFIG_DEPRECATED"
+	// DiagLegacySets: publish/index.json lists sets an older publish of this
+	// pass chunked by viewport × theme; they are kept under `legacy` and never
+	// re-adopted — delete their boards when the area sets replace them (info).
+	DiagLegacySets = "LEGACY_SETS"
+	// DiagPublishFailed: a set could not be pushed even after retries; its row
+	// in publish/index.json says why.
 	DiagPublishFailed = "PUBLISH_FAILED"
+	// DiagPublishRefused: `board capture` refused some files of a set; the rest
+	// were adopted and the set pushed. The row's `refused` in
+	// publish/index.json names each file and why (warning).
+	DiagPublishRefused = "PUBLISH_REFUSED"
 	// DiagVitrinkaMissing: the vitrinka CLI is not on PATH.
 	DiagVitrinkaMissing = "VITRINKA_MISSING"
 	// DiagBacklogInvalid: the review backlog JSON does not decode or validate.
@@ -52,6 +64,16 @@ const (
 	// shots, sessions and params the box wrote (warning on check) — add the
 	// missing sync_ignores.
 	DiagDevboxSync = "DEVBOX_SYNC"
+	// DiagFollowSource: publish --follow has no box to fetch from — pass
+	// --from, or set publish.from in the config.
+	DiagFollowSource = "FOLLOW_SOURCE"
+	// DiagFetchFailed: publish --follow's rsync from the box failed on
+	// followFetchTries ticks in a row — see its stderr.
+	DiagFetchFailed = "FETCH_FAILED"
+	// DiagRunUnfinished: publish --follow stopped without the run's done.json
+	// after 3 × --until-idle without a new shot (the capture died before its
+	// teardown); finish the pass with run --resume and follow again (warning).
+	DiagRunUnfinished = "RUN_UNFINISHED"
 )
 
 func diag(code, detail, fix string) runx.DiagError {
@@ -73,3 +95,6 @@ func errDiag(code, detail, fix string) runx.Diagnostic {
 }
 
 type runxDiagnostic = runx.Diagnostic
+
+// SelectionError is a SELECTION_INVALID refusal for the CLI's flag checks.
+func SelectionError(detail, fix string) error { return diag(DiagSelectionInvalid, detail, fix) }

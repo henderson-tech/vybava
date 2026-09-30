@@ -105,7 +105,7 @@ func (t *Tool) Check(skipTS bool) (Result, error) {
 		Manifest: ManifestCheck{Status: "skipped", Problems: []string{}},
 		AppMap:   AppMapCheck{Status: "skipped", File: t.Config.AppMap},
 	}
-	res := Result{Data: &data}
+	res := Result{Data: &data, Diagnostics: t.Config.Deprecations()}
 	vendor, err := t.Vendor()
 	if err != nil {
 		return res, err
