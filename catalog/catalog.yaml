@@ -262,7 +262,7 @@ items:
   - id: polish
     kind: skill
     status: experimental
-    description: Manual-only protocol — fix a branch's findings in its existing PR, then run the adverse-condition matrix (network, app lifecycle, web, backend, DB) with blip until a clean pass.
+    description: Manual-only protocol on two axes, target (app | ui | api, inferred from the diff, the findings and the cwd) × intensity (quick | default | full) — fix a branch's findings in its existing PR, then run the target's adverse-condition matrix with blip, and at full the target's deep pass (the app chrome matrix over iOS 26, iOS 18 and Android via polish-kit, the ui-loop capture pass, the API concurrency and log pass) until a clean pass.
     source: skills/polish
 
   - id: readiness
