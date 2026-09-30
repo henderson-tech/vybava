@@ -2,6 +2,7 @@ package framestats
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // Frame-time thresholds: one 120 Hz and one 60 Hz vsync period.
@@ -75,9 +78,12 @@ type Summary struct {
 	Files       []string `json:"files"`
 	RowsTotal   int      `json:"rowsTotal"`
 	RowsFlagged int      `json:"rowsFlagged"`
-	Frames      int      `json:"frames"`
-	InputFrames int      `json:"inputFrames"`
-	SpanMs      Ms       `json:"spanMs"`
+	// RowsMalformed counts rows read but never measured (see parseRow); they
+	// are not deduped and not part of RowsTotal.
+	RowsMalformed int `json:"rowsMalformed"`
+	Frames        int `json:"frames"`
+	InputFrames   int `json:"inputFrames"`
+	SpanMs        Ms  `json:"spanMs"`
 
 	CadenceMedianMs       Ms  `json:"cadenceMedianMs"`
 	CadenceP90Ms          Ms  `json:"cadenceP90Ms"`
@@ -142,61 +148,101 @@ var stages = []stage{
 
 type frameRow map[string]int64
 
-// ParseFiles opens every path and parses them as one run.
+// requiredColumns are the stamps every measurement reads; a header without
+// one of them is MISSING_COLUMNS rather than a run of 0 ms frames.
+var requiredColumns = []string{"Flags", "IntendedVsync", "SwapBuffers", "FrameCompleted"}
+
+// ParseFiles parses every path as one run, opening one file at a time (a
+// timer-driven capture can pass thousands of dumps).
 func ParseFiles(paths []string, opts ParseOptions) (Summary, error) {
-	inputs := make([]Input, 0, len(paths))
+	p := newParser(opts)
 	for _, path := range paths {
 		fh, err := os.Open(path)
 		if err != nil {
-			return Summary{}, diag(DiagFileUnreadable, fmt.Sprintf("cannot read %s: %v", path, err),
+			return p.s, diag(DiagFileUnreadable, fmt.Sprintf("cannot read %s: %v", path, err),
 				"framestats parse <framestats.txt>... --json")
 		}
-		defer fh.Close()
-		inputs = append(inputs, Input{Name: path, Reader: fh})
+		err = p.read(path, fh)
+		fh.Close()
+		if err != nil {
+			return p.s, err
+		}
 	}
-	return Parse(inputs, opts)
+	return p.finish()
 }
 
 // Parse reads every ---PROFILEDATA--- block of every input, dedupes rows by
 // IntendedVsync (a run is often dumped several times, each dump holding the
 // last ~120 frames), drops rows with Flags != 0 and summarises the rest.
 func Parse(inputs []Input, opts ParseOptions) (Summary, error) {
+	p := newParser(opts)
+	for _, in := range inputs {
+		if err := p.read(in.Name, in.Reader); err != nil {
+			return p.s, err
+		}
+	}
+	return p.finish()
+}
+
+// parser accumulates the rows of every dump of one run, deduped by
+// IntendedVsync across dumps.
+type parser struct {
+	opts   ParseOptions
+	s      Summary
+	seen   map[int64]frameRow
+	blocks int
+}
+
+func newParser(opts ParseOptions) *parser {
 	if opts.AfterReleaseMs <= 0 {
 		opts.AfterReleaseMs = DefaultAfterReleaseMs
 	}
-	s := Summary{
-		Label: opts.Label, Files: []string{}, ReleaseWindowMs: opts.AfterReleaseMs,
-		StageMediansMs: map[string]Ms{}, StageP90Ms: map[string]Ms{},
-		FirstInputFramesTotalMs: []Ms{}, FirstInputFramesStages: []string{}, Gestures: []Gesture{},
+	return &parser{
+		opts: opts,
+		s: Summary{
+			Label: opts.Label, Files: []string{}, ReleaseWindowMs: opts.AfterReleaseMs,
+			StageMediansMs: map[string]Ms{}, StageP90Ms: map[string]Ms{},
+			FirstInputFramesTotalMs: []Ms{}, FirstInputFramesStages: []string{}, Gestures: []Gesture{},
+		},
+		seen: map[int64]frameRow{},
 	}
-	seen := map[int64]frameRow{}
-	blocks := 0
-	for _, in := range inputs {
-		s.Files = append(s.Files, in.Name)
-		n, err := readBlocks(in.Reader, func(r frameRow) {
-			iv := r["IntendedVsync"]
-			if _, dup := seen[iv]; dup {
-				return
-			}
-			seen[iv] = r
-			s.RowsTotal++
-			if r["Flags"] != 0 {
-				s.RowsFlagged++
-			}
-		})
-		if err != nil {
-			return s, diag(DiagFileUnreadable, fmt.Sprintf("cannot read %s: %v", in.Name, err),
-				"framestats parse <framestats.txt>... --json")
+}
+
+func (p *parser) read(name string, r io.Reader) error {
+	p.s.Files = append(p.s.Files, name)
+	n, malformed, err := readBlocks(name, r, func(r frameRow) {
+		iv := r["IntendedVsync"]
+		if _, dup := p.seen[iv]; dup {
+			return
 		}
-		blocks += n
+		p.seen[iv] = r
+		p.s.RowsTotal++
+		if r["Flags"] != 0 {
+			p.s.RowsFlagged++
+		}
+	})
+	p.blocks += n
+	p.s.RowsMalformed += malformed
+	if err != nil {
+		var d runx.DiagError
+		if errors.As(err, &d) {
+			return err
+		}
+		return diag(DiagFileUnreadable, fmt.Sprintf("cannot read %s: %v", name, err),
+			"framestats parse <framestats.txt>... --json")
 	}
-	if blocks == 0 {
+	return nil
+}
+
+func (p *parser) finish() (Summary, error) {
+	s := p.s
+	if p.blocks == 0 {
 		return s, diag(DiagNotFramestats,
 			"no ---PROFILEDATA--- block in the input; a plain `dumpsys gfxinfo <pkg>` carries none",
 			"adb shell dumpsys gfxinfo <pkg> framestats > framestats.txt")
 	}
-	rows := make([]frameRow, 0, len(seen))
-	for _, r := range seen {
+	rows := make([]frameRow, 0, len(p.seen))
+	for _, r := range p.seen {
 		if r["Flags"] == 0 {
 			rows = append(rows, r)
 		}
@@ -206,17 +252,17 @@ func Parse(inputs []Input, opts ParseOptions) (Summary, error) {
 	if len(rows) == 0 {
 		return s, nil
 	}
-	summarize(&s, rows, opts)
+	summarize(&s, rows, p.opts)
 	return s, nil
 }
 
-// readBlocks streams the rows of every PROFILEDATA block and returns how
-// many blocks it saw.
-func readBlocks(r io.Reader, emit func(frameRow)) (int, error) {
+// readBlocks streams the well-formed rows of every PROFILEDATA block and
+// returns how many blocks it saw and how many rows it rejected (parseRow).
+// A header lacking a required column is MISSING_COLUMNS.
+func readBlocks(name string, r io.Reader, emit func(frameRow)) (blocks, malformed int, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	in := false
-	blocks := 0
 	var header []string
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -233,23 +279,62 @@ func readBlocks(r io.Reader, emit func(frameRow)) (int, error) {
 		}
 		parts := strings.Split(strings.TrimSuffix(line, ","), ",")
 		if parts[0] == "Flags" {
+			if missing := missingColumns(parts); len(missing) > 0 {
+				return blocks, malformed, diag(DiagMissingColumns,
+					fmt.Sprintf("%s: the PROFILEDATA header lacks %s, so its frames cannot be measured", name, strings.Join(missing, ", ")),
+					"adb shell dumpsys gfxinfo <pkg> framestats > framestats.txt")
+			}
 			header = parts
 			continue
 		}
-		if header == nil {
+		row, ok := parseRow(header, parts)
+		if !ok {
+			malformed++
 			continue
-		}
-		row := frameRow{}
-		for i, h := range header {
-			if i < len(parts) {
-				if v, err := strconv.ParseInt(parts[i], 10, 64); err == nil {
-					row[h] = v
-				}
-			}
 		}
 		emit(row)
 	}
-	return blocks, sc.Err()
+	return blocks, malformed, sc.Err()
+}
+
+func missingColumns(header []string) []string {
+	var missing []string
+	for _, c := range requiredColumns {
+		found := false
+		for _, h := range header {
+			if h == c {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, c)
+		}
+	}
+	return missing
+}
+
+// parseRow reads one data row by its block's header. The row is malformed
+// (never measured, since every absent stamp would read as 0) when there is
+// no header yet, its field count differs from the header's (a truncated or
+// run-together line), a field is not an integer, or a kept frame
+// (Flags == 0) completes before its IntendedVsync.
+func parseRow(header, parts []string) (frameRow, bool) {
+	if header == nil || len(parts) != len(header) {
+		return nil, false
+	}
+	row := make(frameRow, len(header))
+	for i, h := range header {
+		v, err := strconv.ParseInt(parts[i], 10, 64)
+		if err != nil {
+			return nil, false
+		}
+		row[h] = v
+	}
+	if row["Flags"] == 0 && row["FrameCompleted"] < row["IntendedVsync"] {
+		return nil, false
+	}
+	return row, true
 }
 
 // frameTime is FrameCompleted (or a later GpuCompleted) minus IntendedVsync;

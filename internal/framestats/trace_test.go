@@ -201,6 +201,77 @@ func TestReadTraceNamesAMissingPackage(t *testing.T) {
 	}
 }
 
+func TestReadTraceRefusesATruncatedTrace(t *testing.T) {
+	raw := syntheticTrace()
+	_, _, err := ReadTrace(raw[:len(raw)-3], TraceOptions{Package: "app.test"})
+	var d runx.DiagError
+	if !errors.As(err, &d) || d.Diag.Code != DiagTraceIncomplete || d.Diag.Fix == "" {
+		t.Fatalf("err = %v, want %s: a cut trace must not measure its prefix", err, DiagTraceIncomplete)
+	}
+}
+
+func TestReadTraceReportsDurationTotalsWithoutSamplesAsNull(t *testing.T) {
+	raw := pbMsg(ftracePacket(slicePair(appPid, appPid, "Choreographer#doFrame 1", 0, 8)))
+	s, _, err := ReadTrace(raw, TraceOptions{PID: appPid, Counts: []string{"absent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := s.ARTPauses; p.Count != 0 || p.TotalMs != nil || p.MaxMs != nil {
+		t.Errorf("artPauses = %+v, want count 0 and null durations", p)
+	}
+	for _, match := range []string{TextureUpload, "absent"} {
+		if c := countOf(t, s, match); c.Total != 0 || c.TotalMs != nil {
+			t.Errorf("%s = %+v, want total 0 and totalMs null", match, c)
+		}
+	}
+}
+
+// Android < 12: doFrame and DrawFrame carry no vsync id. UI durations and
+// drag frames need only time; RenderThread and per-frame counts need ids.
+func TestReadTraceMeasuresUIFramesWithoutVsyncIDs(t *testing.T) {
+	var m []marker
+	for _, x := range [][]marker{
+		slicePair(appPid, appPid, "Choreographer#doFrame", 0, 8),
+		slicePair(renderTi, appPid, "DrawFrame", 9, 15),
+		{{20, appPid, "B|4242|Choreographer#doFrame"}, {30, appPid, "E|4242"}},
+		slicePair(appPid, appPid, "input", 20.1, 20.5),
+		slicePair(appPid, appPid, "Choreographer#doFrame - resynced to 5 in 0.1ms", 20.6, 20.7),
+		slicePair(appPid, appPid, "ReanimatedModuleProxy::commitUpdates", 21, 21.4),
+		{{31, renderTi, "B|4242|DrawFrame"}, {37, renderTi, "E|4242"}},
+		slicePair(renderTi, appPid, "Texture upload(2) 1080x2016", 32, 33),
+	} {
+		m = append(m, x...)
+	}
+	s, diags, err := ReadTrace(pbMsg(ftracePacket(m)), TraceOptions{PID: appPid, Counts: []string{"commitUpdates"}, Frames: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warned := false
+	for _, d := range diags {
+		warned = warned || d.Code == DiagNoVsyncIDs
+	}
+	if !warned {
+		t.Errorf("diagnostics = %+v, want %s", diags, DiagNoVsyncIDs)
+	}
+	if s.UIFrames.Count != 2 || s.UIFrames.DragFrames != 1 || val(t, "ui p50", s.UIFrames.P50Ms) != 9 || val(t, "ui drag p50", s.UIFrames.DragP50Ms) != 10 {
+		t.Errorf("uiFrames = %+v (the nested resynced doFrame is not a frame)", s.UIFrames)
+	}
+	if s.RenderFrames.Count != 2 || s.RenderFrames.DragFrames != 0 || s.RenderFrames.DragP50Ms != nil {
+		t.Errorf("renderFrames = %+v, want both draws counted and no drag attribution", s.RenderFrames)
+	}
+	for _, match := range []string{TextureUpload, "commitUpdates"} {
+		if c := countOf(t, s, match); c.Total != 1 || c.InFrames != 0 || c.PerDragFrameP50 != nil {
+			t.Errorf("%s = %+v, want the total but no per-frame attribution", match, c)
+		}
+	}
+	if s.Uploads.LargePerDragFrameP50 != nil || s.Uploads.UploadMsPerDragFrameP50 != nil {
+		t.Errorf("uploads = %+v, want null per-drag-frame values", s.Uploads)
+	}
+	if len(s.Frames) != 2 || s.Frames[0].VsyncID != nil || val(t, "frame 1 ui", s.Frames[1].UIMs) != 10 {
+		t.Errorf("frames = %+v, want two rows with a null vsyncId", s.Frames)
+	}
+}
+
 func TestReadTraceRefusesNonTrace(t *testing.T) {
 	_, _, err := ReadTrace([]byte("# tracer: nop\n"), TraceOptions{Package: "app.test"})
 	var d runx.DiagError

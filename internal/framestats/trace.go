@@ -2,6 +2,7 @@ package framestats
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -123,7 +124,8 @@ type FrameTimeline struct {
 
 // TraceFrame is one UI frame, for --frames.
 type TraceFrame struct {
-	VsyncID  int64          `json:"vsyncId"`
+	// VsyncID is nil when the doFrame carries no id (NO_VSYNC_IDS).
+	VsyncID  *int64         `json:"vsyncId"`
 	StartMs  float64        `json:"startMs"`
 	UIMs     Ms             `json:"uiMs"`
 	RenderMs Ms             `json:"renderMs"`
@@ -159,7 +161,9 @@ func ReadTraceFile(path string, opts TraceOptions) (TraceSummary, []runx.Diagnos
 
 // frame is one UI frame keyed by vsync id, with its spans on both threads.
 type frame struct {
-	id       int64
+	id int64
+	// hasID is false for an id-less doFrame (Android < 12, see NO_VSYNC_IDS).
+	hasID    bool
 	ui       *slice
 	renders  []slice
 	drag     bool
@@ -174,9 +178,14 @@ type frame struct {
 // measures them per UI frame (vsync id). Warnings come back as diagnostics
 // beside a usable summary; only an unusable input is an error.
 func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, error) {
-	t := decodeTrace(raw)
+	t, err := decodeTrace(raw)
 	if t.packets == 0 {
 		return TraceSummary{}, nil, diag(DiagNotATrace, "no TracePacket decoded; pass the binary .pftrace perfetto wrote, not a text or JSON export",
+			"adb pull /data/misc/perfetto-traces/<name>.pftrace")
+	}
+	if err != nil {
+		return TraceSummary{}, nil, diag(DiagTraceIncomplete,
+			fmt.Sprintf("the protobuf stream breaks (%v): the file was pulled while perfetto was still writing, or is corrupt, so later frames are missing and nothing is measured", err),
 			"adb pull /data/misc/perfetto-traces/<name>.pftrace")
 	}
 	s := TraceSummary{Package: opts.Package, PID: opts.PID, PIDSource: "flag"}
@@ -197,7 +206,7 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 	byID := map[int64]*frame{}
 	var order []*frame
 	var inputs []slice
-	noIDs := 0
+	var noIDs []*slice
 	for i := range slices {
 		sl := &slices[i]
 		if sl.tid != s.PID {
@@ -212,7 +221,7 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 		}
 		id, ok := trailingID(sl.name)
 		if !ok {
-			noIDs++
+			noIDs = append(noIDs, sl)
 			continue
 		}
 		if f, dup := byID[id]; dup {
@@ -221,13 +230,30 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 			}
 			continue
 		}
-		f := &frame{id: id, ui: sl, counts: map[string]int{}}
+		f := &frame{id: id, hasID: true, ui: sl, counts: map[string]int{}}
 		byID[id] = f
 		order = append(order, f)
 	}
-	if len(order) == 0 {
-		if noIDs > 0 {
-			diags = append(diags, warn(DiagNoVsyncIDs, fmt.Sprintf("%d doFrame slices carry no vsync id (Android < 12); per-frame attribution needs Android 12+", noIDs), ""))
+	// vsyncIDs: the frames carry ids, so RenderThread work, per-frame slice
+	// counts and FrameTimeline frames can be tied to them.
+	vsyncIDs := len(order) > 0
+	if !vsyncIDs {
+		if len(noIDs) > 0 {
+			// Android < 12: durations and drag frames need only time, so the
+			// outermost id-less doFrames are still the UI frames.
+			sort.SliceStable(noIDs, func(i, j int) bool {
+				if noIDs[i].start != noIDs[j].start {
+					return noIDs[i].start < noIDs[j].start
+				}
+				return noIDs[i].end > noIDs[j].end
+			})
+			for _, sl := range noIDs {
+				if n := len(order); n > 0 && sl.end <= order[n-1].ui.end {
+					continue // nested in the previous doFrame
+				}
+				order = append(order, &frame{ui: sl, counts: map[string]int{}})
+			}
+			diags = append(diags, warn(DiagNoVsyncIDs, fmt.Sprintf("%d doFrame slices carry no vsync id (Android < 12); UI durations are measured, RenderThread, per-frame count and FrameTimeline attribution need Android 12+", len(noIDs)), ""))
 		} else {
 			diags = append(diags, warn(DiagNoAppFrames, fmt.Sprintf("pid %d traced no Choreographer#doFrame slice", s.PID),
 				"record with atrace_categories gfx, view and input plus atrace_apps <pkg>"))
@@ -289,10 +315,13 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 			totals[k]++
 			totalMs[k] += nsToMs(sl.end - sl.start)
 			var f *frame
-			switch sl.tid {
-			case s.PID:
+			switch {
+			case !vsyncIDs:
+				// Without ids the RenderThread half cannot be attributed, so
+				// neither half is: a per-frame count of 0 would pass a budget.
+			case sl.tid == s.PID:
 				f = enclosing(uiSpans, sl.start, sl.end)
-			case s.RenderThreadTID:
+			case sl.tid == s.RenderThreadTID:
 				f = enclosing(rtSpans, sl.start, sl.end)
 			}
 			if f != nil {
@@ -353,6 +382,9 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 		}
 		dragFrames++
 		uiDrag = append(uiDrag, d)
+		if !f.hasID {
+			continue // its per-frame counts were never attributed
+		}
 		if len(f.renders) > 0 {
 			rtDrag = append(rtDrag, f.renderMs)
 		}
@@ -377,7 +409,10 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 	s.RenderFrames = frameStats(rt, rtDrag, len(rtDrag))
 	s.Counts = make([]SliceCount, len(patterns))
 	for k, p := range patterns {
-		c := SliceCount{Match: p, Total: totals[k], TotalMs: ms(totalMs[k]), InFrames: inFrames[k], PerDragFrameP50: pctMs(perDrag[k], 50)}
+		c := SliceCount{Match: p, Total: totals[k], InFrames: inFrames[k], PerDragFrameP50: pctMs(perDrag[k], 50)}
+		if totals[k] > 0 {
+			c.TotalMs = ms(totalMs[k])
+		}
 		for _, n := range perDrag[k] {
 			c.InDragFrames += int(n)
 			if n > 0 {
@@ -409,7 +444,10 @@ func ReadTrace(raw []byte, opts TraceOptions) (TraceSummary, []runx.Diagnostic, 
 		t0 := order[0].ui.start
 		s.Frames = make([]TraceFrame, len(order))
 		for i, f := range order {
-			tf := TraceFrame{VsyncID: f.id, StartMs: nsRound(f.ui.start - t0), UIMs: ms(nsToMs(f.ui.end - f.ui.start)), Drag: f.drag, Counts: f.counts}
+			tf := TraceFrame{StartMs: nsRound(f.ui.start - t0), UIMs: ms(nsToMs(f.ui.end - f.ui.start)), Drag: f.drag, Counts: f.counts}
+			if f.hasID {
+				tf.VsyncID = &f.id
+			}
 			if len(f.renders) > 0 {
 				tf.RenderMs = ms(f.renderMs)
 			}
@@ -485,7 +523,11 @@ func dedupe(in []string) []string {
 	return out
 }
 
+// sum is the total of values, NaN (null through ms) when there are none.
 func sum(values []float64) float64 {
+	if len(values) == 0 {
+		return math.NaN()
+	}
 	total := 0.0
 	for _, v := range values {
 		total += v

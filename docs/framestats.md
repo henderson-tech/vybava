@@ -22,7 +22,12 @@ about 120 frames (one second at 120 Hz), so a longer run is dumped several
 times (after each gesture, or on a timer) and every dump is passed: rows are
 deduped by `IntendedVsync`, and rows with `Flags != 0` (a frame the system
 marked unusable) are counted in `rowsFlagged` and skipped. A dump without a
-`---PROFILEDATA---` block is `NOT_FRAMESTATS`.
+`---PROFILEDATA---` block is `NOT_FRAMESTATS`; a header without `Flags`,
+`IntendedVsync`, `SwapBuffers` or `FrameCompleted` is `MISSING_COLUMNS`. A
+row whose field count differs from the header's (a line cut mid-write), that
+carries a non-integer, or that completes before its `IntendedVsync` is never
+measured: it counts in `rowsMalformed` (per dump, not deduped, outside
+`rowsTotal`) and raises the `MALFORMED_ROWS` warning.
 
 Definitions (a frame is one kept row):
 
@@ -39,12 +44,15 @@ Definitions (a frame is one kept row):
 
 `--rows` adds one row per frame (`tMs`, `vsyncId`, `input`, `totalMs`,
 `uiMs`, `renderThreadMs`, `gpuMs`, `presentMs`). `NO_FRAMES` (warning) means
-every row was flagged: dump again right after the interaction.
+every row was flagged or malformed: dump again right after the interaction.
 
 ## `perfetto <trace.pftrace> --package <pkg>`
 
 Input: the binary trace `perfetto` writes (text and JSON exports are
-`NOT_A_PERFETTO_TRACE`). The config needs `linux.ftrace` with
+`NOT_A_PERFETTO_TRACE`). A protobuf stream that breaks after the first packet
+(pulled while perfetto was still writing, or corrupt) is `TRACE_INCOMPLETE`
+and measures nothing: its prefix would silently drop the later frames. The
+config needs `linux.ftrace` with
 `ftrace/print`, `atrace_categories` `gfx`, `view`, `input` (plus `dalvik`
 for ART pauses) and `atrace_apps: "<pkg>"`, and the
 `android.surfaceflinger.frametimeline` data source; `linux.process_stats`
@@ -67,15 +75,24 @@ section (the frame consumed a touch).
 | `artPauses` | `Mutator threads suspended for <cause>` slices: `count`, `totalMs`, `maxMs`, `duringDragFrames` (overlapping a drag frame), `byCause[]`. |
 | `frameTimeline` | The app's actual surface frames: `presentTypes` (ON_TIME, LATE, EARLY, DROPPED, UNKNOWN, UNSPECIFIED), `jankTypes` (one count per bit: NONE, APP_DEADLINE_MISSED, BUFFER_STUFFING, ...), `jankyFrames` (any bit but NONE), and present-to-present intervals, a present being the end of the display frame the surface frame landed in (`presentIntervalP50Ms`, `dragPresentIntervalP50Ms`, P90s). |
 
+A `totalMs` (in `counts[]` and `artPauses`) is `null` when no slice matched;
+the integer tallies beside it stay `0`.
+
 `--frames` adds one row per UI frame (`vsyncId`, `startMs`, `uiMs`,
 `renderMs`, `drag`, `counts`). Warnings ride a successful envelope:
 `NO_APP_FRAMES`, `NO_RENDER_THREAD`, `NO_VSYNC_IDS` (Android < 12),
-`NO_FRAME_TIMELINE`, each with the config fix in `next`.
+`NO_FRAME_TIMELINE`, each with the config fix in `next`. Under
+`NO_VSYNC_IDS` the outermost id-less doFrames are still the UI frames, so
+`uiFrames` (drag ones included) and `artPauses.duringDragFrames` are
+measured; what needs an id stays empty: `renderFrames` drag values, the
+per-frame `counts[]` and `uploads` values, FrameTimeline drag attribution and
+each `--frames` row's `vsyncId` (`null`).
 
 ## Diagnostics
 
 The closed enum lives in `internal/framestats/diag.go`: `USAGE`,
-`FILE_UNREADABLE`, `NOT_FRAMESTATS`, `NO_FRAMES`, `NOT_A_PERFETTO_TRACE`,
+`FILE_UNREADABLE`, `NOT_FRAMESTATS`, `MISSING_COLUMNS`, `MALFORMED_ROWS`,
+`NO_FRAMES`, `NOT_A_PERFETTO_TRACE`, `TRACE_INCOMPLETE`,
 `PACKAGE_NOT_IN_TRACE`, `NO_APP_FRAMES`, `NO_RENDER_THREAD`, `NO_VSYNC_IDS`,
 `NO_FRAME_TIMELINE`.
 

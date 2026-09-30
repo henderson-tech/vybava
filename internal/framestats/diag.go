@@ -13,13 +13,26 @@ const (
 	// DiagNotFramestats: `parse` found no ---PROFILEDATA--- block, so the
 	// input is not a `dumpsys gfxinfo <pkg> framestats` dump.
 	DiagNotFramestats = "NOT_FRAMESTATS"
-	// DiagNoFrames: the dumps parsed but every row was flagged (or there
-	// were none), so no metric has samples. Warning; the fix re-dumps right
-	// after the interaction, before the ~120-row ring wraps.
+	// DiagMissingColumns: a PROFILEDATA header lacks a column every frame
+	// measurement reads (Flags, IntendedVsync, SwapBuffers, FrameCompleted),
+	// so the dump is cut or not framestats; the fix dumps again.
+	DiagMissingColumns = "MISSING_COLUMNS"
+	// DiagMalformedRows: some rows were cut short, carried a non-integer or
+	// completed before their vsync; they are counted in rowsMalformed and
+	// never measured. Warning; the fix dumps again.
+	DiagMalformedRows = "MALFORMED_ROWS"
+	// DiagNoFrames: the dumps parsed but every row was flagged or malformed
+	// (or there were none), so no metric has samples. Warning; the fix
+	// re-dumps right after the interaction, before the ~120-row ring wraps.
 	DiagNoFrames = "NO_FRAMES"
 	// DiagNotATrace: `perfetto` read no TracePacket from the file, so it is
 	// not a Perfetto protobuf trace (a text or JSON export is not accepted).
 	DiagNotATrace = "NOT_A_PERFETTO_TRACE"
+	// DiagTraceIncomplete: the protobuf stream breaks after at least one
+	// packet (a file pulled while perfetto was still writing, or corrupt),
+	// so later frames are missing and no metric is reported; the fix pulls
+	// the trace again once perfetto has stopped.
+	DiagTraceIncomplete = "TRACE_INCOMPLETE"
 	// DiagPackageNotInTrace: no process_tree entry, FrameTimeline layer or
 	// sched comm names the package; the fix passes the pid explicitly.
 	DiagPackageNotInTrace = "PACKAGE_NOT_IN_TRACE"
@@ -31,9 +44,10 @@ const (
 	// RenderThread metrics and the per-frame RenderThread counts are empty.
 	// Warning.
 	DiagNoRenderThread = "NO_RENDER_THREAD"
-	// DiagNoVsyncIDs: doFrame slices carry no vsync id (Android < 12), so
-	// RenderThread work and FrameTimeline frames cannot be tied to a UI
-	// frame and drag attribution is empty. Warning.
+	// DiagNoVsyncIDs: doFrame slices carry no vsync id (Android < 12). UI
+	// durations and drag frames are still measured (they only need time),
+	// but RenderThread work, per-frame slice counts and FrameTimeline frames
+	// cannot be tied to a UI frame, so those stay empty. Warning.
 	DiagNoVsyncIDs = "NO_VSYNC_IDS"
 	// DiagNoFrameTimeline: the trace has no FrameTimeline packets for the
 	// app; the config lacks the android.surfaceflinger.frametimeline data

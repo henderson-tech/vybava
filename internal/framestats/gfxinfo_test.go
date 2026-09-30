@@ -2,6 +2,8 @@ package framestats
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,8 +29,8 @@ func TestParseMatchesTheFsparseDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Frames != 40 || s.InputFrames != 19 || s.Over8ms != 40 || s.Over16ms != 40 || s.DeadlineMissed != 40 {
-		t.Fatalf("counts = frames %d input %d over8 %d over16 %d missed %d", s.Frames, s.InputFrames, s.Over8ms, s.Over16ms, s.DeadlineMissed)
+	if s.Frames != 40 || s.InputFrames != 19 || s.Over8ms != 40 || s.Over16ms != 40 || s.DeadlineMissed != 40 || s.RowsMalformed != 0 {
+		t.Fatalf("counts = frames %d input %d over8 %d over16 %d missed %d malformed %d", s.Frames, s.InputFrames, s.Over8ms, s.Over16ms, s.DeadlineMissed, s.RowsMalformed)
 	}
 	want := map[string]struct {
 		got  Ms
@@ -137,6 +139,58 @@ func TestParseReportsMetricsWithoutSamplesAsNull(t *testing.T) {
 	}
 	if s.CadenceMedianMs != nil || s.FrameP50Ms != nil || s.InputPresentIntervalP50Ms != nil || s.FirstInputFrameMaxMs != nil {
 		t.Error("an empty run must report null metrics, never a number a budget could pass on")
+	}
+}
+
+func TestParseNeverMeasuresMalformedRows(t *testing.T) {
+	cut := row(0, 16.67, false, 5)
+	cut = cut[:len(cut)/2] // a line cut mid-write
+	s := parse(t, ParseOptions{}, dump(
+		row(0, 8.33, false, 5),
+		"garbage",
+		cut,
+		row(0, 25, false, -5), // completes before its vsync
+		row(0, 33.33, false, 5),
+	))
+	if s.Frames != 2 || s.RowsTotal != 2 || s.RowsMalformed != 3 {
+		t.Fatalf("rows = frames %d total %d malformed %d, want 2 2 3", s.Frames, s.RowsTotal, s.RowsMalformed)
+	}
+	if val(t, "frame p50", s.FrameP50Ms) != 5 || val(t, "frame max", s.FrameMaxMs) != 5 {
+		t.Errorf("a malformed row was measured: frame p50 %v max %v", *s.FrameP50Ms, *s.FrameMaxMs)
+	}
+
+	s = parse(t, ParseOptions{}, dump("garbage", cut))
+	if s.Frames != 0 || s.RowsMalformed != 2 || s.FrameP50Ms != nil || s.CadenceMedianMs != nil {
+		t.Errorf("a dump of only malformed rows must measure nothing: frames %d malformed %d", s.Frames, s.RowsMalformed)
+	}
+}
+
+func TestParseRefusesAHeaderWithoutRequiredColumns(t *testing.T) {
+	cut := "---PROFILEDATA---\nFlags,IntendedVsync,InputEventId,\n0,1,0,\n---PROFILEDATA---\n"
+	_, err := Parse([]Input{{Name: "cut.txt", Reader: strings.NewReader(cut)}}, ParseOptions{})
+	var d runx.DiagError
+	if !errors.As(err, &d) || d.Diag.Code != DiagMissingColumns || !strings.Contains(d.Diag.Detail, "SwapBuffers, FrameCompleted") {
+		t.Fatalf("err = %v, want %s naming the missing columns", err, DiagMissingColumns)
+	}
+}
+
+// ParseFiles reads one file at a time; rows still dedupe across files.
+func TestParseFilesDedupesAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for i := 0; i < 3; i++ {
+		path := filepath.Join(dir, "dump-"+itoa(int64(i))+".txt")
+		if err := os.WriteFile(path, []byte(dump(row(0, float64(i)*8.33, false, 5), row(0, float64(i+1)*8.33, false, 5))), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	s, err := ParseFiles(paths, ParseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Files) != 3 || s.RowsTotal != 4 || s.Frames != 4 {
+		t.Fatalf("files %d rows %d frames %d, want 3 4 4", len(s.Files), s.RowsTotal, s.Frames)
 	}
 }
 

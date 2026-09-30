@@ -1,6 +1,7 @@
 package framestats
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,48 +64,75 @@ type rawTrace struct {
 	timeline []timelineEvent
 }
 
-func decodeTrace(raw []byte) rawTrace {
+// decodeTrace walks every packet. A malformed message anywhere returns an
+// error beside the packets counted so far (ReadTrace tells a non-trace, 0
+// packets, from a cut one), so a partial trace is never measured as whole.
+func decodeTrace(raw []byte) (rawTrace, error) {
 	t := rawTrace{comms: map[int]string{}, cmdlines: map[int]string{}}
-	for _, pk := range fields(raw) {
+	pks, err := fields(raw)
+	for _, pk := range pks {
 		if pk.num != fTracePacket || pk.wt != 2 {
 			continue
 		}
 		t.packets++
-		pfs := fields(pk.data)
-		var ts int64
-		for _, f := range pfs {
-			if f.num == fPacketTimestamp && f.wt == 0 {
-				ts = int64(f.u)
-			}
+		if perr := t.decodePacket(pk.data); perr != nil {
+			return t, fmt.Errorf("packet %d: %w", t.packets, perr)
 		}
-		for _, f := range pfs {
-			if f.wt != 2 {
-				continue
-			}
-			switch f.num {
-			case fFtraceBundle:
-				t.decodeFtrace(f.data)
-			case fProcessTree:
-				t.decodeProcessTree(f.data)
-			case fFrameTimeline:
-				t.decodeTimeline(ts, f.data)
-			}
-		}
+	}
+	if err != nil {
+		return t, fmt.Errorf("after packet %d: %w", t.packets, err)
 	}
 	// Bundles arrive per CPU; slices need each thread's markers in order.
 	sort.SliceStable(t.prints, func(i, j int) bool { return t.prints[i].ts < t.prints[j].ts })
 	sort.SliceStable(t.timeline, func(i, j int) bool { return t.timeline[i].ts < t.timeline[j].ts })
-	return t
+	return t, nil
 }
 
-func (t *rawTrace) decodeFtrace(bundle []byte) {
-	for _, bf := range fields(bundle) {
+func (t *rawTrace) decodePacket(packet []byte) error {
+	pfs, err := fields(packet)
+	if err != nil {
+		return err
+	}
+	var ts int64
+	for _, f := range pfs {
+		if f.num == fPacketTimestamp && f.wt == 0 {
+			ts = int64(f.u)
+		}
+	}
+	for _, f := range pfs {
+		if f.wt != 2 {
+			continue
+		}
+		switch f.num {
+		case fFtraceBundle:
+			err = t.decodeFtrace(f.data)
+		case fProcessTree:
+			err = t.decodeProcessTree(f.data)
+		case fFrameTimeline:
+			err = t.decodeTimeline(ts, f.data)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *rawTrace) decodeFtrace(bundle []byte) error {
+	bfs, err := fields(bundle)
+	if err != nil {
+		return fmt.Errorf("ftrace bundle: %w", err)
+	}
+	for _, bf := range bfs {
 		if bf.num != 2 || bf.wt != 2 {
 			continue
 		}
 		var ets int64
 		var pid int
-		efs := fields(bf.data)
+		efs, err := fields(bf.data)
+		if err != nil {
+			return fmt.Errorf("ftrace event: %w", err)
+		}
 		for _, ef := range efs {
 			if ef.wt == 0 && ef.num == 1 {
 				ets = int64(ef.u)
@@ -114,12 +142,16 @@ func (t *rawTrace) decodeFtrace(bundle []byte) {
 			}
 		}
 		for _, ef := range efs {
-			if ef.wt != 2 {
+			if ef.wt != 2 || (ef.num != 3 && ef.num != 4) {
 				continue
+			}
+			xfs, err := fields(ef.data)
+			if err != nil {
+				return fmt.Errorf("ftrace event field %d: %w", ef.num, err)
 			}
 			switch ef.num {
 			case 3: // print
-				for _, pf := range fields(ef.data) {
+				for _, pf := range xfs {
 					if pf.num == 2 && pf.wt == 2 {
 						t.prints = append(t.prints, printEvent{ts: ets, tid: pid, buf: strings.TrimRight(string(pf.data), "\n")})
 					}
@@ -127,7 +159,7 @@ func (t *rawTrace) decodeFtrace(bundle []byte) {
 			case 4: // sched_switch
 				var prevPid, nextPid int
 				var prevComm, nextComm string
-				for _, sf := range fields(ef.data) {
+				for _, sf := range xfs {
 					switch sf.num {
 					case 1:
 						prevComm = string(sf.data)
@@ -148,18 +180,27 @@ func (t *rawTrace) decodeFtrace(bundle []byte) {
 			}
 		}
 	}
+	return nil
 }
 
-func (t *rawTrace) decodeProcessTree(tree []byte) {
-	for _, f := range fields(tree) {
-		if f.wt != 2 {
+func (t *rawTrace) decodeProcessTree(tree []byte) error {
+	tfs, err := fields(tree)
+	if err != nil {
+		return fmt.Errorf("process tree: %w", err)
+	}
+	for _, f := range tfs {
+		if f.wt != 2 || (f.num != 1 && f.num != 2) {
 			continue
+		}
+		xfs, err := fields(f.data)
+		if err != nil {
+			return fmt.Errorf("process tree field %d: %w", f.num, err)
 		}
 		switch f.num {
 		case 1: // Process
 			var pid int
 			cmdline := ""
-			for _, pf := range fields(f.data) {
+			for _, pf := range xfs {
 				if pf.num == 1 && pf.wt == 0 {
 					pid = int(pf.u)
 				}
@@ -173,7 +214,7 @@ func (t *rawTrace) decodeProcessTree(tree []byte) {
 		case 2: // Thread
 			var tid int
 			name := ""
-			for _, tf := range fields(f.data) {
+			for _, tf := range xfs {
 				if tf.num == 1 && tf.wt == 0 {
 					tid = int(tf.u)
 				}
@@ -188,15 +229,24 @@ func (t *rawTrace) decodeProcessTree(tree []byte) {
 			}
 		}
 	}
+	return nil
 }
 
-func (t *rawTrace) decodeTimeline(ts int64, event []byte) {
-	for _, ev := range fields(event) {
+func (t *rawTrace) decodeTimeline(ts int64, event []byte) error {
+	evs, err := fields(event)
+	if err != nil {
+		return fmt.Errorf("frame timeline: %w", err)
+	}
+	for _, ev := range evs {
 		if ev.wt != 2 || ev.num < 1 || ev.num > 5 {
 			continue
 		}
 		e := timelineEvent{ts: ts, kind: timelineKind(ev.num)}
-		for _, x := range fields(ev.data) {
+		xs, err := fields(ev.data)
+		if err != nil {
+			return fmt.Errorf("frame timeline event %d: %w", ev.num, err)
+		}
+		for _, x := range xs {
 			switch x.num {
 			case 1:
 				e.cookie = int64(x.u)
@@ -230,6 +280,7 @@ func (t *rawTrace) decodeTimeline(ts int64, event []byte) {
 		}
 		t.timeline = append(t.timeline, e)
 	}
+	return nil
 }
 
 // slice is one completed atrace B/E pair on a thread.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/henderson-tech/vybava/internal/framestats"
 	"github.com/henderson-tech/vybava/internal/runx"
@@ -44,7 +45,7 @@ func (rt *runtime) framestatsCommand(use string) *cobra.Command {
 		if err == nil {
 			next := []string{}
 			for _, d := range diags {
-				if d.Fix != "" {
+				if d.Fix != "" && !slices.Contains(next, d.Fix) {
 					next = append(next, d.Fix)
 				}
 			}
@@ -77,10 +78,17 @@ func (rt *runtime) framestatsCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, err)
 			}
 			var diags []runx.Diagnostic
+			if summary.RowsMalformed > 0 {
+				diags = append(diags, runx.Diagnostic{
+					Code: framestats.DiagMalformedRows, Severity: "warning",
+					Detail: fmt.Sprintf("%d rows were cut short, not integers or completed before their vsync; they are not measured", summary.RowsMalformed),
+					Fix:    "adb shell dumpsys gfxinfo <pkg> framestats > framestats.txt",
+				})
+			}
 			if summary.Frames == 0 {
 				diags = append(diags, runx.Diagnostic{
 					Code: framestats.DiagNoFrames, Severity: "warning",
-					Detail: fmt.Sprintf("%d rows read, %d flagged, none left to measure", summary.RowsTotal, summary.RowsFlagged),
+					Detail: fmt.Sprintf("%d rows read, %d flagged, %d malformed, none left to measure", summary.RowsTotal, summary.RowsFlagged, summary.RowsMalformed),
 					Fix:    "adb shell dumpsys gfxinfo <pkg> framestats > framestats.txt",
 				})
 			}

@@ -63,3 +63,16 @@ func TestFramestatsEnvelopeSurface(t *testing.T) {
 		}
 	}
 }
+
+// A malformed row is excluded and named by a warning beside the data.
+func TestFramestatsParseWarnsOnMalformedRows(t *testing.T) {
+	dumpFile := filepath.Join(t.TempDir(), "dump.txt")
+	body := "---PROFILEDATA---\nFlags,IntendedVsync,SwapBuffers,FrameCompleted,\n0,1000000,4000000,6000000,\ngarbage\n---PROFILEDATA---\n"
+	if err := os.WriteFile(dumpFile, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env, err := runFramestats(t, "parse", dumpFile)
+	if err != nil || !env.OK || len(env.Diagnostics) != 1 || env.Diagnostics[0].Code != "MALFORMED_ROWS" || len(env.Next) != 1 {
+		t.Fatalf("envelope = %+v (%v), want ok with one MALFORMED_ROWS warning", env, err)
+	}
+}
