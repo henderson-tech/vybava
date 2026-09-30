@@ -133,7 +133,7 @@ func (p *publisher) adopt(root string, s Set) error {
 			return failed("vitrinka board init", out)
 		}
 	}
-	ledger, err := ledgerFor(root)
+	ledger, err := ledgerFor(p.passDir, root)
 	if err != nil {
 		return err
 	}
@@ -169,12 +169,14 @@ func (p *publisher) adopt(root string, s Set) error {
 	return nil
 }
 
-// ledgerFor is the adopted-files ledger of a set root: publish/adopted/<key>,
-// beside the roots and never in one — `board push` refuses a root holding
+// ledgerFor is the adopted-files ledger of a set root in one pass:
+// <passDir>/publish/adopted/<key>. Per pass, because a root (<out>/sets/<key>)
+// is shared by every pass and a ledger line is a pass-relative path. Never in
+// the root — `board push` refuses a root holding
 // anything but images, sidecars and the manifest, so a ledger inside it failed
 // every push. A ledger an older run left in the root is moved out first.
-func ledgerFor(root string) (string, error) {
-	ledger := filepath.Join(filepath.Dir(filepath.Dir(root)), "adopted", filepath.Base(root))
+func ledgerFor(passDir, root string) (string, error) {
+	ledger := filepath.Join(passDir, "publish", "adopted", filepath.Base(root))
 	if err := os.MkdirAll(filepath.Dir(ledger), 0o755); err != nil {
 		return "", err
 	}
@@ -225,7 +227,7 @@ func (p *publisher) push(root, title string) (url string, attempts int, err erro
 
 // publishSet adopts and pushes one set.
 func (p *publisher) publishSet(s Set) PublishedSet {
-	root := filepath.Join(p.passDir, "publish", "sets", s.Key)
+	root := filepath.Join(filepath.Dir(p.passDir), "sets", s.Key)
 	rec := PublishedSet{Key: s.Key, Title: s.Title, Area: s.Area, Files: len(s.Files), Digest: setDigest(s), Sections: s.Sections}
 	if p.dryRun {
 		rec.Status = "planned"
@@ -294,10 +296,10 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 	// moves to legacy, and the pass publishes fresh area sets instead.
 	areaKeys := map[string]bool{}
 	for _, a := range t.Config.Areas {
-		areaKeys[areaKey(t.Config.Vitrinka.BoardPrefix, pass, a)] = true
+		areaKeys[areaKey(t.Config.Vitrinka.BoardPrefix, a)] = true
 	}
 	for _, r := range records {
-		areaKeys[areaKey(t.Config.Vitrinka.BoardPrefix, pass, r.Area)] = true
+		areaKeys[areaKey(t.Config.Vitrinka.BoardPrefix, r.Area)] = true
 	}
 	legacy := map[string]bool{}
 	for _, s := range index.Legacy {

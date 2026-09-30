@@ -172,7 +172,7 @@ A `login` that types a password reads it from the environment. Getting it there 
 
 ## Split and publish
 
-`split` plans **one vitrinka set per area per pass**, in config area order. A set key is a board, so a pass makes one board per area. Every viewport × theme of the area goes into that one set.
+`split` plans **one vitrinka set per area**, in config area order. A set key is a board, so an area has ONE board across every pass: its key is `<boardPrefix>-<area>`, and each pass adds its shots and its `Pass N · <viewport> · <theme>` sections to it. Every viewport × theme of the area goes into that one set.
 
 - **Images and notes:** only `ok`, `theme-mismatch` and `build-error` shots become images. Every other status (`recipe-failed`, `unreachable`, `error`) is listed per area under `notes` in the plan and in `publish/index.json` (`id`, `viewport`, `theme`, `status`, `step`, `error`), for the review-loop publisher to render as a text card. A `recipe-failed` shot is a picture of wherever the recipe died, usually the same sign-in page.
 - **Keys** are `<boardPrefix>-p<n>-<area>`, capped at 64 characters with a digest. **Titles** are `<boardPrefix> · <area> · pass <n>`.
@@ -184,7 +184,7 @@ A `login` that types a password reads it from the environment. Getting it there 
 - **Captions** carry the status and the lint defects, worst first.
 - **Determinism:** the plan is identical for an identical pass. It goes to `<pass>/publish/plan.json` (`v: 2`).
 
-`publish` adopts each set under `<pass>/publish/sets/<key>`, then pushes it:
+`publish` adopts each set under `<out>/sets/<key>`, one root per area shared by every pass (a set key is a board, so each pass adds its shots and its `Pass N · <viewport> · <theme>` sections to the same board), then pushes it:
 
 1. `vitrinka board init --root --key --title --project`.
 2. `board capture web --file … --label --title --route --url --note --src --state --device --viewport` adopts each file. The descriptor stays in place, so each capture fires vitrinka's detached per-file push and the shot shows up on the board while the rest adopt. A ledger at `publish/adopted/<key>` makes a re-run adopt only what is missing. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`.

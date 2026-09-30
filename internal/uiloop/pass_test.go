@@ -96,12 +96,12 @@ func TestSplitPlansOneSetPerAreaSectionedByViewportAndTheme(t *testing.T) {
 		}
 	}
 	want := []string{
-		"ui-polish-p1-tasks | ui-polish · tasks · pass 1",
-		"  phone · light P1-LIST-PHONE-LIGHT,P1-LIST-PHONE-LIGHT-FULL,P1-DETAIL-PHONE-LIGHT",
-		"  phone · dark P1-LIST-PHONE-DARK",
-		"  desktop · light P1-LIST-DESKTOP-LIGHT",
-		"ui-polish-p1-admin | ui-polish · admin · pass 1",
-		"  desktop · dark P1-USERS-DESKTOP-DARK",
+		"ui-polish-tasks | ui-polish · tasks",
+		"  Pass 1 · phone · light P1-LIST-PHONE-LIGHT,P1-LIST-PHONE-LIGHT-FULL,P1-DETAIL-PHONE-LIGHT",
+		"  Pass 1 · phone · dark P1-LIST-PHONE-DARK",
+		"  Pass 1 · desktop · light P1-LIST-DESKTOP-LIGHT",
+		"ui-polish-admin | ui-polish · admin",
+		"  Pass 1 · desktop · dark P1-USERS-DESKTOP-DARK",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("plan:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -134,7 +134,7 @@ func TestSplitPlansOneSetPerAreaSectionedByViewportAndTheme(t *testing.T) {
 	if string(a) != string(b) {
 		t.Error("split is not deterministic")
 	}
-	if k := areaKey("ui-polish", 12, strings.Repeat("area-", 20)); len(k) > maxKey || k == areaKey("ui-polish", 12, strings.Repeat("area-", 19)+"x") {
+	if k := areaKey("ui-polish", strings.Repeat("area-", 20)); len(k) > maxKey || k == areaKey("ui-polish", strings.Repeat("area-", 19)+"x") {
 		t.Errorf("an area key must cap at 64 and stay unique: %q", k)
 	}
 }
@@ -153,7 +153,7 @@ func TestSplitRefusesAnAreaAboveTheSetFileCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := res.Data.(Plan)
-	if len(plan.Sets) != 1 || plan.Sets[0].Key != "ui-polish-p1-admin" || fmt.Sprint(plan.Skipped) != "[ui-polish-p1-tasks (too many files)]" {
+	if len(plan.Sets) != 1 || plan.Sets[0].Key != "ui-polish-admin" || fmt.Sprint(plan.Skipped) != "[ui-polish-tasks (too many files)]" {
 		t.Errorf("the oversized area is refused, the rest planned: %v %v", plan.Sets, plan.Skipped)
 	}
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagSetTooLarge || res.Diagnostics[0].Severity != "error" {
@@ -192,8 +192,8 @@ func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
 		if strings.Join(args[:2], " ") == "board capture" {
 			devices = append(devices, args[slices.Index(args, "--device")+1]+" "+args[slices.Index(args, "--state")+1])
 		}
-		if strings.Join(args[:2], " ") == "board push" && tasksDown && strings.HasSuffix(args[slices.Index(args, "--root")+1], "ui-polish-p1-tasks") {
-			v.pushes["ui-polish-p1-tasks"]++
+		if strings.Join(args[:2], " ") == "board push" && tasksDown && strings.HasSuffix(args[slices.Index(args, "--root")+1], "ui-polish-tasks") {
+			v.pushes["ui-polish-tasks"]++
 			return CmdOut{Code: 1, Stderr: "push failed: 503"}, nil
 		}
 		return v.exec(args), nil
@@ -206,10 +206,10 @@ func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
 	for _, s := range res.Data.(map[string]any)["sets"].([]PublishedSet) {
 		got = append(got, fmt.Sprintf("%s %s %d %d", s.Key, s.Status, s.Files, len(s.Sections)))
 	}
-	if !slices.Equal(got, []string{"ui-polish-p1-tasks failed 2 2", "ui-polish-p1-admin pushed 1 1"}) {
+	if !slices.Equal(got, []string{"ui-polish-tasks failed 2 2", "ui-polish-admin pushed 1 1"}) {
 		t.Errorf("publish: %v", got)
 	}
-	if v.pushes["ui-polish-p1-tasks"] != 3 || v.pushes[old] != 0 {
+	if v.pushes["ui-polish-tasks"] != 3 || v.pushes[old] != 0 {
 		t.Errorf("3 plain tries, no halving; the chunk set is never pushed: %v", v.pushes)
 	}
 	// The chunk ledger never re-adopts a into its old set: the area set takes every file.
@@ -220,7 +220,7 @@ func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
 	for _, d := range res.Diagnostics {
 		codes[d.Code] = d.Fix
 	}
-	if !strings.Contains(codes[DiagPublishFailed], "--sets ui-polish-p1-tasks") || codes[DiagLegacySets] == "" {
+	if !strings.Contains(codes[DiagPublishFailed], "--sets ui-polish-tasks") || codes[DiagLegacySets] == "" {
 		t.Errorf("diagnostics: %+v", res.Diagnostics)
 	}
 	var index PublishIndex
@@ -231,19 +231,19 @@ func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
 	if len(index.Legacy) != 1 || index.Legacy[0].Key != old || index.Legacy[0].URL == "" || len(index.Sets) != 2 {
 		t.Errorf("the chunk row moves to legacy: %+v", index)
 	}
-	if s := index.Sets[0].Sections; len(s) != 2 || s[0].Title != "phone · light" || s[1].Title != "desktop · dark" || fmt.Sprint(s[1].Labels) != "[P1-A-DESKTOP-DARK]" {
+	if s := index.Sets[0].Sections; len(s) != 2 || s[0].Title != "Pass 1 · phone · light" || s[1].Title != "Pass 1 · desktop · dark" || fmt.Sprint(s[1].Labels) != "[P1-A-DESKTOP-DARK]" {
 		t.Errorf("sections in the index: %+v", s)
 	}
 
 	// Retrying by key pushes the set again without re-adopting it.
 	tasksDown = false
 	v.captures = nil
-	res, err = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-p1-tasks"}})
+	res, err = tool.Publish(context.Background(), PublishOptions{Sets: []string{"ui-polish-tasks"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
-	if len(sets) != 1 || sets[0].Status != "pushed" || len(v.captures) != 0 || sets[0].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-p1-tasks" {
+	if len(sets) != 1 || sets[0].Status != "pushed" || len(v.captures) != 0 || sets[0].URL != "https://app.vitrinka.ai/w/fixit/boards/ui-polish-tasks" {
 		t.Errorf("retry: %+v, captures %v", sets, v.captures)
 	}
 	// A plain re-run finds both pushed and does nothing.
@@ -470,6 +470,35 @@ func TestCheckWarnsWhenADevboxRecipeSyncsTheOutDir(t *testing.T) {
 }
 
 // fakeVitrinka answers board init / capture / push like vitrinka 5.13.
+// A set key is a board, so pass 2 must land on pass 1's boards: same key and
+// root, its own sections — and its own ledger, since shot paths repeat.
+func TestPublishPass2AddsToPass1Boards(t *testing.T) {
+	tool := newTool(t, testConfig())
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Sleep = func(time.Duration) {}
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) { return v.exec(c.Args[1:]), nil }
+	var urls []string
+	for pass := 1; pass <= 2; pass++ {
+		writePass(t, tool, pass, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+		res, err := tool.Publish(context.Background(), PublishOptions{Pass: pass})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
+		if len(sets) != 1 || sets[0].Sections[0].Title != fmt.Sprintf("Pass %d · phone · light", pass) {
+			t.Fatalf("pass %d sets: %+v", pass, sets)
+		}
+		urls = append(urls, sets[0].URL)
+	}
+	if urls[0] != urls[1] || v.pushes["ui-polish-tasks"] != 2 {
+		t.Errorf("both passes push one board: %v %v", urls, v.pushes)
+	}
+	if !slices.Equal(v.captures, []string{"P1-A-PHONE-LIGHT", "P2-A-PHONE-LIGHT"}) {
+		t.Errorf("pass 2 adopts its own shot despite the repeated path: %v", v.captures)
+	}
+}
+
 type fakeVitrinka struct {
 	t        *testing.T
 	captures []string
@@ -605,7 +634,7 @@ func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
 	if !data.Done || data.Ticks != 4 || data.Final != 5 {
 		t.Errorf("stops on done + a minute idle: %+v", data)
 	}
-	if v.pushes["ui-polish-p1-tasks"] != 2 || v.pushes["ui-polish-p1-admin"] != 1 || len(v.pushes) != 2 {
+	if v.pushes["ui-polish-tasks"] != 2 || v.pushes["ui-polish-admin"] != 1 || len(v.pushes) != 2 {
 		t.Errorf("one push per tick per area set that grew: %v", v.pushes)
 	}
 	if _, err := os.Stat(filepath.Join(tool.passAbs(1), ".auth")); err == nil {
@@ -615,7 +644,7 @@ func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
 	if notes != "[{tasks [{c phone light recipe-failed step 2 clickText no Sign in button} {d phone light unreachable  }]}]" {
 		t.Errorf("failures are notes in the index: %s", notes)
 	}
-	if len(data.Sets) != 2 || data.Sets[0].Key != "ui-polish-p1-tasks" || data.Sets[0].Status != "pushed" || data.Sets[0].Files != 2 || data.Sets[1].Files != 1 {
+	if len(data.Sets) != 2 || data.Sets[0].Key != "ui-polish-tasks" || data.Sets[0].Status != "pushed" || data.Sets[0].Files != 2 || data.Sets[1].Files != 1 {
 		t.Errorf("sets: %+v", data.Sets)
 	}
 }

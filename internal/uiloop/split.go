@@ -106,9 +106,11 @@ const (
 // setFileCap is MaxSetFiles; a test lowers it.
 var setFileCap = MaxSetFiles
 
-// areaKey is the set key of an area in a pass.
-func areaKey(prefix string, pass int, area string) string {
-	return fit(fmt.Sprintf("%s-p%d-%s", prefix, pass, area), "", maxKey)
+// areaKey is the set key of an area: ONE set, so one board, per area across
+// every pass. A set key is a board in vitrinka; each pass adds its shots and
+// its sections to the same board instead of minting a board per pass.
+func areaKey(prefix string, area string) string {
+	return fit(fmt.Sprintf("%s-%s", prefix, area), "", maxKey)
 }
 
 func digest(s string, n int) string {
@@ -282,8 +284,8 @@ func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []
 			return a.Theme < b.Theme
 		})
 		s := Set{
-			Key:   areaKey(c.Vitrinka.BoardPrefix, pass, area),
-			Title: fmt.Sprintf("%s · %s · pass %d", c.Vitrinka.BoardPrefix, area, pass),
+			Key:   areaKey(c.Vitrinka.BoardPrefix, area),
+			Title: fmt.Sprintf("%s · %s", c.Vitrinka.BoardPrefix, area),
 			Area:  area, Sections: []BoardSection{}, Files: []PlanFile{},
 		}
 		for _, r := range rs {
@@ -292,7 +294,7 @@ func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []
 				return Plan{}, nil, err
 			}
 			if n := len(s.Sections); n == 0 || s.Sections[n-1].Viewport != r.Viewport || s.Sections[n-1].Theme != r.Theme {
-				s.Sections = append(s.Sections, BoardSection{Title: r.Viewport + " · " + r.Theme, Viewport: r.Viewport, Theme: r.Theme, Labels: []string{}})
+				s.Sections = append(s.Sections, BoardSection{Title: fmt.Sprintf("Pass %d · %s · %s", pass, r.Viewport, r.Theme), Viewport: r.Viewport, Theme: r.Theme, Labels: []string{}})
 			}
 			sec := &s.Sections[len(s.Sections)-1]
 			for _, f := range unit {
