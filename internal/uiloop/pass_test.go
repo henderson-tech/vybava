@@ -166,6 +166,13 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 		case "board push":
 			key := filepath.Base(root)
 			pushes[key]++
+			// vitrinka 5.13 refuses a root holding anything but screenshot-set content.
+			entries, _ := os.ReadDir(root)
+			for _, e := range entries {
+				if e.Name() != ".vitrinka" {
+					t.Errorf("%s holds %s at push: board push refuses non-screenshot content", key, e.Name())
+				}
+			}
 			if key == "ui-polish-p1-tasks-phone-light-1" || (key == "ui-polish-p1-tasks-phone-light-1b" && tailDown) {
 				return CmdOut{Code: 1, Stderr: "push timed out after 30s"}, nil
 			}

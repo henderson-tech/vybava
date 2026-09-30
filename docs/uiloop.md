@@ -104,6 +104,7 @@ A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, ex
 - `params(run)`, resolved once per pass into `params.json`. A screen that names a missing param is recorded `unreachable`.
 - `prepare(run)`: idempotent and never destructive. It is skipped on `--resume`.
 - `login(page, as, app, run)`. It either returns a storage-state path or signs in on the page; the harness then saves the state.
+- `signedOut(page, as, app)`. True when a signed-in screen landed on the sign-in page (an expired session): the shot is `recipe-failed`, never `ok`. Every run, `--resume` included, signs in fresh, so a resume re-takes it.
 - `theme(context, theme, app)`, `readTheme(page)`, `settle(page, screen)` and `chrome` (selectors of app chrome that paints its own background).
 
 `states.ts` reaches empty, error and loading without touching seed data:
@@ -178,7 +179,7 @@ A `login` that types a password reads it from the environment. Getting it there 
 `publish` adopts each set under `<pass>/publish/sets/<key>`:
 
 1. `vitrinka board init --root --key --title --project`.
-2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. An `.ui-loop-adopted` ledger makes a re-run adopt only what is missing.
+2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. A ledger at `publish/adopted/<key>` makes a re-run adopt only what is missing. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`.
 3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`.
 4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
 

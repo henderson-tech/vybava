@@ -121,7 +121,10 @@ func (p *publisher) adopt(root string, s Set) error {
 	if err := hold(root); err != nil {
 		return err
 	}
-	ledger := filepath.Join(root, adoptedLedger)
+	ledger, err := ledgerFor(root)
+	if err != nil {
+		return err
+	}
 	have := map[string]bool{}
 	if b, err := os.ReadFile(ledger); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
@@ -152,6 +155,24 @@ func (p *publisher) adopt(root string, s Set) error {
 		}
 	}
 	return release(root)
+}
+
+// ledgerFor is the adopted-files ledger of a set root: publish/adopted/<key>,
+// beside the roots and never in one — `board push` refuses a root holding
+// anything but images, sidecars and the manifest, so a ledger inside it failed
+// every push. A ledger an older run left in the root is moved out first.
+func ledgerFor(root string) (string, error) {
+	ledger := filepath.Join(filepath.Dir(filepath.Dir(root)), "adopted", filepath.Base(root))
+	if err := os.MkdirAll(filepath.Dir(ledger), 0o755); err != nil {
+		return "", err
+	}
+	old := filepath.Join(root, adoptedLedger)
+	if _, err := os.Stat(old); err == nil {
+		if err := os.Rename(old, ledger); err != nil {
+			return "", err
+		}
+	}
+	return ledger, nil
 }
 
 func hold(root string) error {
