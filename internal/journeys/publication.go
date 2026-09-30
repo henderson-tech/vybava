@@ -127,7 +127,7 @@ func (s Store) PreparePublication(l *Library, id, mode string, presentation *Pre
 	if !validID(mode) {
 		return Publication{}, problem("DOCUMENT_INVALID", "invalid publication mode")
 	}
-	summary, err := s.Finish(id)
+	summary, err := s.finish(id, true)
 	if err != nil {
 		return Publication{}, err
 	}

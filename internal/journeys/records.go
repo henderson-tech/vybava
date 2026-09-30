@@ -540,6 +540,9 @@ func (s Store) Append(id string, e Event) (Event, error) {
 	return e, closeErr
 }
 func (s Store) Finish(id string) (Summary, error) {
+	return s.finish(id, false)
+}
+func (s Store) finish(id string, requireFinished bool) (Summary, error) {
 	dir, err := s.dir(id)
 	if err != nil {
 		return Summary{}, err
@@ -566,6 +569,9 @@ func (s Store) Finish(id string) (Summary, error) {
 		finished = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return existing, err
+	}
+	if requireFinished && !finished {
+		return Summary{}, problem("EVIDENCE_MISSING", "finish the attempt before preparing publication")
 	}
 	summary := Summary{Version: 1, RunID: a.RunID, AttemptID: a.ID, RetestOf: a.RetestOf, Phase: a.Phase, PlanHash: a.Plan.Hash, LibraryHash: a.Plan.LibraryHash, Started: a.At, Ended: time.Now().UTC(), JournalHash: Digest(b), Denominator: len(a.Plan.Cells), Cells: []CellResult{}}
 	if finished {
