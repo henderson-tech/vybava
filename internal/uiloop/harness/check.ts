@@ -33,7 +33,8 @@ export function checkManifest(p: Project, config: LoopConfig): { screens: number
     if (s.viewports && !s.viewports.length) problems.push(`${s.id}: viewports is empty`);
     if (s.themes && !s.themes.length) problems.push(`${s.id}: themes is empty`);
     for (const f of s.sourceFiles) if (!fs.existsSync(fromRoot(f))) problems.push(`${s.id}: source file ${f} does not exist`);
-    if (!s.unreachable) captures += (s.viewports ?? cfg.viewports).length * (s.themes ?? cfg.themes).length;
+    const shots = (s.viewports ?? cfg.viewports).length * (s.themes ?? cfg.themes).length;
+    if (!s.unreachable) captures += s.once ? Math.min(1, shots) : shots;
   }
   return { screens: p.screens.length, captures, problems };
 }

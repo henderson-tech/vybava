@@ -56,6 +56,18 @@ export interface RuleResult {
   items: Finding[];
   /** Per-value tallies (grid, type-ramp): `marginTop:6 → 12`. */
   byValue?: Record<string, number>;
+  /**
+   * Every distinct path + detail the rule hit on this shot, uncapped up to
+   * 1000 per rule: what the pass-level unique counts fold, so one sidebar
+   * defect seen on 38 screens counts once.
+   */
+  distinct?: LintKey[];
+}
+
+/** One defect's identity across a pass: the element path and the detail. */
+export interface LintKey {
+  path: string;
+  detail: string;
 }
 
 export interface LintOptions {
@@ -65,6 +77,12 @@ export interface LintOptions {
   touchTarget: number;
   ramp: number[];
   off: string[];
+  /**
+   * uiLoop.lint.allow: rule id → selectors. A hit on an element that matches
+   * one, or sits inside one, lands in `allowed` (counted as info), never in
+   * `rules` — a spec that allows half steps inside primitive recipes only.
+   */
+  allow: Record<string, string[]>;
   /** project.ts `chrome`: selectors that paint their own background (sticky bars, docks). */
   chrome: string[];
   /** The screen is an overlay: content checks are scoped to the topmost open overlay. */
@@ -82,6 +100,8 @@ export interface LintResult {
   /** The overlay content checks were scoped to, when one was. */
   scope: string | null;
   rules: Partial<Record<LintRule, RuleResult>>;
+  /** Hits the allowlist moved out of `rules`: counted as info under the same rule id. */
+  allowed: Partial<Record<LintRule, RuleResult>>;
 }
 
 /** Defect and info counts per rule — what a shot record and the scoreboard carry. */
@@ -94,7 +114,22 @@ export function lintCounts(result: LintResult | null): { defects: Record<string,
     const kind = (LINT_RULES as Record<string, string>)[rule] ?? 'defect';
     (kind === 'info' ? info : defects)[rule] = res.count;
   }
+  for (const [rule, res] of Object.entries(result.allowed)) {
+    if (res && res.count) info[rule] = (info[rule] ?? 0) + res.count;
+  }
   return { defects, info };
+}
+
+/** Defect rule → the distinct path + detail keys it hit on the shot (the record's `lint.distinct`). */
+export function lintDistinct(result: LintResult | null): Record<string, LintKey[]> {
+  const out: Record<string, LintKey[]> = {};
+  if (!result) return out;
+  for (const [rule, res] of Object.entries(result.rules)) {
+    if (!res || !res.count || (LINT_RULES as Record<string, string>)[rule] === 'info') continue;
+    // A rule folded in outside lintPage (glass-blur) carries its items only.
+    out[rule] = res.distinct ?? res.items.map((f) => ({ path: f.path, detail: f.detail }));
+  }
+  return out;
 }
 
 export function lintPage(o: LintOptions): LintResult {
@@ -102,14 +137,41 @@ export function lintPage(o: LintOptions): LintResult {
   const vh = window.innerHeight;
   const on = (rule: string): boolean => !o.off.includes(rule);
   const rules: Partial<Record<string, RuleResult>> = {};
-  const bucket = (rule: string): RuleResult => {
-    let r = rules[rule];
+  const allowedRules: Partial<Record<string, RuleResult>> = {};
+  const bucketIn = (table: Partial<Record<string, RuleResult>>, rule: string): RuleResult => {
+    let r = table[rule];
     if (!r) {
       r = { count: 0, items: [] };
-      rules[rule] = r;
+      table[rule] = r;
     }
     return r;
   };
+  const bucket = (rule: string): RuleResult => bucketIn(rules, rule);
+  // Distinct path + detail per defect rule, kept apart from the capped items.
+  const DISTINCT_CAP = 1000;
+  const seen = new Map<RuleResult, Set<string>>();
+  const noteDistinct = (b: RuleResult, path: string, detail: string): void => {
+    let keys = seen.get(b);
+    if (!keys) {
+      keys = new Set<string>();
+      seen.set(b, keys);
+    }
+    const key = `${path}\n${detail}`;
+    if (keys.has(key) || keys.size >= DISTINCT_CAP) return;
+    keys.add(key);
+    (b.distinct = b.distinct ?? []).push({ path, detail });
+  };
+  const allowSel: Record<string, string> = {};
+  for (const [rule, selectors] of Object.entries(o.allow)) {
+    for (const sel of selectors) {
+      try {
+        document.createDocumentFragment().querySelector(sel);
+      } catch {
+        throw new Error(`uiLoop.lint.allow.${rule}: ${JSON.stringify(sel)} is not a valid selector`);
+      }
+    }
+    if (selectors.length) allowSel[rule] = selectors.join(', ');
+  }
 
   // ── Element helpers ──────────────────────────────────────────────────────────────────────
   const styles = new Map<Element, CSSStyleDeclaration>();
@@ -170,16 +232,23 @@ export function lintPage(o: LintOptions): LintResult {
     const text = (ownText(el) || (el as HTMLElement).innerText || '').replace(/\s+/g, ' ').slice(0, 80);
     return text ? { path: describe(el), text, detail, rect: rectOf(r) } : { path: describe(el), detail, rect: rectOf(r) };
   };
+  // An allowlisted element's hit is counted in `allowed` (info), never as a defect.
+  const target = (rule: string, el: Element): RuleResult => {
+    const sel = allowSel[rule];
+    return sel && closestDeep(el, sel) ? bucketIn(allowedRules, rule) : bucket(rule);
+  };
   const hit = (rule: string, el: Element, r: DOMRect, detail: string): void => {
     if (!on(rule)) return;
-    const b = bucket(rule);
+    const b = target(rule, el);
     b.count++;
     if (b.items.length < o.cap) b.items.push(finding(el, r, detail));
+    if (b === rules[rule]) noteDistinct(b, describe(el), detail);
   };
   const tally = (rule: string, el: Element, key: string): void => {
     if (!on(rule)) return;
-    const b = bucket(rule);
+    const b = target(rule, el);
     b.count++;
+    if (b === rules[rule]) noteDistinct(b, describe(el), key);
     b.byValue = b.byValue ?? {};
     b.byValue[key] = (b.byValue[key] ?? 0) + 1;
     if (b.items.length < o.cap && !b.items.some((x) => x.detail === key && x.path === describe(el)))
@@ -653,6 +722,7 @@ export function lintPage(o: LintOptions): LintResult {
     const b = bucket('h-scroll');
     b.count++;
     b.items.push({ path: 'document', detail: `document scrolls ${docOverflowX}px sideways`, rect: [0, 0, vw, vh] });
+    noteDistinct(b, 'document', 'document scrolls sideways');
   }
 
   return {
@@ -661,5 +731,6 @@ export function lintPage(o: LintOptions): LintResult {
     insetsEmulated,
     scope: scopeName,
     rules: rules as LintResult['rules'],
+    allowed: allowedRules as LintResult['allowed'],
   };
 }

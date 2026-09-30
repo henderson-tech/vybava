@@ -20,6 +20,7 @@ type shot struct {
 	status              string
 	bytes, full         int
 	defects             map[string]int
+	distinct            map[string][]LintKey
 }
 
 func writePass(t *testing.T, tool *Tool, pass int, shots []shot) {
@@ -37,6 +38,9 @@ func writePass(t *testing.T, tool *Tool, pass int, shots []shot) {
 			"viewport": s.vp, "theme": s.theme, "status": s.status, "size": map[string]int{"width": 390, "height": 844},
 			"files": map[string]any{"viewport": nil, "full": nil}, "consoleErrors": []string{}, "sourceFiles": []string{"apps/portal/" + s.id + ".ts"},
 			"lint": map[string]any{"defects": s.defects, "info": map[string]int{}},
+		}
+		if s.distinct != nil {
+			rec["lint"].(map[string]any)["distinct"] = s.distinct
 		}
 		files := rec["files"].(map[string]any)
 		if s.bytes > 0 {
@@ -362,5 +366,89 @@ func TestRunPrintWritesRunFileAndReusesAnUnshotPass(t *testing.T) {
 	}
 	if _, err := tool.Run(context.Background(), RunOptions{Selection: Selection{Apps: []string{"designer"}}}); diagCode(err) != DiagSelectionInvalid {
 		t.Errorf("an unknown app is SELECTION_INVALID: %v", err)
+	}
+}
+
+func TestScoreboardCountsUniqueDefectsAndRepeatedOffenders(t *testing.T) {
+	tool := newTool(t, testConfig())
+	sidebar := LintKey{Path: "nav.sidebar > a.item", Detail: "paddingTop:6"}
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1, defects: map[string]int{"grid": 3},
+			distinct: map[string][]LintKey{"grid": {sidebar, {Path: "main > h1", Detail: "marginTop:10"}}}},
+		{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "dark", status: "ok", bytes: 1, defects: map[string]int{"grid": 1},
+			distinct: map[string][]LintKey{"grid": {sidebar}}},
+		{order: 1, id: "users", area: "admin", vp: "desktop", theme: "dark", status: "ok", bytes: 1, defects: map[string]int{"grid": 1, "contrast": 1},
+			distinct: map[string][]LintKey{"grid": {sidebar}, "contrast": {{Path: "td", Detail: "3.1:1 < 4.5:1"}}}},
+	})
+	res, err := tool.Scoreboard(ScoreboardOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := res.Data.(Scoreboard)
+	// Raw sums count the sidebar once per shot; unique counts it once per pass (and never sum areas).
+	if !sb.UniqueKnown || sb.Totals.LintDefects != 6 || sb.Totals.LintDefectsUnique != 3 || sb.Totals.LintUnique["grid"] != 2 || sb.Areas[0].LintDefectsUnique != 2 {
+		t.Errorf("unique totals: %+v / areas %+v", sb.Totals, sb.Areas)
+	}
+	if len(sb.Offenders) != 1 || sb.Offenders[0] != (Offender{Rule: "grid", Path: sidebar.Path, Detail: sidebar.Detail, Screens: 2, Shots: 3}) {
+		t.Errorf("offenders: %+v", sb.Offenders)
+	}
+	md, _ := os.ReadFile(filepath.Join(tool.passAbs(1), "scoreboard.md"))
+	if !strings.Contains(string(md), "| **all** | 2 | — | — | — | — | — | 6 | 3 |") || !strings.Contains(string(md), "`grid` 5, 2 unique") ||
+		!strings.Contains(string(md), "· 2 screens, 3 shots") {
+		t.Errorf("markdown:\n%s", md)
+	}
+
+	// A record from a harness before the distinct keys makes the unique columns unknown, never zero.
+	writePass(t, tool, 2, []shot{{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1, defects: map[string]int{"grid": 1}}})
+	res, err = tool.Scoreboard(ScoreboardOptions{Pass: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb := res.Data.(Scoreboard); sb.UniqueKnown || sb.Delta == nil || sb.Delta.UniqueKnown {
+		t.Errorf("old records: uniqueKnown %v, delta %+v", sb.UniqueKnown, sb.Delta)
+	}
+}
+
+func TestExplicitPassZeroIsRefused(t *testing.T) {
+	if err := CheckPassFlag(0, true); diagCode(err) != DiagSelectionInvalid || !strings.Contains(err.Error(), "numbered from 1") {
+		t.Errorf("--pass 0 must be refused, got %v", err)
+	}
+	if err := CheckPassFlag(0, false); err != nil {
+		t.Errorf("an absent --pass is the default, got %v", err)
+	}
+}
+
+func TestCheckWarnsWhenADevboxRecipeSyncsTheOutDir(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "pwf-ui")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool, err := New(root, filepath.Join(root, "vybava.config.json"), testConfig(), "1.2.3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(file, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignores := `"` + strings.Join(DevboxSyncIgnores(".ui-loop"), `", "`) + `"`
+	// The repo's own recipe ignores everything; the sibling workspace's does not.
+	write(filepath.Join(root, "devbox.yaml"), "apps:\n  designer:\n    sync: .\n    sync_ignores: [node_modules, "+ignores+"]\n")
+	write(filepath.Join(parent, "compose", "devbox.yaml"), "apps:\n  pwf-ui:\n    source_only: true\n    sync: sibling:pwf-ui\n    sync_ignores: [.env, /.ui-loop/*/shots]\n  other:\n    sync: sibling:elsewhere\n")
+	gaps := tool.devboxSyncGaps()
+	if len(gaps) != 1 || gaps[0].App != "pwf-ui" || gaps[0].Recipe != "../compose/devbox.yaml" || slices.Contains(gaps[0].Missing, "/.ui-loop/*/shots") ||
+		!slices.Contains(gaps[0].Missing, "/.ui-loop/*/.auth") {
+		t.Fatalf("gaps: %+v", gaps)
+	}
+	// A worktree patch beside the recipe adds its ignores.
+	write(filepath.Join(parent, "compose", "devbox.worktree.yaml"), "apps:\n  pwf-ui:\n    sync_ignores: ["+ignores+"]\n")
+	if gaps := tool.devboxSyncGaps(); len(gaps) != 0 {
+		t.Errorf("the patch's ignores count: %+v", gaps)
 	}
 }

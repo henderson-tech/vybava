@@ -47,6 +47,11 @@ const (
 	DiagBacklogInvalid = "BACKLOG_INVALID"
 	// DiagNoPrevious: no previous pass to compute a delta against (info).
 	DiagNoPrevious = "NO_PREVIOUS"
+	// DiagDevboxSync: a devbox.yaml next to the repo syncs it one-way without
+	// ignoring the capture's output under <out>, so a sync mid-run deletes
+	// shots, sessions and params the box wrote (warning on check) — add the
+	// missing sync_ignores.
+	DiagDevboxSync = "DEVBOX_SYNC"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

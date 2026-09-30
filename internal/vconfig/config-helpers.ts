@@ -206,6 +206,12 @@ export interface UiLoopConfig {
     off?: string[];
     /** The type ramp in px; the type-ramp rule runs only when set. */
     ramp?: number[];
+    /**
+     * Defect rule id → CSS selectors. A hit on an element that matches one, or
+     * sits inside one, counts as info, not as a defect:
+     * `{ grid: ['ui-button', '.ui-badge-small', '[role=menuitem]'] }`.
+     */
+    allow?: Record<string, string[]>;
   };
   vitrinka: { project: string; boardPrefix: string };
   publish?: {

@@ -20,7 +20,7 @@ chrome selectors) and `../screens/*.ts` (the screen manifest).
 | `states.ts` | Empty / error / loading recipes by request mocks (`listStates`, `emptyList`, …). |
 | `viewports.ts` | Built-in viewports (mirrored in Go). |
 | `run.ts` | The run.json contract, selection, params, pass layout. |
-| `capture.ts` | Context, safe area, recipe runner, settle, shots, glass probe, shot records. |
+| `capture.ts` | Context, safe area, recipe runner (`runSteps` for recipe functions), settle, shots, glass probe, shot records. |
 | `lint.ts` | The in-page layout lint (self-contained; runs through `page.evaluate`). |
 | `capture.spec.ts` · `setup.ts` · `teardown.ts` · `playwright.config.ts` | The Playwright entry: one test per screen × viewport × theme. |
 | `report.ts` | `report.json` / `report.md` per pass. |

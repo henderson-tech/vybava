@@ -249,6 +249,7 @@ async function capture(browser: Browser, shot: PlannedShot, run: RunFile, files:
         touchTarget: run.lint.touchTarget,
         ramp: run.lint.ramp,
         off: run.lint.off,
+        allow: run.lint.allow ?? {},
         chrome: [...(p.chrome ?? [])],
         overlayOnly: OVERLAY_KINDS.includes(screen.kind),
         cap: 25,
