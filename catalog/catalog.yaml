@@ -85,6 +85,12 @@ items:
     description: Orchestrate a performance drill from a testing/<project>/perf manifest — neighbor guard, staged push-to-first-failure ramp, and percentile-vs-concurrency report; projects supply seed/auth/generator commands.
     applet: perfrig
 
+  - id: framestats
+    kind: applet
+    status: experimental
+    description: Android frame metrics from `dumpsys gfxinfo framestats` dumps and Perfetto traces - cadence, present intervals, per-gesture first-input and release frames, per-frame UI/RenderThread work, texture uploads, ART pauses, FrameTimeline jank.
+    applet: framestats
+
   - id: shrt
     kind: applet
     status: experimental
@@ -464,6 +470,7 @@ groups:
       - merge-assist
       - fontfreeze
       - perfrig
+      - framestats
       - shrt
       - press
       - press-pdf
@@ -560,6 +567,7 @@ groups:
       - memo-ledger
       - fontfreeze
       - perfrig
+      - framestats
       - shrt
       - ingressgen
       - reconcile
