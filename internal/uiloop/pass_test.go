@@ -468,6 +468,21 @@ func TestPublishResumesPartialAdoptionWithoutLosingEarlierPasses(t *testing.T) {
 	if v.pushes["ui-polish-tasks"] != 2 {
 		t.Fatalf("acknowledged sets replayed: %v", v.pushes)
 	}
+	root := filepath.Join(filepath.Dir(tool.passAbs(2)), "sets", "ui-polish-tasks")
+	b, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels []string
+	if err := json.Unmarshal(b, &labels); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(labels, v.captures) {
+		t.Fatalf("shared manifest lost or duplicated entries: %v", labels)
+	}
+	if _, err := os.Stat(filepath.Join(root, descriptor)); err != nil {
+		t.Fatalf("descriptor not retained: %v", err)
+	}
 }
 
 func TestScoreboardMathAndDelta(t *testing.T) {
@@ -824,7 +839,26 @@ func (v *fakeVitrinka) exec(args []string) CmdOut {
 		if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err != nil {
 			v.t.Error("capture ran without the descriptor: no detached push would carry the shot")
 		}
-		v.captures = append(v.captures, args[slices.Index(args, "--label")+1])
+		label := args[slices.Index(args, "--label")+1]
+		v.captures = append(v.captures, label)
+		// Capture appends; keep a real mock manifest to expose duplicate adoption
+		// and accidental root rebuilding across passes.
+		file := filepath.Join(root, "manifest.json")
+		var labels []string
+		if b, err := os.ReadFile(file); err == nil {
+			if err := json.Unmarshal(b, &labels); err != nil {
+				v.t.Fatal(err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			v.t.Fatal(err)
+		}
+		b, err := json.Marshal(append(labels, label))
+		if err != nil {
+			v.t.Fatal(err)
+		}
+		if err := os.WriteFile(file, b, 0o644); err != nil {
+			v.t.Fatal(err)
+		}
 	case "board push":
 		v.pushes[filepath.Base(root)]++
 		// vitrinka 5.13 refuses a root holding anything but screenshot-set content.
