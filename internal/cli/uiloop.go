@@ -116,6 +116,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		apps, only, viewports, themes string
 		areas, sets, backlog          string
 		pass, previous, retries       int
+		passGiven                     bool
 		dryRun, forcePublish, noDelta bool
 	)
 	runCmd := &cobra.Command{
@@ -132,6 +133,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 			opts.Selection.Viewports = uiloop.SplitList(viewports)
 			opts.Selection.Themes = uiloop.SplitList(themes)
 			opts.Pass = pass
+			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
+				return uiloop.Result{}, err
+			}
 			return t.Run(context.Background(), opts)
 		}),
 	}
@@ -152,6 +156,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "Plan a pass's vitrinka sets: area × viewport × theme, ≤ publish.maxFiles and ≤ publish.maxBytes each",
 		Args:  cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
+				return uiloop.Result{}, err
+			}
 			return t.Split(uiloop.SplitOptions{Pass: pass, Areas: uiloop.SplitList(areas)})
 		}),
 	}
@@ -163,6 +170,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "Adopt and push each planned set with the vitrinka CLI (retry, then halve)",
 		Args:  cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
+				return uiloop.Result{}, err
+			}
 			return t.Publish(context.Background(), uiloop.PublishOptions{
 				Pass: pass, Areas: uiloop.SplitList(areas), Sets: uiloop.SplitList(sets),
 				Retries: retries, Force: forcePublish, DryRun: dryRun,
@@ -181,6 +191,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "Fold a pass's records and review backlog into scoreboard.json + scoreboard.md, with a delta",
 		Args:  cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
+				return uiloop.Result{}, err
+			}
 			prev := previous
 			if noDelta {
 				prev = -1
@@ -192,6 +205,12 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	scoreboardCmd.Flags().StringVar(&backlog, "backlog", "", "review backlog JSON (default: <passDir>/review/backlog.json when present)")
 	scoreboardCmd.Flags().IntVar(&previous, "previous", 0, "pass to compute the delta against (default: the one before)")
 	scoreboardCmd.Flags().BoolVar(&noDelta, "no-delta", false, "skip the delta")
+
+	// --pass is shared by four verbs; record whether it was given so an
+	// explicit 0 is refused instead of read as "not given".
+	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd} {
+		c.PreRun = func(cmd *cobra.Command, _ []string) { passGiven = cmd.Flags().Changed("pass") }
+	}
 
 	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd)
 	return command

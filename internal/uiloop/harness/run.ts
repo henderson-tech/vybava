@@ -37,6 +37,8 @@ export interface LintConfig {
   touchTarget: number;
   off: string[];
   ramp: number[];
+  /** Rule id → selectors whose hits count as info (uiLoop.lint.allow); absent in older run.json. */
+  allow?: Record<string, string[]>;
 }
 
 export interface Selection {
@@ -179,10 +181,12 @@ export function plannedShots(project: Project, run: RunFile): PlannedShot[] {
     const themes = (screen.themes ?? cfg.themes).filter(
       (t) => !selection.themes.length || selection.themes.includes(t),
     );
-    for (const viewport of viewports) {
+    shots: for (const viewport of viewports) {
       if (!run.viewports[viewport]) throw new Error(`${screen.id}: unknown viewport "${viewport}"`);
       for (const theme of themes) {
         (screen.destructive ? late : picked).push({ screen, order, app, viewport, theme });
+        // `once`: the first viewport × theme the run selects, and no other.
+        if (screen.once) break shots;
       }
     }
   });

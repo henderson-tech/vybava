@@ -123,13 +123,20 @@ type AreaScore struct {
 	Polish    int `json:"polish"`
 	Clean     int `json:"clean"`
 	// Findings by status.
-	Open          int            `json:"open"`
-	Met           int            `json:"met"`
-	Partly        int            `json:"partly"`
-	NotMet        int            `json:"notMet"`
-	LintDefects   int            `json:"lintDefects"`
-	Lint          map[string]int `json:"lint"`
-	ConsoleErrors int            `json:"consoleErrors"`
+	Open   int `json:"open"`
+	Met    int `json:"met"`
+	Partly int `json:"partly"`
+	NotMet int `json:"notMet"`
+	// LintDefects and Lint sum every shot's hits: one sidebar defect counts
+	// once per screen it is on.
+	LintDefects int            `json:"lintDefects"`
+	Lint        map[string]int `json:"lint"`
+	// LintDefectsUnique and LintUnique count each rule + element path +
+	// detail once across the area's shots (Scoreboard.UniqueKnown says
+	// whether the records carried the keys).
+	LintDefectsUnique int            `json:"lintDefectsUnique"`
+	LintUnique        map[string]int `json:"lintUnique"`
+	ConsoleErrors     int            `json:"consoleErrors"`
 }
 
 // Scoreboard is <passDir>/scoreboard.json.
@@ -139,15 +146,35 @@ type Scoreboard struct {
 	Reviewed bool        `json:"reviewed"`
 	Areas    []AreaScore `json:"areas"`
 	Totals   AreaScore   `json:"totals"`
-	Delta    *Delta      `json:"delta,omitempty"`
+	// UniqueKnown: every shot with lint defects carried its distinct keys
+	// (a harness before v0.23 did not), so the unique columns are real.
+	UniqueKnown bool `json:"uniqueKnown"`
+	// Offenders are the defects seen on the most screens (2 or more).
+	Offenders []Offender `json:"offenders"`
+	Delta     *Delta     `json:"delta,omitempty"`
 }
+
+// Offender is one defect repeated across screens: fix it once, where it lives.
+type Offender struct {
+	Rule   string `json:"rule"`
+	Path   string `json:"path"`
+	Detail string `json:"detail"`
+	// Screens it was seen on (distinct ids) and shots (screen × viewport × theme).
+	Screens int `json:"screens"`
+	Shots   int `json:"shots"`
+}
+
+// MaxOffenders bounds Scoreboard.Offenders.
+const MaxOffenders = 20
 
 // Delta is this pass minus the previous one; severity columns only when both were reviewed.
 type Delta struct {
-	Pass     int         `json:"pass"`
-	Reviewed bool        `json:"reviewed"`
-	Areas    []AreaScore `json:"areas"`
-	Totals   AreaScore   `json:"totals"`
+	Pass     int  `json:"pass"`
+	Reviewed bool `json:"reviewed"`
+	// UniqueKnown: both passes carried distinct keys, so unique deltas are real.
+	UniqueKnown bool        `json:"uniqueKnown"`
+	Areas       []AreaScore `json:"areas"`
+	Totals      AreaScore   `json:"totals"`
 }
 
 // ScoreboardOptions are the scoreboard verb's flags.
@@ -159,7 +186,9 @@ type ScoreboardOptions struct {
 	Previous int
 }
 
-func newArea(area string) AreaScore { return AreaScore{Area: area, Lint: map[string]int{}} }
+func newArea(area string) AreaScore {
+	return AreaScore{Area: area, Lint: map[string]int{}, LintUnique: map[string]int{}}
+}
 
 func (a *AreaScore) add(b AreaScore) {
 	a.Shots += b.Shots
@@ -271,7 +300,88 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 		sb.Areas = append(sb.Areas, *areas[n])
 		sb.Totals.add(*areas[n])
 	}
+	// Unique counts never sum: a chrome defect is on every area's screens.
+	for i := range sb.Areas {
+		addUnique(&sb.Areas[i], records, sb.Areas[i].Area)
+	}
+	addUnique(&sb.Totals, records, "")
+	sb.UniqueKnown = true
+	for _, r := range records {
+		if r.Defects() > 0 && r.Lint.Distinct == nil {
+			sb.UniqueKnown = false
+		}
+	}
+	sb.Offenders = repeatedOffenders(records, MaxOffenders)
 	return sb
+}
+
+func lintKey(rule string, k LintKey) string { return rule + "\x00" + k.Path + "\x00" + k.Detail }
+
+// addUnique counts each rule + path + detail once across the records of
+// area ("" = every area).
+func addUnique(a *AreaScore, records []Record, area string) {
+	seen := map[string]bool{}
+	for _, r := range records {
+		if r.Lint == nil || (area != "" && r.Area != area) {
+			continue
+		}
+		for rule, keys := range r.Lint.Distinct {
+			for _, k := range keys {
+				if key := lintKey(rule, k); !seen[key] {
+					seen[key] = true
+					a.LintUnique[rule]++
+					a.LintDefectsUnique++
+				}
+			}
+		}
+	}
+}
+
+// repeatedOffenders are the defects seen on 2+ screens, most screens first.
+func repeatedOffenders(records []Record, limit int) []Offender {
+	type acc struct {
+		o   Offender
+		ids map[string]bool
+	}
+	by := map[string]*acc{}
+	for _, r := range records {
+		if r.Lint == nil {
+			continue
+		}
+		for rule, keys := range r.Lint.Distinct {
+			for _, k := range keys {
+				key := lintKey(rule, k)
+				a := by[key]
+				if a == nil {
+					a = &acc{o: Offender{Rule: rule, Path: k.Path, Detail: k.Detail}, ids: map[string]bool{}}
+					by[key] = a
+				}
+				a.o.Shots++
+				a.ids[r.ID] = true
+				a.o.Screens = len(a.ids)
+			}
+		}
+	}
+	out := []Offender{}
+	for _, a := range by {
+		if a.o.Screens > 1 {
+			out = append(out, a.o)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		x, y := out[i], out[j]
+		if x.Screens != y.Screens {
+			return x.Screens > y.Screens
+		}
+		if x.Shots != y.Shots {
+			return x.Shots > y.Shots
+		}
+		return lintKey(x.Rule, LintKey{x.Path, x.Detail}) < lintKey(y.Rule, LintKey{y.Path, y.Detail})
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func minus(cur, prev AreaScore) AreaScore {
@@ -291,12 +401,24 @@ func minus(cur, prev AreaScore) AreaScore {
 			delete(d.Lint, k)
 		}
 	}
+	d.LintDefectsUnique = cur.LintDefectsUnique - prev.LintDefectsUnique
+	for k, v := range cur.LintUnique {
+		d.LintUnique[k] += v
+	}
+	for k, v := range prev.LintUnique {
+		d.LintUnique[k] -= v
+	}
+	for k, v := range d.LintUnique {
+		if v == 0 {
+			delete(d.LintUnique, k)
+		}
+	}
 	return d
 }
 
 // WithDelta attaches this-minus-previous per area (areas of either pass).
 func (sb *Scoreboard) WithDelta(prev Scoreboard) {
-	d := &Delta{Pass: prev.Pass, Reviewed: sb.Reviewed && prev.Reviewed}
+	d := &Delta{Pass: prev.Pass, Reviewed: sb.Reviewed && prev.Reviewed, UniqueKnown: sb.UniqueKnown && prev.UniqueKnown}
 	prevBy := map[string]AreaScore{}
 	for _, a := range prev.Areas {
 		prevBy[a.Area] = a
@@ -354,8 +476,19 @@ func (sb Scoreboard) Markdown() string {
 		}
 		return fmt.Sprintf("%d (%s)", v, signed(pick(d)))
 	}
-	b.WriteString("| Area | Screens | Broken | Needs work | Polish | Clean | Open · partly · not met · met | Lint defects | Console errors | Shots not ok |\n")
-	b.WriteString("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
+	// Unique columns need the records' distinct keys; their delta needs both passes'.
+	unique := func(area string, v int, pick func(AreaScore) int) string {
+		if !sb.UniqueKnown {
+			return "—"
+		}
+		d, ok := delta[area]
+		if !ok || !sb.Delta.UniqueKnown {
+			return fmt.Sprint(v)
+		}
+		return fmt.Sprintf("%d (%s)", v, signed(pick(d)))
+	}
+	b.WriteString("| Area | Screens | Broken | Needs work | Polish | Clean | Open · partly · not met · met | Lint defects | Unique lint | Console errors | Shots not ok |\n")
+	b.WriteString("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
 	for _, a := range append(append([]AreaScore{}, sb.Areas...), sb.Totals) {
 		name := a.Area
 		if name == "all" {
@@ -365,13 +498,14 @@ func (sb Scoreboard) Markdown() string {
 		if sb.Reviewed {
 			findings = fmt.Sprintf("%d · %d · %d · %d", a.Open, a.Partly, a.NotMet, a.Met)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s |\n", name, a.Screens,
+		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", name, a.Screens,
 			cell(a.Area, a.Broken, func(d AreaScore) int { return d.Broken }, true),
 			cell(a.Area, a.NeedsWork, func(d AreaScore) int { return d.NeedsWork }, true),
 			cell(a.Area, a.Polish, func(d AreaScore) int { return d.Polish }, true),
 			cell(a.Area, a.Clean, func(d AreaScore) int { return d.Clean }, true),
 			findings,
 			cell(a.Area, a.LintDefects, func(d AreaScore) int { return d.LintDefects }, false),
+			unique(a.Area, a.LintDefectsUnique, func(d AreaScore) int { return d.LintDefectsUnique }),
 			cell(a.Area, a.ConsoleErrors, func(d AreaScore) int { return d.ConsoleErrors }, false),
 			cell(a.Area, a.NotOk, func(d AreaScore) int { return d.NotOk }, false))
 	}
@@ -393,8 +527,24 @@ func (sb Scoreboard) Markdown() string {
 			if sb.Delta != nil {
 				fmt.Fprintf(&b, " (%s)", signed(sb.Delta.Totals.Lint[r]))
 			}
+			if sb.UniqueKnown {
+				fmt.Fprintf(&b, ", %d unique", sb.Totals.LintUnique[r])
+				if sb.Delta != nil && sb.Delta.UniqueKnown {
+					fmt.Fprintf(&b, " (%s)", signed(sb.Delta.Totals.LintUnique[r]))
+				}
+			}
 		}
 		b.WriteString("\n")
+	}
+	if len(sb.Offenders) > 0 {
+		b.WriteString("\nRepeated offenders — the same defect on several screens; fix it once, where it lives:\n\n")
+		for i, o := range sb.Offenders {
+			if i == 10 {
+				fmt.Fprintf(&b, "- … %d more in scoreboard.json\n", len(sb.Offenders)-10)
+				break
+			}
+			fmt.Fprintf(&b, "- `%s` %s · `%s` · %d screens, %d shots\n", o.Rule, o.Detail, o.Path, o.Screens, o.Shots)
+		}
 	}
 	return b.String()
 }

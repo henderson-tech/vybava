@@ -2,6 +2,7 @@ package uiloop
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
 	"regexp"
@@ -66,6 +67,10 @@ type Lint struct {
 	TouchTarget int       `json:"touchTarget,omitempty"`
 	Off         []string  `json:"off,omitempty"`
 	Ramp        []float64 `json:"ramp,omitempty"`
+	// Allow maps a defect rule id to CSS selectors: a hit on an element that
+	// matches one, or sits inside one, is counted as info, not as a defect
+	// (a spec that allows half steps inside primitive recipes only).
+	Allow map[string][]string `json:"allow,omitempty"`
 }
 
 // Vitrinka is where passes are published.
@@ -95,6 +100,10 @@ var LintRules = []string{
 	"h-scroll", "h-scroller", "text-clipped", "text-spill", "truncated", "grid", "type-ramp",
 	"touch-target", "safe-area", "repeated-text", "contrast", "glass-on-content", "nested-surface", "glass-blur",
 }
+
+// LintInfoRules are the LintRules whose hits are listed for judgement, never
+// counted as defects (LINT_RULES kind 'info'; the same test keeps them equal).
+var LintInfoRules = []string{"h-scroller", "truncated", "repeated-text"}
 
 var (
 	kebab  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -258,6 +267,21 @@ func (c Config) Validate() []string {
 	for _, r := range c.Lint.Off {
 		if !slices.Contains(LintRules, r) {
 			add(fmt.Sprintf("lint.off: unknown rule %q (rules: %s)", r, strings.Join(LintRules, ", ")))
+		}
+	}
+	for _, r := range slices.Sorted(maps.Keys(c.Lint.Allow)) {
+		switch {
+		case !slices.Contains(LintRules, r):
+			add(fmt.Sprintf("lint.allow: unknown rule %q (rules: %s)", r, strings.Join(LintRules, ", ")))
+		case slices.Contains(LintInfoRules, r):
+			add(fmt.Sprintf("lint.allow: %q is informational already; only defect rules take an allowlist", r))
+		case len(c.Lint.Allow[r]) == 0:
+			add(fmt.Sprintf("lint.allow.%s must list at least one selector", r))
+		}
+		for _, sel := range c.Lint.Allow[r] {
+			if strings.TrimSpace(sel) == "" {
+				add(fmt.Sprintf("lint.allow.%s holds an empty selector", r))
+			}
 		}
 	}
 	for _, r := range c.Lint.Ramp {

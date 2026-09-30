@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { ShotRecord, ShotStatus } from './capture';
+import type { LintKey } from './lint';
 import { type RunFile, passPath, writeJson } from './run';
 
 export interface ReportRow {
@@ -31,12 +32,27 @@ export interface ReportRow {
 export interface Totals {
   shots: number;
   byStatus: Record<string, number>;
-  /** Defect hits per lint rule. */
+  /** Defect hits per lint rule, summed over shots (one sidebar defect counts once per screen). */
   lint: Record<string, number>;
+  /** Distinct defects per lint rule across the shots: rule + element path + detail, counted once. */
+  lintUnique: Record<string, number>;
   /** Informational hits per lint rule (truncation, contained scrollers, repeats). */
   lintInfo: Record<string, number>;
   defects: number;
+  /** Sum of lintUnique. */
+  defectsUnique: number;
   consoleErrors: number;
+}
+
+/** One defect repeated across screens: fix it once, in the primitive or chrome it lives in. */
+export interface Offender {
+  rule: string;
+  path: string;
+  detail: string;
+  /** Distinct screen ids it was seen on. */
+  screens: number;
+  /** Shots (screen × viewport × theme) it was seen on. */
+  shots: number;
 }
 
 export interface PassReport {
@@ -45,6 +61,10 @@ export interface PassReport {
   generatedAt: string;
   totals: Totals;
   areas: Array<{ area: string } & Totals>;
+  /** The most repeated defects (on 2+ screens), most screens first. */
+  offenders: Offender[];
+  /** Every shot with lint defects carried `lint.distinct`; false (an older harness's record kept by a resume) makes the unique counts unknown. */
+  uniqueKnown: boolean;
   rows: ReportRow[];
 }
 
@@ -69,7 +89,7 @@ export function collectRecords(passDir: string): ShotRecord[] {
 }
 
 function emptyTotals(): Totals {
-  return { shots: 0, byStatus: {}, lint: {}, lintInfo: {}, defects: 0, consoleErrors: 0 };
+  return { shots: 0, byStatus: {}, lint: {}, lintUnique: {}, lintInfo: {}, defects: 0, defectsUnique: 0, consoleErrors: 0 };
 }
 
 function add(t: Totals, r: ShotRecord): void {
@@ -81,6 +101,46 @@ function add(t: Totals, r: ShotRecord): void {
   }
   for (const [rule, n] of Object.entries(r.lint?.info ?? {})) t.lintInfo[rule] = (t.lintInfo[rule] ?? 0) + n;
   t.consoleErrors += r.consoleErrors.length;
+}
+
+const keyOf = (rule: string, k: LintKey): string => `${rule}\n${k.path}\n${k.detail}`;
+
+/** Distinct rule + path + detail across the records, into t.lintUnique / t.defectsUnique. */
+function addUnique(t: Totals, records: readonly ShotRecord[]): void {
+  const seen = new Set<string>();
+  for (const r of records) {
+    for (const [rule, keys] of Object.entries(r.lint?.distinct ?? {})) {
+      for (const k of keys) {
+        const key = keyOf(rule, k);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        t.lintUnique[rule] = (t.lintUnique[rule] ?? 0) + 1;
+        t.defectsUnique++;
+      }
+    }
+  }
+}
+
+/** The defects seen on the most screens (2 or more), at most `limit`. */
+export function repeatedOffenders(records: readonly ShotRecord[], limit = 20): Offender[] {
+  const by = new Map<string, { o: Offender; ids: Set<string> }>();
+  for (const r of records) {
+    for (const [rule, keys] of Object.entries(r.lint?.distinct ?? {})) {
+      for (const k of keys) {
+        const key = keyOf(rule, k);
+        const hit = by.get(key) ?? { o: { rule, path: k.path, detail: k.detail, screens: 0, shots: 0 }, ids: new Set<string>() };
+        hit.o.shots++;
+        hit.ids.add(r.id);
+        hit.o.screens = hit.ids.size;
+        by.set(key, hit);
+      }
+    }
+  }
+  return [...by.values()]
+    .map((h) => h.o)
+    .filter((o) => o.screens > 1)
+    .sort((a, b) => b.screens - a.screens || b.shots - a.shots || a.rule.localeCompare(b.rule) || a.path.localeCompare(b.path) || a.detail.localeCompare(b.detail))
+    .slice(0, limit);
 }
 
 export function buildReport(run: RunFile, records: readonly ShotRecord[]): PassReport {
@@ -114,30 +174,38 @@ export function buildReport(run: RunFile, records: readonly ShotRecord[]): PassR
     const i = run.areas.indexOf(area);
     return i < 0 ? run.areas.length : i;
   };
+  addUnique(totals, records);
+  for (const [area, t] of byArea) addUnique(t, records.filter((r) => r.area === area));
   const areas = [...byArea.entries()].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b)).map(([area, t]) => ({ area, ...t }));
-  return { v: 1, pass: run.pass, generatedAt: new Date().toISOString(), totals, areas, rows };
+  return { v: 1, pass: run.pass, generatedAt: new Date().toISOString(), totals, areas, offenders: repeatedOffenders(records), uniqueKnown: records.every((r) => !r.lint || !Object.keys(r.lint.defects).length || r.lint.distinct !== undefined), rows };
 }
 
 const cell = (v: string | number): string => String(v).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 export function toMarkdown(report: PassReport): string {
+  // Unique counts are only real when every record carried its distinct keys.
+  const u = (n: number): string => (report.uniqueKnown ? String(n) : '—');
   const statuses = ['ok', 'recipe-failed', 'theme-mismatch', 'build-error', 'unreachable', 'error'];
   const out: string[] = [
     `# UI loop · pass ${report.pass}`,
     '',
-    `${report.totals.shots} shots · ${report.totals.defects} lint defects · ${report.totals.consoleErrors} console errors · generated ${report.generatedAt}`,
+    `${report.totals.shots} shots · ${report.totals.defects} lint defects (${u(report.totals.defectsUnique)} unique) · ${report.totals.consoleErrors} console errors · generated ${report.generatedAt}`,
     '',
-    `| Area | Shots | ${statuses.join(' | ')} | Lint defects | Console errors |`,
-    `|---|--:|${statuses.map(() => '--:').join('|')}|--:|--:|`,
+    `| Area | Shots | ${statuses.join(' | ')} | Lint defects | Unique | Console errors |`,
+    `|---|--:|${statuses.map(() => '--:').join('|')}|--:|--:|--:|`,
   ];
   for (const a of [...report.areas, { area: '**all**', ...report.totals }]) {
-    out.push(`| ${cell(a.area)} | ${a.shots} | ${statuses.map((s) => a.byStatus[s] ?? 0).join(' | ')} | ${a.defects} | ${a.consoleErrors} |`);
+    out.push(`| ${cell(a.area)} | ${a.shots} | ${statuses.map((s) => a.byStatus[s] ?? 0).join(' | ')} | ${a.defects} | ${u(a.defectsUnique)} | ${a.consoleErrors} |`);
   }
   const rules = Object.entries(report.totals.lint).sort(([, a], [, b]) => b - a);
   out.push('', '## Lint defects by rule', '');
-  out.push(...(rules.length ? rules.map(([rule, n]) => `- \`${rule}\`: ${n}`) : ['None.']));
+  out.push(...(rules.length ? rules.map(([rule, n]) => `- \`${rule}\`: ${n} (${u(report.totals.lintUnique[rule] ?? 0)} unique)`) : ['None.']));
   const info = Object.entries(report.totals.lintInfo).sort(([, a], [, b]) => b - a);
-  if (info.length) out.push('', 'For judgement: ' + info.map(([rule, n]) => `\`${rule}\` ${n}`).join(' · '));
+  if (info.length) out.push('', 'For judgement (informational rules and allowlisted hits): ' + info.map(([rule, n]) => `\`${rule}\` ${n}`).join(' · '));
+  if (report.offenders.length) {
+    out.push('', '## Repeated offenders', '', 'The same defect on several screens: fix it once, where it lives.', '');
+    out.push(...report.offenders.map((o) => `- \`${o.rule}\` ${cell(o.detail)} · \`${cell(o.path)}\` · ${o.screens} screens, ${o.shots} shots`));
+  }
   const broken = report.rows.filter((r) => r.status !== 'ok');
   out.push('', '## Shots that are not ok', '');
   out.push(

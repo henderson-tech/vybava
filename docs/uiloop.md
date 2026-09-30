@@ -52,7 +52,11 @@ uiLoop: {
     designer: { baseUrl: 'http://10.8.0.10:21781/designer/', viewports: ['desktop', 'laptop'], themes: ['light', 'dark'] },
   },
   viewports: { 'phone-se': { width: 375, height: 667, mobile: true, insets: { top: 20, right: 0, bottom: 0, left: 0 } } },
-  lint: { grid: 4, touchTarget: 44, off: ['repeated-text'], ramp: [11, 12, 14, 16, 20, 24, 30] },
+  lint: {
+    grid: 4, touchTarget: 44, off: ['repeated-text'], ramp: [11, 12, 14, 16, 20, 24, 30],
+    // Rule id → selectors: a hit on a matching element, or inside one, counts as info, not a defect.
+    allow: { grid: ['ui-button', '.ui-badge-small', '[role=menuitem]'] },
+  },
   vitrinka: { project: 'powerflow', boardPrefix: 'ui-polish' },
   publish: { maxFiles: 96, maxBytes: 4_000_000 },
 }
@@ -70,6 +74,8 @@ Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobi
 | `laptop` | 1024×768 | no | — |
 | `desktop` | 1440×810 | no | — |
 
+`lint.allow` takes defect rules only (an informational rule is refused), each with at least one selector. It exists for a spec that allows an off-grid value in named places only: pwf-ui allows Tailwind half steps (6/10 px) inside primitive recipes, and without it the grid rule flagged 6,033 hits on 38 shots, nearly all primitives and chrome. An allowed hit is still counted, under `info` in the shot record, so the report shows how much the allowlist absorbs. An invalid selector fails the lint loudly on the first shot.
+
 ## The manifest contract
 
 A repo owns `<dir>/project.ts` (`defineProject`) and `<dir>/screens/*.ts` (`defineScreens`). The vendored `manifest.ts` and `project.ts` are the API.
@@ -86,9 +92,12 @@ A repo owns `<dir>/project.ts` (`defineProject`) and `<dir>/screens/*.ts` (`defi
 - `open`, as steps or a Recipe (drives into the overlay or state and ends waiting for it);
 - `ready`, a selector or a Recipe;
 - `context` (timezone, locale, localStorage);
-- `full: false`, `knownIssues`, `unreachable` and `destructive`.
+- `full: false`, `knownIssues`, `unreachable` and `destructive`;
+- `once: true`: shot only at the first viewport × theme the run selects, for a recipe with a side effect that must not repeat per shot (a real failed login that counts against a lockout).
 
-**`Step`** is one of `goto`, `click`, `clickText`, `clickRole` (topmost overlay first), `fill`, `waitFor`, `press`, `hover`, `dblclick`, `longPress`, `drag`, `evaluate` or `upload`.
+**`Step`** is one of `goto`, `click`, `clickText`, `clickRole` (topmost overlay first), `check`, `uncheck`, `selectOption` (`{ selector, value }`, a native `<select>` option by value or label), `wait` (ms, capped at 2000; prefer `waitFor`), `fill`, `waitFor`, `press`, `hover`, `dblclick`, `longPress`, `drag`, `evaluate` or `upload`. `clickText` takes the exact label (a substring is the last resort) or a `/regex/flags` string; `check` reports an invalid regex and a negative `wait`.
+
+A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, exported from `vendor/capture.ts` (not `manifest.ts`, which stays free of runtime imports so `check` and `map` never load Playwright). A failing step throws `StepFailed`, which the shot records as `recipe-failed` with the step and its index.
 
 **`defineProject`** takes:
 
@@ -116,15 +125,15 @@ UILOOP_ROOT="$PWD" UILOOP_RUN="$PWD/.ui-loop/pass-3/run.json" pnpm exec playwrig
 
 The repo needs no Playwright config of its own for the loop.
 
-- **Pass numbers:** the next pass is the latest plus one. A pass that holds no shots yet (a `--print` whose command never ran) is reused instead. `--resume` defaults to the latest pass and retakes everything that is not `ok` or `unreachable`.
+- **Pass numbers** start at 1. `--pass 0` (or below) is refused with `SELECTION_INVALID` on every verb, never read as "not given". The next pass is the latest plus one. A pass that holds no shots yet (a `--print` whose command never ran) is reused instead. `--resume` defaults to the latest pass and retakes everything that is not `ok` or `unreachable`.
 - **Shot layout:** `shots/<id>/<viewport>.<theme>.{png,full.png,json}` in the pass directory. The full companion is only taken when the page scrolls, capped at 6000 CSS px.
-- **Other pass files:** `params.json`, `auth.json` and `.auth/`, plus `report.json` and `report.md` (written by the global teardown).
+- **Other pass files:** `params.json`, `auth.json` and `.auth/`, plus `report.json` and `report.md` (written by the global teardown). The report sums defects per shot, so one sidebar defect counts once per screen, and beside it counts each rule + element path + detail once across the pass (`lintUnique`, `defectsUnique`), and lists the top repeated offenders (`offenders`: rule, path, detail, screens, shots).
 - **Statuses:** a shot is `ok`, `recipe-failed` (still shot), `theme-mismatch`, `build-error` (a red dev-server overlay that never turned green within `--build-wait`), `unreachable` or `error` (a harness failure, which also fails the test).
 - **Lint rules** (`LINT_RULES` in `lint.ts`), in two groups:
   - Defects: `h-scroll`, `text-clipped`, `text-spill`, `grid`, `type-ramp` (with `lint.ramp`), `touch-target` (mobile viewports), `safe-area`, `contrast`, `glass-on-content`, `nested-surface` and `glass-blur`.
   - Listed for judgement: `h-scroller`, `truncated` and `repeated-text`.
 
-The shot record (`capture.ts` `ShotRecord`, v1) is the contract that `split`, `publish` and `scoreboard` read (`internal/uiloop/record.go`).
+The shot record (`capture.ts` `ShotRecord`, v1) is the contract that `split`, `publish` and `scoreboard` read (`internal/uiloop/record.go`). Its `lint.distinct` (defect rule → the distinct `{ path, detail }` the shot hit, up to 1000 per rule) feeds the unique counts. It is additive: a record without it (a harness before v0.23) makes the unique columns unknown, never zero.
 
 ### On a Devbox
 
@@ -134,6 +143,26 @@ The capture must run next to the app, never on the Mac. The container needs the 
 2. **Run it in the workspace.** Use `vybava ui-loop run --wrap "devbox run --max-wait 45m -- {cmd}"`, or run the printed line yourself. Set the app's `env` var inside the command when the container reaches the app on another address.
 3. **Bring the pass back.** Devbox sync is one-way (Mac → box), so the pass directory stays in the workspace. Fetch it from the box host the way voke's `run-pass.sh` does: `rsync -a devops:ws/<workspace>/<app>/<out>/pass-<n>/ <out>/pass-<n>/`, with `<workspace>` from `devbox url --json`.
 4. **Split, publish and score on the Mac:** `ui-loop split`, then `publish`, then `scoreboard`.
+
+#### The sync trap: ignore the capture's output
+
+When `<out>` sits inside a checkout that Devbox syncs one-way, the next sync deletes everything the box wrote there mid-run. It removes `shots/`, `.auth/`, `params.json` and `auth.json`, and the next test fails with "no signed-in session". The app that syncs the repo must list these in its `sync_ignores`, so that only `run.json` (written on the Mac) syncs:
+
+```yaml
+sync_ignores: [/.ui-loop/*/shots, /.ui-loop/*/.auth, /.ui-loop/*/auth.json, /.ui-loop/*/params.json,
+  /.ui-loop/*/report.json, /.ui-loop/*/report.md, /.ui-loop/*/review, /.ui-loop/*/fix,
+  /.ui-loop/*/*.tmp-*, /.ui-loop/*/playwright]
+```
+
+Replace `.ui-loop` with your `out`. Every app that syncs the repo needs them. That includes a sibling workspace's `sync: sibling:<repo>` app, such as pwf-docker-compose's `pwf-ui`, next to the repo's own `devbox.yaml`. `ui-loop check` warns (`DEVBOX_SYNC`) when a `devbox.yaml` in the repo or a sibling directory has an app that syncs the repo without them. A `devbox.worktree.yaml` beside the recipe is folded in: its `sync` wins and its ignores add.
+
+#### Login secrets on the box
+
+A `login` that types a password reads it from the environment. Getting it there takes three steps:
+
+1. **Push the env.** Push it to the workspace from the vault, never from a file: use onyx `run_command` with `env_refs` that map each `NAME` to its onyx ref, running `devbox env push <ws> <app> --from-env NAME…`. The app must be a real unit (one with a `cmd`). A `source_only` app carries no `env_file`, so the push has nowhere to land.
+2. **Source it in the capture command.** The capture command sources the file with auto-export: `set -a; . ~/ws/<ws>/env/<file>; set +a; <capture command>`.
+3. **Put node and pnpm on the PATH.** The box's mise has no global node or pnpm. Run the command under `mise x node@<v> pnpm@<v> -- sh -c '…'`, or export `PATH` from `mise x node@<v> pnpm@<v> -- printenv PATH` first.
 
 ## Split and publish
 
@@ -161,11 +190,13 @@ Outcomes go to `<pass>/publish/index.json`. A set already pushed with the same f
 
 - screens by their worst open finding: broken, needs-work, polish or clean;
 - findings by status;
-- lint defects per rule;
+- lint defects per rule, raw (summed per shot) and unique (each rule + element path + detail once, `lintUnique` and `lintDefectsUnique`). Unique counts never sum across areas, because a chrome defect sits on every area's screens;
 - console errors;
 - shots that are not ok.
 
-The delta against the previous pass comes from its `scoreboard.json` (or its records when it was never scored). Severity deltas appear only when both passes were reviewed.
+`offenders` lists the 20 defects seen on the most screens (2 or more), each with its rule, path, detail, screens and shots. The markdown shows the top 10. `uniqueKnown` is false when a record predates the distinct keys, and then the unique columns render `—`.
+
+The delta against the previous pass comes from its `scoreboard.json` (or its records when it was never scored). Severity deltas appear only when both passes were reviewed, and unique deltas only when both carried distinct keys.
 
 The review-loop writes the backlog. Its shape is strict, with unknown keys rejected:
 
@@ -224,7 +255,7 @@ These cost real incidents. The review-loop workflow carries them into every lane
 Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrored in Go, and tests keep them equal:
 
 - `BUILTIN_VIEWPORTS` ↔ `viewports.go`;
-- `LINT_RULES` ↔ `LintRules`;
+- `LINT_RULES` ↔ `LintRules` and `LintInfoRules`;
 - the run.json and record shapes ↔ `run.go` and `record.go`. Bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change.
 
 The harness must type-check under TS 5.3 strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `noPropertyAccessFromIndexSignature`, in both CJS and ESM packages. It must stay Node 20 compatible: no bun-only APIs, no `import.meta`, no `__dirname`.
