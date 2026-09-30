@@ -106,7 +106,14 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   agent's. Device state is reset at the end. An `ios-device` lane answers
   `lane-unsupported` naming the hand shot / Appium alternative and the
   directory to drop files in; a `browser` lane points at `ui-loop run`; a
-  `server` lane at `run add-cell`.
+  `server` lane at `run add-cell`. The lane is read from the pass's
+  snapshot (`run.lanes`), like the screens: a lane edited or removed in the
+  config after `run init` never captures another device under the old
+  identity (`unknown-lane` names the pass's lanes and the `--force` init
+  that would re-snapshot). The device is restored on EVERY return path,
+  including a failed open, screenshot, state change or ledger write, with a
+  bounded context of its own; a reset failure is reported together with the
+  capture error, never instead of it.
 - **sheet** renders, per screen with shots, `<pass>/sheets/<screen>.png`
   (columns = lanes, rows = device states, every shot scaled to 640 px high
   under a label strip; a missing file is a red cell), `<screen>--edges.png`
@@ -117,10 +124,12 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   built-in 5x7 bitmap font).
 - **report** writes `<pass>/report.md` and returns it: a table per lane
   (screen x state, glyphs ✓ ✗ - ·), the matrix cells, the failing cells with
-  shots and findings, and the delta versus `--previous` (default: the pass
-  before): `fixed` (fail → pass), `regressed` (pass → fail), `new` (a
-  failing cell the previous pass did not have). Pending cells make it a
-  warning, not a refusal. In text mode the Markdown is the output; under
+  shots and findings, and the delta versus `--previous` (default: the
+  immediately preceding pass number; its ledger must load, so an
+  incompatible one answers `run-version` rather than being skipped for an
+  older pass that happens to decode; `--no-delta` skips it): `fixed` (fail
+  → pass), `regressed` (pass → fail), `new` (a failing cell the previous
+  pass did not have). Pending cells make it a warning, not a refusal. In text mode the Markdown is the output; under
   `--json` it is `data.markdown`.
 
 ## Config: `polish` in vybava.config.ts
@@ -179,9 +188,13 @@ are `<lane>--matrix--<flow-slug>--<tier-slug>`.
 bumped on any breaking change of `RunFile` or `Cell`. A pass written by
 another version answers `run-version` on every verb that reads it and is
 recreated with `run init --pass <n> --force`; it is never silently re-read.
-Additive fields (a new optional key) do not bump it. run.json is written
-atomically (temp file + rename) after every change, so a crash mid-shoot
-leaves the last saved shot recorded.
+Additive fields (a new optional key) do not bump it. Every writer (`run
+init`, `run add-cell`, `cell`, `shoot` after each shot) is one
+load-modify-save transaction under the pass's interprocess lock
+(`<pass>/run.lock`, `flock`), so a verdict recorded from another terminal
+while a shoot runs survives; the file is written to a uniquely named temp
+file (pid + random suffix) and renamed into place, so a crash mid-shoot
+leaves the last saved shot recorded and never a half-written ledger.
 
 ## Envelope, diagnostics and exit codes
 

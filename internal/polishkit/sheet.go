@@ -197,8 +197,8 @@ func (t *Tool) Sheet(opts SheetOptions) (Result, error) {
 		return Result{}, err
 	}
 	for _, id := range opts.Lanes {
-		if _, ok := t.Config.Lane(id); !ok {
-			return Result{}, diag(DiagUnknownLane, fmt.Sprintf("lane %q is not declared (lanes: %s)", id, strings.Join(t.Config.LaneIDs(nil), ", ")), "polish-kit lanes --json")
+		if _, ok := runLane(run, id); !ok {
+			return Result{}, diag(DiagUnknownLane, fmt.Sprintf("pass %d does not include lane %q (lanes: %s)", run.Pass, id, strings.Join(runLaneIDs(run), ", ")), fmt.Sprintf("polish-kit status --pass %d --json", run.Pass))
 		}
 	}
 	var screens []Screen

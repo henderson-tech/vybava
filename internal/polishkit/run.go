@@ -92,7 +92,8 @@ type InitData struct {
 
 var passDirRe = regexp.MustCompile(`^pass-(\d+)$`)
 
-// Passes lists the pass numbers under <out>, ascending.
+// Passes lists the pass numbers under <out> that hold a run.json, ascending
+// (a directory without one, a shots drop or a crashed init, is not a pass).
 func (t *Tool) Passes() []int {
 	entries, err := os.ReadDir(t.OutDir())
 	if err != nil {
@@ -101,6 +102,9 @@ func (t *Tool) Passes() []int {
 	var passes []int
 	for _, e := range entries {
 		if m := passDirRe.FindStringSubmatch(e.Name()); m != nil && e.IsDir() {
+			if _, err := os.Stat(filepath.Join(t.OutDir(), e.Name(), "run.json")); err != nil {
+				continue
+			}
 			n, _ := strconv.Atoi(m[1])
 			passes = append(passes, n)
 		}
@@ -167,7 +171,9 @@ func (t *Tool) LoadRun(pass int) (*RunFile, error) {
 	return &run, nil
 }
 
-// SaveRun writes run.json atomically (temp file + rename).
+// SaveRun writes run.json atomically: a uniquely named temp file (pid and
+// a random suffix, so two processes never share one) renamed into place.
+// Writers that read first go through Update, which holds the pass lock.
 func (t *Tool) SaveRun(run *RunFile) error {
 	if err := os.MkdirAll(run.PassDir, 0o755); err != nil {
 		return err
@@ -180,11 +186,52 @@ func (t *Tool) SaveRun(run *RunFile) error {
 		return err
 	}
 	final := filepath.Join(run.PassDir, "run.json")
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	tmp, err := os.CreateTemp(run.PassDir, fmt.Sprintf("run.json.%d.*.tmp", os.Getpid()))
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, final)
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), final); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// LockName is the per-pass interprocess lock file.
+const LockName = "run.lock"
+
+// Update runs one load-modify-save transaction on a pass's ledger under
+// the pass's interprocess lock (<passDir>/run.lock): shoot saving after
+// every shot, cell and add-cell replacing the file, all from different
+// processes, never lose each other's writes. fn's error is returned as is
+// and nothing is saved.
+func (t *Tool) Update(pass int, fn func(run *RunFile) error) (*RunFile, error) {
+	pass, err := t.resolvePass(pass)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := lockFile(filepath.Join(t.PassDir(pass), LockName))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	run, err := t.LoadRun(pass)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(run); err != nil {
+		return run, err
+	}
+	return run, t.SaveRun(run)
 }
 
 // Init writes <out>/pass-<n>/run.json with the plan snapshot and the chrome
@@ -198,13 +245,16 @@ func (t *Tool) Init(ctx context.Context, opts InitOptions) (Result, error) {
 		pass = t.nextPass()
 	}
 	runFile := filepath.Join(t.PassDir(pass), "run.json")
-	if _, err := os.Stat(runFile); err == nil && !opts.Force {
+	existing := func() (Result, error) {
 		run, err := t.LoadRun(pass)
 		if err != nil {
 			return Result{}, err
 		}
 		data := initData(run, true)
 		return Result{Data: data, Lines: initLines(data), Next: t.initNext(run)}, nil
+	}
+	if _, err := os.Stat(runFile); err == nil && !opts.Force {
+		return existing()
 	}
 	planRes, err := t.Plan(ctx, opts.Plan)
 	if err != nil {
@@ -223,13 +273,22 @@ func (t *Tool) Init(ctx context.Context, opts InitOptions) (Result, error) {
 		V: RunVersion, Pass: pass, PassDir: t.PassDir(pass), CreatedAt: t.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		Vybava: t.Version, Plan: plan, Lanes: lanes, Screens: screens, Cells: ChromeCells(lanes, screens),
 	}
-	if opts.Force {
-		// A recreated pass keeps its shots; the cell table starts pending.
-		_ = os.Remove(runFile)
-	}
 	if err := t.ensureOut(); err != nil {
 		return Result{}, err
 	}
+	if err := os.MkdirAll(run.PassDir, 0o755); err != nil {
+		return Result{}, err
+	}
+	unlock, err := lockFile(filepath.Join(run.PassDir, LockName))
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+	// Another process may have created the pass while the plan ran.
+	if _, err := os.Stat(runFile); err == nil && !opts.Force {
+		return existing()
+	}
+	// A recreated pass (--force) keeps its shots; the cell table starts pending.
 	if err := t.SaveRun(run); err != nil {
 		return Result{}, err
 	}
@@ -359,23 +418,21 @@ func (t *Tool) AddCell(opts AddCellOptions) (Result, error) {
 	if strings.TrimSpace(opts.Flow) == "" || strings.TrimSpace(opts.Tier) == "" {
 		return Result{}, diag(DiagUsage, "add-cell needs --flow and --tier", "polish-kit run add-cell --kind matrix --lane "+opts.Lane+" --flow \"<title>\" --tier \"<tier>\" --json")
 	}
-	run, err := t.LoadRun(opts.Pass)
-	if err != nil {
-		return Result{}, err
-	}
-	if _, ok := t.Config.Lane(opts.Lane); !ok {
-		return Result{}, diag(DiagUnknownLane, fmt.Sprintf("lane %q is not declared (lanes: %s)", opts.Lane, strings.Join(t.Config.LaneIDs(nil), ", ")), "polish-kit lanes --json")
-	}
 	cell := Cell{Kind: CellMatrix, Lane: opts.Lane, Flow: opts.Flow, Tier: opts.Tier, Verdict: VerdictPending}
 	cell.ID = strings.Join([]string{opts.Lane, "matrix", Slug(opts.Flow), Slug(opts.Tier)}, "--")
-	existing := slices.IndexFunc(run.Cells, func(c Cell) bool { return c.ID == cell.ID })
-	if existing >= 0 {
-		cell = run.Cells[existing]
-	} else {
-		run.Cells = append(run.Cells, cell)
-		if err := t.SaveRun(run); err != nil {
-			return Result{}, err
+	run, err := t.Update(opts.Pass, func(run *RunFile) error {
+		if _, ok := runLane(run, opts.Lane); !ok {
+			return diag(DiagUnknownLane, fmt.Sprintf("pass %d does not include lane %q (lanes: %s)", run.Pass, opts.Lane, strings.Join(runLaneIDs(run), ", ")), fmt.Sprintf("polish-kit run init --pass %d --lanes %s --force --json", run.Pass, opts.Lane))
 		}
+		if existing := slices.IndexFunc(run.Cells, func(c Cell) bool { return c.ID == cell.ID }); existing >= 0 {
+			cell = run.Cells[existing]
+			return nil
+		}
+		run.Cells = append(run.Cells, cell)
+		return nil
+	})
+	if err != nil {
+		return Result{}, err
 	}
 	return Result{Data: cell, Lines: []string{cell.ID + "  " + cell.Verdict}, Next: []string{
 		fmt.Sprintf("polish-kit cell %s pass --pass %d --json", cell.ID, run.Pass),
@@ -398,36 +455,37 @@ func (t *Tool) SetCell(opts CellOptions) (Result, error) {
 	if !slices.Contains(Verdicts, opts.Verdict) {
 		return Result{}, diag(DiagUsage, fmt.Sprintf("verdict %q is not pass, fail or skip", opts.Verdict), "polish-kit cell "+opts.ID+" pass --json")
 	}
-	run, err := t.LoadRun(opts.Pass)
+	var cell Cell
+	run, err := t.Update(opts.Pass, func(run *RunFile) error {
+		i := slices.IndexFunc(run.Cells, func(c Cell) bool { return c.ID == opts.ID })
+		if i < 0 {
+			return diag(DiagCellUnknown, fmt.Sprintf("pass %d has no cell %q", run.Pass, opts.ID), fmt.Sprintf("polish-kit status --pass %d --json", run.Pass))
+		}
+		c := &run.Cells[i]
+		if opts.Shot != "" {
+			abs := opts.Shot
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(t.Cwd, abs)
+			}
+			if _, err := os.Stat(abs); err != nil {
+				return diag(DiagShotRequired, fmt.Sprintf("--shot %s does not exist", opts.Shot), fmt.Sprintf("polish-kit cell %s %s --shot <existing file> --json", c.ID, opts.Verdict))
+			}
+			c.Shot = t.passRel(run, abs)
+		}
+		if opts.Verdict == VerdictFail && c.Shot == "" {
+			return diag(DiagShotRequired, "a fail verdict needs the screenshot that shows it", fmt.Sprintf("polish-kit cell %s fail --shot <path> --note \"<what>\" --json", c.ID))
+		}
+		c.Verdict = opts.Verdict
+		if opts.Note != "" {
+			c.Note = opts.Note
+		}
+		if opts.Finding != "" {
+			c.Finding = opts.Finding
+		}
+		cell = *c
+		return nil
+	})
 	if err != nil {
-		return Result{}, err
-	}
-	i := slices.IndexFunc(run.Cells, func(c Cell) bool { return c.ID == opts.ID })
-	if i < 0 {
-		return Result{}, diag(DiagCellUnknown, fmt.Sprintf("pass %d has no cell %q", run.Pass, opts.ID), fmt.Sprintf("polish-kit status --pass %d --json", run.Pass))
-	}
-	cell := &run.Cells[i]
-	if opts.Shot != "" {
-		abs := opts.Shot
-		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(t.Cwd, abs)
-		}
-		if _, err := os.Stat(abs); err != nil {
-			return Result{}, diag(DiagShotRequired, fmt.Sprintf("--shot %s does not exist", opts.Shot), fmt.Sprintf("polish-kit cell %s %s --shot <existing file> --json", cell.ID, opts.Verdict))
-		}
-		cell.Shot = t.passRel(run, abs)
-	}
-	if opts.Verdict == VerdictFail && cell.Shot == "" {
-		return Result{}, diag(DiagShotRequired, "a fail verdict needs the screenshot that shows it", fmt.Sprintf("polish-kit cell %s fail --shot <path> --note \"<what>\" --json", cell.ID))
-	}
-	cell.Verdict = opts.Verdict
-	if opts.Note != "" {
-		cell.Note = opts.Note
-	}
-	if opts.Finding != "" {
-		cell.Finding = opts.Finding
-	}
-	if err := t.SaveRun(run); err != nil {
 		return Result{}, err
 	}
 	next := []string{fmt.Sprintf("polish-kit status --pass %d --json", run.Pass)}
@@ -436,7 +494,26 @@ func (t *Tool) SetCell(opts CellOptions) (Result, error) {
 	} else {
 		next = append(next, fmt.Sprintf("polish-kit report --pass %d --json", run.Pass))
 	}
-	return Result{Data: *cell, Lines: []string{cell.ID + "  " + cell.Verdict}, Next: next}, nil
+	return Result{Data: cell, Lines: []string{cell.ID + "  " + cell.Verdict}, Next: next}, nil
+}
+
+// runLane looks a lane up in the pass's snapshot: a lane edited or removed
+// in the config after init never changes what a resumed pass captures.
+func runLane(run *RunFile, id string) (Lane, bool) {
+	for _, l := range run.Lanes {
+		if l.ID == id {
+			return l, true
+		}
+	}
+	return Lane{}, false
+}
+
+func runLaneIDs(run *RunFile) []string {
+	ids := make([]string, 0, len(run.Lanes))
+	for _, l := range run.Lanes {
+		ids = append(ids, l.ID)
+	}
+	return ids
 }
 
 // passRel makes a shot path pass-dir-relative when it lives under it.

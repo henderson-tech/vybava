@@ -55,11 +55,13 @@ func (t *Tool) Report(opts ReportOptions) (Result, error) {
 			return Result{}, err
 		}
 	case opts.Previous == 0:
-		for _, p := range t.Passes() {
-			if p < run.Pass {
-				if r, err := t.LoadRun(p); err == nil {
-					prev = r
-				}
+		// The immediately preceding pass, and its load error propagates: an
+		// incompatible ledger (another RUN_VERSION) is a run-version
+		// diagnostic, never silently skipped for an older one that decodes.
+		if p := precedingPass(t.Passes(), run.Pass); p > 0 {
+			prev, err = t.LoadRun(p)
+			if err != nil {
+				return Result{}, err
 			}
 		}
 	}
@@ -88,6 +90,17 @@ func (t *Tool) Report(opts ReportOptions) (Result, error) {
 		res.Next = []string{fmt.Sprintf("polish-kit run init --pass %d --json", run.Pass+1)}
 	}
 	return res, nil
+}
+
+// precedingPass is the largest pass number below pass (0 when none).
+func precedingPass(passes []int, pass int) int {
+	prev := 0
+	for _, p := range passes {
+		if p < pass && p > prev {
+			prev = p
+		}
+	}
+	return prev
 }
 
 // ComputeDelta compares verdicts by cell id.

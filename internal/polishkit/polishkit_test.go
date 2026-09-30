@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -11,15 +12,20 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/runx"
 )
 
-// fakeExec answers commands by argv prefix and records every call; no test
-// ever reaches git, xcrun or adb.
+// fakeExec answers commands by the LONGEST matching argv prefix and records
+// every call; no test ever reaches git, xcrun or adb. An argv no rule
+// matches fails the test by name: every side effect a verb relies on
+// (a screenshot written, a state applied) is an explicit rule.
 type fakeExec struct {
+	t     *testing.T
+	mu    sync.Mutex
 	calls [][]string
 	rules []rule
 }
@@ -31,17 +37,57 @@ type rule struct {
 }
 
 func (f *fakeExec) run(_ context.Context, c Cmd) (CmdOut, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, c.Args)
+	rules := slices.Clone(f.rules)
+	f.mu.Unlock()
 	joined := strings.Join(c.Args, " ")
-	for _, r := range f.rules {
-		if strings.HasPrefix(joined, r.prefix) {
-			if r.fn != nil {
-				return r.fn(c), nil
-			}
-			return r.out, nil
+	best := -1
+	for i, r := range rules {
+		// the longest prefix wins; among equals the later rule (an override)
+		if strings.HasPrefix(joined, r.prefix) && (best < 0 || len(r.prefix) >= len(rules[best].prefix)) {
+			best = i
 		}
 	}
-	return CmdOut{}, nil
+	if best < 0 {
+		f.t.Errorf("fake exec: no rule for %q", joined)
+		return CmdOut{}, fmt.Errorf("fake exec: no rule for %q", joined)
+	}
+	if r := rules[best]; r.fn != nil {
+		return r.fn(c), nil
+	}
+	return rules[best].out, nil
+}
+
+// ok is a rule that succeeds silently.
+func ok(prefix string) rule { return rule{prefix: prefix} }
+
+// androidStateRules are the reads and writes shoot/set issue on a device.
+func androidStateRules(serial string) []rule {
+	p := "adb -s " + serial + " shell "
+	return []rule{
+		{prefix: p + "settings get secure navigation_mode", out: CmdOut{Stdout: "2\n"}},
+		{prefix: p + "cmd uimode night", out: CmdOut{Stdout: "Night mode: no\n"}},
+		ok(p + "cmd uimode night yes"), ok(p + "cmd uimode night no"),
+		ok(p + "cmd overlay enable-exclusive"), ok(p + "settings put system font_scale"),
+		ok(p + "am start -a android.intent.action.VIEW"),
+	}
+}
+
+// simStateRules are the state writes shoot/set issue on a simulator, and
+// a screenshot that writes the file it is asked for.
+func simStateRules(udid string) []rule {
+	p := "xcrun simctl "
+	return []rule{
+		ok(p + "ui " + udid + " appearance light"), ok(p + "ui " + udid + " appearance dark"),
+		ok(p + "ui " + udid + " content_size"), ok(p + "openurl " + udid),
+		{prefix: p + "io " + udid + " screenshot", fn: func(c Cmd) CmdOut {
+			if err := os.WriteFile(c.Args[len(c.Args)-1], []byte("\x89PNG-sim"), 0o644); err != nil {
+				return CmdOut{Code: 1, Stderr: err.Error()}
+			}
+			return CmdOut{}
+		}},
+	}
 }
 
 func (f *fakeExec) ran(prefix string) bool {
@@ -89,6 +135,7 @@ func newTool(t *testing.T, cfg Config, fx *fakeExec) *Tool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fx.t = t
 	tool.Exec = fx.run
 	tool.Now = func() time.Time { return time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC) }
 	tool.Sleep = func(time.Duration) {}
@@ -844,7 +891,10 @@ func TestURLCommandLane(t *testing.T) {
 }
 
 func TestLanesSetAndUnsupported(t *testing.T) {
-	fx := &fakeExec{rules: []rule{{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}}}}
+	fx := &fakeExec{rules: append(simStateRules("BBBB-26"),
+		rule{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}},
+		rule{prefix: "xcrun simctl ui BBBB-26 appearance", out: CmdOut{Stdout: "light\n"}},
+	)}
 	cfg := testConfig()
 	cfg.Lanes[0].Device = "BBBB-26" // the booted one
 	tool := newTool(t, cfg, fx)
@@ -878,7 +928,7 @@ func TestLanesSetAndUnsupported(t *testing.T) {
 }
 
 func TestShootAndroidWritesShotsAndRestoresState(t *testing.T) {
-	fx := &fakeExec{rules: append(gitRules("apps/client/app/home.tsx"),
+	fx := &fakeExec{rules: append(append(gitRules("apps/client/app/home.tsx"), androidStateRules("R5CT30ABC")...),
 		rule{prefix: "adb devices -l", out: CmdOut{Stdout: "List of devices attached\nR5CT30ABC device model:SM_S911B\n"}},
 		rule{prefix: "adb -s R5CT30ABC exec-out screencap -p", out: CmdOut{Stdout: "\x89PNG-bytes"}},
 	)}
@@ -961,7 +1011,8 @@ func TestShootAndroidWritesShotsAndRestoresState(t *testing.T) {
 }
 
 func TestShootIOSSimUsesSimctl(t *testing.T) {
-	fx := &fakeExec{rules: append(gitRules("apps/client/app/home.tsx"),
+	fx := &fakeExec{rules: append(append(gitRules("apps/client/app/home.tsx"), simStateRules("BBBB-26")...),
+		rule{prefix: "xcrun simctl ui BBBB-26 appearance", out: CmdOut{Stdout: "light\n"}},
 		rule{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}},
 	)}
 	cfg := testConfig()
@@ -981,10 +1032,18 @@ func TestShootIOSSimUsesSimctl(t *testing.T) {
 	if !fx.ran("xcrun simctl openurl BBBB-26 fixit://inquiries/new") || !fx.ran("xcrun simctl ui BBBB-26 appearance dark") {
 		t.Fatalf("simctl calls:\n%v", fx.calls)
 	}
-	for _, c := range fx.calls {
-		if len(c) > 5 && c[1] == "simctl" && c[2] == "io" && !strings.HasSuffix(c[len(c)-1], "shots/ios26/inquiry-new--"+c[len(c)-1][strings.LastIndex(c[len(c)-1], "--")+2:]) {
-			t.Fatalf("screenshot path: %v", c)
+	// the screenshot fixture wrote the files the cells now point at
+	run, _ := tool.LoadRun(1)
+	for _, c := range run.Cells {
+		if c.Shot != "shots/ios26/inquiry-new--"+c.Theme+".png" {
+			t.Fatalf("cell %s shot %q", c.ID, c.Shot)
 		}
+		if b, err := os.ReadFile(run.ShotPath(c)); err != nil || string(b) != "\x89PNG-sim" {
+			t.Fatalf("shot file for %s: %v", c.ID, err)
+		}
+	}
+	if got := res.Data.(ShootData).Restored; !slices.Equal(got, []string{"xcrun simctl ui BBBB-26 appearance light", "xcrun simctl ui BBBB-26 content_size medium"}) {
+		t.Fatalf("restored: %v", got)
 	}
 	// a shutdown simulator answers with its boot command
 	fx.rules[len(fx.rules)-1].out = CmdOut{Stdout: strings.Replace(simctlFixture, `"state": "Booted"`, `"state": "Shutdown"`, 1)}
@@ -992,6 +1051,175 @@ func TestShootIOSSimUsesSimctl(t *testing.T) {
 	var de runx.DiagError
 	if !errors.As(err, &de) || de.Diag.Code != DiagDeviceUnavailable || !strings.HasPrefix(de.Diag.Fix, "xcrun simctl boot") {
 		t.Fatalf("not booted: %v", err)
+	}
+}
+
+// The default delta takes the immediately preceding pass and its load
+// error propagates: an incompatible ledger is run-version, never skipped
+// for an older pass that decodes.
+func TestReportPropagatesPreviousPassVersion(t *testing.T) {
+	fx := &fakeExec{rules: gitRules("apps/client/app/home.tsx")}
+	tool := newTool(t, testConfig(), fx)
+	ctx := context.Background()
+	for pass := 1; pass <= 3; pass++ {
+		if _, err := tool.Init(ctx, InitOptions{Pass: pass, Lanes: []string{"ios26"}, Screens: []string{"home"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(tool.PassDir(2), "run.json")
+	b, _ := os.ReadFile(file)
+	if err := os.WriteFile(file, []byte(strings.Replace(string(b), `"v": 1`, `"v": 99`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Report(ReportOptions{Pass: 3}); diagCode(t, err) != DiagRunVersion {
+		t.Fatalf("pass 2 is incompatible and must not be skipped for pass 1: %v", err)
+	}
+	if res, err := tool.Report(ReportOptions{Pass: 3, Previous: 1}); err != nil || res.Data.(ReportData).Delta.Previous != 1 {
+		t.Fatalf("explicit --previous 1: %v", err)
+	}
+	if res, err := tool.Report(ReportOptions{Pass: 3, Previous: -1}); err != nil || res.Data.(ReportData).Delta != nil {
+		t.Fatalf("--no-delta: %v", err)
+	}
+	if precedingPass([]int{1, 2, 5, 9}, 5) != 2 || precedingPass([]int{3}, 3) != 0 {
+		t.Fatal("precedingPass")
+	}
+}
+
+// Two writers interleaving load-modify-save transactions on one ledger
+// (a shoot saving shots while a cell verdict is recorded) both survive:
+// every transaction runs under the pass lock, none is lost.
+func TestUpdateInterleavedWritesSurvive(t *testing.T) {
+	fx := &fakeExec{rules: gitRules("apps/client/app/home.tsx")}
+	tool := newTool(t, testConfig(), fx)
+	if _, err := tool.Init(context.Background(), InitOptions{Lanes: []string{"android"}, Screens: []string{"home"}}); err != nil {
+		t.Fatal(err)
+	}
+	const rounds = 40
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*rounds)
+	for _, w := range []struct{ cell, field string }{{"android--home--light--gesture", "note"}, {"android--home--dark--gesture", "finding"}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				_, err := tool.Update(1, func(run *RunFile) error {
+					j := slices.IndexFunc(run.Cells, func(c Cell) bool { return c.ID == w.cell })
+					if w.field == "note" {
+						run.Cells[j].Note += "n"
+					} else {
+						run.Cells[j].Finding += "f"
+					}
+					return nil
+				})
+				if err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	run, err := tool.LoadRun(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range run.Cells {
+		switch c.ID {
+		case "android--home--light--gesture":
+			if len(c.Note) != rounds {
+				t.Fatalf("lost note writes: %d of %d", len(c.Note), rounds)
+			}
+		case "android--home--dark--gesture":
+			if len(c.Finding) != rounds {
+				t.Fatalf("lost finding writes: %d of %d", len(c.Finding), rounds)
+			}
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(run.PassDir, "run.json.*.tmp")); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
+
+// A failing screenshot still restores the device, and the reset commands
+// are reported beside the capture error.
+func TestShootFailedScreenshotStillResets(t *testing.T) {
+	fx := &fakeExec{rules: append(append(gitRules("apps/client/app/home.tsx"), androidStateRules("R5CT30ABC")...),
+		rule{prefix: "adb devices -l", out: CmdOut{Stdout: "List of devices attached\nR5CT30ABC device model:SM_S911B\n"}},
+		rule{prefix: "adb -s R5CT30ABC exec-out screencap -p", out: CmdOut{Code: 1, Stderr: "error: device offline"}},
+	)}
+	cfg := testConfig()
+	cfg.Lanes[1].TextSizes = nil
+	tool := newTool(t, cfg, fx)
+	ctx := context.Background()
+	if _, err := tool.Init(ctx, InitOptions{Lanes: []string{"android"}, Screens: []string{"home"}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Shoot(ctx, ShootOptions{Lane: "android", Themes: []string{"dark"}})
+	if err == nil || !strings.Contains(err.Error(), "device offline") {
+		t.Fatalf("capture error must surface: %v", err)
+	}
+	data := res.Data.(ShootData)
+	want := []string{
+		"adb -s R5CT30ABC shell cmd uimode night no",
+		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural",
+		"adb -s R5CT30ABC shell settings put system font_scale 1.0",
+	}
+	if !slices.Equal(data.Restored, want) || len(data.Shots) != 0 {
+		t.Fatalf("restored %v shots %v", data.Restored, data.Shots)
+	}
+	if !fx.ran("adb -s R5CT30ABC shell cmd uimode night yes") {
+		t.Fatal("dark was applied before the failed shot")
+	}
+	run, _ := tool.LoadRun(1)
+	for _, c := range run.Cells {
+		if c.Shot != "" {
+			t.Fatalf("a failed shot must not be recorded: %s", c.ID)
+		}
+	}
+	// a reset that fails too is reported with the capture error, not instead of it
+	fx.rules = append(fx.rules, rule{prefix: "adb -s R5CT30ABC shell cmd uimode night no", out: CmdOut{Code: 1, Stderr: "adb: device gone"}})
+	_, err = tool.Shoot(ctx, ShootOptions{Lane: "android", Themes: []string{"dark"}})
+	if err == nil || !strings.Contains(err.Error(), "device offline") || !strings.Contains(err.Error(), "restoring android") || !strings.Contains(err.Error(), "device gone") {
+		t.Fatalf("both errors expected: %v", err)
+	}
+}
+
+// shoot reads the lane from the pass's snapshot, never the live config.
+func TestShootUsesSnapshotLane(t *testing.T) {
+	fx := &fakeExec{rules: append(append(gitRules("apps/client/app/home.tsx"), androidStateRules("R5CT30ABC")...),
+		rule{prefix: "adb devices -l", out: CmdOut{Stdout: "List of devices attached\nR5CT30ABC device model:SM_S911B\nOTHER device model:X\n"}},
+		rule{prefix: "adb -s R5CT30ABC exec-out screencap -p", out: CmdOut{Stdout: "\x89PNG-bytes"}},
+	)}
+	cfg := testConfig()
+	cfg.Lanes[1].Device, cfg.Lanes[1].TextSizes, cfg.Lanes[1].Nav = "R5CT30ABC", nil, []string{"gesture"}
+	tool := newTool(t, cfg, fx)
+	ctx := context.Background()
+	if _, err := tool.Init(ctx, InitOptions{Lanes: []string{"android"}, Screens: []string{"home"}}); err != nil {
+		t.Fatal(err)
+	}
+	// the config is edited after init: another serial, and the lane renamed away
+	tool.Config.Lanes[1].Device = "OTHER"
+	res, err := tool.Shoot(ctx, ShootOptions{Lane: "android"})
+	if err != nil || len(res.Data.(ShootData).Shots) != 2 || fx.ran("adb -s OTHER") {
+		t.Fatalf("snapshot lane must win: %v %+v", err, res.Data)
+	}
+	tool.Config.Lanes[1].ID = "droid"
+	if res, err := tool.Shoot(ctx, ShootOptions{Lane: "android"}); err != nil || len(res.Data.(ShootData).Shots) != 2 {
+		t.Fatalf("a lane removed from the config still shoots from the snapshot: %v", err)
+	}
+	var de runx.DiagError
+	_, err = tool.Shoot(ctx, ShootOptions{Lane: "droid"})
+	if !errors.As(err, &de) || de.Diag.Code != DiagUnknownLane || !strings.Contains(de.Diag.Detail, "pass 1 does not include lane") {
+		t.Fatalf("a lane outside the snapshot: %v", err)
+	}
+	if _, err := tool.AddCell(AddCellOptions{Kind: CellMatrix, Lane: "droid", Flow: "f", Tier: "t"}); diagCode(t, err) != DiagUnknownLane {
+		t.Fatalf("add-cell on a lane outside the snapshot: %v", err)
+	}
+	if _, err := tool.Sheet(SheetOptions{Lanes: []string{"droid"}}); diagCode(t, err) != DiagUnknownLane {
+		t.Fatalf("sheet on a lane outside the snapshot: %v", err)
 	}
 }
 

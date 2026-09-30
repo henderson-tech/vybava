@@ -2,6 +2,7 @@ package polishkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,14 +42,17 @@ type ShootData struct {
 // text size) set the device, then per screen open the deep link, wait its
 // settle time and screenshot into <pass>/shots/<lane>/. Verdicts stay
 // pending: the judgement is the agent's. Device state is restored at the end.
-func (t *Tool) Shoot(ctx context.Context, opts ShootOptions) (Result, error) {
-	l, ok := t.Config.Lane(opts.Lane)
-	if !ok {
-		return Result{}, diag(DiagUnknownLane, fmt.Sprintf("lane %q is not declared (lanes: %s)", opts.Lane, strings.Join(t.Config.LaneIDs(nil), ", ")), "polish-kit lanes --json")
-	}
+func (t *Tool) Shoot(ctx context.Context, opts ShootOptions) (res Result, err error) {
 	run, err := t.LoadRun(opts.Pass)
 	if err != nil {
 		return Result{}, err
+	}
+	// The lane comes from the pass's snapshot, like the screens: a lane
+	// edited or removed after init never captures another device under
+	// the old identity.
+	l, ok := runLane(run, opts.Lane)
+	if !ok {
+		return Result{}, diag(DiagUnknownLane, fmt.Sprintf("pass %d does not include lane %q (lanes: %s)", run.Pass, opts.Lane, strings.Join(runLaneIDs(run), ", ")), fmt.Sprintf("polish-kit run init --pass %d --lanes %s --force --json", run.Pass, opts.Lane))
 	}
 	shotsDir := filepath.Join(run.PassDir, "shots", l.ID)
 	switch l.Kind {
@@ -79,9 +83,22 @@ func (t *Tool) Shoot(ctx context.Context, opts ShootOptions) (Result, error) {
 		return Result{}, err
 	}
 	data := ShootData{Lane: l.ID, Pass: run.Pass, Shots: []ShotRecord{}, Restored: []string{}}
+	// The device is restored on EVERY return path from here on, with its
+	// own bounded context (the capture's may be cancelled), and a reset
+	// failure travels with the capture error, never hides it.
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		restored, rerr := t.applyState(resetCtx, st, deviceState{Reset: true})
+		data.Restored = restored
+		res.Data = data
+		if rerr != nil {
+			err = errors.Join(err, fmt.Errorf("restoring %s: %w", l.ID, rerr))
+		}
+	}()
 	var current *deviceState
 	for _, idx := range cells {
-		c := &run.Cells[idx]
+		c := run.Cells[idx]
 		want := deviceState{Theme: c.Theme, Nav: c.Nav, Text: c.TextSize}
 		if c.TextSize == "" {
 			want.Text = defaultTextSize(l.Kind)
@@ -98,15 +115,20 @@ func (t *Tool) Shoot(ctx context.Context, opts ShootOptions) (Result, error) {
 		if err := t.capture(ctx, st, screen, file); err != nil {
 			return Result{Data: data}, err
 		}
-		c.Shot = c.ShotFile()
-		data.Shots = append(data.Shots, ShotRecord{Cell: c.ID, File: c.Shot})
-		fmt.Fprintf(t.Log, "shot %s\n", c.Shot)
-		if err := t.SaveRun(run); err != nil {
+		// One locked transaction per shot: a cell verdict recorded by
+		// another process meanwhile survives.
+		if _, err := t.Update(run.Pass, func(r *RunFile) error {
+			if i := slices.IndexFunc(r.Cells, func(x Cell) bool { return x.ID == c.ID }); i >= 0 {
+				r.Cells[i].Shot = c.ShotFile()
+			}
+			return nil
+		}); err != nil {
 			return Result{Data: data}, err
 		}
+		data.Shots = append(data.Shots, ShotRecord{Cell: c.ID, File: c.ShotFile()})
+		fmt.Fprintf(t.Log, "shot %s\n", c.ShotFile())
 	}
-	restored, err := t.applyState(ctx, st, deviceState{Reset: true})
-	data.Restored = restored
+	run, err = t.LoadRun(run.Pass)
 	if err != nil {
 		return Result{Data: data}, err
 	}
