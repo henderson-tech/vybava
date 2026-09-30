@@ -201,7 +201,7 @@ Outcomes go to `<pass>/publish/index.json`, with the notes beside the sets. A se
 
 `scoreboard` folds the pass's records with its review backlog. The backlog comes from `--backlog`, else from `<pass>/review/backlog.json` when present. A backlog whose `pass` is not the scored pass is refused. The output is `scoreboard.json` and `scoreboard.md` in the pass directory. Each area counts:
 
-- screens by their worst open finding: broken, needs-work, polish or clean;
+- screens by their worst open finding: broken, needs-work or polish. A screen with no open finding is `clean` only when it is in the backlog's `reviewed` list. Otherwise it is `unreviewed`: nobody judged it, so it is not clean;
 - findings by status;
 - lint defects per rule, raw (summed per shot) and unique (each rule + element path + detail once, `lintUnique` and `lintDefectsUnique`). Unique counts never sum across areas, because a chrome defect sits on every area's screens;
 - console errors;
@@ -217,6 +217,7 @@ The review-loop writes the backlog. Its shape is strict, with unknown keys rejec
 {
   "v": 1,
   "pass": 3,
+  "reviewed": ["tasks-my-new-empty", "tasks-my-new"],
   "findings": [
     {
       "key": "tasks-empty-state-cta",
@@ -244,6 +245,7 @@ The fields follow these rules:
   - `open`: found this pass;
   - `met`, `partly` or `not-met`: the verdict on a previous finding's `acceptance`, which reuses that finding's `key`.
 - **Required:** `title` and `acceptance`. Every finding that is not `met` also names the `files` a fix lane edits.
+- **`reviewed`** lists the screen ids a reviewer actually judged this pass, whether or not they found anything. It is the only thing that makes a screen clean: a screen with no open finding that is missing from `reviewed` is counted `unreviewed` per area and in the totals, and the markdown table shows the column. A backlog without `reviewed` (the format before v0.24.1) still scores every screen without an open finding as clean, with the unreviewed column shown as `—`, and `scoreboard` warns `REVIEWED_MISSING`. An empty list means nothing was judged.
 
 ## Operational rules
 

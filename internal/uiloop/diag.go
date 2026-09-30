@@ -59,6 +59,11 @@ const (
 	DiagBacklogInvalid = "BACKLOG_INVALID"
 	// DiagNoPrevious: no previous pass to compute a delta against (info).
 	DiagNoPrevious = "NO_PREVIOUS"
+	// DiagReviewedMissing: the backlog has no `reviewed` list (a review-loop
+	// before it named the screens it judged), so a screen with no finding
+	// counts as clean even if no reviewer looked at it (warning) — have the
+	// review stage write `reviewed`.
+	DiagReviewedMissing = "REVIEWED_MISSING"
 	// DiagDevboxSync: a devbox.yaml next to the repo syncs it one-way without
 	// ignoring the capture's output under <out>, so a sync mid-run deletes
 	// shots, sessions and params the box wrote (warning on check) — add the
