@@ -3,6 +3,7 @@ package uiloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -236,6 +237,143 @@ func TestPublishRetriesThenHalves(t *testing.T) {
 		if s.Status != "halved" && s.Status != "skipped" {
 			t.Errorf("re-run touched %s (%s)", s.Key, s.Status)
 		}
+	}
+	// Recapture the tail with different pixels: preserve the two-board layout,
+	// refreshing only the changed half rather than reviving the failed parent.
+	headPushes := pushes["ui-polish-p1-tasks-phone-light-1a"]
+	parentPushes := pushes["ui-polish-p1-tasks-phone-light-1"]
+	if err := os.WriteFile(filepath.Join(tool.passAbs(1), "shots", "c", "phone.light.png"), []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = tool.Publish(context.Background(), PublishOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushes["ui-polish-p1-tasks-phone-light-1a"] != headPushes || pushes["ui-polish-p1-tasks-phone-light-1"] != parentPushes {
+		t.Fatalf("recapture touched the unchanged head or revived its parent: %v", pushes)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("tail recapture failed: %+v", res.Diagnostics)
+	}
+}
+
+func TestPublishResumesAcknowledgedSetsAfterCancellation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Publish = Publish{MaxFiles: 1, MaxBytes: 1000}
+	tool := newTool(t, cfg)
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+		{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	captures, pushes := 0, map[string]int{}
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		switch strings.Join(args[:2], " ") {
+		case "board init":
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		case "board capture":
+			captures++
+		case "board push":
+			key := filepath.Base(root)
+			pushes[key]++
+			if len(pushes) == 1 {
+				cancel()
+			}
+			return CmdOut{Stdout: `{"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + key + `"}}`}, nil
+		default:
+			t.Fatalf("unexpected command %v", args)
+		}
+		return CmdOut{}, nil
+	}
+	if _, err := tool.Publish(ctx, PublishOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cutoff, got %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tool.passAbs(1), "publish", "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index PublishIndex
+	if err := json.Unmarshal(body, &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Sets) != 1 || index.Sets[0].Status != "pushed" || index.Sets[0].URL == "" {
+		t.Fatalf("acknowledgement was not saved before cutoff: %+v", index)
+	}
+	for range 2 {
+		if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if captures != 2 || len(pushes) != 2 {
+		t.Fatalf("resume duplicated capture/upload: captures=%d pushes=%v", captures, pushes)
+	}
+	for key, count := range pushes {
+		if count != 1 {
+			t.Errorf("%s uploaded %d times", key, count)
+		}
+	}
+}
+
+func TestPublishInvalidatesReceiptWhenImageContentsChange(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	captures, pushes := 0, 0
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		switch strings.Join(args[:2], " ") {
+		case "board init":
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		case "board capture":
+			captures++
+		case "board push":
+			pushes++
+			return CmdOut{Stdout: `{"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/a"}}`}, nil
+		}
+		return CmdOut{}, nil
+	}
+	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Same filename and size, different pixels: both receipt and adoption ledger must refresh.
+	file := filepath.Join(tool.passAbs(1), "shots", "a", "phone.light.png")
+	if err := os.WriteFile(file, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if captures != 2 || pushes != 2 {
+		t.Fatalf("changed contents were not refreshed exactly once: %d captures, %d pushes", captures, pushes)
+	}
+}
+
+func TestPublishDoesNotAcceptAnErrorEnvelopeAsAcknowledged(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		if args[1] == "init" {
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		}
+		return CmdOut{Stdout: `{"ok":false,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/a"}}`}, nil
+	}
+	res, err := tool.Publish(context.Background(), PublishOptions{Retries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
+	if len(sets) != 1 || sets[0].Status != "failed" || len(res.Diagnostics) != 1 {
+		t.Fatalf("error response became a successful receipt: %+v", res)
 	}
 }
 

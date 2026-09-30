@@ -178,11 +178,13 @@ A `login` that types a password reads it from the environment. Getting it there 
 `publish` adopts each set under `<pass>/publish/sets/<key>`:
 
 1. `vitrinka board init --root --key --title --project`.
-2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. An `.ui-loop-adopted` ledger makes a re-run adopt only what is missing.
+2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. An `.ui-loop-adopted` ledger skips a fully adopted, unchanged set. Partial or changed staging sets are rebuilt before adopting, so a capture acknowledged just before a cutoff cannot leave duplicate manifest entries.
 3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`.
 4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
 
-Outcomes go to `<pass>/publish/index.json`. A set already pushed with the same files is skipped unless `--force`.
+Each acknowledged set is saved immediately to `<pass>/publish/index.json` through an atomic, synced replacement before another upload starts. After a cutoff, rerun `publish`: acknowledged sets are skipped and unfinished sets resume, including individual halves. The receipt fingerprints image contents and capture metadata; replacing a PNG at the same path, even with the same byte count, triggers adoption and publication again. Legacy path-only receipts refresh once. `--force` re-pushes an acknowledged set.
+
+The ledger and receipts prevent repeated delivery after a recorded acknowledgement. An interruption between server acknowledgement and local receipt persistence can still repeat the request; board keys and capture labels remain stable so it targets the same board and capture. Only one publisher may write a pass at a time.
 
 ## Scoreboard and the review backlog
 

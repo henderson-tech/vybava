@@ -21,6 +21,7 @@ type PlanFile struct {
 	Shot     string   `json:"shot"`
 	Full     bool     `json:"full"`
 	Bytes    int64    `json:"bytes"`
+	SHA256   string   `json:"sha256"`
 	Label    string   `json:"label"`
 	Title    string   `json:"title"`
 	Note     string   `json:"note"`
@@ -289,12 +290,12 @@ func (t *Tool) planFiles(pass int, passDir string, r Record) ([]PlanFile, error)
 	label := strings.ToUpper(fmt.Sprintf("p%d-%s-%s-%s", pass, r.ID, r.Viewport, r.Theme))
 	mk := func(name string, full bool) (PlanFile, error) {
 		rel := path.Join(r.Dir, name)
-		st, err := os.Stat(filepath.Join(passDir, filepath.FromSlash(rel)))
+		body, err := os.ReadFile(filepath.Join(passDir, filepath.FromSlash(rel)))
 		if err != nil {
 			return PlanFile{}, fmt.Errorf("%s: %w", rel, err)
 		}
 		f := PlanFile{
-			Path: rel, Shot: r.Key(), Full: full, Bytes: st.Size(),
+			Path: rel, Shot: r.Key(), Full: full, Bytes: int64(len(body)), SHA256: digest(string(body), 64),
 			Label: fit(label, "", maxLabel), Title: fmt.Sprintf("%s · %s · %s", r.Title, r.Viewport, r.Theme),
 			Note: note(pass, r), Route: route, URL: r.URL, State: state,
 			Viewport: fmt.Sprintf("%dx%d@%d", w, h, DPR), Src: src,

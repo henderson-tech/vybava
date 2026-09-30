@@ -56,12 +56,13 @@ const (
 var boardURLRe = regexp.MustCompile(`https://\S+/boards/\S+`)
 
 func setDigest(s Set) string {
-	var b strings.Builder
-	for _, f := range s.Files {
-		b.WriteString(f.Path)
-		b.WriteByte('\n')
-	}
-	return digest(b.String(), 12)
+	b, _ := json.Marshal(s) // Set contains only JSON-safe values.
+	return digest(string(b), 64)
+}
+
+func fileIdentity(f PlanFile) string {
+	body, _ := json.Marshal(f) // PlanFile contains only JSON-safe values.
+	return f.Path + "\t" + digest(string(body), 64)
 }
 
 // publisher carries one publish run's state.
@@ -72,6 +73,7 @@ type publisher struct {
 	project string
 	retries int
 	dryRun  bool
+	receipt func(PublishedSet) error
 }
 
 func (p *publisher) vitrinka(args ...string) (CmdOut, error) {
@@ -102,13 +104,47 @@ func failed(what string, out CmdOut) error {
 
 // adopt makes root a set holding exactly the plan's files: init when new,
 // the descriptor held aside so `board capture` fires no per-shot push, and a
-// ledger so a re-run only adopts what is missing.
+// ledger so a re-run skips a complete set or rebuilds incomplete staging.
 func (p *publisher) adopt(root string, s Set) error {
+	ledger := filepath.Join(root, adoptedLedger)
+	have := map[string]bool{}
+	if b, err := os.ReadFile(ledger); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if line != "" {
+				have[line] = true
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read adoption ledger: %w", err)
+	}
+	want := map[string]bool{}
+	for _, f := range s.Files {
+		want[fileIdentity(f)] = true
+	}
+	complete := len(have) == len(want)
+	for identity := range want {
+		complete = complete && have[identity]
+	}
+	if !complete {
+		// Capture appends to its manifest. Rebuild our disposable staging root
+		// after a changed plan or partial adoption, including a cutoff between
+		// a capture acknowledgement and its ledger write. The board key stays stable.
+		if err := os.RemoveAll(root); err != nil {
+			return err
+		}
+		have = map[string]bool{}
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
 	_, errD := os.Stat(filepath.Join(root, descriptor))
 	_, errH := os.Stat(filepath.Join(root, heldDesc))
+	if errD != nil && !errors.Is(errD, fs.ErrNotExist) {
+		return errD
+	}
+	if errH != nil && !errors.Is(errH, fs.ErrNotExist) {
+		return errH
+	}
 	if errors.Is(errD, fs.ErrNotExist) && errors.Is(errH, fs.ErrNotExist) {
 		out, err := p.vitrinka("board", "init", "--root", root, "--key", s.Key, "--title", s.Title, "--project", p.project, "--no-input", "--yes")
 		if err != nil {
@@ -121,15 +157,12 @@ func (p *publisher) adopt(root string, s Set) error {
 	if err := hold(root); err != nil {
 		return err
 	}
-	ledger := filepath.Join(root, adoptedLedger)
-	have := map[string]bool{}
-	if b, err := os.ReadFile(ledger); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			have[line] = true
-		}
-	}
 	for _, f := range s.Files {
-		if have[f.Path] {
+		if err := p.ctx.Err(); err != nil {
+			return err
+		}
+		identity := fileIdentity(f)
+		if have[identity] {
 			continue
 		}
 		out, err := p.vitrinka(p.captureArgs(root, f)...)
@@ -143,7 +176,7 @@ func (p *publisher) adopt(root string, s Set) error {
 		if err != nil {
 			return err
 		}
-		_, werr := lf.WriteString(f.Path + "\n")
+		_, werr := lf.WriteString(identity + "\n")
 		if cerr := lf.Close(); werr == nil {
 			werr = cerr
 		}
@@ -158,6 +191,8 @@ func hold(root string) error {
 	d := filepath.Join(root, descriptor)
 	if _, err := os.Stat(d); err == nil {
 		return os.Rename(d, filepath.Join(root, heldDesc))
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -166,6 +201,8 @@ func release(root string) error {
 	h := filepath.Join(root, heldDesc)
 	if _, err := os.Stat(h); err == nil {
 		return os.Rename(h, filepath.Join(root, descriptor))
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -173,24 +210,35 @@ func release(root string) error {
 // push pushes root, retrying; the board URL comes from the --json envelope.
 func (p *publisher) push(root, title string) (url string, attempts int, err error) {
 	for attempts = 1; attempts <= p.retries; attempts++ {
+		if err := p.ctx.Err(); err != nil {
+			return "", attempts, err
+		}
 		out, xerr := p.vitrinka("board", "push", "--root", root, "--title", title, "--yes", "--no-input", "--no-render", "--json")
 		if xerr != nil {
 			return "", attempts, xerr
 		}
 		if out.Code == 0 {
 			var env struct {
+				OK   *bool `json:"ok"`
 				Data struct {
 					URL string `json:"url"`
 				} `json:"data"`
 			}
-			if json.Unmarshal([]byte(out.Stdout), &env) == nil && env.Data.URL != "" {
+			if json.Unmarshal([]byte(out.Stdout), &env) == nil && (env.OK == nil || *env.OK) && env.Data.URL != "" {
 				return env.Data.URL, attempts, nil
+			}
+			if env.OK != nil && !*env.OK {
+				return "", attempts, fmt.Errorf("vitrinka board push returned ok=false: %s", lastLine(out.Stdout))
 			}
 			if m := boardURLRe.FindString(out.Stdout + "\n" + out.Stderr); m != "" {
 				return m, attempts, nil
 			}
 		}
-		err = failed("vitrinka board push", out)
+		if out.Code == 0 {
+			err = errors.New("vitrinka board push returned no board URL")
+		} else {
+			err = failed("vitrinka board push", out)
+		}
 		if attempts < p.retries {
 			p.t.Sleep(3 * time.Second)
 		}
@@ -200,7 +248,19 @@ func (p *publisher) push(root, title string) (url string, attempts int, err erro
 
 // publishSet adopts and pushes one set; a set that will not push is halved
 // once (the tail moves to <key>b) and both halves are pushed.
-func (p *publisher) publishSet(s Set, canHalve bool) []PublishedSet {
+func (p *publisher) finish(rec PublishedSet) ([]PublishedSet, error) {
+	if p.receipt != nil {
+		if err := p.receipt(rec); err != nil {
+			return []PublishedSet{rec}, err
+		}
+	}
+	return []PublishedSet{rec}, nil
+}
+
+func (p *publisher) publishSet(s Set, canHalve bool) ([]PublishedSet, error) {
+	if err := p.ctx.Err(); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(p.passDir, "publish", "sets", s.Key)
 	rec := PublishedSet{Key: s.Key, Title: s.Title, Files: len(s.Files), Digest: setDigest(s)}
 	if p.dryRun {
@@ -210,35 +270,49 @@ func (p *publisher) publishSet(s Set, canHalve bool) []PublishedSet {
 			rec.Commands = append(rec.Commands, append([]string{"vitrinka"}, p.captureArgs(root, f)...))
 		}
 		rec.Commands = append(rec.Commands, []string{"vitrinka", "board", "push", "--root", root, "--title", s.Title, "--yes", "--no-input", "--no-render", "--json"})
-		return []PublishedSet{rec}
+		return []PublishedSet{rec}, nil
 	}
 	if err := p.adopt(root, s); err != nil {
+		if cancelErr := p.ctx.Err(); cancelErr != nil {
+			return nil, cancelErr
+		}
 		rec.Status, rec.Error = "failed", err.Error()
-		return []PublishedSet{rec}
+		return p.finish(rec)
 	}
 	url, attempts, err := p.push(root, s.Title)
 	rec.Attempts = attempts
 	if err == nil {
 		rec.Status, rec.URL = "pushed", url
-		return []PublishedSet{rec}
+		return p.finish(rec)
+	}
+	if cancelErr := p.ctx.Err(); cancelErr != nil {
+		return nil, cancelErr // a cutoff is not evidence that a set needs halving
 	}
 	rec.Status, rec.Error = "failed", err.Error()
 	if !canHalve || len(s.Files) < 2 {
-		return []PublishedSet{rec}
+		return p.finish(rec)
 	}
 	head, tail, ok := halves(s)
 	if !ok {
-		return []PublishedSet{rec}
+		return p.finish(rec)
 	}
 	if err := os.RemoveAll(root); err != nil {
 		rec.Error += "; " + err.Error()
-		return []PublishedSet{rec}
+		return p.finish(rec)
 	}
 	rec.Status, rec.HalvedInto = "halved", []string{head.Key, tail.Key}
-	out := []PublishedSet{rec}
-	out = append(out, p.publishSet(head, false)...)
-	out = append(out, p.publishSet(tail, false)...)
-	return out
+	out, err := p.finish(rec)
+	if err != nil {
+		return out, err
+	}
+	for _, half := range []Set{head, tail} {
+		rows, err := p.publishSet(half, false)
+		out = append(out, rows...)
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
 }
 
 // halves splits a set in two: <key>a takes the head, <key>b the tail. A
@@ -254,6 +328,13 @@ func halves(s Set) (head, tail Set, ok bool) {
 	}
 	head, tail = s, s
 	head.Files, tail.Files = s.Files[:cut], s.Files[cut:]
+	head.Bytes, tail.Bytes = 0, 0
+	for _, f := range head.Files {
+		head.Bytes += f.Bytes
+	}
+	for _, f := range tail.Files {
+		tail.Bytes += f.Bytes
+	}
 	head.Key, head.Title = s.Key+"a", s.Title+" (a)"
 	tail.Key, tail.Title = s.Key+"b", s.Title+" (b)"
 	return head, tail, true
@@ -283,10 +364,33 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 		if err := json.Unmarshal(b, &index); err != nil {
 			return Result{}, fmt.Errorf("%s: %w", indexFile, err)
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Result{}, fmt.Errorf("read publish index: %w", err)
+	}
+	if index.Pass != pass {
+		return Result{}, fmt.Errorf("publish index belongs to pass %d, expected %d", index.Pass, pass)
 	}
 	prior := map[string]PublishedSet{}
 	for _, s := range index.Sets {
 		prior[s.Key] = s
+	}
+	saveState := func() error {
+		index.Sets = index.Sets[:0]
+		keys := make([]string, 0, len(prior))
+		for key := range prior {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			index.Sets = append(index.Sets, prior[key])
+		}
+		return writePublishIndex(indexFile, index)
+	}
+	if !o.DryRun {
+		p.receipt = func(row PublishedSet) error {
+			prior[row.Key] = row
+			return saveState()
+		}
 	}
 	var results []PublishedSet
 	want := func(keys ...string) bool {
@@ -302,16 +406,22 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	}
 	pushed := func(s Set) (PublishedSet, bool) {
 		was, ok := prior[s.Key]
-		return was, ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s)
+		return was, ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.URL != "" && was.Digest == setDigest(s)
 	}
 	for _, s := range plan.Sets {
 		head, tail, split := halves(s)
 		// A set halved on an earlier run is worked as its two halves, so a
 		// failed half is retried by the key its diagnostic names. --force only
 		// re-pushes halves already pushed; it never re-merges them into the parent.
-		if was, ok := prior[s.Key]; ok && split && was.Status == "halved" && was.Digest == setDigest(s) {
+		if was, ok := prior[s.Key]; ok && split && was.Status == "halved" {
 			if !want(s.Key, head.Key, tail.Key) {
 				continue
+			}
+			was.Digest, was.Files, was.Title = setDigest(s), len(s.Files), s.Title
+			if p.receipt != nil {
+				if err := p.receipt(was); err != nil {
+					return Result{}, err
+				}
 			}
 			results = append(results, was)
 			for _, h := range []Set{head, tail} {
@@ -323,7 +433,11 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 					results = append(results, done)
 					continue
 				}
-				results = append(results, p.publishSet(h, false)...)
+				rows, err := p.publishSet(h, false)
+				results = append(results, rows...)
+				if err != nil {
+					return Result{}, err
+				}
 			}
 			continue
 		}
@@ -335,47 +449,17 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 			results = append(results, done)
 			continue
 		}
-		results = append(results, p.publishSet(s, true)...)
+		rows, err := p.publishSet(s, true)
+		results = append(results, rows...)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	res := Result{Data: map[string]any{"pass": pass, "sets": results}, Diagnostics: diags}
 	if o.DryRun {
 		return res, nil
 	}
-	merged := map[string]PublishedSet{}
-	for _, s := range index.Sets {
-		merged[s.Key] = s
-	}
-	for _, r := range results {
-		if r.Status == "skipped" {
-			r.Status = "pushed"
-		}
-		merged[r.Key] = r
-	}
-	index.Sets = index.Sets[:0]
-	for _, s := range plan.Sets {
-		for _, k := range []string{s.Key, s.Key + "a", s.Key + "b"} {
-			if r, ok := merged[k]; ok {
-				index.Sets = append(index.Sets, r)
-				delete(merged, k)
-			}
-		}
-	}
-	left := make([]string, 0, len(merged))
-	for k := range merged {
-		left = append(left, k)
-	}
-	slices.Sort(left)
-	for _, k := range left {
-		index.Sets = append(index.Sets, merged[k])
-	}
-	b, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return res, err
-	}
-	if err := os.MkdirAll(filepath.Dir(indexFile), 0o755); err != nil {
-		return res, err
-	}
-	if err := os.WriteFile(indexFile, append(b, '\n'), 0o644); err != nil {
+	if err := saveState(); err != nil {
 		return res, err
 	}
 	for _, r := range results {
@@ -385,4 +469,43 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	}
 	res.Next = []string{fmt.Sprintf("vybava ui-loop scoreboard --pass %d --json", pass)}
 	return res, nil
+}
+
+// Each acknowledged upload is durable before another set starts. Rename
+// prevents a cutoff from leaving an unreadable, partially written receipt.
+func writePublishIndex(file string, index PublishIndex) error {
+	b, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(file), ".publish-index-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(append(b, '\n'))
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), file); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(file))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	if closeErr := dir.Close(); syncErr == nil {
+		syncErr = closeErr
+	}
+	return syncErr
 }
