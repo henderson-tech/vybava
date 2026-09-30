@@ -20,6 +20,9 @@ func TestJourneyCoverageAdapterProcess(t *testing.T) {
 	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil || req.Plan == nil {
 		os.Exit(4)
 	}
+	if err := os.WriteFile("coverage-called", nil, 0600); err != nil {
+		os.Exit(4)
+	}
 	// A pure pin snapshot succeeds even when readiness fails. The CLI must
 	// choose readiness, or identical pins incorrectly keep a past pass fresh.
 	r := journeys.Receipt{Version: 1, OK: req.Operation != "readiness" || mode == "ready", Operation: req.Operation, Snapshot: &req.Plan.Snapshot, Diagnostics: []journeys.Diagnostic{}, Next: []string{}}
@@ -124,5 +127,76 @@ func TestJourneyCoverageRequiresLiveReadiness(t *testing.T) {
 				t.Fatalf("incorrect freshness: %+v", envelope)
 			}
 		})
+	}
+	t.Run("tampered plan never invokes adapter", func(t *testing.T) {
+		t.Setenv("JOURNEYS_COVERAGE_TEST", "ready")
+		if err := os.Remove(filepath.Join(root, "coverage-called")); err != nil {
+			t.Fatal(err)
+		}
+		p.Snapshot.Namespace = "tampered"
+		writeJSONFile(planPath, p)
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("journeys")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs([]string{"coverage", "--root", root, "--library", "pack", "--plan", planPath, "--private", s.Root, "--json"})
+		if err := cmd.Execute(); err == nil {
+			t.Fatal("tampered plan accepted")
+		}
+		if _, err := os.Stat(filepath.Join(root, "coverage-called")); !os.IsNotExist(err) {
+			t.Fatalf("tampered plan invoked adapter: %v", err)
+		}
+	})
+}
+
+func TestJourneyIndexRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	pack := filepath.Join(root, "pack")
+	if err := os.Mkdir(pack, 0700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "---\nschema: user-journeys/v1\nname: reference\ndescription: A useful reference.\ntype: reference\nstatus: draft\ntags: [qa]\naliases: []\nlast-verified: \"2026-09-26\"\n---\n\nBody.\n"
+	if err := os.WriteFile(filepath.Join(pack, "reference.md"), []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(target, []byte("owned sentinel"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(pack, "INDEX.md")
+	if err := os.Symlink(target, index); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []bool{false, true} {
+		var out bytes.Buffer
+		cmd, err := (App{Stdout: &out, Stderr: &out}).Command("journeys")
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := []string{"index", "--root", root, "--library", "pack", "--json"}
+		if check {
+			args = append(args, "--check")
+		}
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("symlink accepted: %s", &out)
+		}
+		b, err := os.ReadFile(target)
+		if err != nil || string(b) != "owned sentinel" {
+			t.Fatalf("outside file overwritten: %q %v", b, err)
+		}
+	}
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd, err := (App{Stdout: &out, Stderr: &out}).Command("journeys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetArgs([]string{"index", "--root", root, "--library", "pack", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("new regular index failed: %s %v", &out, err)
 	}
 }

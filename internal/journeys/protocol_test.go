@@ -34,6 +34,9 @@ func TestStartupAdapterProcess(t *testing.T) {
 		s.Origins = map[string]string{"api": "http://wrong-target"}
 	}
 	r := Receipt{Version: 1, OK: true, Operation: req.Operation, Snapshot: &s, Diagnostics: []Diagnostic{}, Next: []string{}}
+	if os.Getenv("JOURNEYS_TEST_INVALID_RECEIPT") == "version" {
+		r.Version = 999
+	}
 	if req.Operation == "verify" {
 		evidence := json.RawMessage(`{"observed":"fixture"}`)
 		r.Snapshot = nil
@@ -65,6 +68,9 @@ func TestStartupAdapterProcess(t *testing.T) {
 	if err := json.NewEncoder(os.Stdout).Encode(r); err != nil {
 		os.Exit(4)
 	}
+	if os.Getenv("JOURNEYS_TEST_INVALID_RECEIPT") == "trailing" {
+		_, _ = os.Stdout.WriteString("invalid trailing output")
+	}
 	if !r.OK {
 		os.Exit(3)
 	}
@@ -87,7 +93,7 @@ func startupFixture(t *testing.T) (*Library, Plan, Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := json.Marshal(Registry{Version: 1, Adapters: map[string]Adapter{"test": {Command: []string{exe, "-test.run=^TestStartupAdapterProcess$"}, Env: []string{"JOURNEYS_TEST_ADAPTER", "JOURNEYS_TEST_DRIFT", "JOURNEYS_TEST_VERIFY"}}}})
+	b, err := json.Marshal(Registry{Version: 1, Adapters: map[string]Adapter{"test": {Command: []string{exe, "-test.run=^TestStartupAdapterProcess$"}, Env: []string{"JOURNEYS_TEST_ADAPTER", "JOURNEYS_TEST_DRIFT", "JOURNEYS_TEST_VERIFY", "JOURNEYS_TEST_INVALID_RECEIPT"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
