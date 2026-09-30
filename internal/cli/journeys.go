@@ -132,7 +132,19 @@ func (rt *runtime) journeysCommand(use string) *cobra.Command {
 			}
 			files := []file{}
 			if cmd.Name() == "index" {
-				files = append(files, file{filepath.Join(root, dir, "INDEX.md"), l.Index()})
+				parent, err := journeys.SafePath(root, dir)
+				if err != nil {
+					return finish(cmd.Name(), nil, err)
+				}
+				path := filepath.Join(parent, "INDEX.md")
+				info, err := os.Lstat(path)
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					return finish(cmd.Name(), nil, err)
+				}
+				if info != nil && info.Mode()&os.ModeSymlink != 0 {
+					return finish(cmd.Name(), nil, &journeys.Problem{Diagnostic: journeys.Diagnostic{Code: "TARGET_UNSAFE", Message: "index destination is a symlink"}})
+				}
+				files = append(files, file{path, l.Index()})
 			} else {
 				for _, d := range l.Documents {
 					b, err := journeys.Format(d)
