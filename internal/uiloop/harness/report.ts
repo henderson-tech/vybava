@@ -63,6 +63,8 @@ export interface PassReport {
   areas: Array<{ area: string } & Totals>;
   /** The most repeated defects (on 2+ screens), most screens first. */
   offenders: Offender[];
+  /** Every shot with lint defects carried `lint.distinct`; false (an older harness's record kept by a resume) makes the unique counts unknown. */
+  uniqueKnown: boolean;
   rows: ReportRow[];
 }
 
@@ -175,27 +177,29 @@ export function buildReport(run: RunFile, records: readonly ShotRecord[]): PassR
   addUnique(totals, records);
   for (const [area, t] of byArea) addUnique(t, records.filter((r) => r.area === area));
   const areas = [...byArea.entries()].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b)).map(([area, t]) => ({ area, ...t }));
-  return { v: 1, pass: run.pass, generatedAt: new Date().toISOString(), totals, areas, offenders: repeatedOffenders(records), rows };
+  return { v: 1, pass: run.pass, generatedAt: new Date().toISOString(), totals, areas, offenders: repeatedOffenders(records), uniqueKnown: records.every((r) => !r.lint || !Object.keys(r.lint.defects).length || r.lint.distinct !== undefined), rows };
 }
 
 const cell = (v: string | number): string => String(v).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 export function toMarkdown(report: PassReport): string {
+  // Unique counts are only real when every record carried its distinct keys.
+  const u = (n: number): string => (report.uniqueKnown ? String(n) : '—');
   const statuses = ['ok', 'recipe-failed', 'theme-mismatch', 'build-error', 'unreachable', 'error'];
   const out: string[] = [
     `# UI loop · pass ${report.pass}`,
     '',
-    `${report.totals.shots} shots · ${report.totals.defects} lint defects (${report.totals.defectsUnique} unique) · ${report.totals.consoleErrors} console errors · generated ${report.generatedAt}`,
+    `${report.totals.shots} shots · ${report.totals.defects} lint defects (${u(report.totals.defectsUnique)} unique) · ${report.totals.consoleErrors} console errors · generated ${report.generatedAt}`,
     '',
     `| Area | Shots | ${statuses.join(' | ')} | Lint defects | Unique | Console errors |`,
     `|---|--:|${statuses.map(() => '--:').join('|')}|--:|--:|--:|`,
   ];
   for (const a of [...report.areas, { area: '**all**', ...report.totals }]) {
-    out.push(`| ${cell(a.area)} | ${a.shots} | ${statuses.map((s) => a.byStatus[s] ?? 0).join(' | ')} | ${a.defects} | ${a.defectsUnique} | ${a.consoleErrors} |`);
+    out.push(`| ${cell(a.area)} | ${a.shots} | ${statuses.map((s) => a.byStatus[s] ?? 0).join(' | ')} | ${a.defects} | ${u(a.defectsUnique)} | ${a.consoleErrors} |`);
   }
   const rules = Object.entries(report.totals.lint).sort(([, a], [, b]) => b - a);
   out.push('', '## Lint defects by rule', '');
-  out.push(...(rules.length ? rules.map(([rule, n]) => `- \`${rule}\`: ${n} (${report.totals.lintUnique[rule] ?? 0} unique)`) : ['None.']));
+  out.push(...(rules.length ? rules.map(([rule, n]) => `- \`${rule}\`: ${n} (${u(report.totals.lintUnique[rule] ?? 0)} unique)`) : ['None.']));
   const info = Object.entries(report.totals.lintInfo).sort(([, a], [, b]) => b - a);
   if (info.length) out.push('', 'For judgement (informational rules and allowlisted hits): ' + info.map(([rule, n]) => `\`${rule}\` ${n}`).join(' · '));
   if (report.offenders.length) {

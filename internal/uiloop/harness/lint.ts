@@ -718,7 +718,7 @@ export function lintPage(o: LintOptions): LintResult {
     }
   }
 
-  if (docOverflowX > 0 && on('h-scroll') && !rules['h-scroll']) {
+  if (docOverflowX > 0 && on('h-scroll') && !rules['h-scroll'] && !allowedRules['h-scroll']) {
     const b = bucket('h-scroll');
     b.count++;
     b.items.push({ path: 'document', detail: `document scrolls ${docOverflowX}px sideways`, rect: [0, 0, vw, vh] });
