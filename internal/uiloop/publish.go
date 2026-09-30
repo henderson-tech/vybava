@@ -192,10 +192,12 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 	if err != nil {
 		return nil, err
 	}
-	have := map[string]bool{}
+	have := map[string]string{}
 	if b, err := os.ReadFile(ledger); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
-			have[line] = true
+			if path, _, _ := strings.Cut(line, "\t"); path != "" {
+				have[path] = line // only the latest adoption is current
+			}
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read adoption ledger: %w", err)
@@ -204,7 +206,7 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		if err := p.ctx.Err(); err != nil {
 			return refused, err
 		}
-		if have[fileIdentity(f)] {
+		if have[f.Path] == fileIdentity(f) {
 			continue
 		}
 		vp, err := p.viewportOf(f)
@@ -234,6 +236,7 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		if werr != nil {
 			return refused, werr
 		}
+		have[f.Path] = fileIdentity(f)
 	}
 	return refused, nil
 }

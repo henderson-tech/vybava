@@ -376,17 +376,24 @@ func TestPublishInvalidatesReceiptWhenImageContentsChange(t *testing.T) {
 	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// Same filename and size, different pixels: both receipt and adoption ledger must refresh.
+	// Same filename and size, A → B → A pixels: only the latest adoption
+	// counts, never an older matching fingerprint from this append-only ledger.
 	file := filepath.Join(tool.passAbs(1), "shots", "a", "phone.light.png")
-	if err := os.WriteFile(file, []byte("0123456789"), 0o644); err != nil {
+	original, err := os.ReadFile(file)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+	for _, pixels := range [][]byte{[]byte("0123456789"), original} {
+		if err := os.WriteFile(file, pixels, 0o644); err != nil {
 			t.Fatal(err)
 		}
+		for range 2 {
+			if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if captures != 2 || pushes != 2 {
+	if captures != 3 || pushes != 3 {
 		t.Fatalf("changed contents were not refreshed exactly once: %d captures, %d pushes", captures, pushes)
 	}
 }
