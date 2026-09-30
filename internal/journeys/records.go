@@ -158,8 +158,45 @@ func privateJSON(path string, v interface{}, exclusive bool) error {
 	}
 	return writeFile(path, append(b, '\n'), exclusive)
 }
+func syncDirectory(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+func mkdirDurable(path string) error {
+	missing := []string{}
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if _, err := os.Stat(p); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, p)
+		if p == filepath.Dir(p) {
+			break
+		}
+	}
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return err
+	}
+	for _, p := range missing {
+		if err := syncDirectory(filepath.Dir(p)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeFile(path string, b []byte, exclusive bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := mkdirDurable(filepath.Dir(path)); err != nil {
 		return err
 	}
 	if exclusive {
@@ -175,7 +212,10 @@ func writeFile(path string, b []byte, exclusive bool) error {
 		if err != nil {
 			return err
 		}
-		return closeErr
+		if closeErr != nil {
+			return closeErr
+		}
+		return syncDirectory(filepath.Dir(path))
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".journeys-*")
 	if err != nil {
@@ -192,7 +232,10 @@ func writeFile(path string, b []byte, exclusive bool) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(f.Name(), path)
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 func (s Store) dir(id string) (string, error) {
 	if !validID(id) {
@@ -202,7 +245,7 @@ func (s Store) dir(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err = os.MkdirAll(root, 0700); err != nil {
+	if err = mkdirDurable(root); err != nil {
 		return "", err
 	}
 	p := filepath.Join(root, id)
