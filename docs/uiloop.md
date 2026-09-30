@@ -29,6 +29,7 @@ ui-loop run         [--app a,b] [--only id,area,prefix*] [--viewports v,…] [--
                     [--print] [--wrap "devbox run -- {cmd}"]
 ui-loop split       [--pass N] [--areas a,b]
 ui-loop publish     [--pass N] [--areas a,b] [--sets key,…] [--retries 3] [--force] [--dry-run]
+ui-loop publish     --follow [--from user@host:path] [--interval 30s] [--until-idle 10m] [--pass N] [--areas a,b] [--retries 3]
 ui-loop scoreboard  [--pass N] [--backlog FILE] [--previous N] [--no-delta]
 ```
 
@@ -58,7 +59,7 @@ uiLoop: {
     allow: { grid: ['ui-button', '.ui-badge-small', '[role=menuitem]'] },
   },
   vitrinka: { project: 'powerflow', boardPrefix: 'ui-polish' },
-  publish: { maxFiles: 96, maxBytes: 4_000_000 },
+  publish: { maxFiles: 96, maxBytes: 4_000_000, from: 'devops:ws/pwf/pwf-ui' },  // from: the repo on the capture box, for publish --follow
 }
 ```
 
@@ -128,7 +129,7 @@ The repo needs no Playwright config of its own for the loop.
 
 - **Pass numbers** start at 1. `--pass 0` (or below) is refused with `SELECTION_INVALID` on every verb, never read as "not given". The next pass is the latest plus one. A pass that holds no shots yet (a `--print` whose command never ran) is reused instead. `--resume` defaults to the latest pass and retakes everything that is not `ok` or `unreachable`.
 - **Shot layout:** `shots/<id>/<viewport>.<theme>.{png,full.png,json}` in the pass directory. The full companion is only taken when the page scrolls, capped at 6000 CSS px.
-- **Other pass files:** `params.json`, `auth.json` and `.auth/`, plus `report.json` and `report.md` (written by the global teardown). The report sums defects per shot, so one sidebar defect counts once per screen, and beside it counts each rule + element path + detail once across the pass (`lintUnique`, `defectsUnique`), and lists the top repeated offenders (`offenders`: rule, path, detail, screens, shots).
+- **Other pass files:** `params.json`, `auth.json` and `.auth/`, plus `report.json`, `report.md` and `done.json` (written by the global teardown, `done.json` last: `{ v, pass, run, finishedAt, shots }`, where `run` is the `createdAt` of the run.json it finished). The report sums defects per shot, so one sidebar defect counts once per screen, and beside it counts each rule + element path + detail once across the pass (`lintUnique`, `defectsUnique`), and lists the top repeated offenders (`offenders`: rule, path, detail, screens, shots).
 - **Statuses:** a shot is `ok`, `recipe-failed` (still shot), `theme-mismatch`, `build-error` (a red dev-server overlay that never turned green within `--build-wait`), `unreachable` or `error` (a harness failure, which also fails the test).
 - **Lint rules** (`LINT_RULES` in `lint.ts`), in two groups:
   - Defects: `h-scroll`, `text-clipped`, `text-spill`, `grid`, `type-ramp` (with `lint.ramp`), `touch-target` (mobile viewports), `safe-area`, `contrast`, `glass-on-content`, `nested-surface` and `glass-blur`.
@@ -142,8 +143,12 @@ The capture must run next to the app, never on the Mac. The container needs the 
 
 1. **Print the command.** On the Mac, in the repo: `vybava ui-loop check && vybava ui-loop run --print --json`. This writes run.json into the synced tree. The `--print` output also shows the `devbox run -- '<cmd>'` line.
 2. **Run it in the workspace.** Use `vybava ui-loop run --wrap "devbox run --max-wait 45m -- {cmd}"`, or run the printed line yourself. Set the app's `env` var inside the command when the container reaches the app on another address.
-3. **Bring the pass back.** Devbox sync is one-way (Mac → box), so the pass directory stays in the workspace. Fetch it from the box host the way voke's `run-pass.sh` does: `rsync -a devops:ws/<workspace>/<app>/<out>/pass-<n>/ <out>/pass-<n>/`, with `<workspace>` from `devbox url --json`.
-4. **Split, publish and score on the Mac:** `ui-loop split`, then `publish`, then `scoreboard`.
+3. **Publish beside the capture.** Devbox sync is one-way (Mac → box), and the box has no vitrinka CLI or token, so on the Mac, next to the running capture, run `vybava ui-loop publish --follow`. Every `--interval` (30 s) it rsyncs the pass back from `--from` (default `publish.from` + `/<out>/pass-<n>/`, e.g. `devops:ws/<workspace>/<app-dir>/.ui-loop/pass-3/`, with `<workspace>` from `devbox url --json`). It never fetches `.auth/` (storage states), `playwright/` or `run.json`. It then adopts and pushes every shot that became final, one push per set that gained files. It stops once the run's `done.json` has arrived and no new shot has for `--until-idle` (10 min). It is idempotent through the ledgers and the index, so a re-run after a stop or a crash picks up where it left off. Without `done.json` (a capture killed before its teardown) it gives up after 3 × `--until-idle` with no new shot (`RUN_UNFINISHED`); finish with `run --resume` and follow again.
+4. **Score on the Mac:** `ui-loop scoreboard`. `split` and a plain `publish` still work on a pass fetched by hand (`rsync -a devops:ws/<workspace>/<app>/<out>/pass-<n>/ <out>/pass-<n>/`).
+
+A shot is **final** when its captures are on disk and the running capture will not rewrite it: it was taken by this run (`capturedAt` at or after run.json's `createdAt`, so keep the box's clock in sync), it has a status `--resume` keeps (`ok`, `unreachable`), or the run is done. A `--resume` re-run writes a new run.json, so the previous run's `done.json` no longer counts.
+
+Follow does not rely on vitrinka's detached per-shot push (the one `board capture` fires when the root holds its descriptor). That push reports no exit status or URL, so the index could not tell a pushed set from a failed one. It would also start one upload per adopted shot on the uplink that already times out. The descriptor stays held during adoption, as in a plain publish. A failed push is retried on the next tick. Follow never halves a set, because its sets are still growing; a plain `publish` afterwards halves what still fails.
 
 #### The sync trap: ignore the capture's output
 
@@ -151,7 +156,7 @@ When `<out>` sits inside a checkout that Devbox syncs one-way, the next sync del
 
 ```yaml
 sync_ignores: [/.ui-loop/*/shots, /.ui-loop/*/.auth, /.ui-loop/*/auth.json, /.ui-loop/*/params.json,
-  /.ui-loop/*/report.json, /.ui-loop/*/report.md, /.ui-loop/*/review, /.ui-loop/*/fix,
+  /.ui-loop/*/report.json, /.ui-loop/*/report.md, /.ui-loop/*/done.json, /.ui-loop/*/review, /.ui-loop/*/fix,
   /.ui-loop/*/*.tmp-*, /.ui-loop/*/playwright]
 ```
 
@@ -169,21 +174,23 @@ A `login` that types a password reads it from the environment. Getting it there 
 
 `split` plans one vitrinka set per area × viewport × theme, in config area order.
 
-- **Limits:** each set is chunked at `publish.maxFiles` (default 96; vitrinka rejects a set directory of more than 100 files) and at `publish.maxBytes` of source PNG bytes (default 4 MB; pushes time out at 30 s on a shared uplink). The adopted WebP is smaller, so the byte bound is conservative.
+- **Images and notes:** only `ok`, `theme-mismatch` and `build-error` shots become images. Every other status (`recipe-failed`, `unreachable`, `error`) is listed per area under `notes` in the plan and in `publish/index.json` (`id`, `viewport`, `theme`, `status`, `step`, `error`), for the review-loop publisher to render as a text card. A `recipe-failed` shot is a picture of wherever the recipe died, usually the same sign-in page.
+- **Limits:** each set is chunked at `publish.maxFiles` (default 96, the hard cap; vitrinka rejects a set directory of more than 100 files) and at `publish.maxBytes` of **upload** bytes (default 4 MB; pushes time out at 30 s on a shared uplink). An adopted file counts at the size of the WebP `board capture` made of it, read from the set root. A file not adopted yet counts at `min(PNG bytes, 0.1 × pixels)`. PNG bytes predict the WebP badly: on pwf-ui pass 1 a noisy 4 MB desktop PNG became 7 % of that, and a small flat one 93 %. Bytes per pixel held (p99 0.089, max 0.136), and the estimate came out at p99 0.89 of the real size. Sizing by PNG bytes had split that pass into 302 sets. The estimate plans 144 for its 1,208 image shots (42 area × viewport × theme groups), and measured packing tightens that further.
+- **Adoption is sticky:** a file already adopted stays in its set. `board push` only adds, so a file that moved would sit on two boards. A shot that arrives late (a resume retake, a slower worker) joins the group's open set instead of shifting the pushed ones. Without adoptions the plan is plain greedy in manifest order.
 - **Pairs:** a shot's viewport and full captures stay in one chunk.
 - **Keys** are `<boardPrefix>-p<n>-<area>-<viewport>-<theme>-<chunk>`, capped at 62 characters with a digest. vitrinka keys cap at 64, and the halving `b` needs room.
 - **Labels** are `P<n>-<ID>-<VIEWPORT>-<THEME>[-FULL]`, capped at 40 characters.
 - **Captions** carry the status and the lint defects, worst first.
-- **Determinism:** the plan is identical for identical input. It goes to `<pass>/publish/plan.json`.
+- **Determinism:** the plan is identical for an identical pass and set of ledgers. It goes to `<pass>/publish/plan.json`. Before a publish it shows the estimates; after one it shows the measured sets.
 
-`publish` adopts each set under `<pass>/publish/sets/<key>`:
+`publish` adopts each set under `<pass>/publish/sets/<key>`, one set at a time. After each set it re-plans with the WebP sizes it just measured, so shots join the set while it has room, and only then pushes:
 
 1. `vitrinka board init --root --key --title --project`.
 2. The `.vitrinka` descriptor is held aside while `board capture web --file … --label --title --route --url --note --src --state --viewport` adopts each file. Otherwise every capture would fire a push. A ledger at `publish/adopted/<key>` makes a re-run adopt only what is missing. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`.
 3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`.
-4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
+4. A failed push is retried (`--retries`, default 3). After that the set is halved once, into `<key>a` (head) and `<key>b` (tail), and both halves are pushed. The parent's root and ledger are removed, because the halves re-adopt every file. A later run works a halved set as its halves, so `--sets <key>b` retries just the failed half.
 
-Outcomes go to `<pass>/publish/index.json`. A set already pushed with the same files is skipped unless `--force`.
+Outcomes go to `<pass>/publish/index.json`, with the notes beside the sets. A set already pushed with the same files is skipped unless `--force`.
 
 ## Scoreboard and the review backlog
 
@@ -257,6 +264,6 @@ Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrore
 
 - `BUILTIN_VIEWPORTS` ↔ `viewports.go`;
 - `LINT_RULES` ↔ `LintRules` and `LintInfoRules`;
-- the run.json and record shapes ↔ `run.go` and `record.go`. Bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change.
+- the run.json and record shapes ↔ `run.go` and `record.go`, and `done.json` (`teardown.ts` `DoneFile`) ↔ `follow.go` `DoneFile`. Bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change.
 
 The harness must type-check under TS 5.3 strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `noPropertyAccessFromIndexSignature`, in both CJS and ESM packages. It must stay Node 20 compatible: no bun-only APIs, no `import.meta`, no `__dirname`.

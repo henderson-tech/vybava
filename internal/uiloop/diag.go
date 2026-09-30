@@ -52,6 +52,16 @@ const (
 	// shots, sessions and params the box wrote (warning on check) — add the
 	// missing sync_ignores.
 	DiagDevboxSync = "DEVBOX_SYNC"
+	// DiagFollowSource: publish --follow has no box to fetch from — pass
+	// --from, or set publish.from in the config.
+	DiagFollowSource = "FOLLOW_SOURCE"
+	// DiagFetchFailed: publish --follow's rsync from the box failed on
+	// followFetchTries ticks in a row — see its stderr.
+	DiagFetchFailed = "FETCH_FAILED"
+	// DiagRunUnfinished: publish --follow stopped without the run's done.json
+	// after 3 × --until-idle without a new shot (the capture died before its
+	// teardown); finish the pass with run --resume and follow again (warning).
+	DiagRunUnfinished = "RUN_UNFINISHED"
 )
 
 func diag(code, detail, fix string) runx.DiagError {
@@ -73,3 +83,6 @@ func errDiag(code, detail, fix string) runx.Diagnostic {
 }
 
 type runxDiagnostic = runx.Diagnostic
+
+// SelectionError is a SELECTION_INVALID refusal for the CLI's flag checks.
+func SelectionError(detail, fix string) error { return diag(DiagSelectionInvalid, detail, fix) }

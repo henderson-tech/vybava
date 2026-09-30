@@ -217,8 +217,10 @@ export interface UiLoopConfig {
   publish?: {
     /** Files per set (default 96, at most 100: vitrinka rejects larger set directories). */
     maxFiles?: number;
-    /** Source bytes per set (default 4_000_000: pushes time out at 30 s on a shared uplink). */
+    /** Upload bytes per set: the adopted WebP, estimated until adopted (default 4_000_000: pushes time out at 30 s on a shared uplink). */
     maxBytes?: number;
+    /** rsync source of the repo on the capture box, e.g. 'devops:ws/<workspace>/<app-dir>'; `publish --follow` appends /<out>/pass-<n>/. */
+    from?: string;
   };
 }
 

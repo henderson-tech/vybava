@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +24,7 @@ type shot struct {
 	bytes, full         int
 	defects             map[string]int
 	distinct            map[string][]LintKey
+	at, failure         string // capturedAt; the recipe failure's error
 }
 
 func writePass(t *testing.T, tool *Tool, pass int, shots []shot) {
@@ -41,6 +45,12 @@ func writePass(t *testing.T, tool *Tool, pass int, shots []shot) {
 		}
 		if s.distinct != nil {
 			rec["lint"].(map[string]any)["distinct"] = s.distinct
+		}
+		if s.at != "" {
+			rec["capturedAt"] = s.at
+		}
+		if s.failure != "" {
+			rec["failure"] = map[string]any{"step": "clickText", "stepIndex": 2, "error": s.failure}
 		}
 		files := rec["files"].(map[string]any)
 		if s.bytes > 0 {
@@ -115,8 +125,8 @@ func TestSplitIsDeterministicAndHonoursBothLimits(t *testing.T) {
 			t.Errorf("%s breaks a limit: %d files, %d bytes", s.Key, len(s.Files), s.Bytes)
 		}
 	}
-	if !slices.Equal(plan.Skipped, []string{"gone@phone.light (unreachable)"}) {
-		t.Errorf("skipped: %v", plan.Skipped)
+	if len(plan.Skipped) != 0 || len(plan.Notes) != 1 || plan.Notes[0].Area != "tasks" || fmt.Sprint(plan.Notes[0].Shots) != "[{gone phone light unreachable  }]" {
+		t.Errorf("an unreachable shot is a note, never an image: skipped %v, notes %+v", plan.Skipped, plan.Notes)
 	}
 	full := plan.Sets[1].Files[1]
 	if full.Label != "P1-TASK-3-PHONE-LIGHT-FULL" || full.Route != "/portal/#/task-3" || full.Viewport != "390x844@2" || !strings.HasPrefix(full.Note, "full content · pass 1 · clean") {
@@ -457,5 +467,228 @@ func TestCheckWarnsWhenADevboxRecipeSyncsTheOutDir(t *testing.T) {
 	write(filepath.Join(parent, "compose", "devbox.worktree.yaml"), "apps:\n  pwf-ui:\n    sync_ignores: ["+ignores+"]\n")
 	if gaps := tool.devboxSyncGaps(); len(gaps) != 0 {
 		t.Errorf("the patch's ignores count: %+v", gaps)
+	}
+}
+
+// fakeVitrinka answers board init / capture / push like vitrinka 5.13: a
+// capture writes a WebP of webp bytes (0: none) and its manifest row.
+type fakeVitrinka struct {
+	t        *testing.T
+	webp     int
+	captures []string
+	pushes   map[string]int
+}
+
+func (v *fakeVitrinka) exec(args []string) CmdOut {
+	root := args[slices.Index(args, "--root")+1]
+	switch strings.Join(args[:2], " ") {
+	case "board init":
+		if err := os.WriteFile(filepath.Join(root, ".vitrinka"), []byte(`{}`), 0o644); err != nil {
+			v.t.Fatal(err)
+		}
+	case "board capture":
+		if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err == nil {
+			v.t.Error("capture ran with the descriptor in place")
+		}
+		label := args[slices.Index(args, "--label")+1]
+		v.captures = append(v.captures, label)
+		if v.webp > 0 {
+			var m struct {
+				Shots []map[string]string `json:"shots"`
+			}
+			b, _ := os.ReadFile(filepath.Join(root, "manifest.json"))
+			_ = json.Unmarshal(b, &m)
+			file := strings.ToLower(label) + ".webp"
+			m.Shots = append(m.Shots, map[string]string{"file": file, "label": label})
+			b, _ = json.Marshal(m)
+			if err := os.WriteFile(filepath.Join(root, "manifest.json"), b, 0o644); err != nil {
+				v.t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, file), make([]byte, v.webp), 0o644); err != nil {
+				v.t.Fatal(err)
+			}
+		}
+	case "board push":
+		v.pushes[filepath.Base(root)]++
+		return CmdOut{Stdout: `{"v":1,"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + filepath.Base(root) + `"}}`}
+	default:
+		v.t.Fatalf("unexpected vitrinka %v", args)
+	}
+	return CmdOut{}
+}
+
+// copyTree copies src into dst, skipping what follow's rsync excludes.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if rel == ".auth" || rel == "playwright" {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || rel == "run.json" {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(dst, filepath.Dir(rel)), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFollowPublishesOnlyNewFinalShotsAndStopsOnDoneAndIdle(t *testing.T) {
+	tool := newTool(t, testConfig())
+	box := newTool(t, testConfig()) // its pass dir is the capture box's
+	const created = "2026-09-30T10:00:00Z"
+	run, _ := json.Marshal(RunFile{V: RunVersion, Pass: 1, CreatedAt: created})
+	if err := os.MkdirAll(tool.passAbs(1), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tool.passAbs(1), "run.json"), run, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 30, 10, 5, 0, 0, time.UTC)
+	tool.Now = func() time.Time { return now }
+	tool.Sleep = func(d time.Duration) { now = now.Add(d) }
+	tool.LookPath = func(string) (string, error) { return "/bin/x", nil }
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	ticks := 0
+	var perTick [][]string
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		if c.Args[0] == "vitrinka" {
+			return v.exec(c.Args[1:]), nil
+		}
+		if c.Args[0] != "rsync" || !slices.Contains(c.Args, "--exclude=/.auth/") || !slices.Contains(c.Args, "--exclude=/playwright/") || c.Args[len(c.Args)-2] != "devops:ws/pwf/pwf-ui/.ui-loop/pass-1/" {
+			t.Fatalf("fetch: %v", c.Args)
+		}
+		ticks++
+		perTick = append(perTick, v.captures)
+		v.captures = nil
+		switch ticks {
+		case 1:
+			writePass(t, box, 1, []shot{
+				{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: "2026-09-30T10:01:00.000Z"},
+				{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: "2026-09-30T10:02:00.000Z"},
+				// Taken by the run before the resume: it is being retaken, so it is not
+				// adopted although its status is an image status.
+				{order: 2, id: "c", area: "tasks", vp: "phone", theme: "light", status: "theme-mismatch", bytes: 10, at: "2026-09-29T09:00:00.000Z"},
+				{order: 3, id: "d", area: "tasks", vp: "phone", theme: "light", status: "unreachable", at: "2026-09-30T10:02:00.000Z"},
+			})
+			// rsync brought b's record before its PNG.
+			if err := os.Remove(filepath.Join(box.passAbs(1), "shots", "b", "phone.light.png")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(box.passAbs(1), ".auth"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		case 2:
+			writePass(t, box, 1, []shot{
+				{order: 1, id: "b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10, at: "2026-09-30T10:02:00.000Z"},
+				{order: 2, id: "c", area: "tasks", vp: "phone", theme: "light", status: "recipe-failed", bytes: 10, at: "2026-09-30T10:04:00.000Z", failure: "no Sign in button"},
+			})
+			done, _ := json.Marshal(DoneFile{V: 1, Pass: 1, Run: created, Shots: 4})
+			if err := os.WriteFile(filepath.Join(box.passAbs(1), "done.json"), done, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		copyTree(t, box.passAbs(1), tool.passAbs(1))
+		return CmdOut{}, nil
+	}
+	res, err := tool.Follow(context.Background(), FollowOptions{From: "devops:ws/pwf/pwf-ui/.ui-loop/pass-1", Interval: 30 * time.Second, UntilIdle: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	perTick = append(perTick, v.captures)
+	data := res.Data.(FollowData)
+	// Tick 2 adopts b alone (a is in the ledger); c and d never become images.
+	if got := fmt.Sprint(perTick); got != "[[] [P1-A-PHONE-LIGHT] [P1-B-PHONE-LIGHT] [] []]" {
+		t.Errorf("captures per tick: %s", got)
+	}
+	if !data.Done || data.Ticks != 4 || data.Final != 4 {
+		t.Errorf("stops on done + a minute idle: %+v", data)
+	}
+	if v.pushes["ui-polish-p1-tasks-phone-light-1"] != 2 {
+		t.Errorf("one push per tick that grew the set: %v", v.pushes)
+	}
+	if _, err := os.Stat(filepath.Join(tool.passAbs(1), ".auth")); err == nil {
+		t.Error("storage states came to the Mac")
+	}
+	notes := fmt.Sprint(data.Notes)
+	if notes != "[{tasks [{c phone light recipe-failed step 2 clickText no Sign in button} {d phone light unreachable  }]}]" {
+		t.Errorf("failures are notes in the index: %s", notes)
+	}
+	if len(data.Sets) != 1 || data.Sets[0].Status != "pushed" || data.Sets[0].Files != 2 {
+		t.Errorf("sets: %+v", data.Sets)
+	}
+}
+
+func TestPublishSizesSetsByUploadBytes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Publish = Publish{MaxFiles: 96, MaxBytes: 1000}
+	tool := newTool(t, cfg)
+	var shots []shot
+	for i := range 10 {
+		shots = append(shots, shot{order: i, id: fmt.Sprintf("s%d", i), area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1})
+	}
+	writePass(t, tool, 1, shots)
+	// Noise PNGs: 40×40 px is ~6.4 KB of PNG, each alone above maxBytes, but
+	// estimated at 0.1 B/px = 160 upload bytes.
+	rng := rand.New(rand.NewPCG(1, 2))
+	for _, s := range shots {
+		img := image.NewNRGBA(image.Rect(0, 0, 40, 40))
+		for i := range img.Pix {
+			img.Pix[i] = uint8(rng.IntN(256))
+		}
+		f, err := os.Create(filepath.Join(tool.passAbs(1), "shots", s.id, "phone.light.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(f, img); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	res, err := tool.Split(SplitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sizes []string
+	for _, s := range res.Data.(Plan).Sets {
+		sizes = append(sizes, fmt.Sprintf("%d/%d", len(s.Files), s.Bytes))
+	}
+	if fmt.Sprint(sizes) != "[6/960 4/640]" {
+		t.Errorf("estimated plan: %v", sizes)
+	}
+
+	// Each adopted WebP is 100 bytes: the first set takes shots until the
+	// measured bytes plus the next estimate would pass 1000.
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	v := &fakeVitrinka{t: t, webp: 100, pushes: map[string]int{}}
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) { return v.exec(c.Args[1:]), nil }
+	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.captures) != 10 || v.pushes["ui-polish-p1-tasks-phone-light-1"] != 1 || v.pushes["ui-polish-p1-tasks-phone-light-2"] != 1 {
+		t.Errorf("each shot adopted once, each set pushed once: %d captures, %v", len(v.captures), v.pushes)
+	}
+	res, err = tool.Split(SplitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes = sizes[:0]
+	for _, s := range res.Data.(Plan).Sets {
+		sizes = append(sizes, fmt.Sprintf("%d/%d/%v", len(s.Files), s.Bytes, s.Files[0].Measured))
+	}
+	if fmt.Sprint(sizes) != "[9/900/true 1/100/true]" {
+		t.Errorf("measured plan: %v", sizes)
 	}
 }

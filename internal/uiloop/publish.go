@@ -45,6 +45,10 @@ type PublishedSet struct {
 type PublishIndex struct {
 	Pass int            `json:"pass"`
 	Sets []PublishedSet `json:"sets"`
+	// Notes are the shots listed as text instead of uploaded (not an image
+	// status), per area in config order, for the review-loop publisher to
+	// render as a text card.
+	Notes []AreaNotes `json:"notes"`
 }
 
 const (
@@ -255,6 +259,18 @@ func (p *publisher) publishSet(s Set, canHalve bool) []PublishedSet {
 		rec.Error += "; " + err.Error()
 		return []PublishedSet{rec}
 	}
+	// The parent ledger goes with its root: the halves re-adopt every file, and a
+	// ledger left behind would make a later adopt of the parent skip them all.
+	ledger, err := ledgerFor(root)
+	if err == nil {
+		if err = os.Remove(ledger); errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
+	}
+	if err != nil {
+		rec.Error += "; " + err.Error()
+		return []PublishedSet{rec}
+	}
 	rec.Status, rec.HalvedInto = "halved", []string{head.Key, tail.Key}
 	out := []PublishedSet{rec}
 	out = append(out, p.publishSet(head, false)...)
@@ -290,16 +306,36 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	if _, err := t.LookPath("vitrinka"); err != nil && !o.DryRun {
 		return Result{}, diag(DiagVitrinkaMissing, "the vitrinka CLI is not on PATH", "vybava install vitrinka-cli")
 	}
-	plan, diags, err := t.plan(pass, o.Areas)
+	passDir := t.passAbs(pass)
+	if _, err := os.Stat(passDir); err != nil {
+		return Result{}, diag(DiagPassMissing, t.PassDir(pass)+" does not exist", "vybava ui-loop run")
+	}
+	records, err := LoadRecords(passDir)
+	if err != nil {
+		return Result{}, err
+	}
+	return t.publishRecords(ctx, pass, records, o, true)
+}
+
+// publishRecords publishes the given records of a pass: adopt, then push
+// every set whose files changed since its last push. canHalve lets a set
+// that will not push be halved (never during --follow: its sets still grow).
+func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o PublishOptions, canHalve bool) (Result, error) {
+	passDir := t.passAbs(pass)
+	st, err := loadAdopted(passDir)
+	if err != nil {
+		return Result{}, err
+	}
+	plan, diags, err := t.planRecords(pass, records, o.Areas, st)
 	if err != nil {
 		return Result{}, err
 	}
 	if o.Retries <= 0 {
 		o.Retries = 3
 	}
-	p := &publisher{t: t, ctx: ctx, passDir: t.passAbs(pass), project: plan.Project, retries: o.Retries, dryRun: o.DryRun}
+	p := &publisher{t: t, ctx: ctx, passDir: passDir, project: plan.Project, retries: o.Retries, dryRun: o.DryRun}
 	indexFile := filepath.Join(p.passDir, "publish", "index.json")
-	index := PublishIndex{Pass: pass, Sets: []PublishedSet{}}
+	index := PublishIndex{Pass: pass, Sets: []PublishedSet{}, Notes: []AreaNotes{}}
 	if b, err := os.ReadFile(indexFile); err == nil {
 		if err := json.Unmarshal(b, &index); err != nil {
 			return Result{}, fmt.Errorf("%s: %w", indexFile, err)
@@ -325,7 +361,38 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 		was, ok := prior[s.Key]
 		return was, ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s)
 	}
+	// Adopt first, one set at a time, re-planning after each: the plan sized
+	// the set by estimates, and once its WebP is measured the set usually has
+	// room for more shots, which join it before it is pushed. A set halved on
+	// an earlier run is left to its halves.
+	adoptFailed := map[string]string{}
+	for !o.DryRun {
+		i := slices.IndexFunc(plan.Sets, func(s Set) bool {
+			head, tail, _ := halves(s)
+			if _, bad := adoptFailed[s.Key]; bad || !want(s.Key, head.Key, tail.Key) || prior[s.Key].Status == "halved" {
+				return false
+			}
+			return slices.ContainsFunc(s.Files, func(f PlanFile) bool { _, ok := st.set[f.Path]; return !ok })
+		})
+		if i < 0 {
+			break
+		}
+		s := plan.Sets[i]
+		if err := p.adopt(filepath.Join(passDir, "publish", "sets", s.Key), s); err != nil {
+			adoptFailed[s.Key] = err.Error()
+		}
+		if err := st.refresh(passDir, s.Key); err != nil {
+			return Result{}, err
+		}
+		if plan, diags, err = t.planRecords(pass, records, o.Areas, st); err != nil {
+			return Result{}, err
+		}
+	}
 	for _, s := range plan.Sets {
+		if msg, bad := adoptFailed[s.Key]; bad {
+			results = append(results, PublishedSet{Key: s.Key, Title: s.Title, Files: len(s.Files), Digest: setDigest(s), Status: "failed", Error: msg})
+			continue
+		}
 		head, tail, split := halves(s)
 		// A set halved on an earlier run is worked as its two halves, so a
 		// failed half is retried by the key its diagnostic names. --force only
@@ -356,9 +423,9 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 			results = append(results, done)
 			continue
 		}
-		results = append(results, p.publishSet(s, true)...)
+		results = append(results, p.publishSet(s, canHalve)...)
 	}
-	res := Result{Data: map[string]any{"pass": pass, "sets": results}, Diagnostics: diags}
+	res := Result{Data: map[string]any{"pass": pass, "sets": results, "notes": plan.Notes}, Diagnostics: diags}
 	if o.DryRun {
 		return res, nil
 	}
@@ -389,6 +456,14 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	for _, k := range left {
 		index.Sets = append(index.Sets, merged[k])
 	}
+	// This run's areas replace their notes; an area it did not plan keeps its own.
+	notes := slices.DeleteFunc(index.Notes, func(n AreaNotes) bool { return len(o.Areas) == 0 || slices.Contains(o.Areas, n.Area) })
+	notes = append(notes, plan.Notes...)
+	slices.SortStableFunc(notes, func(a, b AreaNotes) int { return orderOf(t.Config.Areas, a.Area) - orderOf(t.Config.Areas, b.Area) })
+	if notes == nil {
+		notes = []AreaNotes{}
+	}
+	index.Notes = notes
 	b, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return res, err

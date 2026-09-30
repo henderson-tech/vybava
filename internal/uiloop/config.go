@@ -79,10 +79,14 @@ type Vitrinka struct {
 	BoardPrefix string `json:"boardPrefix"`
 }
 
-// Publish bounds one vitrinka set.
+// Publish bounds one vitrinka set and says where `publish --follow` fetches
+// a pass from.
 type Publish struct {
 	MaxFiles int   `json:"maxFiles,omitempty"`
 	MaxBytes int64 `json:"maxBytes,omitempty"`
+	// From is the rsync source of the repo on the capture box
+	// (devops:ws/<workspace>/<app-dir>); follow appends /<out>/pass-<n>/.
+	From string `json:"from,omitempty"`
 }
 
 // Defaults and hard limits.
