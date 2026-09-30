@@ -206,3 +206,14 @@ name, http (path/method-scoped faults, `error`, `record`/`authz` replay) or raw
 tcp; ONE fault at a time behind an atomic pointer, `set` replaces it; every
 verb goes through the control socket, never the state file, and `authz`
 substitutes only the identity given by `--as` — it never guesses credentials.
+
+`internal/polishkit` is the polish skill's deterministic layer (`docs/polish-kit.md`):
+target inference from the diff, device lanes, the pass ledger, native shots,
+contact sheets and the report; the skill owns judgement and the adverse-condition
+rows, the applet never knows them. The `polish` section is a Go/TS mirror
+(`config.go` / `config-helpers.ts` `PolishConfig`): change both together. Every
+device command goes through `Tool.Exec` (tests drive fixtures, never a device);
+the applet never edits app code and its one network call is a GET of a
+configured lane URL. `run.json` carries `RunVersion`: bump it on a breaking
+change of `RunFile` or `Cell`, and a pass written by another version answers
+`run-version` (fix: `run init --force`), never a silent re-read.

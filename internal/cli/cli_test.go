@@ -29,6 +29,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"vpn", "vpn"},
 		{"redact", "redact"},
 		{"blip", "blip"},
+		{"polish-kit", "polish-kit"},
 		{"ui-loop", "ui-loop"},
 		{"/usr/local/bin/perfrig", "perfrig"}, // dispatch is on the basename
 		{"vybava", "vybava"},
