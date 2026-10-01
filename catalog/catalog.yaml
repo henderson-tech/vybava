@@ -503,6 +503,13 @@ groups:
       - press-offer
       - press-email
 
+  - id: claude-hooks
+    description: The applets a Claude Code settings.json's hooks call (claude-guards, memo, memorylint), linked into ~/.local/bin where the hooks look — one install wires a Claude home on the Mac or a Linux Devbox portal box.
+    items:
+      - claude-guards
+      - memo
+      - memorylint
+
   - id: ai-git
     description: The git family — commit, sync, PR create → review → merge, and the gitkit layer they run on.
     items:

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -163,6 +164,9 @@ func guardDevboxWhenWorkspace(in *HookInput) *Denial {
 	cfg := in.guards()
 	if len(cfg.DevboxWhenWorkspace) == 0 {
 		return nil
+	}
+	if devboxguest.Detected() {
+		return nil // a portal session: the command already runs on the Devbox
 	}
 	// Every matching command is judged by the checkout it RUNS in (after its
 	// cd / --cwd), never the session's: from the main clone, `(cd

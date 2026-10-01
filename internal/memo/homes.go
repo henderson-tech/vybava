@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/gitkit"
 	"github.com/henderson-tech/vybava/internal/shellword"
 )
@@ -488,6 +489,24 @@ func MainCheckoutTeamHome(home, branch string) (*Diag, error) {
 	}
 	wt := filepath.Join(root, ".worktrees", Slugify(filepath.Base(branch)))
 	return errorDiag(DiagMainCheckout, home+" is in the main checkout of "+root+", so the row was not written: a team row there is uncommitted dirt on the default branch; add it from a worktree and land it through a PR (WORKTREE_POLICY=never in .claude/.claude.git.config opts a repo out)", "git -C "+shellword.Quote(root)+" worktree add -b "+shellword.Quote(branch)+" "+shellword.Quote(wt)+" && cd "+shellword.Quote(wt)+"  # then re-run this memo command with --home "+shellword.Quote(filepath.Join(wt, ".claude", "memory"))+" (an explicit --home or alias would still name the main checkout)"), nil
+}
+
+// MirrorHome refuses a personal home inside a git work tree on a Devbox
+// guest: there ~/.claude is the portal's pull-only clone of Claudik. A row
+// written there is never committed (a box commit would stop every later
+// fast-forward), a Mac change to the same file replaces it, and harvest
+// never carries memory/ to the Mac, so the capture would be lost. retry is
+// the command a Mac session re-runs. A team home (a box-owned checkout that
+// is pushed through a PR) and every home off a guest pass.
+func MirrorHome(h Home, retry string) *Diag {
+	if h.Kind != KindPersonal || !devboxguest.Detected() {
+		return nil
+	}
+	root, ok := gitToplevel(h.Path)
+	if !ok {
+		return nil
+	}
+	return errorDiag(DiagHomeMirror, h.Path+" is a personal home in "+root+", this Devbox guest's pull-only mirror of the Mac's Claude home, so nothing was written: the box never commits there and its memory never reaches the Mac; a project or reference fact goes to the team home (it lands through the checkout's PR)", retry+"  # from a Mac session; a box session names the row in its hand-back")
 }
 
 // SetAlias rewrites the `alias:` frontmatter line of a ledger; the one

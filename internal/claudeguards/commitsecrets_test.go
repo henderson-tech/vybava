@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/gittest"
 	"github.com/henderson-tech/vybava/internal/secretscan"
 )
@@ -15,10 +16,12 @@ import (
 // TestMain keeps every test from spawning the detached visibility refresh: it
 // re-executes os.Executable(), which under `go test` is the test binary. The
 // git the fixtures commit with must not leave auto maintenance running either
-// (see gittest).
+// (see gittest). The suite runs on a Devbox guest too (`devbox run verify`),
+// so every rule is judged as on the Mac unless a test opts in (onDevboxGuest).
 func TestMain(m *testing.M) {
 	spawnVisibilityRefresh = func(string, string) {}
 	gittest.NoDaemons()
+	devboxguest.Marker = "/nonexistent/devbox-guest-marker"
 	os.Exit(m.Run())
 }
 

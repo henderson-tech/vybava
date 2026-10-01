@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
@@ -206,6 +207,18 @@ Heavy suites belong on the Devbox, where they cost this Mac nothing:
 Must run here? Cap it:
     playwright test --workers %[3]d        vitest run --maxWorkers %[3]d        jest --maxWorkers %[3]d`
 
+// testWorkerCapGuestMsg is the same refusal in a Devbox portal session, where
+// the command already runs on the Devbox and `devbox run` is not available
+// from the agent: only the cap is a way forward.
+const testWorkerCapGuestMsg = `%s
+
+runs %s. On this Devbox guest a test runner fans
+out one browser or worker per vCPU of the whole box, inside this agent's own
+memory and CPU scope, which everything else it started shares.
+
+Cap it:
+    playwright test --workers %[3]d        vitest run --maxWorkers %[3]d        jest --maxWorkers %[3]d`
+
 const testWorkerCapEscape = "A deliberate full-parallel run on a quiet Mac: CLAUDE_GUARDS_ALLOW_TEST_WORKERS=1 <command>"
 
 func guardTestWorkerCap(in *HookInput) *Denial {
@@ -218,9 +231,13 @@ func guardTestWorkerCap(in *HookInput) *Denial {
 	if m == nil {
 		return nil
 	}
+	msg, machine := testWorkerCapMsg, "this Mac's"
+	if devboxguest.Detected() {
+		msg, machine = testWorkerCapGuestMsg, "this guest's"
+	}
 	how := m.runner + " with no worker cap"
 	if m.workers > max {
-		how = fmt.Sprintf("%s with %d workers, above this Mac's cap of %d", m.runner, m.workers, max)
+		how = fmt.Sprintf("%s with %d workers, above %s cap of %d", m.runner, m.workers, machine, max)
 	}
-	return deny("machine:test-worker-cap", fmt.Sprintf(testWorkerCapMsg, m.argv, how, max), testWorkerCapEscape)
+	return deny("machine:test-worker-cap", fmt.Sprintf(msg, m.argv, how, max), testWorkerCapEscape)
 }
