@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 )
 
 const reapMinAge = 10 * 60
@@ -215,8 +217,13 @@ func xcuitestHost(p machineProc) bool {
 
 // selectReapVictims picks the orphans: a known kind, older than reapMinAge,
 // with no live claude/codex ancestor in the table, and for a WebDriverAgent
-// runner no driver the sweep keeps.
+// runner no driver the sweep keeps. On a Devbox guest it picks none: there
+// the table is every workspace's, an Appium a workspace's run started has no
+// claude ancestor either, and the box's own sweep owns its strays.
 func selectReapVictims(table []machineProc) []machineProc {
+	if devboxguest.Detected() {
+		return nil
+	}
 	byPID := make(map[int]machineProc, len(table))
 	for _, p := range table {
 		byPID[p.pid] = p

@@ -316,6 +316,16 @@ the command IS a boot or a start. The message lists the running servers by
 pid and points at `/wk:pause` and the Devbox; a deliberate extra instance on
 a quiet Mac sets `CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1`.
 
+On a Devbox guest (`/etc/devbox/runtime.env` exists: a Devbox portal session
+running the Mac's Claudik settings on the box) `machine:devbox-only`,
+`machine:devbox-workspace`, both caps and `reap` stand down: the command
+already runs on the Devbox, and the process table there is every workspace's,
+so it would refuse an agent for other workspaces' servers and reap an Appium a
+workspace's run started (it has no claude ancestor either). The box admits and
+sweeps its own workloads. `machine:test-worker-cap` still applies — an
+uncapped suite in an agent's scope sizes its workers to the box's vCPUs.
+`internal/devboxguest` is the one check.
+
 `claude-guards weather` (SessionStart) prints one line the session starts
 with — load against cores, free and compressor GB, claude and codex sessions,
 sims, metro, next and api counts — and a second, warning line only under
