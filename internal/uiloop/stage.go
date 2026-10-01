@@ -42,12 +42,15 @@ type BatchesFile struct {
 
 // Checkpoint is one fix item's <pass>/fix/<key>.json.
 type Checkpoint struct {
-	Key     string   `json:"key"`
-	Lane    string   `json:"lane,omitempty"`
-	Status  string   `json:"status"` // done | skipped | blocked
-	Commit  string   `json:"commit,omitempty"`
-	Screens []string `json:"screens,omitempty"`
-	Note    string   `json:"note,omitempty"`
+	Basis       string            `json:"basis"`
+	FileDigests map[string]string `json:"fileDigests,omitempty"`
+	APIChanges  []string          `json:"apiChanges,omitempty"`
+	Key         string            `json:"key"`
+	Lane        string            `json:"lane,omitempty"`
+	Status      string            `json:"status"` // done | skipped | blocked
+	Commit      string            `json:"commit,omitempty"`
+	Screens     []string          `json:"screens,omitempty"`
+	Note        string            `json:"note,omitempty"`
 }
 
 // Finishes reports whether the checkpoint closes its item for this round.
@@ -134,22 +137,29 @@ type BoardRow struct {
 
 // StateData is `ui-loop state`: a pass's state as counts, never item bodies.
 type StateData struct {
-	Pass        int              `json:"pass"`
-	PassDir     string           `json:"passDir"`
-	Config      StateConfig      `json:"config"`
-	Shots       int              `json:"shots"`
-	Screens     int              `json:"screens"`
-	Areas       []AreaCount      `json:"areas"`
-	Published   bool             `json:"published"`
-	Unpublished []string         `json:"unpublished"`
-	Sets        []StateSet       `json:"sets"`
-	Review      StateReview      `json:"review"`
-	HasBacklog  bool             `json:"hasBacklog"`
-	Backlog     *BacklogCounts   `json:"backlog"`
-	Previous    *PreviousBacklog `json:"previous"`
-	Checkpoints CheckpointCounts `json:"checkpoints"`
-	Boards      []BoardRow       `json:"boards"`
-	Next        NextStage        `json:"next"`
+	HeadSHA            string           `json:"headSha"`
+	ReviewBasis        string           `json:"reviewBasis"`
+	CapturedHeadSHA    string           `json:"capturedHeadSha"`
+	SourceUnchanged    bool             `json:"sourceUnchanged"`
+	ScoreboardBasis    string           `json:"scoreboardBasis"`
+	ScoreboardCurrent  bool             `json:"scoreboardCurrent"`
+	CheckpointAPINotes []string         `json:"checkpointApiNotes"`
+	Pass               int              `json:"pass"`
+	PassDir            string           `json:"passDir"`
+	Config             StateConfig      `json:"config"`
+	Shots              int              `json:"shots"`
+	Screens            int              `json:"screens"`
+	Areas              []AreaCount      `json:"areas"`
+	Published          bool             `json:"published"`
+	Unpublished        []string         `json:"unpublished"`
+	Sets               []StateSet       `json:"sets"`
+	Review             StateReview      `json:"review"`
+	HasBacklog         bool             `json:"hasBacklog"`
+	Backlog            *BacklogCounts   `json:"backlog"`
+	Previous           *PreviousBacklog `json:"previous"`
+	Checkpoints        CheckpointCounts `json:"checkpoints"`
+	Boards             []BoardRow       `json:"boards"`
+	Next               NextStage        `json:"next"`
 }
 
 // StateOptions are `state`'s flags.
@@ -227,7 +237,7 @@ func writeJSON(file string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file, append(b, '\n'), 0o644)
+	return writeAtomicJSONBytes(file, b)
 }
 
 // loadBatches reads review/batches.json; without it, it computes the batches
@@ -254,7 +264,57 @@ func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
 		return nil, err
 	}
 	ids := map[string]bool{}
+	var marker captureEvidence
+	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	if err != nil {
+		return nil, err
+	}
+	var basis string
+	var batches BatchesFile
+	if strict {
+		basis, err = t.reviewBasis(pass)
+		if err != nil {
+			return nil, err
+		}
+		records, err := LoadRecords(t.passAbs(pass))
+		if err != nil {
+			return nil, err
+		}
+		batches, _, err = t.loadBatches(pass, records, 0)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, p := range paths {
+		if strict {
+			var r rawReview
+			if _, err := readJSON(p, &r); err != nil {
+				return nil, err
+			}
+			if r.Basis != basis || r.Batch != strings.TrimSuffix(filepath.Base(p), ".json") {
+				continue
+			}
+			valid := false
+			for _, batch := range batches.Batches {
+				if batch.ID != r.Batch {
+					continue
+				}
+				valid = true
+				for _, screen := range batch.Screens {
+					if !slices.Contains(r.ScreensRead, screen) {
+						valid = false
+					}
+				}
+				for _, screen := range r.ScreensRead {
+					if !slices.Contains(batch.Screens, screen) {
+						valid = false
+					}
+				}
+			}
+			if !valid || len(r.Unreviewed) > 0 {
+				continue
+			}
+		}
 		ids[strings.TrimSuffix(filepath.Base(p), ".json")] = true
 	}
 	return ids, nil
@@ -269,6 +329,18 @@ func (t *Tool) loadCheckpoints(pass int) ([]Checkpoint, []runxDiagnostic, error)
 	}
 	var out []Checkpoint
 	var diags []runxDiagnostic
+	var marker captureEvidence
+	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	if err != nil {
+		return nil, nil, err
+	}
+	var basis string
+	if strict {
+		basis, err = t.reviewBasis(pass)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	for _, p := range paths {
 		if filepath.Base(p) == lanesFile {
 			continue
@@ -278,6 +350,15 @@ func (t *Tool) loadCheckpoints(pass int) ([]Checkpoint, []runxDiagnostic, error)
 			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+filepath.Base(p)+" is not a checkpoint ({key, status})",
 				"rewrite it, or delete it so its item is fixed again"))
 			continue
+		}
+		if strict {
+			valid, err := t.validCheckpoint(c, basis)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !valid {
+				continue
+			}
 		}
 		out = append(out, c)
 	}
@@ -326,6 +407,26 @@ func (t *Tool) loadPassBacklog(pass int) (*Backlog, error) {
 	if b.Pass != pass {
 		return nil, diag(DiagBacklogInvalid, fmt.Sprintf("%s/review/backlog.json is the backlog of pass %d", t.PassDir(pass), b.Pass),
 			fmt.Sprintf("its \"pass\" must be %d: re-run the review stage's synthesis", pass))
+	}
+	var marker captureEvidence
+	found, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		basis, err := t.reviewBasis(pass)
+		if err != nil {
+			return nil, err
+		}
+		var receipt struct {
+			Basis string `json:"basis"`
+		}
+		if _, err := readJSON(filepath.Join(t.reviewDir(pass), "basis.json"), &receipt); err != nil {
+			return nil, err
+		}
+		if receipt.Basis != basis {
+			return nil, nil
+		}
 	}
 	return b, nil
 }
@@ -426,6 +527,27 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		return Result{Data: data, Next: []string{"vybava ui-loop run"}}, nil
 	}
 	data.Pass, data.PassDir = pass, t.PassDir(pass)
+	head, headErr := t.git("rev-parse", "--verify", "HEAD")
+	if headErr != nil {
+		return Result{}, headErr
+	}
+	if head.Code == 0 {
+		data.HeadSHA = strings.TrimSpace(head.Stdout)
+	}
+	var err error
+	data.ReviewBasis, err = t.reviewBasis(pass)
+	if err != nil {
+		return Result{}, err
+	}
+	var marker captureEvidence
+	if _, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker); err != nil {
+		return Result{}, err
+	}
+	data.CapturedHeadSHA = marker.HeadSHA
+	data.SourceUnchanged, err = t.sourceUnchanged(marker.HeadSHA)
+	if err != nil {
+		return Result{}, err
+	}
 	if _, err := os.Stat(t.passAbs(pass)); err != nil {
 		return Result{}, diag(DiagPassMissing, data.PassDir+" does not exist", "omit --pass for the latest pass")
 	}
@@ -453,6 +575,22 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		return Result{}, err
 	}
 	data.Published = len(records) > 0 && len(data.Unpublished) == 0
+	if data.CapturedHeadSHA != "" && len(records) > 0 {
+		plan, _, err := t.planRecords(pass, records, nil)
+		if err != nil {
+			return Result{}, err
+		}
+		var index PublishIndex
+		if _, err := readJSON(filepath.Join(t.passAbs(pass), "publish", "index.json"), &index); err != nil {
+			return Result{}, err
+		}
+		for _, set := range plan.Sets {
+			matched := slices.ContainsFunc(index.Sets, func(row PublishedSet) bool {
+				return row.Key == set.Key && row.Digest == setDigest(set) && row.URL != "" && len(row.Refused) == 0 && (row.Status == "pushed" || row.Status == "skipped")
+			})
+			data.Published = data.Published && matched
+		}
+	}
 
 	batches, persisted, err := t.loadBatches(pass, records, 0)
 	if err != nil {
@@ -504,7 +642,40 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if backlog != nil {
 		findings = backlog.Findings
 	}
+	data.ScoreboardBasis, err = t.scoreBasis(pass, data.ReviewBasis)
+	if err != nil {
+		return Result{}, err
+	}
+	var score struct {
+		Basis  string     `json:"basis"`
+		Posted []BoardRow `json:"posted"`
+	}
+	found, err := readJSON(filepath.Join(t.reviewDir(pass), "scoreboard-receipt.json"), &score)
+	if err != nil {
+		return Result{}, err
+	}
+	data.ScoreboardCurrent = found && score.Basis == data.ScoreboardBasis && len(data.Boards) > 0
+	for _, area := range areas {
+		data.ScoreboardCurrent = data.ScoreboardCurrent && slices.ContainsFunc(data.Boards, func(board BoardRow) bool { return board.Area == area && board.URL != "" })
+	}
+	for _, name := range []string{"scoreboard.json", "scoreboard.md"} {
+		if _, err := os.Stat(filepath.Join(t.passAbs(pass), name)); errors.Is(err, fs.ErrNotExist) {
+			data.ScoreboardCurrent = false
+		} else if err != nil {
+			return Result{}, err
+		}
+	}
+	for _, board := range data.Boards {
+		posted := slices.ContainsFunc(score.Posted, func(row BoardRow) bool { return row.Area == board.Area && row.URL == board.URL })
+		data.ScoreboardCurrent = data.ScoreboardCurrent && posted
+	}
+	for _, cp := range checkpoints {
+		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
+	}
 	data.Next = nextStage(pass, len(records), data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, o.Cap)
+	if data.Shots == 0 && data.CapturedHeadSHA != "" && data.SourceUnchanged {
+		data.Next = NextStage{Stage: "capture", Resume: true, Reason: "the interrupted pass has provenance but no shots yet"}
+	}
 	return Result{Data: data, Diagnostics: diags}, nil
 }
 
@@ -649,10 +820,12 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 
 // rawReview is one reviewer's <pass>/review/raw/<batch>.json.
 type rawReview struct {
-	Batch      string            `json:"batch"`
-	Area       string            `json:"area"`
-	Findings   []json.RawMessage `json:"findings"`
-	Acceptance []struct {
+	Basis       string            `json:"basis"`
+	ScreensRead []string          `json:"screensRead"`
+	Batch       string            `json:"batch"`
+	Area        string            `json:"area"`
+	Findings    []json.RawMessage `json:"findings"`
+	Acceptance  []struct {
 		Key     string `json:"key"`
 		Verdict string `json:"verdict"`
 	} `json:"acceptance"`
@@ -909,8 +1082,15 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 		}
 		return paths[i] < paths[j]
 	})
+	validRaw, err := t.rawBatchIDs(pass)
+	if err != nil {
+		return Result{}, err
+	}
 	raws := make([]rawReview, 0, len(paths))
 	for _, p := range paths {
+		if !validRaw[id(p)] {
+			continue
+		}
 		var r rawReview
 		if _, err := readJSON(p, &r); err != nil {
 			return Result{}, diag(DiagReviewInvalid, err.Error(), "re-run that review batch (delete its raw file)")

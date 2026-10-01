@@ -352,3 +352,27 @@ Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrore
 - the run.json and record shapes ↔ `run.go` and `record.go`, and `done.json` (`teardown.ts` `DoneFile`) ↔ `follow.go` `DoneFile`. Bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change.
 
 The harness must type-check under TS 5.3 strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `noPropertyAccessFromIndexSignature`, in both CJS and ESM packages. It must stay Node 20 compatible: no bun-only APIs, no `import.meta`, no `__dirname`.
+
+### Durable workflow evidence
+
+The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
+`reviewBasis`, `scoreboardBasis`, `scoreboardCurrent` and `checkpointApiNotes`.
+`run` writes `capture.json` atomically before starting the interruptible runner;
+resume retains that revision and refuses application drift. Workflows recapture
+legacy passes without provenance. Captures outside git have no verified revision.
+
+For passes with provenance, raw reviews need the current `basis` and explicit
+`screensRead` covering their batch. Backlogs use `review/basis.json` as a sidecar.
+Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
+SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
+are reevaluated. Skips/blocks are reusable only with unchanged application source.
+The spec and manifests stay unchanged during fixes; API notes live beside source
+and in ignored checkpoints. The state reader keeps item bodies on disk.
+
+After scoreboard callouts are confirmed by board readback, the workflow writes
+`review/scoreboard-receipt.json` atomically as `{basis: scoreboardBasis, posted:
+[{area, url}]}`. The basis covers review inputs, backlog, publish index, board list
+and scoreboard files. `scoreboardCurrent` requires a matching receipt, every area
+board acknowledged and both scoreboard files present. Interrupted publication
+must retry before a workflow can claim completion. Existing CLI-only passes
+retain their legacy stage semantics; verified workflows require these receipts.

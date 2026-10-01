@@ -538,10 +538,11 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 // Each acknowledged upload is durable before another set starts. Rename
 // prevents a cutoff from leaving an unreadable, partially written receipt.
 func writePublishIndex(file string, index PublishIndex) error {
-	b, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return err
-	}
+	return writeJSON(file, index)
+}
+
+// writeAtomicJSONBytes commits a receipt before its caller starts another operation.
+func writeAtomicJSONBytes(file string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return err
 	}

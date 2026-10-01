@@ -286,6 +286,9 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	if err := os.WriteFile(t.abs(runFile), append(b, '\n'), 0o644); err != nil {
 		return Result{}, err
 	}
+	if err := t.captureProvenance(pass, o.Selection.Resume); err != nil {
+		return Result{}, err
+	}
 	command := t.CaptureCommand(passDir)
 	if o.Wrap != "" {
 		if !strings.Contains(o.Wrap, "{cmd}") {
