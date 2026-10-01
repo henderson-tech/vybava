@@ -138,7 +138,17 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
 		}
-		if d := memo.MirrorHome(homes[0], "memo add "+shellword.Quote(args[0])+" "+shellword.Quote(args[1])); d != nil {
+		retry := "memo add " + shellword.Quote(args[0]) + " " + shellword.Quote(args[1])
+		for _, link := range links {
+			retry += " --link " + shellword.Quote(link)
+		}
+		if supersedes > 0 {
+			retry += fmt.Sprintf(" --supersedes %d", supersedes)
+		}
+		if retires > 0 {
+			retry += fmt.Sprintf(" --retires %d", retires)
+		}
+		if d := memo.MirrorHome(homes[0], retry+" --home "+macHome(env, homes[0])); d != nil {
 			return finish(s, nil, nil, nil, d)
 		}
 		if d := memo.LegacyHome(homes[0].Path); d != nil {
@@ -201,8 +211,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				}
 			}
 		}
-		if err := recordEvent(env, l.Home(), row.ID, "show"); err != nil {
-			return finish(s, nil, nil, nil, err)
+		// A Devbox guest's mirror home is read, never written: no show event.
+		if memo.MirrorHome(memo.Home{Path: l.Home(), Kind: l.Kind}, "") == nil {
+			if err := recordEvent(env, l.Home(), row.ID, "show"); err != nil {
+				return finish(s, nil, nil, nil, err)
+			}
 		}
 		payload := map[string]any{"row": row, "line": row.Format(), "home": l.Home(), "alias": l.Alias, "status": status, "notes": notes}
 		var data any = payload
@@ -296,6 +309,10 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		h := memo.Home{Path: l.Home(), Kind: l.Kind}
+		if d := memo.MirrorHome(h, "memo touch "+shellword.Quote(args[0])+" --home "+macHome(env, h)); d != nil {
+			return finish(s, nil, nil, nil, d)
+		}
 		if err := recordEvent(env, l.Home(), row.ID, "touch"); err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
@@ -343,6 +360,10 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 					return finish(s, map[string]any{"home": h.Path, "drift": true}, nil, nil, &memo.Diag{Code: memo.DiagRenderDrift, Severity: "error", Detail: filepath.Join(h.Path, memo.IndexFile) + " differs from the render", Fix: "memo render --home " + h.Path + " --json"})
 				}
 				results = append(results, map[string]any{"home": h.Path, "drift": false})
+				continue
+			}
+			if memo.MirrorHome(h, "") != nil { // a Devbox guest's pull-only clone keeps the Mac's render
+				results = append(results, map[string]any{"home": h.Path, "mirror": true})
 				continue
 			}
 			changed, _, err := memo.WriteIndex(l, events, now)
@@ -410,7 +431,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
 		}
-		if d := memo.MirrorHome(homes[0], "memo import "+shellword.Quote(args[0])); d != nil {
+		if d := memo.MirrorHome(homes[0], "memo import "+shellword.Quote(args[0])+" --home "+macHome(env, homes[0])); d != nil {
 			return finish(s, nil, nil, nil, d)
 		}
 		l, d, err := env.Open(homes[0], true)
@@ -487,6 +508,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
 		}
+		if d := memo.MirrorHome(homes[0], "memo homes alias "+macHome(env, homes[0])+" "+shellword.Quote(args[1])); d != nil {
+			return finish(s, nil, nil, nil, d)
+		}
 		ledger := filepath.Join(homes[0].Path, memo.LedgerFile)
 		if d, err := memo.SetAlias(ledger, args[1]); d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
@@ -554,7 +578,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		if err != nil {
 			return finish(s, nil, nil, nil, err)
 		}
-		if d := memo.MirrorHome(h, "memo snapshot"+homeArg(h)); d != nil {
+		retry := "memo snapshot --home " + macHome(memoEnv(), h)
+		if message != "" {
+			retry += " -m " + shellword.Quote(message)
+		}
+		if d := memo.MirrorHome(h, retry); d != nil {
 			return finish(s, map[string]any{"home": h.Path}, nil, nil, d)
 		}
 		rev, d, err := memo.Snapshot(h, message)
@@ -594,6 +622,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		h, err := oneHome()
 		if err != nil {
 			return finish(s, nil, nil, nil, err)
+		}
+		if d := memo.MirrorHome(h, "memo restore "+shellword.Quote(args[0])+" "+shellword.Quote(args[1])+" --home "+macHome(memoEnv(), h)); d != nil {
+			return finish(s, nil, nil, nil, d)
 		}
 		d, err := memo.Restore(h, args[0], args[1])
 		if d != nil || err != nil {
@@ -646,6 +677,17 @@ func flagIf(home string) string {
 		return ""
 	}
 	return " --home " + home
+}
+
+// macHome spells h for the Mac session that re-runs a write a Devbox guest
+// refused (HOME_MIRROR): from ~, since the guest reaches the same Claude home
+// under its own HOME and the Mac under the owner's.
+func macHome(env memo.Env, h memo.Home) string {
+	rel, err := filepath.Rel(env.UserHome, h.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return shellword.Quote(h.Path)
+	}
+	return "~/" + shellword.Quote(filepath.ToSlash(rel))
 }
 
 // markSentence prepends the --supersedes / --retires marker unless the

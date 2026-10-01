@@ -1,10 +1,19 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/memo"
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // The --supersedes / --retires flags write the marker, accept one the author
@@ -65,5 +74,72 @@ func TestRecordAddedStampsOneAddEventPerRow(t *testing.T) {
 	}
 	if again[2].At != later[2].At || again[2].Row != 3 || again[2].Kind != "add" {
 		t.Errorf("re-stamp must leave the original event untouched: %+v", again[2])
+	}
+}
+
+// On a Devbox guest the personal home in the box's Claudik clone is read-only
+// through the CLI: show reads it without recording a use, and a write refuses
+// HOME_MIRROR with a fix a Mac session runs as written — every flag kept, the
+// home spelled from ~ (the guest's HOME is not the Mac's).
+func TestMemoMirrorHomeIsReadOnlyOnDevboxGuest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-box")
+	clone := filepath.Join(home, ".claude")
+	if err := os.Mkdir(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", clone, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	t.Chdir(t.TempDir())
+	cwd, _ := os.Getwd()
+	personal, _ := memo.Env{UserHome: home, Cwd: cwd}.SessionHomes()
+	l, d, err := (memo.Env{UserHome: home, Cwd: cwd}).Open(personal, true)
+	if d != nil || err != nil {
+		t.Fatal(d, err)
+	}
+	if _, d, err := l.Append(memo.Row{Type: "feedback", Topic: "git", Sentence: "Never git stash."}); d != nil || err != nil {
+		t.Fatal(d, err)
+	}
+	marker := filepath.Join(t.TempDir(), "runtime.env")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	save := devboxguest.Marker
+	devboxguest.Marker = marker
+	t.Cleanup(func() { devboxguest.Marker = save })
+
+	run := func(args ...string) (runx.Envelope, error) {
+		var out bytes.Buffer
+		cmd, err := App{Stdout: &out, Stderr: io.Discard}.Command("memo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetArgs(append(args, "--json"))
+		runErr := cmd.Execute()
+		var env runx.Envelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("memo %v: %v\n%s", args, err, out.String())
+		}
+		return env, runErr
+	}
+	env, err := run("show", "1")
+	if err != nil || !env.OK {
+		t.Fatalf("show must read the mirror home: %+v %v", env, err)
+	}
+	for _, f := range []string{memo.UsageFile, memo.IndexFile} {
+		if _, err := os.Stat(filepath.Join(personal.Path, f)); !os.IsNotExist(err) {
+			t.Errorf("show wrote %s into the mirror home: %v", f, err)
+		}
+	}
+	rel, _ := filepath.Rel(home, personal.Path)
+	want := "memo add feedback/git 'Use worktrees.' --link https://example.com/x --supersedes 1 --home ~/" + rel + "  # from a Mac session"
+	env, err = run("add", "feedback/git", "Use worktrees.", "--supersedes", "1", "--link", "https://example.com/x")
+	if err == nil || len(env.Diagnostics) != 1 || env.Diagnostics[0].Code != memo.DiagHomeMirror || !strings.HasPrefix(env.Diagnostics[0].Fix, want) {
+		t.Errorf("add must refuse with the Mac re-run %q: %+v", want, env)
+	}
+	if env, err = run("touch", "1"); err == nil || len(env.Diagnostics) != 1 || env.Diagnostics[0].Code != memo.DiagHomeMirror {
+		t.Errorf("touch must refuse HOME_MIRROR: %+v", env)
 	}
 }
