@@ -247,6 +247,12 @@ items:
     description: Doctrine for building AI-first CLI tools and their thin-wrapper skills — envelope contract, closed diagnostics, Go/Charm patterns.
     source: skills/cli-craft
 
+  - id: codex-sidekick
+    kind: skill
+    status: experimental
+    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to a persistent Codex thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
+    source: skills/codex-sidekick
+
   - id: memo-ledger
     kind: skill
     status: experimental
@@ -479,6 +485,7 @@ groups:
       - press-email
       - ingressgen
       - cli-craft
+      - codex-sidekick
 
   - id: press-family
     description: Document production — the press CLI plus the PDF, logo, and offer skills that drive it.
@@ -588,3 +595,4 @@ groups:
       - press-offer
       - press-email
       - cli-craft
+      - codex-sidekick
