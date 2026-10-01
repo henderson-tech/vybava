@@ -1,6 +1,6 @@
 ---
 name: codex-sidekick
-description: "Claude Code only. Use when manual or verification work should run on a Codex sidekick thread instead of in this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex', 'codex high', 'codex xhigh' or 'sidekick'. Claude stays the orchestrator and the only author of app source; the sidekick runs through `switcheroo codex run`."
+description: "Claude Code only. Use when manual or verification work should run on a Codex sidekick thread instead of in this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex high', 'codex xhigh' or 'sidekick', or asks to hand work to the Codex sidekick. Claude stays the orchestrator and the only author of app source; the sidekick runs through `switcheroo codex run`."
 ---
 
 # codex-sidekick: hand the manual work to a Codex thread
@@ -10,7 +10,8 @@ writing go to a Codex thread on gpt-6.1-sol through `switcheroo codex run`. The
 CLI prepends the sidekick contract to every run. That contract says the
 sidekick may touch test files only, never runs git, reports to
 `findings.md` and returns one structured result. Claude reads that result.
-Flags, run state, account failover and the result schema: `switcheroo codex run --help`.
+Flags, exit codes and report paths: `switcheroo codex run --help`. Account failover
+and run state: claude-switcheroo's `docs/specs/2026-10-01-codex-sidekick-run-decisions.md`.
 
 **If you are Codex, this skill is not for you.** You are the sidekick: do the brief
 yourself and never call `switcheroo codex run` from inside a run.
@@ -43,16 +44,20 @@ EOF
   orchestrating in the meantime and don't poll or sleep.
 - Pass `--cwd` as the literal absolute path of the worktree the work belongs to.
   The persistent shell's cwd drifts, so never rely on it.
-- Start with `result`: `summary`, `findings[]`, `files_written[]`, `tests`, `blocker`.
-  Open `<exports>/findings.md` (one `## Turn n` per turn) only when the summary
-  falls short.
+- Start with `result`: `status` (`done`|`blocked`|`failed`), `summary`,
+  `findings[{severity: blocker|major|minor|info, title, detail, evidence, files[]}]`,
+  `files_written[]`, `tests{written[], ran[], passed, failed}` and
+  `blocker{reason, evidence, fix_hint, files[]}` or `null`. Open
+  `<exports>/findings.md` (one `## Turn n` per turn) only when the summary falls short.
 - Every further step of the same lane resumes the same thread with
   `switcheroo codex run --resume <run> --json - <<'EOF' … EOF` (the envelope's
   `resume` field). Never start a fresh run per feature or screen: the thread keeps
   the selectors, seeds and conventions it has already found. A new lane gets a new run.
 - Run at most 4 live lanes. The mobile (Appium) lane is always exactly one, because there is one simulator.
-- Don't edit app source while a `verify`, `usertest` or `e2e-run` lane is driving that
-  worktree, because its verdicts become nondeterministic. Edit between turns, then resume.
+- Don't edit app source while a `verify`, `usertest`, `e2e-write` or `e2e-run` lane is
+  driving that worktree, because its verdicts become nondeterministic. `e2e-write`
+  drives the live app even under `--no-run`; only the runner is skipped. Edit between
+  turns, then resume.
 - Never put secret values in a brief. Name the seed account or the onyx ref.
 
 ## Exit codes
@@ -68,16 +73,20 @@ EOF
 **Fallback.** Use one `general-purpose` Agent with `model: "opus"` per lane. Give it
 the same brief plus the contract essentials: test files only, no git, the same
 result shape. Keep it persistent through SendMessage for the lane and shut it down
-when the lane ends. Tell the user in one line: "Codex unavailable: <lane> ran on an
-Opus subagent."
+when the lane ends. A lane briefed to lead the `e2e` skill (`e2e-write`) is the
+exception: don't forward its Codex-lead brief, since a subagent has no `sol_explorer`
+or `sol_tester`. Follow the `e2e` skill's exit-3 path instead, where Claude leads
+Phases 1-2 and spawns one named Opus writer per lane. Tell the user in one line:
+"Codex unavailable: <lane> ran on an Opus subagent."
 
 ## Browser and device etiquette
 
 - By default the run shares this session's onyx browser (`$CLAUDE_CODE_SESSION_ID`).
   While a run is live, Claude makes no playwright, chrome-devtools or onyx
   browser calls. Two drivers on one page corrupt each other.
-- Parallel lanes each pass `--browser $CLAUDE_CODE_SESSION_ID-<lane>`. Static work
-  (`explore`, `e2e-write`, `rework`) passes `--browser none`.
+- Parallel lanes each pass `--browser $CLAUDE_CODE_SESSION_ID-<lane>`. `e2e-write`
+  passes `--browser $CLAUDE_CODE_SESSION_ID-e2e`, so the lead's testers derive
+  `<browser>-web<n>`. Static work (`explore`, `rework`) passes `--browser none`.
 - Never stop or restart a browser a lane is using. Claude also leaves the simulator
   or the computer-use app alone while a lane is driving it.
 
