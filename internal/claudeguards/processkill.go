@@ -446,15 +446,15 @@ processes.
 		return nil // fail open: no table, no verdict
 	}
 	if t, hit, why, ok := sessionTarget(plan.pids, table, hookPID()); ok {
-		target := strconv.Itoa(t)
+		target := fmt.Sprintf("PID %d", t)
 		if t < 0 {
-			target = fmt.Sprintf("process group %d", -t)
+			target = fmt.Sprintf("process group %d, which holds PID %d", -t, hit.pid)
 		}
-		return deny("process:session-kill", fmt.Sprintf(`kill would signal %s, which reaches PID %d (%s), %s.
+		return deny("process:session-kill", fmt.Sprintf(`kill would signal %s (%s): %s.
 Signalling it ends an agent session, this one or the user's, with every task,
 subagent and sidekick under it.
 
-%s`, target, hit.pid, shortArgs(hit.args, 100), why, killAlternative), "")
+%s`, target, shortArgs(hit.args, 100), why, killAlternative), "")
 	}
 	return nil
 }

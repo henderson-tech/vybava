@@ -43,8 +43,6 @@ process kill      one `ps -A` (~0.1 s) when a local kill names a literal PID
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
                   simulator or starts a dev server (a `dev:*` script counts
                   when its package.json body is one)
-process kill      one `ps -A` (~0.1 s) when a kill names a literal PID or
-                  process group; pattern kills are refused from the text alone
 browser           a loopback GET to onyx (1.5 s timeout) on every
                   playwright/chrome-devtools call
 ```
@@ -170,11 +168,6 @@ memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   verb that owns the file
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
-process:*         pkill / killall / fuser -k, or kill / xargs kill fed its PIDs by
-                  a ps / pgrep / pidof / lsof listing in the same command ·
-                  kill of a literal PID or -PGID that is a claude/codex session,
-                  its switcheroo/cmux launcher or an ancestor of one, outside
-                  the calling session's own tree (no escape)
 process:*         pkill / killall / fuser -k, and kill or xargs kill fed by a
                   ps/pgrep/pidof/lsof listing in the same command
                   (pattern-kill) · kill of a literal PID or -PGID that is a
@@ -432,35 +425,6 @@ command, and on an explicit `--cwd` / `--prefix` / `--dir` / `-C` pointing
 inside it. Reads, `ls`, and `bun run` / `npm run` inside the cache stay
 allowed — sessions legitimately load skill files from there. Reclaiming what
 already accumulated is `plugin-gc` (`docs/plugin-gc.md`).
-
-`process:pattern-kill` and `process:session-kill` keep one session from ending
-the others. Every Claude Code session on the Mac runs as `bun … switcheroo
-start …` and every Codex sidekick as `switcheroo codex run …` over `codex …`,
-so a process pattern written for one session's own work also matches every
-other session's. On 2026-10-01 a FixIt session stopping its own sidekick and
-Appium run sent `pids=$(ps -axo pid,command | grep -E 'switcheroo|codex
-exec|…' | grep -v grep | awk '{print $1}'); kill -INT ${=pids}`, and SIGINT
-reached 57 processes: the user's other sessions, their Codex runs and the
-calling session itself. `pattern-kill` reads the command alone: `pkill` and
-`killall` with any pattern, `fuser -k`, and a `kill` or `xargs kill` whose PIDs
-come through a substitution, a variable, xargs or a loop in a command that also
-runs `ps`, `pgrep`, `pidof`, `lsof` or `fuser` (`lsof -ti:<port> | xargs kill`
-included: the guard cannot see who owns the port without running the lookup).
-`session-kill` resolves the literal operands of every other kill against one
-`ps -A -o pid=,ppid=,pgid=,args=`: a PID, or every member of a `-PGID` group,
-that is a claude or codex process, the switcheroo launcher or a cmux
-`*-wrapper` holding one, or an ancestor of one (its shell, login, cmux), is
-refused unless it descends from the session the hook runs under, the nearest
-such process above the hook. That keeps a session's own sidekick, Appium and
-background shells killable by PID. `kill -1` (every process the user owns) is
-refused without a table. Signal 0 probes, `kill -l`, job specs (`%1`), `$!`,
-`ps | grep` and `pgrep -fl` with no signal, payloads carried by `ssh` or
-`devbox run`, and a PID the table does not hold all pass; with no table at all
-a literal kill passes (fail open). Neither rule has an escape: the sanctioned
-form is TaskStop for a background task, `kill $!`/`kill %1` for what the
-command itself started, or `pgrep -fl`/`lsof -ti:<port>` then `kill <pid>` on
-the reviewed literal PIDs, and a process that belongs to another session or
-the user is the user's to stop.
 
 The `process:*` rules are incident-born (2026-10-01). Every Claude Code
 session on this Mac runs as `bun … switcheroo start …` and every Codex sidekick
