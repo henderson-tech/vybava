@@ -10,6 +10,7 @@ import (
 
 	"github.com/henderson-tech/vybava/internal/memo"
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/shellword"
 	"github.com/spf13/cobra"
 )
 
@@ -136,6 +137,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 			if d, err := memo.MainCheckoutTeamHome(homes[0].Path, "chore/memory-"+topic); d != nil || err != nil {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
+		}
+		if d := memo.MirrorHome(homes[0], "memo add "+shellword.Quote(args[0])+" "+shellword.Quote(args[1])); d != nil {
+			return finish(s, nil, nil, nil, d)
 		}
 		if d := memo.LegacyHome(homes[0].Path); d != nil {
 			return finish(s, nil, nil, nil, d)
@@ -406,6 +410,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
 		}
+		if d := memo.MirrorHome(homes[0], "memo import "+shellword.Quote(args[0])); d != nil {
+			return finish(s, nil, nil, nil, d)
+		}
 		l, d, err := env.Open(homes[0], true)
 		if d != nil || err != nil {
 			return finish(s, nil, nil, nil, diagOrErr(d, err))
@@ -546,6 +553,9 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		h, err := oneHome()
 		if err != nil {
 			return finish(s, nil, nil, nil, err)
+		}
+		if d := memo.MirrorHome(h, "memo snapshot"+homeArg(h)); d != nil {
+			return finish(s, map[string]any{"home": h.Path}, nil, nil, d)
 		}
 		rev, d, err := memo.Snapshot(h, message)
 		if d != nil || err != nil {

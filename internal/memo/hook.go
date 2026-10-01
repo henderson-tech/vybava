@@ -92,6 +92,9 @@ func (e Env) ensureAll(p HookPayload, now time.Time) HookResult {
 		return res
 	}
 	for _, h := range homes {
+		if MirrorHome(h, "") != nil {
+			continue // a portal box's pull-only clone: its MEMORY.md stays the Mac's
+		}
 		r, d, err := env.EnsureHome(h, now)
 		switch {
 		case err != nil:
@@ -294,6 +297,9 @@ func (e Env) harvest(p HookPayload, now time.Time) (HookResult, error) {
 	}
 	homes = append(homes, env.aliasHomes(cites, homes)...)
 	for _, h := range homes {
+		if MirrorHome(h, "") != nil {
+			continue // a portal box's pull-only clone: box usage never reaches the Mac
+		}
 		n, rendered, err := env.credit(h, cites, now)
 		if err != nil {
 			return res, err

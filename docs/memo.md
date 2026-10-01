@@ -155,7 +155,13 @@ nothing snapshots a personal home before its ledger exists. `memo migrate`
 refuse `MAIN_CHECKOUT`: a team row whose home is in a repository's main
 checkout would sit there as uncommitted dirt on the default branch, so it is
 written from a worktree and lands through a PR; `WORKTREE_POLICY=never` in
-the repo's `.claude/.claude.git.config` opts a repo out. Elsewhere,
+the repo's `.claude/.claude.git.config` opts a repo out. On a Devbox guest
+(a portal session, `internal/devboxguest`) a personal home inside a git work
+tree is the box's pull-only Claudik clone: `memo add`, `memo import` and
+`memo snapshot` refuse `HOME_MIRROR` there (a box commit would stop every
+later fast-forward, and harvest never carries `memory/` to the Mac), the
+fix is the same command from a Mac session, and the hooks neither render
+nor credit that home. Team homes on the box work as anywhere. Elsewhere,
 `memo add` creates the ledger on first use: the row's type decides the kind
 (`user`/`feedback` personal, else team), the alias is the repo basename
 lowercased (`-team` suffix for the team home), and a personal ledger records
@@ -304,6 +310,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `RENDER_DRIFT` | 2 | `render --check`: MEMORY.md differs |
 | `LEGACY_HOME` | 2 | `add` into a v2 home (hand-written `MEMORY.md`, no `LEDGER.md`); the row is not written; fix `memo migrate <home>`, then `memo import` |
 | `MAIN_CHECKOUT` | 2 | `add`/`import` of a team row into a repo's main checkout; the row is not written; fix adds a worktree to re-run from; `WORKTREE_POLICY=never` opts out |
+| `HOME_MIRROR` | 2 | `add`/`import`/`snapshot` of a personal home in a Devbox guest's pull-only Claudik clone; nothing is written; fix is the same command from a Mac session |
 | `SURFACE_TRACKED` | 0 | warning, a team `MEMORY.md` is tracked by git and was left as committed; fix untracks a render or migrates a hand-written index |
 | `IMPORT_INVALID` | 2 | import file line outside the id-less grammar |
 | `REGISTRY_INVALID` | 2 | homes.json malformed or with unknown fields |

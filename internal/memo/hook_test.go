@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 )
 
 func TestScanTranscriptCitations(t *testing.T) {
@@ -446,6 +448,53 @@ func TestMainCheckoutTeamHome(t *testing.T) {
 	}
 	if d, err := MainCheckoutTeamHome(filepath.Join(root, ".claude", "memory"), "chore/memory-x"); d != nil || err != nil {
 		t.Errorf("WORKTREE_POLICY=never must opt the main checkout out: %+v %v", d, err)
+	}
+}
+
+// TestMirrorHomeOnDevboxGuest: on a Devbox guest ~/.claude is the portal's
+// pull-only Claudik clone, so a personal home inside it refuses add/import/
+// snapshot with the Mac re-run as the fix, and SessionStart leaves it
+// unrendered while the team home still renders. Off a guest nothing changes.
+func TestMirrorHomeOnDevboxGuest(t *testing.T) {
+	user := t.TempDir()
+	if err := os.Mkdir(filepath.Join(user, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git(filepath.Join(user, ".claude"), "init", "-q"); err != nil {
+		t.Fatal(out)
+	}
+	repo := t.TempDir()
+	env := Env{UserHome: user, Cwd: repo}
+	personal, team := env.SessionHomes()
+	for _, h := range []Home{personal, team} {
+		if _, d, err := env.Open(h, true); err != nil || d != nil {
+			t.Fatal(d, err)
+		}
+	}
+	if d := MirrorHome(personal, "memo add feedback/git 'X.'"); d != nil {
+		t.Fatalf("off a guest the personal home is writable: %+v", d)
+	}
+
+	marker := filepath.Join(t.TempDir(), "runtime.env")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	devboxguest.Marker = marker
+	t.Cleanup(func() { devboxguest.Marker = noGuestMarker })
+
+	d := MirrorHome(personal, "memo add feedback/git 'X.'")
+	if d == nil || d.Code != DiagHomeMirror || !strings.HasPrefix(d.Fix, "memo add feedback/git 'X.'  # from a Mac session") {
+		t.Fatalf("a personal home in the clone must refuse with the Mac re-run: %+v", d)
+	}
+	if d := MirrorHome(team, "memo add project/api 'X.'"); d != nil {
+		t.Errorf("the team home lands through its checkout's PR: %+v", d)
+	}
+	res, err := env.RunHook(HookPayload{HookEventName: "SessionStart", Cwd: repo, SessionID: "s"}, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(res.Homes) != 1 || res.Homes[0] != team.Path {
+		t.Fatalf("only the team home may render: %+v %v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(personal.Path, IndexFile)); !os.IsNotExist(err) {
+		t.Errorf("the clone's personal MEMORY.md was written: %v", err)
 	}
 }
 
