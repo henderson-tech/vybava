@@ -162,7 +162,8 @@ tree is the box's pull-only Claudik clone, read-only to memo: `add`,
 `HOME_MIRROR` there (a box commit would stop every later fast-forward, and
 harvest never carries `memory/` to the Mac), the fix is the same command for
 a Mac session (every flag kept, `--home` spelled from `~`), `show` records no
-use, `render` leaves the home's `MEMORY.md` as the Mac's (`"mirror": true`),
+use, `render` and `ensure` leave the home's `MEMORY.md` as the Mac's
+(`"mirror": true`, reason `mirror`),
 and the hooks neither render nor credit it. Team homes on the box work as
 anywhere. Elsewhere,
 `memo add` creates the ledger on first use: the row's type decides the kind

@@ -390,6 +390,10 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		var warnings []*memo.Diag
 		next := []string{"memo render --check" + flagIf(homeSpec) + " --json"}
 		for _, h := range homes {
+			if memo.MirrorHome(h, "") != nil { // a Devbox guest's pull-only clone keeps the Mac's render
+				results = append(results, memo.EnsureResult{Home: h.Path, Reason: "mirror"})
+				continue
+			}
 			r, d, err := env.EnsureHome(h, now)
 			if d != nil || err != nil {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
