@@ -56,7 +56,7 @@ Steps:
    · PR #N"), the final artifact's § Delivery and the run door all read `pr`
    refs. Re-attaching the same (kind, ref) only updates meta, so re-running is
    safe. No `vt-<id>` or no binding → skip silently, never ask.
-5. **`--admin` → `vybava gitkit admin-labels <N> --repo <ABS repo path>`** (created,
+5. **`--admin`, or a code-free chore (SKILL.md Hard rules) → `vybava gitkit admin-labels <N> --repo <ABS repo path>`** (created,
    found or adopted alike). It creates `skip-ci` + `eve-ignore` in the repo when
    missing, adds whichever the PR lacks, and cancels every queued/running workflow run
    on the head SHA — the push that opened the PR queued them with an event payload
