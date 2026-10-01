@@ -53,6 +53,28 @@ func (t *Tool) sourceUnchanged(head string) (bool, error) {
 	return true, nil
 }
 
+func (t *Tool) backlogEvidenceCurrent(pass int, file string, knownBasis ...string) (bool, error) {
+	var marker captureEvidence
+	found, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	basis, err := t.cachedReviewBasis(pass, knownBasis)
+	if err != nil {
+		return false, err
+	}
+	var receipt struct {
+		Basis string `json:"basis"`
+	}
+	if _, err := readJSON(filepath.Join(filepath.Dir(file), "basis.json"), &receipt); err != nil {
+		return false, err
+	}
+	return receipt.Basis == basis, nil
+}
+
 // Persist BEFORE the interruptible runner. A resume never replaces the original revision.
 func (t *Tool) captureProvenance(pass int, resume bool) error {
 	file := filepath.Join(t.passAbs(pass), "capture.json")
@@ -94,7 +116,20 @@ func (t *Tool) captureProvenance(pass int, resume bool) error {
 
 // Content basis: compact JSON of sorted [relative filename, SHA256(bytes)] pairs.
 func (t *Tool) reviewBasis(pass int) (string, error) {
+	basis, _, err := t.reviewEvidence(pass)
+	return basis, err
+}
+
+func (t *Tool) cachedReviewBasis(pass int, known []string) (string, error) {
+	if len(known) > 0 {
+		return known[0], nil
+	}
+	return t.reviewBasis(pass)
+}
+
+func (t *Tool) reviewEvidence(pass int) (string, map[string]string, error) {
 	entries := [][2]string{}
+	hashes := map[string]string{}
 	add := func(file string) error {
 		body, err := os.ReadFile(file)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -107,7 +142,8 @@ func (t *Tool) reviewBasis(pass int) (string, error) {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, [2]string{filepath.ToSlash(rel), digest(string(body), 64)})
+		hashes[filepath.ToSlash(rel)] = digest(string(body), 64)
+		entries = append(entries, [2]string{filepath.ToSlash(rel), hashes[filepath.ToSlash(rel)]})
 		return nil
 	}
 	for _, dir := range []string{filepath.Join(t.passAbs(pass), "shots"), t.abs(t.Config.Dir)} {
@@ -131,12 +167,12 @@ func (t *Tool) reviewBasis(pass int) (string, error) {
 			return nil
 		})
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 	if t.Config.Spec != "" {
 		if err := add(t.abs(t.Config.Spec)); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i][0] < entries[j][0] })
@@ -144,9 +180,9 @@ func (t *Tool) reviewBasis(pass int) (string, error) {
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(entries); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return digest(strings.TrimSuffix(b.String(), "\n"), 64), nil
+	return digest(strings.TrimSuffix(b.String(), "\n"), 64), hashes, nil
 }
 
 func (t *Tool) scoreBasis(pass int, basis string) (string, error) {

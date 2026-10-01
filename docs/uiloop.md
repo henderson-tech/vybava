@@ -376,3 +376,12 @@ and scoreboard files. `scoreboardCurrent` requires a matching receipt, every are
 board acknowledged and both scoreboard files present. Interrupted publication
 must retry before a workflow can claim completion. Existing CLI-only passes
 retain their legacy stage semantics; verified workflows require these receipts.
+
+State computes capture hashes once per request and shares that snapshot with
+publication and review/checkpoint checks; no digest cache survives a request.
+Valid partial raw reviews still merge their findings, while unread screens and
+incomplete batches remain explicit. Scoreboard validates the same evidence for
+both the default backlog and an explicitly supplied backlog (with its adjacent
+`basis.json`). Writers persist `fix/recovery.json` before editing. State relays
+that bounded lane identity and schedules its cleanup before completed checkpoints
+can hide a dirty interrupted writer, even at the pass cap.

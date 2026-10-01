@@ -3,6 +3,7 @@ package uiloop
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -91,6 +92,15 @@ func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 	if err != nil || raw["tasks-1"] {
 		t.Fatal("incomplete review admitted")
 	}
+	writeFile(t, filepath.Join(dir, "review/raw/tasks-1.json"), `{"batch":"tasks-1","basis":"`+basis+`","screensRead":["tasks"],"unreviewed":["task-detail (blank)"],"findings":[{"screen":"tasks","area":"tasks","severity":"broken","title":"Partial finding","acceptance":"fixed","files":["app.ts"]}]}`)
+	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := merged.Data.(MergeReviewData)
+	if md.Findings != 1 || md.Reviewed != 1 || !slices.Contains(md.Left, "tasks-1") || !slices.Contains(md.Unreviewed, "task-detail") {
+		t.Fatalf("partial review lost: %+v", md)
+	}
 	cp := Checkpoint{Basis: basis, Key: "fix", Status: "done", Commit: head, FileDigests: map[string]string{"app.ts": digest("original\n", 64)}, APIChanges: []string{"additive API"}}
 	if err := writeJSON(filepath.Join(dir, "fix/fix.json"), cp); err != nil {
 		t.Fatal(err)
@@ -124,6 +134,10 @@ func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 	if state().ScoreboardCurrent {
 		t.Fatal("stale scoreboard admitted")
 	}
+	writeFile(t, filepath.Join(dir, "fix/recovery.json"), `{"lane":"prim-1","kind":"primitives","dirs":["."],"keys":["fix"]}`)
+	if s := state(); s.Next.Stage != "fix" || s.Recovery == nil || s.Checkpoints.Total != 1 {
+		t.Fatalf("recovery lost behind completed checkpoints: %+v", s)
+	}
 	writeFile(t, filepath.Join(tool.Root, "app.ts"), "reverted\n")
 	cps, _, err = tool.loadCheckpoints(1)
 	if err != nil || len(cps) != 0 {
@@ -132,5 +146,10 @@ func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "shots/tasks/phone.light.png"), "new pixels")
 	if state().HasBacklog {
 		t.Fatal("new pixels kept the cached backlog")
+	}
+	for _, file := range []string{"", filepath.Join(dir, "review/backlog.json")} {
+		if _, err := tool.Scoreboard(ScoreboardOptions{Pass: 1, Backlog: file}); diagCode(err) != DiagBacklogInvalid {
+			t.Fatalf("stale scoreboard %q: %v", file, err)
+		}
 	}
 }

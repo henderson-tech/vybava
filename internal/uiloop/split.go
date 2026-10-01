@@ -232,7 +232,7 @@ func sortAreas(order, areas []string) {
 
 // planRecords plans the given records of a pass (publish --follow passes
 // only the final ones).
-func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []runxDiagnostic, error) {
+func (t *Tool) planRecords(pass int, records []Record, areas []string, knownHashes ...map[string]string) (Plan, []runxDiagnostic, error) {
 	c := t.Config
 	passDir := t.passAbs(pass)
 	if len(records) == 0 {
@@ -293,7 +293,7 @@ func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []
 			Area:  area, Sections: []BoardSection{}, Files: []PlanFile{},
 		}
 		for _, r := range rs {
-			unit, err := t.planFiles(pass, passDir, r)
+			unit, err := t.planFiles(pass, passDir, r, knownHashes...)
 			if err != nil {
 				return Plan{}, nil, err
 			}
@@ -332,7 +332,7 @@ func (t *Tool) planRecords(pass int, records []Record, areas []string) (Plan, []
 	return plan, diags, nil
 }
 
-func (t *Tool) planFiles(pass int, passDir string, r Record) ([]PlanFile, error) {
+func (t *Tool) planFiles(pass int, passDir string, r Record, knownHashes ...map[string]string) ([]PlanFile, error) {
 	vp := t.Config.ResolvedViewports()[r.Viewport]
 	w, h := r.Size.Width, r.Size.Height
 	if w == 0 {
@@ -363,12 +363,24 @@ func (t *Tool) planFiles(pass int, passDir string, r Record) ([]PlanFile, error)
 	label := strings.ToUpper(fmt.Sprintf("p%d-%s-%s-%s", pass, r.ID, r.Viewport, r.Theme))
 	mk := func(name string, full bool) (PlanFile, error) {
 		rel := path.Join(r.Dir, name)
-		body, err := os.ReadFile(filepath.Join(passDir, filepath.FromSlash(rel)))
-		if err != nil {
-			return PlanFile{}, fmt.Errorf("%s: %w", rel, err)
+		file := filepath.Join(passDir, filepath.FromSlash(rel))
+		var hash string
+		if len(knownHashes) > 0 {
+			name, err := filepath.Rel(t.Root, file)
+			if err != nil {
+				return PlanFile{}, err
+			}
+			hash = knownHashes[0][filepath.ToSlash(name)]
+		}
+		if hash == "" {
+			body, err := os.ReadFile(file)
+			if err != nil {
+				return PlanFile{}, fmt.Errorf("%s: %w", rel, err)
+			}
+			hash = digest(string(body), 64)
 		}
 		f := PlanFile{
-			Path: rel, Stamp: r.CapturedAt, SHA256: digest(string(body), 64), Shot: r.Key(), Full: full,
+			Path: rel, Stamp: r.CapturedAt, SHA256: hash, Shot: r.Key(), Full: full,
 			Label: fit(label, "", maxLabel), Title: fmt.Sprintf("%s · %s · %s", r.Title, r.Viewport, r.Theme),
 			Note: note(pass, r), Route: route, URL: r.URL, State: state,
 			Viewport: r.Viewport, Theme: r.Theme, Size: fmt.Sprintf("%dx%d@%d", w, h, DPR), Src: src,

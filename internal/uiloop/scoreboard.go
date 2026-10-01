@@ -622,6 +622,13 @@ func (t *Tool) Scoreboard(o ScoreboardOptions) (Result, error) {
 		if backlog, err = LoadBacklog(file); err != nil {
 			return Result{}, err
 		}
+		current, err := t.backlogEvidenceCurrent(pass, file)
+		if err != nil {
+			return Result{}, err
+		}
+		if !current {
+			return Result{}, diag(DiagBacklogInvalid, file+" has stale or missing review evidence", "review the current captures and write the current basis.json beside the backlog")
+		}
 		// A previous pass's backlog would mark this pass reviewed with stale verdicts.
 		if backlog.Pass != pass {
 			return Result{}, diag(DiagBacklogInvalid, fmt.Sprintf("%s is the backlog of pass %d, not pass %d", file, backlog.Pass, pass),

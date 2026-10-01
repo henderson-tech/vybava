@@ -136,7 +136,16 @@ type BoardRow struct {
 }
 
 // StateData is `ui-loop state`: a pass's state as counts, never item bodies.
+type RecoveryLane struct {
+	Lane string   `json:"lane"`
+	Kind string   `json:"kind"`
+	Dirs []string `json:"dirs"`
+	Keys []string `json:"keys"`
+}
+
+// StateData carries only the interrupted writer's bounded ownership, never item bodies.
 type StateData struct {
+	Recovery           *RecoveryLane    `json:"recovery,omitempty"`
 	HeadSHA            string           `json:"headSha"`
 	ReviewBasis        string           `json:"reviewBasis"`
 	CapturedHeadSHA    string           `json:"capturedHeadSha"`
@@ -258,7 +267,12 @@ func (t *Tool) loadBatches(pass int, records []Record, size int) (BatchesFile, b
 }
 
 // rawBatchIDs lists the batch ids that have a review/raw/<id>.json.
-func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
+func (t *Tool) rawBatchIDs(pass int, knownBasis ...string) (map[string]bool, error) {
+	return t.rawBatchEvidence(pass, false, knownBasis...)
+}
+
+// A valid partial review is mergeable but does not complete its batch.
+func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (map[string]bool, error) {
 	paths, err := filepath.Glob(filepath.Join(t.reviewDir(pass), "raw", "*.json"))
 	if err != nil {
 		return nil, err
@@ -272,7 +286,7 @@ func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
 	var basis string
 	var batches BatchesFile
 	if strict {
-		basis, err = t.reviewBasis(pass)
+		basis, err = t.cachedReviewBasis(pass, knownBasis)
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +315,7 @@ func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
 				}
 				valid = true
 				for _, screen := range batch.Screens {
-					if !slices.Contains(r.ScreensRead, screen) {
+					if !partial && !slices.Contains(r.ScreensRead, screen) {
 						valid = false
 					}
 				}
@@ -311,7 +325,7 @@ func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
 					}
 				}
 			}
-			if !valid || len(r.Unreviewed) > 0 {
+			if !valid || (!partial && len(r.Unreviewed) > 0) {
 				continue
 			}
 		}
@@ -322,7 +336,7 @@ func (t *Tool) rawBatchIDs(pass int) (map[string]bool, error) {
 
 // loadCheckpoints reads every <pass>/fix/*.json except lanes.json. A file
 // that does not decode (cut off mid-write) is skipped with a warning.
-func (t *Tool) loadCheckpoints(pass int) ([]Checkpoint, []runxDiagnostic, error) {
+func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []runxDiagnostic, error) {
 	paths, err := filepath.Glob(filepath.Join(t.passAbs(pass), "fix", "*.json"))
 	if err != nil {
 		return nil, nil, err
@@ -336,13 +350,13 @@ func (t *Tool) loadCheckpoints(pass int) ([]Checkpoint, []runxDiagnostic, error)
 	}
 	var basis string
 	if strict {
-		basis, err = t.reviewBasis(pass)
+		basis, err = t.cachedReviewBasis(pass, knownBasis)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	for _, p := range paths {
-		if filepath.Base(p) == lanesFile {
+		if filepath.Base(p) == lanesFile || filepath.Base(p) == "recovery.json" {
 			continue
 		}
 		var c Checkpoint
@@ -395,7 +409,7 @@ func (t *Tool) previousBacklog(pass int) (*Backlog, *PreviousBacklog, error) {
 }
 
 // loadPassBacklog reads <pass>/review/backlog.json strictly; nil when absent.
-func (t *Tool) loadPassBacklog(pass int) (*Backlog, error) {
+func (t *Tool) loadPassBacklog(pass int, knownBasis ...string) (*Backlog, error) {
 	file := filepath.Join(t.reviewDir(pass), "backlog.json")
 	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -408,25 +422,12 @@ func (t *Tool) loadPassBacklog(pass int) (*Backlog, error) {
 		return nil, diag(DiagBacklogInvalid, fmt.Sprintf("%s/review/backlog.json is the backlog of pass %d", t.PassDir(pass), b.Pass),
 			fmt.Sprintf("its \"pass\" must be %d: re-run the review stage's synthesis", pass))
 	}
-	var marker captureEvidence
-	found, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	current, err := t.backlogEvidenceCurrent(pass, file, knownBasis...)
 	if err != nil {
 		return nil, err
 	}
-	if found {
-		basis, err := t.reviewBasis(pass)
-		if err != nil {
-			return nil, err
-		}
-		var receipt struct {
-			Basis string `json:"basis"`
-		}
-		if _, err := readJSON(filepath.Join(t.reviewDir(pass), "basis.json"), &receipt); err != nil {
-			return nil, err
-		}
-		if receipt.Basis != basis {
-			return nil, nil
-		}
+	if !current {
+		return nil, nil
 	}
 	return b, nil
 }
@@ -535,7 +536,8 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		data.HeadSHA = strings.TrimSpace(head.Stdout)
 	}
 	var err error
-	data.ReviewBasis, err = t.reviewBasis(pass)
+	var hashes map[string]string
+	data.ReviewBasis, hashes, err = t.reviewEvidence(pass)
 	if err != nil {
 		return Result{}, err
 	}
@@ -576,7 +578,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	data.Published = len(records) > 0 && len(data.Unpublished) == 0
 	if data.CapturedHeadSHA != "" && len(records) > 0 {
-		plan, _, err := t.planRecords(pass, records, nil)
+		plan, _, err := t.planRecords(pass, records, nil, hashes)
 		if err != nil {
 			return Result{}, err
 		}
@@ -596,7 +598,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := t.rawBatchIDs(pass)
+	raw, err := t.rawBatchIDs(pass, data.ReviewBasis)
 	if err != nil {
 		return Result{}, err
 	}
@@ -616,7 +618,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		}
 	}
 
-	backlog, err := t.loadPassBacklog(pass)
+	backlog, err := t.loadPassBacklog(pass, data.ReviewBasis)
 	if err != nil {
 		return Result{}, err
 	}
@@ -627,7 +629,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if _, data.Previous, err = t.previousBacklog(pass); err != nil {
 		return Result{}, err
 	}
-	checkpoints, diags, err := t.loadCheckpoints(pass)
+	checkpoints, diags, err := t.loadCheckpoints(pass, data.ReviewBasis)
 	if err != nil {
 		return Result{}, err
 	}
@@ -673,7 +675,16 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
 	}
 	data.Next = nextStage(pass, len(records), data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, o.Cap)
-	if data.Shots == 0 && data.CapturedHeadSHA != "" && data.SourceUnchanged {
+	if _, err := readJSON(filepath.Join(t.passAbs(pass), "fix", "recovery.json"), &data.Recovery); err != nil {
+		return Result{}, err
+	}
+	if data.Recovery != nil {
+		if data.Recovery.Lane == "" {
+			return Result{}, diag(DiagCheckpointInvalid, "recovery.json has no writer identity", "restore the interrupted lane's identity and owned dirs before resuming")
+		}
+		data.Next = NextStage{Stage: "fix", Resume: true, Reason: "recover the interrupted writer before checkpoint filtering"}
+	}
+	if data.Recovery == nil && data.Shots == 0 && data.CapturedHeadSHA != "" && data.SourceUnchanged {
 		data.Next = NextStage{Stage: "capture", Resume: true, Reason: "the interrupted pass has provenance but no shots yet"}
 	}
 	return Result{Data: data, Diagnostics: diags}, nil
@@ -916,6 +927,14 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 	verdicts := map[string]string{}
 	for _, r := range raws {
 		for _, a := range r.Acceptance {
+			if r.Basis != "" && previous != nil {
+				read := slices.ContainsFunc(previous.Findings, func(f Finding) bool {
+					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return unreviewedScreen(entry) == f.Screen })
+				})
+				if !read {
+					continue
+				}
+			}
 			if verdictRank[a.Verdict] > verdictRank[verdicts[a.Key]] {
 				verdicts[a.Key] = a.Verdict
 			}
@@ -1013,6 +1032,10 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 			}
 		}
 		for _, id := range ids {
+			if r.Basis != "" && !slices.Contains(r.ScreensRead, id) {
+				skipped[id] = true
+				continue
+			}
 			judged[id] = true
 		}
 		for _, e := range r.Unreviewed {
@@ -1082,7 +1105,11 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 		}
 		return paths[i] < paths[j]
 	})
-	validRaw, err := t.rawBatchIDs(pass)
+	validRaw, err := t.rawBatchEvidence(pass, true)
+	if err != nil {
+		return Result{}, err
+	}
+	completeRaw, err := t.rawBatchIDs(pass)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1118,7 +1145,7 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	}
 	have := map[string]bool{}
 	for _, r := range raws {
-		have[r.Batch] = true
+		have[r.Batch] = completeRaw[r.Batch]
 	}
 	var diags []runxDiagnostic
 	for _, b := range batches.Batches {
