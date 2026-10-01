@@ -13,7 +13,8 @@ The applet owns what must not depend on judgment:
 - the vendored TypeScript/Playwright harness and its drift gate;
 - the pass directory and its `run.json`;
 - the split into vitrinka sets and the publish;
-- the scoreboard.
+- the scoreboard;
+- the stage state the review-loop reads back: `state`, the review `batches`, `merge-review` and the fix `lanes`.
 
 The orchestration (reviewers per area, synthesis, fix lanes, boards) lives in the vitrinka `map` and `review-loop` workflows, which drive this CLI. There is no Výbava skill for it.
 
@@ -31,6 +32,10 @@ ui-loop split       [--pass N] [--areas a,b]
 ui-loop publish     [--pass N] [--areas a,b] [--sets key,…] [--retries 3] [--force] [--dry-run]
 ui-loop publish     --follow [--from user@host:path] [--interval 30s] [--until-idle 10m] [--pass N] [--areas a,b] [--retries 3]
 ui-loop scoreboard  [--pass N] [--backlog FILE] [--previous N] [--no-delta]
+ui-loop state       [--pass N] [--cap 6]
+ui-loop batches     [--pass N] [--size 14] [--areas a,b]
+ui-loop merge-review [--pass N]
+ui-loop lanes       [--pass N] [--primitives dir,dir] [--max 4]
 ```
 
 Every verb emits the `{v, ok, verb, data, diagnostics, next}` envelope (`--json` for machines). The output of the commands a verb runs streams to stderr. Exit codes: 0 ok, 1 infra, 2 diagnostics. The codes are the closed enum in `internal/uiloop/diag.go`.
@@ -248,6 +253,77 @@ The fields follow these rules:
   - `met`, `partly` or `not-met`: the verdict on a previous finding's `acceptance`, which reuses that finding's `key`.
 - **Required:** `title` and `acceptance`. Every finding that is not `met` also names the `files` a fix lane edits.
 - **`reviewed`** lists the screen ids a reviewer actually judged this pass, whether or not they found anything. It is the only thing that makes a screen clean: a screen with no open finding that is missing from `reviewed` is counted `unreviewed` per area and in the totals, and the markdown table shows the column. A backlog without `reviewed` (the format before v0.24.1) still scores every screen without an open finding as clean, with the unreviewed column shown as `—`, and `scoreboard` warns `REVIEWED_MISSING`. An empty list means nothing was judged.
+
+## Stage verbs: what the review-loop reads back
+
+A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377 screens, 31 batches, a 340-item backlog of 500 KB) the workflow's agents dropped the screen list, abridged the raw review files and refused the backlog, so a backlog was synthesized from 7 of 31 batches and a fix stage planned 0 lanes. These four verbs own every list instead. An agent runs one and relays its envelope; an agent that needs an item's body reads it from the file by key (`jq '.findings[] | select(.key=="<key>")' <pass>/review/backlog.json`).
+
+**`state [--pass N] [--cap 6]`** reads a pass back as counts, never item bodies. It defaults to the latest pass, and a repo with no pass answers pass 0 and `capture`. It writes nothing.
+
+```json
+{
+  "pass": 1, "passDir": ".ui-loop/pass-1",
+  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix" },
+  "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
+  "published": true, "unpublished": [], "sets": [{ "area", "key", "status", "url" }],
+  "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [] },
+  "hasBacklog": true,
+  "backlog": { "file", "findings": 340, "open": 340, "byStatus": {}, "bySeverity": {}, "reviewed": 264 },
+  "previous": { "pass", "file", "open" },
+  "checkpoints": { "total": 47, "byStatus": { "done": 43, "blocked": 4 } },
+  "boards": [{ "area", "url", "slug", "section" }],
+  "next": { "stage": "fix", "resume": true, "reason": "293 of 340 open items without a checkpoint" }
+}
+```
+
+- `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
+- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists. An area is reviewed when none of its batches is left.
+- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts `fix/*.json`, `lanes.json` excluded.
+- `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
+- `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
+  - `capture`: no shots yet, or the pass is unpublished (`resume`);
+  - `review`: no backlog, or an area has a batch left;
+  - `done`: nothing is open;
+  - `fix`: open items lack a finishing checkpoint (`done`, `skipped` or `blocked`);
+  - `done`: the pass reached `--cap`;
+  - `done`: the round fixed nothing;
+  - otherwise `verify`.
+
+**`batches [--pass N] [--size 14] [--areas a,b]`** gives the reviewer batches: each area's screens sorted by id, in chunks of `--size`, with areas in config order. The ids are `<area>-<n>`. The verb writes every batch to `review/batches.json` (`{v, pass, size, batches}`), the one definition the review stage and `merge-review` share. It returns `{pass, passDir, file, size, screens, batches: [{id, area, screens}], done, left}`, narrowed to `--areas` (the file never is). Without `--size` the size the file was made with stays. A different `--size` once raw batches exist is refused (`SELECTION_INVALID`), because it would redefine what a finished batch covered.
+
+**`merge-review [--pass N]`** folds `review/raw/*.json` (in batch order) and the previous pass's backlog into `review/backlog.draft.json`, a `{v, pass, reviewed, findings}` in the scoreboard contract:
+
+- **Previous items:** each previous open item keeps its key and takes its worst verdict across the batches (`not-met` beats `partly`, which beats `met`). An item nobody judged stands as `not-met` and is listed in `unjudged`.
+- **Fresh findings** are keyed by screen + title (slugged, 80 characters). Two with one key fold into one: the worst severity wins, and viewports, themes, shots and files are unioned. A fresh finding whose key is a previous item's is that item's verdict, never a second item. A raw finding's `area` defaults to its batch's.
+- **Problems:** a raw finding missing its screen, title, acceptance, files or a valid severity stays out of the draft and is listed in `problems` (`{batch, index, screen, title, missing}`).
+- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. An entry naming one shot (`<id>@<viewport>`) skips nothing, because the screen was judged at its other shots.
+
+It returns counts plus what needs an agent's judgement: `{pass, passDir, file, previous, raw, left, findings, open, byStatus, bySeverity, reviewed, unreviewed, unjudged, problems, invalid}`. `invalid` is what the draft still breaks of the contract. Planned batches without a raw file are listed in `left` and warned `REVIEW_INCOMPLETE`. The synthesis agent judges only those keys, writes `backlog.json` and validates it with `scoreboard`.
+
+**`lanes [--pass N] [--primitives dir,dir] [--max 4]`** plans the fix round from `review/backlog.json` by **ownership**. It writes `fix/lanes.json` and returns the same:
+
+```json
+{ "v": 1, "pass": 1, "passDir", "file",
+  "primitives": [{ "lane": "prim-1", "dirs": ["libs/ui-lib/src/lib/components/table"], "keys": ["…"], "bySeverity": {} }],
+  "areas": [{ "lane": "area-1", "dirs": [], "keys": [], "bySeverity": {} }],
+  "frozen": ["<every primitive dir>"], "foreign": ["<key>"], "i18n": ["<key>"],
+  "open": 340, "finished": 47, "primitivePrefixes": [], "max": 4 }
+```
+
+1. **Home.** Each open item's home is the directory of its first file that is inside the repo and not an i18n catalog (a `.json` under a directory named `i18n`). An absolute path is made repo-relative. A path outside the repo (another repo, or `../`) never counts. An item without a home is `foreign` (warned `FOREIGN_ITEMS`), or `i18n` when its only in-repo files are catalogs.
+2. **Groups.** Items group by home. A group is primitive when its dir is under a `--primitives` prefix (a directory prefix, `libs/ui-lib` matches `libs/ui-lib/…`) or when items of two areas share it. `frozen` lists every primitive dir.
+3. **Packing.** The groups pack greedily into at most `--max` lanes per phase: the biggest group first, onto the lightest lane, ties by dir. The primitives phase runs first.
+4. **Order inside a lane:** worst severity first, then carried items (`not-met`, `partly`) before fresh ones, then key.
+5. **A resumed round** classifies every open item, so `frozen` stays stable, but packs only the items without a finishing checkpoint (`finished` counts them).
+
+On pwf-ui pass 1 this planned 4 × ~62 primitive items and 4 × ~22 area items. The union-find over shared files it replaces chained 244 items and 172 files into ONE lane through hub files (a table template named by 46 findings, the i18n catalogs).
+
+**The ownership contract:**
+
+- **Dirs.** A lane owns the files DIRECTLY inside its `dirs`, not their subdirectories: a subdirectory with items of its own is another group, and maybe another lane. A fix that needs a file outside its dirs is checkpointed `blocked`, with the exact change as its note.
+- **Frozen.** Area lanes never edit a `frozen` dir.
+- **Catalogs.** i18n catalogs are owned by nobody. Lanes return the keys they need (`{key, <locale>: text}`), and the fix stage's settle step applies them, type-checks, and resolves the `i18n` items.
+- **Foreign items** get a `blocked` checkpoint that names where the fix lands, so the round can finish.
 
 ## Operational rules
 

@@ -79,6 +79,21 @@ const (
 	// after 3 × --until-idle without a new shot (the capture died before its
 	// teardown); finish the pass with run --resume and follow again (warning).
 	DiagRunUnfinished = "RUN_UNFINISHED"
+	// DiagReviewInvalid: a <pass>/review/raw/<batch>.json does not decode;
+	// merge-review stops — re-run that batch (delete its raw file).
+	DiagReviewInvalid = "REVIEW_INVALID"
+	// DiagReviewIncomplete: merge-review ran while planned batches have no
+	// raw file; the draft covers only the reviewed ones (warning) — finish
+	// the review stage first.
+	DiagReviewIncomplete = "REVIEW_INCOMPLETE"
+	// DiagCheckpointInvalid: a <pass>/fix/*.json is not a checkpoint (it does
+	// not decode or has no key) and is skipped, so its item counts as not
+	// finished (warning) — rewrite it or delete it.
+	DiagCheckpointInvalid = "CHECKPOINT_INVALID"
+	// DiagForeignItems: lanes found open items that name no file inside the
+	// repo (an absolute path into another repo); no lane owns them (warning)
+	// — checkpoint them blocked with where the fix lands, or repair their files.
+	DiagForeignItems = "FOREIGN_ITEMS"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

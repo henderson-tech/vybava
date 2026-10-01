@@ -227,12 +227,69 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	scoreboardCmd.Flags().IntVar(&previous, "previous", 0, "pass to compute the delta against (default: the one before)")
 	scoreboardCmd.Flags().BoolVar(&noDelta, "no-delta", false, "skip the delta")
 
-	// --pass is shared by four verbs; record whether it was given so an
+	var (
+		stageCap, batchSize, maxLanes int
+		primitives                    string
+	)
+	withPass := func(verb func(*uiloop.Tool) (uiloop.Result, error)) func(*cobra.Command, []string) error {
+		return run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			if err := uiloop.CheckPassFlag(pass, passGiven); err != nil {
+				return uiloop.Result{}, err
+			}
+			return verb(t)
+		})
+	}
+	stateCmd := &cobra.Command{
+		Use:   "state",
+		Short: "A pass's state as counts (shots, screens, published, review batches, backlog, checkpoints) and the next stage",
+		Args:  cobra.NoArgs,
+		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.State(uiloop.StateOptions{Pass: pass, Cap: stageCap})
+		}),
+	}
+	stateCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
+	stateCmd.Flags().IntVar(&stageCap, "cap", 6, "the pass cap the next stage respects")
+
+	batchesCmd := &cobra.Command{
+		Use:   "batches",
+		Short: "Plan the pass's review batches from its shot records and persist them to review/batches.json",
+		Args:  cobra.NoArgs,
+		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas)})
+		}),
+	}
+	batchesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
+	batchesCmd.Flags().IntVar(&batchSize, "size", 0, "screens per batch (default: the size batches.json was made with, else 14)")
+	batchesCmd.Flags().StringVar(&areas, "areas", "", "return only these areas' batches (the file always holds every batch)")
+
+	mergeCmd := &cobra.Command{
+		Use:   "merge-review",
+		Short: "Merge review/raw/*.json and the previous backlog into review/backlog.draft.json; list what needs judgement",
+		Args:  cobra.NoArgs,
+		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.MergeReview(uiloop.MergeReviewOptions{Pass: pass})
+		}),
+	}
+	mergeCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
+
+	lanesCmd := &cobra.Command{
+		Use:   "lanes",
+		Short: "Plan the fix lanes by directory ownership from review/backlog.json; write fix/lanes.json",
+		Args:  cobra.NoArgs,
+		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.Lanes(uiloop.LanesOptions{Pass: pass, Primitives: uiloop.SplitList(primitives), Max: maxLanes})
+		}),
+	}
+	lanesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
+	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated)")
+	lanesCmd.Flags().IntVar(&maxLanes, "max", 4, "lanes per phase")
+
+	// --pass is shared by the pass verbs; record whether it was given so an
 	// explicit 0 is refused instead of read as "not given".
-	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd} {
+	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd} {
 		c.PreRun = func(cmd *cobra.Command, _ []string) { passGiven = cmd.Flags().Changed("pass") }
 	}
 
-	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd)
+	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd)
 	return command
 }
