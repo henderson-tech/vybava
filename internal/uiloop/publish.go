@@ -77,12 +77,13 @@ const (
 var boardURLRe = regexp.MustCompile(`https://\S+/boards/\S+`)
 
 func setDigest(s Set) string {
-	var b strings.Builder
-	for _, f := range s.Files {
-		b.WriteString(ledgerLine(f))
-		b.WriteByte('\n')
-	}
-	return digest(b.String(), 12)
+	b, _ := json.Marshal(s) // Set contains only JSON-safe values.
+	return digest(string(b), 64)
+}
+
+func fileIdentity(f PlanFile) string {
+	body, _ := json.Marshal(f) // PlanFile contains only JSON-safe values.
+	return f.Path + "\t" + digest(string(body), 64)
 }
 
 // publisher carries one publish run's state.
@@ -175,6 +176,9 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		return nil, err
 	}
 	_, errD := os.Stat(filepath.Join(root, descriptor))
+	if errD != nil && !errors.Is(errD, fs.ErrNotExist) {
+		return nil, errD
+	}
 	if errors.Is(errD, fs.ErrNotExist) {
 		out, err := p.vitrinka("board", "init", "--root", root, "--key", s.Key, "--title", s.Title, "--project", p.project, "--no-input", "--yes")
 		if err != nil {
@@ -188,15 +192,21 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 	if err != nil {
 		return nil, err
 	}
-	have := map[string]bool{}
+	have := map[string]string{}
 	if b, err := os.ReadFile(ledger); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
-			have[line] = true
+			if path, _, _ := strings.Cut(line, "\t"); path != "" {
+				have[path] = line // only the latest adoption is current
+			}
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read adoption ledger: %w", err)
 	}
 	for _, f := range s.Files {
-		// A bare-path line is an older publish's; it stands for any stamp.
-		if have[ledgerLine(f)] || have[f.Path] {
+		if err := p.ctx.Err(); err != nil {
+			return refused, err
+		}
+		if have[f.Path] == fileIdentity(f) {
 			continue
 		}
 		vp, err := p.viewportOf(f)
@@ -216,13 +226,17 @@ func (p *publisher) adopt(root string, s Set) (refused []RefusedFile, err error)
 		if err != nil {
 			return refused, err
 		}
-		_, werr := lf.WriteString(ledgerLine(f) + "\n")
+		_, werr := lf.WriteString(fileIdentity(f) + "\n")
+		if werr == nil {
+			werr = lf.Sync()
+		}
 		if cerr := lf.Close(); werr == nil {
 			werr = cerr
 		}
 		if werr != nil {
 			return refused, werr
 		}
+		have[f.Path] = fileIdentity(f)
 	}
 	return refused, nil
 }
@@ -243,6 +257,8 @@ func ledgerFor(passDir, root string) (string, error) {
 		if err := os.Rename(old, ledger); err != nil {
 			return "", err
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
 	}
 	return ledger, nil
 }
@@ -282,6 +298,8 @@ func release(root string) error {
 	h := filepath.Join(root, heldDesc)
 	if _, err := os.Stat(h); err == nil {
 		return os.Rename(h, filepath.Join(root, descriptor))
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -289,24 +307,37 @@ func release(root string) error {
 // push pushes root, retrying; the board URL comes from the --json envelope.
 func (p *publisher) push(root, title string) (url string, attempts int, err error) {
 	for attempts = 1; attempts <= p.retries; attempts++ {
+		if err := p.ctx.Err(); err != nil {
+			return "", attempts, err
+		}
 		out, xerr := p.vitrinka("board", "push", "--root", root, "--title", title, "--yes", "--no-input", "--no-render", "--json")
 		if xerr != nil {
 			return "", attempts, xerr
 		}
+		negativeAck := false
 		if out.Code == 0 {
 			var env struct {
+				OK   *bool `json:"ok"`
 				Data struct {
 					URL string `json:"url"`
 				} `json:"data"`
 			}
-			if json.Unmarshal([]byte(out.Stdout), &env) == nil && env.Data.URL != "" {
+			if json.Unmarshal([]byte(out.Stdout), &env) == nil && (env.OK == nil || *env.OK) && env.Data.URL != "" {
 				return env.Data.URL, attempts, nil
 			}
-			if m := boardURLRe.FindString(out.Stdout + "\n" + out.Stderr); m != "" {
+			if env.OK != nil && !*env.OK {
+				negativeAck = true
+				err = fmt.Errorf("vitrinka board push returned ok=false: %s", lastLine(out.Stdout))
+			}
+			if m := boardURLRe.FindString(out.Stdout + "\n" + out.Stderr); !negativeAck && m != "" {
 				return m, attempts, nil
 			}
 		}
-		err = failed("vitrinka board push", out)
+		if out.Code == 0 && !negativeAck {
+			err = errors.New("vitrinka board push returned no board URL")
+		} else if out.Code != 0 {
+			err = failed("vitrinka board push", out)
+		}
 		if attempts < p.retries {
 			p.t.Sleep(3 * time.Second)
 		}
@@ -349,7 +380,7 @@ func (p *publisher) publishSet(s Set) PublishedSet {
 }
 
 // Publish adopts the pass's split plan into vitrinka sets under
-// <passDir>/publish/sets, one per area, and pushes them one by one.
+// <out>/sets, one per area across passes, and pushes them one by one.
 func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -387,6 +418,11 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 		if err := json.Unmarshal(b, &index); err != nil {
 			return Result{}, fmt.Errorf("%s: %w", indexFile, err)
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Result{}, fmt.Errorf("read publish index: %w", err)
+	}
+	if index.Pass != pass {
+		return Result{}, fmt.Errorf("publish index belongs to pass %d, expected %d", index.Pass, pass)
 	}
 	// A row whose key is no area's set came from the chunked publish: it
 	// moves to legacy, and the pass publishes fresh area sets instead.
@@ -416,48 +452,7 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 		prior[s.Key] = s
 	}
 
-	var results []PublishedSet
-	for _, s := range plan.Sets {
-		if len(o.Sets) > 0 && !slices.Contains(o.Sets, s.Key) {
-			continue
-		}
-		if was, ok := prior[s.Key]; ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.Digest == setDigest(s) && len(was.Refused) == 0 {
-			was.Status, was.Sections = "skipped", s.Sections
-			results = append(results, was)
-			continue
-		}
-		results = append(results, p.publishSet(s))
-	}
-	res := Result{Data: map[string]any{"pass": pass, "sets": results, "notes": plan.Notes, "legacy": index.Legacy}, Diagnostics: diags}
-	if o.DryRun {
-		return res, nil
-	}
-	merged := map[string]PublishedSet{}
-	for _, s := range index.Sets {
-		merged[s.Key] = s
-	}
-	for _, r := range results {
-		if r.Status == "skipped" {
-			r.Status = "pushed"
-		}
-		merged[r.Key] = r
-	}
-	index.Sets = index.Sets[:0]
-	for _, s := range plan.Sets {
-		if r, ok := merged[s.Key]; ok {
-			index.Sets = append(index.Sets, r)
-			delete(merged, s.Key)
-		}
-	}
-	left := make([]string, 0, len(merged))
-	for k := range merged {
-		left = append(left, k)
-	}
-	slices.Sort(left)
-	for _, k := range left {
-		index.Sets = append(index.Sets, merged[k])
-	}
-	// This run's areas replace their notes; an area it did not plan keeps its own.
+	// Preserve notes for areas outside this run before saving any receipt.
 	notes := slices.DeleteFunc(index.Notes, func(n AreaNotes) bool { return len(o.Areas) == 0 || slices.Contains(o.Areas, n.Area) })
 	notes = append(notes, plan.Notes...)
 	slices.SortStableFunc(notes, func(a, b AreaNotes) int { return orderOf(t.Config.Areas, a.Area) - orderOf(t.Config.Areas, b.Area) })
@@ -465,16 +460,62 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 		notes = []AreaNotes{}
 	}
 	index.Notes = notes
-	b, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
+	saveState := func() error {
+		index.Sets = index.Sets[:0]
+		remaining := make(map[string]PublishedSet, len(prior))
+		for key, row := range prior {
+			remaining[key] = row
+		}
+		for _, set := range plan.Sets {
+			if row, ok := remaining[set.Key]; ok {
+				index.Sets = append(index.Sets, row)
+				delete(remaining, set.Key)
+			}
+		}
+		keys := make([]string, 0, len(remaining))
+		for key := range remaining {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			index.Sets = append(index.Sets, remaining[key])
+		}
+		return writePublishIndex(indexFile, index)
+	}
+	var results []PublishedSet
+	for _, s := range plan.Sets {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		if len(o.Sets) > 0 && !slices.Contains(o.Sets, s.Key) {
+			continue
+		}
+		if was, ok := prior[s.Key]; ok && !o.Force && !o.DryRun && was.Status == "pushed" && was.URL != "" && was.Digest == setDigest(s) && len(was.Refused) == 0 {
+			was.Status, was.Sections = "skipped", s.Sections
+			results = append(results, was)
+			continue
+		}
+		rec := p.publishSet(s)
+		results = append(results, rec)
+		if !o.DryRun {
+			prior[rec.Key] = rec
+			if err := saveState(); err != nil {
+				return Result{}, err
+			}
+			// A cancellation can arrive with an acknowledged upload. Save it first.
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+		}
+	}
+	res := Result{Data: map[string]any{"pass": pass, "sets": results, "notes": plan.Notes, "legacy": index.Legacy}, Diagnostics: diags}
+	if o.DryRun {
+		return res, nil
+	}
+	if err := saveState(); err != nil {
 		return res, err
 	}
-	if err := os.MkdirAll(filepath.Dir(indexFile), 0o755); err != nil {
-		return res, err
-	}
-	if err := os.WriteFile(indexFile, append(b, '\n'), 0o644); err != nil {
-		return res, err
-	}
+
 	for _, r := range results {
 		if r.Status == "failed" {
 			res.Diagnostics = append(res.Diagnostics, errDiag(DiagPublishFailed, r.Key+": "+r.Error, fmt.Sprintf("vybava ui-loop publish --pass %d --sets %s", pass, r.Key)))
@@ -494,6 +535,42 @@ func (t *Tool) publishRecords(ctx context.Context, pass int, records []Record, o
 	return res, nil
 }
 
-// ledgerLine is a file's line in an adopted ledger and its setDigest entry:
-// path and stamp, so a retaken image at the same path is adopted again.
-func ledgerLine(f PlanFile) string { return f.Path + "\t" + f.Stamp }
+// Each acknowledged upload is durable before another set starts. Rename
+// prevents a cutoff from leaving an unreadable, partially written receipt.
+func writePublishIndex(file string, index PublishIndex) error {
+	return writeJSON(file, index)
+}
+
+// writeAtomicJSONBytes commits a receipt before its caller starts another operation.
+func writeAtomicJSONBytes(file string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(file), ".publish-index-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(append(b, '\n'))
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), file); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(file))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	if closeErr := dir.Close(); syncErr == nil {
+		syncErr = closeErr
+	}
+	return syncErr
+}

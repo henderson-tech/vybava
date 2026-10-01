@@ -180,9 +180,9 @@ A `login` that types a password reads it from the environment. Getting it there 
 `split` plans **one vitrinka set per area**, in config area order. A set key is a board, so an area has ONE board across every pass: its key is `<boardPrefix>-<area>`, and each pass adds its shots and its `Pass N · <viewport> · <theme>` sections to it. Every viewport × theme of the area goes into that one set.
 
 - **Images and notes:** only `ok`, `theme-mismatch` and `build-error` shots become images. Every other status (`recipe-failed`, `unreachable`, `error`) is listed per area under `notes` in the plan and in `publish/index.json` (`id`, `viewport`, `theme`, `status`, `step`, `error`), for the review-loop publisher to render as a text card. A `recipe-failed` shot is a picture of wherever the recipe died, usually the same sign-in page.
-- **Keys** are `<boardPrefix>-p<n>-<area>`, capped at 64 characters with a digest. **Titles** are `<boardPrefix> · <area> · pass <n>`.
+- **Keys** are `<boardPrefix>-<area>`, capped at 64 characters with a digest. **Titles** are `<boardPrefix> · <area>`.
 - **Order:** files are grouped by viewport, then theme, in the order `apps.<app>.viewports` × `themes` lists them. Inside each group they follow screen (manifest) order, with a shot's full capture right after its viewport capture. A plain `publish` adopts in this order, so the set's manifest follows it too. Under `--follow` shots are adopted as they become final, so the manifest is in arrival order, and the sections below carry the layout.
-- **Sections:** each set in `plan.json` and each row in `publish/index.json` carries `sections: [{title: "<viewport> · <theme>", viewport, theme, labels: [...]}]`, in set order. The review-loop publisher lays out one board section per entry from its labels.
+- **Sections:** each set in `plan.json` and each row in `publish/index.json` carries `sections: [{title: "Pass N · <viewport> · <theme>", viewport, theme, labels: [...]}]`, in set order. The review-loop publisher lays out one board section per entry from its labels.
 - **Size:** vitrinka 5.13 syncs a screenshot set file by file (the per-file door), so a set has no byte cap and holds up to 20,000 files, its manifest included (`ingest.MaxSetFiles`). The root is shared by every pass, so the files other passes adopted into it (their ledgers, one per path) count too. An area above the cap is not planned: `split` reports `SET_TOO_LARGE`. Split the area in the config.
 - **Labels** are `P<n>-<ID>-<VIEWPORT>-<THEME>[-FULL]`, capped at 40 characters.
 - **Captures** carry `--device <viewport>`, `--viewport <W>x<H>@2` and `--state <theme>[ · as <user>][ · <app>]`, so every shot names its section on the board.
@@ -192,11 +192,13 @@ A `login` that types a password reads it from the environment. Getting it there 
 `publish` adopts each set under `<out>/sets/<key>`, one root per area shared by every pass (a set key is a board, so each pass adds its shots and its `Pass N · <viewport> · <theme>` sections to the same board), then pushes it:
 
 1. `vitrinka board init --root --key --title --project`.
-2. `board capture web --file … --label --title --route --url --note --src --state --device --viewport` adopts each file. The descriptor stays in place, so each capture fires vitrinka's detached per-file push and the shot shows up on the board while the rest adopt. A ledger at `publish/adopted/<key>` (one `path<TAB>capturedAt` line per file) makes a re-run adopt only what is missing, and a `--resume` retake, which keeps the path but not the `capturedAt`, is adopted again. A bare-path line from an older publish stands for any retake; delete that ledger to re-adopt its set. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`. A full companion passes its own CSS size as `--viewport` (PNG size ÷ 2, `@2`): it is an element screenshot of the scroller, narrower than 2 × the page viewport, which the hi-dpi check would refuse. `--hidpi` stays on. A file `board capture` refuses is recorded under the set's `refused` (`path`, `error`) and reported as `PUBLISH_REFUSED`; the rest of the set is adopted and pushed, and the next publish retries only the refused files. Only a failure to run vitrinka at all aborts the set.
+2. `board capture web --file … --label --title --route --url --note --src --state --device --viewport` adopts each file. The descriptor stays in place, so each capture fires vitrinka's detached per-file push and the shot shows up on the board while the rest adopt. A synced ledger at `publish/adopted/<key>` (one `path<TAB>fingerprint` line per file) makes a re-run adopt only what is missing. The fingerprint includes image SHA256, capture time and metadata: changed pixels at the same path and size are adopted again. Older bare-path and timestamp-only ledger entries refresh once. It lives beside the set roots, never in one: `board push` refuses a root holding anything but images, `.boxes.json` sidecars and `manifest.json`. A full companion passes its own CSS size as `--viewport` (PNG size ÷ 2, `@2`): it is an element screenshot of the scroller, narrower than 2 × the page viewport, which the hi-dpi check would refuse. `--hidpi` stays on. A file `board capture` refuses is recorded under the set's `refused` (`path`, `error`) and reported as `PUBLISH_REFUSED`; the rest of the set is adopted and pushed, and the next publish retries only the refused files. Only a failure to run vitrinka at all aborts the set.
 3. `vitrinka board push --root --title --yes --no-input --no-render --json`, reading `data.url`. This commits the set and records its status.
 4. A failed push is retried (`--retries`, default 3). A set that still fails is `failed` in the index, and `--sets <key>` retries it.
 
-Outcomes go to `<pass>/publish/index.json`, with the notes beside the sets. A set already pushed with the same files is skipped unless `--force`.
+Each acknowledged set is saved immediately to `<pass>/publish/index.json` through an atomic, synced replacement before another upload starts. Notes and legacy rows remain beside the sets. After a cutoff, rerun `publish`: acknowledged sets with matching content and metadata are skipped; unfinished or refused files retry. `--force` re-pushes an acknowledged set.
+
+Only one publisher may write the shared area roots at a time. These receipts prevent repeat delivery after a recorded acknowledgement. A cutoff between a capture or upload acknowledgement and its local ledger or receipt write can still repeat the request and append a capture; this is not an exactly-once protocol. Shared roots are never rebuilt on retry, so earlier passes stay present.
 
 **A pass published before one set per area** (chunked by area × viewport × theme into `…-<viewport>-<theme>-<n>` sets) is not re-adopted into those chunks. `publish` plans fresh area sets and adopts every file into them. Index rows whose key is no area's set move to `legacy` (`key`, `title`, `files`, `status`, `url`), and publish reports `LEGACY_SETS`. Their boards are never deleted here: that cleanup is the owner's call, and `legacy` is its list.
 
@@ -350,3 +352,36 @@ Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrore
 - the run.json and record shapes ↔ `run.go` and `record.go`, and `done.json` (`teardown.ts` `DoneFile`) ↔ `follow.go` `DoneFile`. Bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change.
 
 The harness must type-check under TS 5.3 strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `noPropertyAccessFromIndexSignature`, in both CJS and ESM packages. It must stay Node 20 compatible: no bun-only APIs, no `import.meta`, no `__dirname`.
+
+### Durable workflow evidence
+
+The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
+`reviewBasis`, `scoreboardBasis`, `scoreboardCurrent` and `checkpointApiNotes`.
+`run` writes `capture.json` atomically before starting the interruptible runner;
+resume retains that revision and refuses application drift. Workflows recapture
+legacy passes without provenance. Captures outside git have no verified revision.
+
+For passes with provenance, raw reviews need the current `basis` and explicit
+`screensRead` covering their batch. Backlogs use `review/basis.json` as a sidecar.
+Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
+SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
+are reevaluated. Skips/blocks are reusable only with unchanged application source.
+The spec and manifests stay unchanged during fixes; API notes live beside source
+and in ignored checkpoints. The state reader keeps item bodies on disk.
+
+After scoreboard callouts are confirmed by board readback, the workflow writes
+`review/scoreboard-receipt.json` atomically as `{basis: scoreboardBasis, posted:
+[{area, url}]}`. The basis covers review inputs, backlog, publish index, board list
+and scoreboard files. `scoreboardCurrent` requires a matching receipt, every area
+board acknowledged and both scoreboard files present. Interrupted publication
+must retry before a workflow can claim completion. Existing CLI-only passes
+retain their legacy stage semantics; verified workflows require these receipts.
+
+State computes capture hashes once per request and shares that snapshot with
+publication and review/checkpoint checks; no digest cache survives a request.
+Valid partial raw reviews still merge their findings, while unread screens and
+incomplete batches remain explicit. Scoreboard validates the same evidence for
+both the default backlog and an explicitly supplied backlog (with its adjacent
+`basis.json`). Writers persist `fix/recovery.json` before editing. State relays
+that bounded lane identity and schedules its cleanup before completed checkpoints
+can hide a dirty interrupted writer, even at the pass cap.

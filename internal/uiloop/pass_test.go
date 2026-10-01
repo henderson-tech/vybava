@@ -294,6 +294,204 @@ func TestPublishRetriesAPushAndLeavesChunkedSetsAsLegacy(t *testing.T) {
 	}
 }
 
+func TestPublishResumesAcknowledgedSetsAfterCancellation(t *testing.T) {
+	cfg := testConfig()
+	tool := newTool(t, cfg)
+	writePass(t, tool, 1, []shot{
+		{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+		{order: 1, id: "b", area: "admin", vp: "phone", theme: "light", status: "ok", bytes: 10},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	captures, pushes := 0, map[string]int{}
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		switch strings.Join(args[:2], " ") {
+		case "board init":
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		case "board capture":
+			captures++
+		case "board push":
+			key := filepath.Base(root)
+			pushes[key]++
+			if len(pushes) == 1 {
+				cancel()
+			}
+			return CmdOut{Stdout: `{"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/` + key + `"}}`}, nil
+		default:
+			t.Fatalf("unexpected command %v", args)
+		}
+		return CmdOut{}, nil
+	}
+	if _, err := tool.Publish(ctx, PublishOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cutoff, got %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tool.passAbs(1), "publish", "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index PublishIndex
+	if err := json.Unmarshal(body, &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Sets) != 1 || index.Sets[0].Status != "pushed" || index.Sets[0].URL == "" {
+		t.Fatalf("acknowledgement was not saved before cutoff: %+v", index)
+	}
+	for range 2 {
+		if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if captures != 2 || len(pushes) != 2 {
+		t.Fatalf("resume duplicated capture/upload: captures=%d pushes=%v", captures, pushes)
+	}
+	for key, count := range pushes {
+		if count != 1 {
+			t.Errorf("%s uploaded %d times", key, count)
+		}
+	}
+}
+
+func TestPublishInvalidatesReceiptWhenImageContentsChange(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	captures, pushes := 0, 0
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		switch strings.Join(args[:2], " ") {
+		case "board init":
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		case "board capture":
+			captures++
+		case "board push":
+			pushes++
+			return CmdOut{Stdout: `{"ok":true,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/a"}}`}, nil
+		}
+		return CmdOut{}, nil
+	}
+	if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Same filename and size, A → B → A pixels: only the latest adoption
+	// counts, never an older matching fingerprint from this append-only ledger.
+	file := filepath.Join(tool.passAbs(1), "shots", "a", "phone.light.png")
+	original, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pixels := range [][]byte{[]byte("0123456789"), original} {
+		if err := os.WriteFile(file, pixels, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if _, err := tool.Publish(context.Background(), PublishOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if captures != 3 || pushes != 3 {
+		t.Fatalf("changed contents were not refreshed exactly once: %d captures, %d pushes", captures, pushes)
+	}
+}
+
+func TestPublishDoesNotAcceptAnErrorEnvelopeAsAcknowledged(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		root := args[slices.Index(args, "--root")+1]
+		if args[1] == "init" {
+			return CmdOut{}, os.WriteFile(filepath.Join(root, descriptor), []byte(`{}`), 0o644)
+		}
+		return CmdOut{Stdout: `{"ok":false,"data":{"url":"https://app.vitrinka.ai/w/fixit/boards/a"}}`}, nil
+	}
+	res, err := tool.Publish(context.Background(), PublishOptions{Retries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := res.Data.(map[string]any)["sets"].([]PublishedSet)
+	if len(sets) != 1 || sets[0].Status != "failed" || len(res.Diagnostics) != 1 {
+		t.Fatalf("error response became a successful receipt: %+v", res)
+	}
+}
+
+func TestPublishRetriesNegativeAcknowledgement(t *testing.T) {
+	tool := newTool(t, testConfig())
+	p := &publisher{t: tool, ctx: context.Background(), retries: 3}
+	tries, delays := 0, 0
+	tool.Sleep = func(time.Duration) { delays++ }
+	tool.Exec = func(context.Context, Cmd) (CmdOut, error) {
+		tries++
+		if tries < 3 {
+			return CmdOut{Stdout: `{"ok":false,"data":{"url":"https://app.vitrinka.ai/boards/stale"}}`}, nil
+		}
+		return CmdOut{Stdout: `{"ok":true,"data":{"url":"https://app.vitrinka.ai/boards/recovered"}}`}, nil
+	}
+	url, attempts, err := p.push(tool.Root, "area")
+	if err != nil || attempts != 3 || delays != 2 || url != "https://app.vitrinka.ai/boards/recovered" {
+		t.Fatalf("negative acknowledgements bypassed retry: %s %d %d %v", url, attempts, delays, err)
+	}
+}
+
+func TestPublishResumesPartialAdoptionWithoutLosingEarlierPasses(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "old", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10}})
+	tool.LookPath = func(string) (string, error) { return "/bin/vitrinka", nil }
+	tool.Sleep = func(time.Duration) {}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	v := &fakeVitrinka{t: t, pushes: map[string]int{}}
+	tool.Exec = func(_ context.Context, c Cmd) (CmdOut, error) {
+		args := c.Args[1:]
+		out := v.exec(args)
+		if args[1] == "capture" && len(v.captures) == 2 {
+			cancel()
+		}
+		return out, nil
+	}
+	if _, err := tool.Publish(context.Background(), PublishOptions{Pass: 1}); err != nil {
+		t.Fatal(err)
+	}
+	writePass(t, tool, 2, []shot{
+		{order: 0, id: "new-a", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+		{order: 1, id: "new-b", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 10},
+	})
+	if _, err := tool.Publish(ctx, PublishOptions{Pass: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected adoption cutoff: %v", err)
+	}
+	for range 2 {
+		if _, err := tool.Publish(context.Background(), PublishOptions{Pass: 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fmt.Sprint(v.captures) != "[P1-OLD-PHONE-LIGHT P2-NEW-A-PHONE-LIGHT P2-NEW-B-PHONE-LIGHT]" {
+		t.Fatalf("resume lost or duplicated captures: %v", v.captures)
+	}
+	if v.pushes["ui-polish-tasks"] != 2 {
+		t.Fatalf("acknowledged sets replayed: %v", v.pushes)
+	}
+	root := filepath.Join(filepath.Dir(tool.passAbs(2)), "sets", "ui-polish-tasks")
+	b, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels []string
+	if err := json.Unmarshal(b, &labels); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(labels, v.captures) {
+		t.Fatalf("shared manifest lost or duplicated entries: %v", labels)
+	}
+	if _, err := os.Stat(filepath.Join(root, descriptor)); err != nil {
+		t.Fatalf("descriptor not retained: %v", err)
+	}
+}
+
 func TestScoreboardMathAndDelta(t *testing.T) {
 	tool := newTool(t, testConfig())
 	writePass(t, tool, 1, []shot{
@@ -692,7 +890,26 @@ func (v *fakeVitrinka) exec(args []string) CmdOut {
 		if _, err := os.Stat(filepath.Join(root, ".vitrinka")); err != nil {
 			v.t.Error("capture ran without the descriptor: no detached push would carry the shot")
 		}
-		v.captures = append(v.captures, args[slices.Index(args, "--label")+1])
+		label := args[slices.Index(args, "--label")+1]
+		v.captures = append(v.captures, label)
+		// Capture appends; keep a real mock manifest to expose duplicate adoption
+		// and accidental root rebuilding across passes.
+		file := filepath.Join(root, "manifest.json")
+		var labels []string
+		if b, err := os.ReadFile(file); err == nil {
+			if err := json.Unmarshal(b, &labels); err != nil {
+				v.t.Fatal(err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			v.t.Fatal(err)
+		}
+		b, err := json.Marshal(append(labels, label))
+		if err != nil {
+			v.t.Fatal(err)
+		}
+		if err := os.WriteFile(file, b, 0o644); err != nil {
+			v.t.Fatal(err)
+		}
 	case "board push":
 		v.pushes[filepath.Base(root)]++
 		// vitrinka 5.13 refuses a root holding anything but screenshot-set content.
