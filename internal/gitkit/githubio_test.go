@@ -27,8 +27,10 @@ func TestBuildGitHubCommand(t *testing.T) {
 		// ready-for-review by default; --draft only when passed
 		{"create-pr", flags{"head": "feat/x", "base": "main"}, "pr create --head feat/x --base main --fill"},
 		{"create-pr", flags{"head": "feat/x", "base": "main", "draft": ""}, "pr create --head feat/x --base main --fill --draft"},
-		// an explicit title/body wins over --fill; empty ones emit no bare flag
-		{"create-pr", flags{"head": "feat/x", "base": "main", "title": "Fix the thing", "body": "Why it broke."}, "pr create --head feat/x --base main --fill --title Fix the thing --body Why it broke."},
+		// an explicit title AND body drop --fill (gh needs a local ref to fill a
+		// remote-only head); a missing one keeps it; empty ones emit no bare flag
+		{"create-pr", flags{"head": "feat/x", "base": "main", "title": "Fix the thing", "body": "Why it broke."}, "pr create --head feat/x --base main --title Fix the thing --body Why it broke."},
+		{"create-pr", flags{"head": "feat/x", "base": "main", "title": "Fix the thing"}, "pr create --head feat/x --base main --fill --title Fix the thing"},
 		{"create-pr", flags{"head": "feat/x", "base": "main", "title": "", "body": "", "label": "eve-ignore"}, "pr create --head feat/x --base main --fill --label eve-ignore"},
 		{"review", flags{"owner": "o", "repo": "r", "pr": "5", "event": "request-changes", "body": "Breaks callers."}, "pr review 5 --request-changes --body Breaks callers. --repo o/r"},
 		{"review", flags{"owner": "o", "repo": "r", "pr": "5", "event": "comment", "body": "Notes."}, "pr review 5 --comment --body Notes. --repo o/r"},
