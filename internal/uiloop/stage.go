@@ -285,6 +285,11 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	}
 	var basis string
 	var batches BatchesFile
+	// shot names the screens with at least one ok record. A batch also holds
+	// screens the pass could not shoot (unreachable, recipe-failed, error);
+	// a reviewer can only list those as unreviewed, so they never hold a
+	// batch open.
+	shot := map[string]bool{}
 	if strict {
 		basis, err = t.cachedReviewBasis(pass, knownBasis)
 		if err != nil {
@@ -293,6 +298,11 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 		records, err := LoadRecords(t.passAbs(pass))
 		if err != nil {
 			return nil, err
+		}
+		for _, r := range records {
+			if r.Status == "ok" {
+				shot[r.ID] = true
+			}
 		}
 		batches, _, err = t.loadBatches(pass, records, 0)
 		if err != nil {
@@ -315,7 +325,7 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 				}
 				valid = true
 				for _, screen := range batch.Screens {
-					if !partial && !slices.Contains(r.ScreensRead, screen) {
+					if !partial && shot[screen] && !slices.Contains(r.ScreensRead, screen) {
 						valid = false
 					}
 				}
@@ -325,7 +335,7 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 					}
 				}
 			}
-			if !valid || (!partial && len(r.Unreviewed) > 0) {
+			if !valid || (!partial && slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return shot[unreviewedOf(entry)] })) {
 				continue
 			}
 		}
@@ -895,6 +905,17 @@ func BacklogKey(screen, title string) string {
 // unreviewedScreen reads a reviewer's unreviewed entry: a screen id, maybe
 // followed by a parenthesised why. An entry naming one shot (<id>@<viewport>)
 // is not a screen-level skip: the screen was judged at its other shots.
+// unreviewedOf is the screen an unreviewed entry is about, a shot-level
+// entry ("<screen>@<viewport>.<theme> (why)") included.
+func unreviewedOf(entry string) string {
+	id := strings.TrimSpace(entry)
+	if i := strings.IndexAny(id, " (\t"); i >= 0 {
+		id = id[:i]
+	}
+	screen, _, _ := strings.Cut(id, "@")
+	return screen
+}
+
 func unreviewedScreen(entry string) string {
 	id := strings.TrimSpace(entry)
 	if i := strings.IndexAny(id, " (\t"); i >= 0 {
