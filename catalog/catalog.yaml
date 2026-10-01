@@ -157,6 +157,12 @@ items:
     description: Chaos proxy for polish passes — an HTTP-aware or raw-TCP proxy per name (app→API, server→Postgres) whose faults (delay, drop, error, timeout, slow, flap, cut) are toggled live from the CLI, scoped by path/method/count/duration, plus an access-control replay (record the flow, replay it as another identity, list what still succeeds); never touches the machine's network.
     applet: blip
 
+  - id: polish-kit
+    kind: applet
+    status: experimental
+    description: Deterministic layer of the polish skill (target app|ui|api x intensity quick|default|full) - infers targets from the diff through vybava.config.ts polish globs, resolves device lanes (simulators, phones, emulators, URLs) with exact create/boot fixes, keeps the pass ledger (run.json cell table of lane x screen x theme x nav x text size plus adverse-condition matrix cells), shoots simulators and Android devices natively, renders contact and edge-zoom sheets and the pass report with a delta; never touches the network, never edits app code.
+    applet: polish-kit
+
   - id: reclaim
     kind: applet
     status: experimental
@@ -262,7 +268,7 @@ items:
   - id: polish
     kind: skill
     status: experimental
-    description: Manual-only protocol — fix a branch's findings in its existing PR, then run the adverse-condition matrix (network, app lifecycle, web, backend, DB) with blip until a clean pass.
+    description: Manual-only protocol on two axes, target (app | ui | api, inferred from the diff, the findings and the cwd) × intensity (quick | default | full) — fix a branch's findings in its existing PR, then run the target's adverse-condition matrix with blip, and at full the target's deep pass (the app chrome matrix over iOS 26, iOS 18 and Android via polish-kit, the ui-loop capture pass, the API concurrency and log pass) until a clean pass.
     source: skills/polish
 
   - id: readiness
@@ -452,6 +458,7 @@ groups:
       - hotfix
       - hotfix-lane
       - blip
+      - polish-kit
       - polish
       - readiness
       - release-readiness
@@ -557,6 +564,7 @@ groups:
       - hotfix
       - hotfix-lane
       - blip
+      - polish-kit
       - polish
       - readiness
       - release-readiness

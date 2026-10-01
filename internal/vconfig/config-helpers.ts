@@ -224,11 +224,69 @@ export interface UiLoopConfig {
   };
 }
 
+/** One axis of the polish verb: what the pass polishes. */
+export type PolishTarget = 'app' | 'ui' | 'api';
+
+/** What a polish lane resolves to. */
+export type PolishLaneKind = 'ios-sim' | 'ios-device' | 'android-device' | 'android-emulator' | 'browser' | 'server';
+
+/** One device or URL a target is polished on (polish-kit lanes). */
+export interface PolishLane {
+  /** 'ios26', 'ios18', 'android'. */
+  id: string;
+  target: PolishTarget;
+  kind: PolishLaneKind;
+  /** iOS runtime version the lane needs, e.g. '18.6' or '26.5' (ios-sim); matched by prefix against `xcrun simctl list runtimes`. */
+  runtime?: string;
+  /** Simulator device type name, e.g. 'iPhone 17 Pro' (ios-sim / android-emulator AVD name). */
+  deviceType?: string;
+  /** Physical device: devicectl name/udid (ios-device) or adb serial (android-device); ios-sim: pin the one simulator (name/udid) of the type, else any shutdown sim of the type is taken. */
+  device?: string;
+  /** Android navigation modes the lane must be shot in (default: ['gesture']). */
+  nav?: ('gesture' | '3button')[];
+  /** Default both. */
+  themes?: ('light' | 'dark')[];
+  /** Content-size / font-scale steps to shoot besides default: iOS `xcrun simctl ui content_size` names, Android font_scale numbers as strings. */
+  textSizes?: string[];
+  /** e.g. 'cs'. */
+  locale?: string;
+  /** browser lane: base URL; server lane: health URL. With urlCommand: a path (starting with /) appended to the command's output, or an absolute URL used as is. */
+  url?: string;
+  /** Shell command (sh -c, from the repo root) whose first output line is the lane's base URL, for an app whose address is leased per run: 'devbox url <ws> api'. Exactly one of url / urlCommand for browser and server lanes. */
+  urlCommand?: string;
+}
+
+/** One screen a chrome cell shoots (polish-kit shoot). */
+export interface PolishScreen {
+  id: string;
+  title: string;
+  target: 'app' | 'ui';
+  /** app: a deep link the app opens (scheme URL); ui: a path under the lane url. */
+  url: string;
+  /** Wait after opening before the shot (default 1500). */
+  settleMs?: number;
+  /** Area name; a changed path holding it marks the screen touched. */
+  area?: string;
+}
+
+/** polish-kit: the polish skill's deterministic layer (docs/polish-kit.md). Go twin: internal/polishkit/config.go; change both together. */
+export interface PolishConfig {
+  /** Repository-relative globs per target; a changed file maps to the first target (app, ui, api order) whose glob matches. */
+  targets: Partial<Record<PolishTarget, string[]>>;
+  /** Base ref for the diff (default: origin/main, falling back to the repo default branch). */
+  base?: string;
+  /** Gitignored run root (default '.polish'): <out>/pass-<n>/run.json and shots. */
+  out?: string;
+  lanes: PolishLane[];
+  screens?: PolishScreen[];
+}
+
 export interface VybavaConfig {
   lok?: LokConfig;
   merge?: MergeConfig;
   readiness?: ReadinessConfig;
   uiLoop?: UiLoopConfig;
+  polish?: PolishConfig;
   guards?: {
     /** Repository-relative globs; ** spans directories. Query these files with rg. */
     noRead?: string[];
