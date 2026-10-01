@@ -71,6 +71,44 @@ func TestCaptureProvenanceSurvivesAnInterruptedUnpublishedPass(t *testing.T) {
 	}
 }
 
+// A screen the pass could not shoot is only ever "unreviewed"; it must not hold
+// its batch open, while an unread or unreviewed shot screen still does.
+func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
+	tool := newTool(t, testConfig())
+	evidenceRepo(t, tool)
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	writePass(t, tool, 1, []shot{
+		{order: 1, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 2, id: "task-detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 3, id: "task-ghost", area: "tasks", vp: "phone", theme: "light", status: "unreachable"},
+	})
+	basis, err := tool.reviewBasis(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := filepath.Join(tool.passAbs(1), "review/raw/tasks-1.json")
+	for _, c := range []struct {
+		name, body string
+		done       bool
+	}{
+		{"unshot screen unreviewed", `"screensRead":["tasks","task-detail"],"unreviewed":["task-ghost (unreachable: no shot)"]`, true},
+		{"shot screen unreviewed", `"screensRead":["tasks"],"unreviewed":["task-detail (blank)","task-ghost (unreachable)"]`, false},
+		{"shot screen's shot unreviewed", `"screensRead":["tasks","task-detail"],"unreviewed":["task-detail@phone.light (blank)"]`, false},
+		{"shot screen unread", `"screensRead":["tasks"],"unreviewed":["task-ghost (unreachable)"]`, false},
+	} {
+		writeFile(t, raw, `{"batch":"tasks-1","basis":"`+basis+`",`+c.body+`}`)
+		ids, err := tool.rawBatchIDs(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids["tasks-1"] != c.done {
+			t.Errorf("%s: done=%v, want %v", c.name, ids["tasks-1"], c.done)
+		}
+	}
+}
+
 func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 	tool := newTool(t, testConfig())
 	head := evidenceRepo(t, tool)
