@@ -54,10 +54,10 @@ EOF
   `resume` field). Never start a fresh run per feature or screen: the thread keeps
   the selectors, seeds and conventions it has already found. A new lane gets a new run.
 - Run at most 4 live lanes. The mobile (Appium) lane is always exactly one, because there is one simulator.
-- Don't edit app source while a `verify`, `usertest`, `e2e-write` or `e2e-run` lane is
-  driving that worktree, because its verdicts become nondeterministic. `e2e-write`
-  drives the live app even under `--no-run`; only the runner is skipped. Edit between
-  turns, then resume.
+- Don't edit app source while a `verify`, `usertest` or `e2e-run` lane is driving
+  that worktree, because its verdicts become nondeterministic. Edit between turns,
+  then resume. `e2e-write` and `rework` are static under `--no-run` (no app, no
+  browser), so they may run alongside your edits: the tests follow the code.
 - Never put secret values in a brief. Name the seed account or the onyx ref.
 
 ## Exit codes
@@ -66,15 +66,15 @@ EOF
 |---|---|---|
 | 0 | `done` | Fix the findings that need app source here, then do the commit duties. |
 | 10 | `blocked` | `result.blocker` gives the reason, evidence, `fix_hint` and files. Fix it here (app source, seed, env), commit, then `--resume <run>` with "Fixed: <what> (<sha>). Continue." A human-only gate (sign-in, 2FA, payment): `/codrive` or ask the user, then resume. |
-| 1 | `failed` or codex error | Read `error` and findings.md. Resume once with a corrected brief, or re-run if `thread` is null. If it fails a second time, fall back. |
+| 1 | `failed` or codex error | Read `error` and findings.md. Resume once with a corrected brief, or re-run if `thread` is null. If it fails a second time, report it to the user with the error. A failed run is not a reason to fall back. |
 | 2 | usage error | Fix the invocation (`--help`). |
-| 3 | no Codex account left | Fall back. |
+| 3 | no Codex account left | Fall back. Do the same when `switcheroo codex run --help` itself fails (the CLI is not installed). |
 
 **Fallback.** Use one `general-purpose` Agent with `model: "opus"` per lane. Give it
 the same brief plus the contract essentials: test files only, no git, the same
 result shape. Keep it persistent through SendMessage for the lane and shut it down
-when the lane ends. A lane briefed to lead the `e2e` skill (`e2e-write`) is the
-exception: don't forward its Codex-lead brief, since a subagent has no `sol_explorer`
+when the lane ends. A lane briefed to lead the `e2e` skill (`e2e-write`, a full
+`e2e-run`) is the exception: don't forward its Codex-lead brief, since a subagent has no `sol_explorer`
 or `sol_tester`. Follow the `e2e` skill's exit-3 path instead, where Claude leads
 Phases 1-2 and spawns one named Opus writer per lane. Tell the user in one line:
 "Codex unavailable: <lane> ran on an Opus subagent."
@@ -84,9 +84,9 @@ Phases 1-2 and spawns one named Opus writer per lane. Tell the user in one line:
 - By default the run shares this session's onyx browser (`$CLAUDE_CODE_SESSION_ID`).
   While a run is live, Claude makes no playwright, chrome-devtools or onyx
   browser calls. Two drivers on one page corrupt each other.
-- Parallel lanes each pass `--browser $CLAUDE_CODE_SESSION_ID-<lane>`. `e2e-write`
-  passes `--browser $CLAUDE_CODE_SESSION_ID-e2e`, so the lead's testers derive
-  `<browser>-web<n>`. Static work (`explore`, `rework`) passes `--browser none`.
+- Parallel live lanes each pass `--browser $CLAUDE_CODE_SESSION_ID-<lane>`. A Codex
+  run binds one browser for its whole life, so the `e2e` lead's web lane is serial
+  inside a run. Static work (`explore`, `e2e-write`, `rework`) passes `--browser none`.
 - Never stop or restart a browser a lane is using. Claude also leaves the simulator
   or the computer-use app alone while a lane is driving it.
 
@@ -117,14 +117,15 @@ roles) · **Done when** · the mode lines below.
   feature cluster. [e2e discovery: write `<app>/journeys.md` per the `e2e` skill's
   Phase 1.]"
 - **e2e-write** (no run): "Run the `e2e` skill as its Codex lead with `--no-run` on
-  <scope>: `sol_explorer` discovery, one persistent `sol_tester` per lane, the mobile
-  lane serial. Write or update the specs and `journeys.md`. Lint and typecheck only,
-  and never execute the runner."
+  <scope>: `sol_explorer` discovery, then write or update the specs and `journeys.md`
+  statically from source. No app, no browser or device, and never execute the
+  runner. Lint and typecheck only."
 - **rework** (no run): "<specs> broke because <app change, sha>. Update them to the
   new behavior (selectors, flows, fixtures). Never weaken an assertion to make it
   pass; behavior you believe is a bug is a finding. Lint and typecheck only."
-- **e2e-run**: "Run <specs | --grep @e2e-<slug> | the suite> with the repo's runner,
-  where the repo runs tests (Devbox when it has `devbox.yaml`), workers capped.
+- **e2e-run**: "Run the `e2e` skill as its Codex lead on <scope> (drive live,
+  dual-verify, run each spec alone), or run <specs | --grep @e2e-<slug> | the suite>
+  with the repo's runner, where the repo runs tests (Devbox when it has `devbox.yaml`), workers capped.
   Classify each failure. A spec bug: fix the spec and rerun it once. An app bug:
   record a finding with evidence and don't fix it. Report the counts in `tests`."
 
