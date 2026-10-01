@@ -42,8 +42,10 @@ every item installs independently.
 | `press` | applet | Deterministic state for the document family — project resolution, `~/Exports/<project>/` config and index, ARES lookups, shared doctrine. → [docs/press.md](docs/press.md) |
 | `press-pdf` / `press-logo` / `press-offer` / `press-email` | skills | Offer, documentation and legal PDFs; brand marks; Czech commercial DOCX; Outlook-paste client emails. Issuer identity stays machine-local. → [docs/press.md](docs/press.md) |
 
-Groups (`recommended`, `experimental`, `ai-git`, `press-family`, `everything`)
-are composable presets in the catalog — never code.
+Groups (`recommended`, `experimental`, `claude-hooks`, `ai-git`, `press-family`,
+`everything`) are composable presets in the catalog — never code.
+`claude-hooks` is what a Claude home's hooks call; on Linux (a Devbox portal
+box) the same release archive installs it: `vybava install claude-hooks`.
 
 ## Install
 
