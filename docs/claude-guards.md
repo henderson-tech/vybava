@@ -323,7 +323,8 @@ already runs on the Devbox, and the process table there is every workspace's,
 so it would refuse an agent for other workspaces' servers and reap an Appium a
 workspace's run started (it has no claude ancestor either). The box admits and
 sweeps its own workloads. `machine:test-worker-cap` still applies — an
-uncapped suite in an agent's scope sizes its workers to the box's vCPUs.
+uncapped suite in an agent's scope sizes its workers to the box's vCPUs; its
+refusal there names only the cap, never `devbox run`.
 `internal/devboxguest` is the one check.
 
 `claude-guards weather` (SessionStart) prints one line the session starts

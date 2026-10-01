@@ -3,6 +3,7 @@ package claudeguards
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/henderson-tech/vybava/internal/devboxguest"
@@ -69,5 +70,10 @@ func TestMacMachineRulesStandDownOnDevboxGuest(t *testing.T) {
 	}
 	if v := selectReapVictims(fakeTable); len(v) != 0 {
 		t.Errorf("reap picked %d victims on a Devbox guest", len(v))
+	}
+	// An uncapped suite still sizes its workers to the box's vCPUs, so the cap
+	// stays — answered with the cap alone, since the agent cannot devbox run.
+	if d := guardTestWorkerCap(hookCmd("bunx playwright test")); d == nil || strings.Contains(d.Message, "devbox run") {
+		t.Errorf("test-worker-cap must still refuse on a Devbox guest, without routing to devbox run: %+v", d)
 	}
 }
