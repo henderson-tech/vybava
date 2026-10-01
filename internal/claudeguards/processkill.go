@@ -40,16 +40,25 @@ import (
 var (
 	// killListers print PIDs chosen by name, pattern, port or file.
 	killListers = map[string]bool{"ps": true, "pgrep": true, "pidof": true, "lsof": true, "fuser": true}
-	// killSenders choose their own targets (pkill, killall, fuser -k) or take
-	// PIDs (kill).
-	killSenders = map[string]bool{"kill": true, "pkill": true, "killall": true}
-	// killLaunchers run the next command word on this machine: `sudo kill`,
-	// `xargs -r kill -9`, `timeout 5 pkill`. Container and remote runners are
-	// not here; their quoted payloads are segments of their own.
-	killLaunchers = map[string]bool{
-		"sudo": true, "doas": true, "xargs": true, "timeout": true, "gtimeout": true,
-		"nice": true, "env": true, "command": true, "builtin": true, "exec": true,
-		"nohup": true, "time": true, "stdbuf": true, "arch": true,
+	// killLaunchers run a child command on this machine (`sudo kill`,
+	// `xargs -r kill -9`, `timeout 5 pkill`), each mapped to its options that
+	// take the NEXT word as their value. Container and remote runners are not
+	// here; their quoted payloads are segments of their own.
+	killLaunchers = map[string]map[string]bool{
+		"sudo":     {"-u": true, "-g": true, "-C": true, "-D": true, "-h": true, "-p": true, "-r": true, "-t": true, "-U": true, "-T": true, "--user": true, "--group": true, "--host": true, "--prompt": true, "--chdir": true, "--close-from": true, "--role": true, "--type": true, "--other-user": true, "--command-timeout": true},
+		"doas":     {"-u": true, "-C": true},
+		"xargs":    {"-I": true, "-J": true, "-L": true, "-n": true, "-P": true, "-s": true, "-E": true, "-d": true, "-a": true, "-R": true, "-S": true, "--max-args": true, "--max-procs": true, "--max-lines": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--eof": true, "--process-slot-var": true},
+		"timeout":  {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
+		"gtimeout": {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
+		"nice":     {"-n": true, "--adjustment": true},
+		"env":      {"-u": true, "-C": true, "-S": true, "-P": true, "--unset": true, "--chdir": true, "--split-string": true},
+		"command":  {},
+		"builtin":  {},
+		"exec":     {"-a": true},
+		"nohup":    {},
+		"time":     {"-o": true, "-f": true, "--output": true, "--format": true},
+		"stdbuf":   {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
+		"arch":     {"-arch": true, "-e": true, "-d": true},
 	}
 	// shellKeywords open a compound command: `do kill $p` runs kill.
 	shellKeywords = map[string]bool{"do": true, "then": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "!": true, "{": true}
@@ -70,30 +79,49 @@ func killInvocation(seg string) (word string, args []string, viaXargs bool) {
 	for i < len(toks) && shellKeywords[toks[i]] {
 		i++
 	}
-	if i >= len(toks) {
-		return "", nil, false
-	}
-	w := path.Base(toks[i])
-	if !killLaunchers[w] {
-		return w, toks[i+1:], false
-	}
-	if w == "command" && i+1 < len(toks) && (toks[i+1] == "-v" || toks[i+1] == "-V") {
-		return "", nil, false // a lookup, not a run
-	}
-	viaXargs = w == "xargs"
-	for j := i + 1; j < len(toks); j++ {
-		t := path.Base(toks[j])
-		if killSenders[t] || killListers[t] {
-			return t, toks[j+1:], viaXargs
+	for i < len(toks) {
+		w := path.Base(toks[i])
+		valueFlags, launcher := killLaunchers[w]
+		if !launcher {
+			return w, toks[i+1:], viaXargs
 		}
-		if t == "xargs" {
+		if w == "command" && i+1 < len(toks) && (toks[i+1] == "-v" || toks[i+1] == "-V") {
+			return "", nil, false // a lookup, not a run
+		}
+		if w == "xargs" {
 			viaXargs = true
 		}
-		if shellseg.Runners[t] && !killLaunchers[t] {
-			return "", nil, false // `xargs docker kill`: the runner's business, not a process signal
+		i = launcherChild(w, valueFlags, toks, i+1)
+	}
+	return "", nil, false
+}
+
+// launcherChild is the index of the command a launcher runs: the first word
+// past its options and their values, env's NAME=value words and timeout's
+// duration. Only that word is the child; `sudo printf '%s\n' pkill` runs
+// printf, and `xargs docker kill` runs docker.
+func launcherChild(w string, valueFlags map[string]bool, toks []string, j int) int {
+	positional := 0
+	if w == "timeout" || w == "gtimeout" {
+		positional = 1 // the duration
+	}
+	for ; j < len(toks); j++ {
+		t := toks[j]
+		switch {
+		case t == "--":
+			return j + 1
+		case len(t) > 1 && t[0] == '-':
+			if valueFlags[t] {
+				j++
+			}
+		case w == "env" && shellseg.AssignPrefix.MatchString(t):
+		case positional > 0:
+			positional--
+		default:
+			return j
 		}
 	}
-	return w, toks[i+1:], false
+	return j
 }
 
 // killArgs reads kill's argv: the signal named (or ""), whether it only lists
@@ -176,14 +204,24 @@ func fuserKills(args []string) bool {
 
 // substitutionFollows reports whether the shell text right after seg opens a
 // command substitution: `kill 123 $(pgrep x)` reaches the rules as the
-// segments `kill 123` and `pgrep x`.
+// segments `kill 123` and `pgrep x`. Segments carry no offsets and the same
+// text can occur more than once (`kill 1; kill 1 $(pgrep x)`, or inside an
+// ssh payload LocalSegments leaves out), so every occurrence is checked: a
+// false hit only refuses a kill in a command that also lists processes.
 func substitutionFollows(cmd, seg string) bool {
-	i := strings.Index(cmd, seg)
-	if i < 0 {
-		return false
+	for from := 0; from < len(cmd); {
+		i := strings.Index(cmd[from:], seg)
+		if i < 0 {
+			return false
+		}
+		end := from + i + len(seg)
+		rest := strings.TrimLeft(cmd[end:], " \t\"")
+		if strings.HasPrefix(rest, "$(") || strings.HasPrefix(rest, "`") {
+			return true
+		}
+		from += i + 1
 	}
-	rest := strings.TrimLeft(cmd[i+len(seg):], " \t\"")
-	return strings.HasPrefix(rest, "$(") || strings.HasPrefix(rest, "`")
+	return false
 }
 
 // killPlan is what one command would signal, read without running anything:
@@ -387,7 +425,7 @@ func sessionTarget(pids []int, table []procRow, self int) (target int, hit procR
 			}
 		case t < -1:
 			for _, r := range table {
-				if r.pgid == -t || r.pid == -t {
+				if r.pgid == -t {
 					members = append(members, r)
 				}
 			}
