@@ -37,7 +37,10 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   findings, changed}`. `screensTouched`: per target, the screens whose
   `area` or the last segment of `url` names a component of a changed path;
   when none derives, every screen of the target. `--findings` is recorded
-  in the plan and copied into run.json; the applet never reads it.
+  in the plan and copied into run.json; the applet never reads it. The
+  `run init` follow-up in `next` carries the resolved `--base` and the
+  `--findings` reference (shell-quoted), so following it snapshots exactly
+  what the plan computed, never a replan against the config's base.
 - **lanes** resolves every declared lane to a live device NOW. Data per
   lane: `{id, kind, target, ready, booted, udid|serial|name, runtime, nav,
   theme, fix, boot, url, status}`; a lane with a problem carries its
@@ -79,7 +82,12 @@ Every verb takes `--json`. `--pass 0` or omitted means the latest pass
   / `content_size`; Android `cmd uimode night yes|no`, `cmd overlay
   enable-exclusive --category com.android.internal.systemui.navbar.gestural`
   (`…navbar.threebutton`), `settings put system font_scale <n>`. `--reset`
-  restores light, gesture and the default size (`medium` / `1.0`). An
+  restores light, gesture and the default size (`medium` / `1.0`). `--text`
+  is validated before any device is touched: an Android size is a number in
+  0.5..3.0 (`font_scale`), an iOS size one of simctl's content-size names
+  (`usage` names the accepted range otherwise); every value that reaches
+  `adb shell` (night, overlay category, font_scale, a deep link) is
+  shell-quoted, so a value can never carry a second command. An
   `ios-device` lane answers `lane-unsupported` with the Settings path.
 - **run init** writes `<out>/pass-<n>/run.json`: the plan snapshot, the
   lanes (the targets' lanes, or `--lanes`), the screens (the plan's touched

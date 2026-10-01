@@ -173,11 +173,26 @@ func (t *Tool) Plan(ctx context.Context, opts PlanOptions) (Result, error) {
 	for i, pt := range data.Targets {
 		targets[i] = string(pt.ID)
 	}
+	// The follow-up carries the RESOLVED base and the findings reference:
+	// following it must snapshot exactly what this plan computed, never a
+	// replan against the config's base.
+	initCmd := fmt.Sprintf("polish-kit run init --pass %d --target %s --intensity %s --base %s", t.nextPass(), strings.Join(targets, ","), intensity, shellQuote(base))
+	if opts.Findings != "" {
+		initCmd += " --findings " + shellQuote(opts.Findings)
+	}
 	res.Next = []string{
 		"polish-kit lanes --target " + strings.Join(targets, ",") + " --json",
-		fmt.Sprintf("polish-kit run init --pass %d --target %s --intensity %s --json", t.nextPass(), strings.Join(targets, ","), intensity),
+		initCmd + " --json",
 	}
 	return res, nil
+}
+
+// shellQuote single-quotes s for a POSIX shell (the device's sh behind
+// `adb shell`, or a command the operator pastes): every argument that
+// reaches a shell goes through it, so a value can never carry a second
+// command.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Infer is the pure inference: explicit targets first, then the cwd's, then

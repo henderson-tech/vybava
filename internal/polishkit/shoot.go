@@ -207,9 +207,10 @@ func (t *Tool) capture(ctx context.Context, st LaneState, screen Screen, file st
 		t.Sleep(settle)
 		return t.mustRun(ctx, "xcrun", "simctl", "io", st.UDID, "screenshot", "--type=png", file)
 	case KindAndroidDevice, KindAndroidEmulator:
-		// adb shell joins its arguments for the device's sh: quote the URL so
-		// a query string's & never backgrounds am.
-		if err := t.mustRun(ctx, "adb", "-s", st.Serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "'"+strings.ReplaceAll(screen.URL, "'", "")+"'"); err != nil {
+		// adb shell joins its arguments for the device's sh: the URL is
+		// shell-quoted so a query string's & never backgrounds am and a
+		// quote in it never ends the argument.
+		if err := t.mustRun(ctx, "adb", "-s", st.Serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", shellQuote(screen.URL)); err != nil {
 			return err
 		}
 		t.Sleep(settle)

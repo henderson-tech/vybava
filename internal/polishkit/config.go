@@ -229,9 +229,9 @@ func (c Config) Validate() []string {
 			}
 		}
 		for _, ts := range l.TextSizes {
-			if l.Kind.IsAndroid() {
-				if _, err := strconv.ParseFloat(ts, 64); err != nil {
-					add(fmt.Sprintf("lane %s: android textSizes are font_scale numbers as strings, not %q", l.ID, ts))
+			if l.Kind == KindIOSSim || l.Kind.IsAndroid() {
+				if err := validateTextSize(l.Kind, ts); err != nil {
+					add(fmt.Sprintf("lane %s: textSizes: %v", l.ID, err))
 				}
 			} else if strings.TrimSpace(ts) == "" {
 				add(fmt.Sprintf("lane %s: textSizes holds an empty name", l.ID))

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,6 +182,54 @@ func versionMatches(prefix, version string) bool {
 	return version == prefix || strings.HasPrefix(version, prefix+".")
 }
 
+// versionLess orders dotted versions by numeric components (major, minor,
+// patch; a missing component is 0; a non-numeric one sorts first).
+func versionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
+}
+
+// iOSContentSizes is simctl's finite `ui content_size` name set.
+var iOSContentSizes = []string{
+	"extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large",
+	"accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large",
+}
+
+// Android font_scale bounds.
+const (
+	minFontScale = 0.5
+	maxFontScale = 3.0
+)
+
+// validateTextSize checks a text size BEFORE it reaches a device: an
+// Android font_scale is a finite number in [0.5, 3.0], an iOS content size
+// one of simctl's names. The message names the accepted range.
+func validateTextSize(kind LaneKind, s string) error {
+	if kind.IsAndroid() {
+		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < minFontScale || f > maxFontScale || strings.TrimSpace(s) != s {
+			return fmt.Errorf("android text size %q is not a number between %g and %g (font_scale)", s, minFontScale, maxFontScale)
+		}
+		return nil
+	}
+	if !slices.Contains(iOSContentSizes, s) {
+		return fmt.Errorf("iOS text size %q is not a simctl content size (%s)", s, strings.Join(iOSContentSizes, ", "))
+	}
+	return nil
+}
+
 // matchSim finds the lane's simulator: the newest matching runtime that has
 // a device of the lane's type (matched by deviceTypeIdentifier, since a sim
 // is named per persona, "FixIt template iPhone 17 Pro"), else lane-missing
@@ -205,7 +255,9 @@ func matchSim(list simList, l Lane) (simDevice, simRuntime, error) {
 			fmt.Sprintf("no iOS %s runtime is installed (have: %s)", l.Runtime, strings.Join(have, ", ")),
 			"Xcode > Settings > Components > install the iOS "+l.Runtime+" simulator runtime")
 	}
-	sort.SliceStable(runtimes, func(i, j int) bool { return runtimes[i].Version > runtimes[j].Version })
+	// newest first by NUMERIC components: 26.10 is newer than 26.9 and 26.5,
+	// which a string sort gets wrong.
+	sort.SliceStable(runtimes, func(i, j int) bool { return versionLess(runtimes[j].Version, runtimes[i].Version) })
 	typeID := list.deviceTypeID(l.DeviceType, runtimes)
 	rank := func(d simDevice) int {
 		switch {
@@ -669,6 +721,17 @@ func (t *Tool) Set(ctx context.Context, opts SetOptions) (Result, error) {
 	if opts.Theme == "" && opts.Nav == "" && opts.Text == "" && !opts.Reset {
 		return Result{}, diag(DiagUsage, "set needs --theme, --nav, --text or --reset", "polish-kit lanes set "+l.ID+" --theme dark --json")
 	}
+	// Validated BEFORE any device is touched: --text reaches the device's
+	// shell (font_scale) or simctl, and is never an arbitrary string.
+	if opts.Text != "" && (l.Kind == KindIOSSim || l.Kind.IsAndroid()) {
+		if err := validateTextSize(l.Kind, opts.Text); err != nil {
+			example := "accessibility-medium"
+			if l.Kind.IsAndroid() {
+				example = "1.3"
+			}
+			return Result{}, diag(DiagUsage, err.Error(), "polish-kit lanes set "+l.ID+" --text "+example+" --json")
+		}
+	}
 	switch l.Kind {
 	case KindIOSDevice:
 		return Result{}, diag(DiagLaneUnsupported, "a phone's appearance and text size are set by hand: Settings > Display & Brightness (Light/Dark), Settings > Accessibility > Display & Text Size > Larger Text", "set it on the phone, then: polish-kit cell <id> pass|fail --shot <path> --json")
@@ -718,28 +781,36 @@ func (t *Tool) applyState(ctx context.Context, st LaneState, s deviceState) ([]s
 			cmds = append(cmds, []string{"xcrun", "simctl", "ui", st.UDID, "appearance", s.Theme})
 		}
 		if s.Text != "" {
+			if err := validateTextSize(st.Kind, s.Text); err != nil {
+				return nil, err
+			}
 			cmds = append(cmds, []string{"xcrun", "simctl", "ui", st.UDID, "content_size", s.Text})
 		}
 	case KindAndroidDevice, KindAndroidEmulator:
 		if s.Reset {
 			s.Theme, s.Nav, s.Text = "light", "gesture", "1.0"
 		}
+		// adb shell joins its arguments for the device's sh: every value is
+		// shell-quoted, and the text size was validated as a number.
 		if s.Theme != "" {
 			night := "no"
 			if s.Theme == "dark" {
 				night = "yes"
 			}
-			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "cmd", "uimode", "night", night})
+			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "cmd", "uimode", "night", shellQuote(night)})
 		}
 		if s.Nav != "" {
 			overlay := "com.android.internal.systemui.navbar.gestural"
 			if s.Nav == "3button" {
 				overlay = "com.android.internal.systemui.navbar.threebutton"
 			}
-			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "cmd", "overlay", "enable-exclusive", "--category", overlay})
+			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "cmd", "overlay", "enable-exclusive", "--category", shellQuote(overlay)})
 		}
 		if s.Text != "" {
-			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "settings", "put", "system", "font_scale", s.Text})
+			if err := validateTextSize(st.Kind, s.Text); err != nil {
+				return nil, err
+			}
+			cmds = append(cmds, []string{"adb", "-s", st.Serial, "shell", "settings", "put", "system", "font_scale", shellQuote(s.Text)})
 		}
 	}
 	applied := []string{}

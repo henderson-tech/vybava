@@ -68,9 +68,9 @@ func androidStateRules(serial string) []rule {
 	return []rule{
 		{prefix: p + "settings get secure navigation_mode", out: CmdOut{Stdout: "2\n"}},
 		{prefix: p + "cmd uimode night", out: CmdOut{Stdout: "Night mode: no\n"}},
-		ok(p + "cmd uimode night yes"), ok(p + "cmd uimode night no"),
-		ok(p + "cmd overlay enable-exclusive"), ok(p + "settings put system font_scale"),
-		ok(p + "am start -a android.intent.action.VIEW"),
+		ok(p + "cmd uimode night 'yes'"), ok(p + "cmd uimode night 'no'"),
+		ok(p + "cmd overlay enable-exclusive --category '"), ok(p + "settings put system font_scale '"),
+		ok(p + "am start -a android.intent.action.VIEW -d '"),
 	}
 }
 
@@ -166,7 +166,7 @@ func TestConfigValidateReportsEveryProblem(t *testing.T) {
 		Screens: []Screen{{ID: "s", Target: "api", URL: ""}},
 	}
 	problems := cfg.Validate()
-	for _, want := range []string{"unknown target", "not kebab-case", "needs runtime and deviceType", "needs an http(s) url", "listed twice", "nav applies to android", "font_scale numbers", "not app or ui", "url is required"} {
+	for _, want := range []string{"unknown target", "not kebab-case", "needs runtime and deviceType", "needs an http(s) url", "listed twice", "nav applies to android", "is not a number between 0.5 and 3", "not app or ui", "url is required"} {
 		if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, want) }) {
 			t.Errorf("missing problem %q in %v", want, problems)
 		}
@@ -967,15 +967,15 @@ func TestShootAndroidWritesShotsAndRestoresState(t *testing.T) {
 		joined[i] = strings.Join(c, " ")
 	}
 	order := []string{
-		"adb -s R5CT30ABC shell cmd uimode night yes",
-		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural",
-		"adb -s R5CT30ABC shell settings put system font_scale 1.0",
+		"adb -s R5CT30ABC shell cmd uimode night 'yes'",
+		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category 'com.android.internal.systemui.navbar.gestural'",
+		"adb -s R5CT30ABC shell settings put system font_scale '1.0'",
 		"adb -s R5CT30ABC shell am start -a android.intent.action.VIEW -d 'fixit://home'",
 		"adb -s R5CT30ABC exec-out screencap -p",
-		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton",
+		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category 'com.android.internal.systemui.navbar.threebutton'",
 		"adb -s R5CT30ABC exec-out screencap -p",
-		"adb -s R5CT30ABC shell cmd uimode night no",
-		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural",
+		"adb -s R5CT30ABC shell cmd uimode night 'no'",
+		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category 'com.android.internal.systemui.navbar.gestural'",
 	}
 	pos := 0
 	for _, want := range order {
@@ -1163,14 +1163,14 @@ func TestShootFailedScreenshotStillResets(t *testing.T) {
 	}
 	data := res.Data.(ShootData)
 	want := []string{
-		"adb -s R5CT30ABC shell cmd uimode night no",
-		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural",
-		"adb -s R5CT30ABC shell settings put system font_scale 1.0",
+		"adb -s R5CT30ABC shell cmd uimode night 'no'",
+		"adb -s R5CT30ABC shell cmd overlay enable-exclusive --category 'com.android.internal.systemui.navbar.gestural'",
+		"adb -s R5CT30ABC shell settings put system font_scale '1.0'",
 	}
 	if !slices.Equal(data.Restored, want) || len(data.Shots) != 0 {
 		t.Fatalf("restored %v shots %v", data.Restored, data.Shots)
 	}
-	if !fx.ran("adb -s R5CT30ABC shell cmd uimode night yes") {
+	if !fx.ran("adb -s R5CT30ABC shell cmd uimode night 'yes'") {
 		t.Fatal("dark was applied before the failed shot")
 	}
 	run, _ := tool.LoadRun(1)
@@ -1180,7 +1180,7 @@ func TestShootFailedScreenshotStillResets(t *testing.T) {
 		}
 	}
 	// a reset that fails too is reported with the capture error, not instead of it
-	fx.rules = append(fx.rules, rule{prefix: "adb -s R5CT30ABC shell cmd uimode night no", out: CmdOut{Code: 1, Stderr: "adb: device gone"}})
+	fx.rules = append(fx.rules, rule{prefix: "adb -s R5CT30ABC shell cmd uimode night 'no'", out: CmdOut{Code: 1, Stderr: "adb: device gone"}})
 	_, err = tool.Shoot(ctx, ShootOptions{Lane: "android", Themes: []string{"dark"}})
 	if err == nil || !strings.Contains(err.Error(), "device offline") || !strings.Contains(err.Error(), "restoring android") || !strings.Contains(err.Error(), "device gone") {
 		t.Fatalf("both errors expected: %v", err)
@@ -1220,6 +1220,120 @@ func TestShootUsesSnapshotLane(t *testing.T) {
 	}
 	if _, err := tool.Sheet(SheetOptions{Lanes: []string{"droid"}}); diagCode(t, err) != DiagUnknownLane {
 		t.Fatalf("sheet on a lane outside the snapshot: %v", err)
+	}
+}
+
+// plan's run init follow-up carries the RESOLVED base and the findings
+// reference, shell-quoted, so following it snapshots what plan computed.
+func TestPlanNextCarriesBaseAndFindings(t *testing.T) {
+	fx := &fakeExec{rules: []rule{
+		{prefix: "git rev-parse --verify --quiet release/2026.09^{commit}", out: CmdOut{Stdout: "abc\n"}},
+		{prefix: "git diff --name-only release/2026.09...HEAD", out: CmdOut{Stdout: "apps/client/app/home.tsx\n"}},
+	}}
+	tool := newTool(t, testConfig(), fx)
+	ctx := context.Background()
+	res, err := tool.Plan(ctx, PlanOptions{Base: "release/2026.09", Findings: "board it's-polish", Intensity: "quick"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `polish-kit run init --pass 1 --target app --intensity quick --base 'release/2026.09' --findings 'board it'\''s-polish' --json`
+	if res.Next[1] != want {
+		t.Fatalf("next:\n got %s\nwant %s", res.Next[1], want)
+	}
+	// following it records the same base and findings in run.json
+	init, err := tool.Init(ctx, InitOptions{Pass: 1, Plan: PlanOptions{Base: "release/2026.09", Findings: "board it's-polish", Intensity: "quick", Targets: []string{"app"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := tool.LoadRun(init.Data.(InitData).Pass)
+	if run.Plan.Base != "release/2026.09" || run.Plan.Findings != "board it's-polish" || run.Plan.Intensity != "quick" {
+		t.Fatalf("snapshot: %+v", run.Plan)
+	}
+	if shellQuote("a'b") != `'a'\''b'` || shellQuote("") != "''" {
+		t.Fatal("shellQuote")
+	}
+}
+
+// Runtime versions order by numeric components: 26.10 is newer than 26.9
+// and 26.5; a string sort would pick 26.9.
+func TestRuntimeVersionsOrderNumerically(t *testing.T) {
+	fixture := strings.Replace(simctlFixture, `"com.apple.CoreSimulator.SimRuntime.iOS-18-6": []`,
+		`"com.apple.CoreSimulator.SimRuntime.iOS-18-6": [],
+		"com.apple.CoreSimulator.SimRuntime.iOS-26-9": [{"udid": "NINE", "name": "iPhone 17 Pro", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}],
+		"com.apple.CoreSimulator.SimRuntime.iOS-26-10-2": [{"udid": "TEN", "name": "iPhone 17 Pro", "state": "Shutdown", "isAvailable": true, "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}]`, 1)
+	fixture = strings.Replace(fixture, `"runtimes": [`,
+		`"runtimes": [
+		{"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-9", "version": "26.9", "name": "iOS 26.9", "platform": "iOS", "isAvailable": true},
+		{"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-10-2", "version": "26.10.2", "name": "iOS 26.10.2", "platform": "iOS", "isAvailable": true},`, 1)
+	var list simList
+	if err := json.Unmarshal([]byte(fixture), &list); err != nil {
+		t.Fatal(err)
+	}
+	dev, rt, err := matchSim(list, Lane{ID: "ios26", Runtime: "26", DeviceType: "iPhone 17 Pro"})
+	if err != nil || rt.Version != "26.10.2" || dev.UDID != "TEN" {
+		t.Fatalf("newest numeric runtime: %+v %+v %v", rt, dev, err)
+	}
+	for _, c := range []struct {
+		a, b string
+		less bool
+	}{{"26.9", "26.10", true}, {"26.10", "26.9", false}, {"26.5", "26.10.2", true}, {"26.10", "26.10.1", true}, {"26.10.1", "26.10", false}, {"18.6", "26", true}, {"26", "26.0", false}} {
+		if versionLess(c.a, c.b) != c.less {
+			t.Fatalf("versionLess(%s, %s) != %v", c.a, c.b, c.less)
+		}
+	}
+}
+
+// --text is validated before any device mutation and shell-quoted exactly
+// once in the argv: an injection string never reaches adb.
+func TestSetTextIsValidatedAndQuoted(t *testing.T) {
+	fx := &fakeExec{rules: append(androidStateRules("R5CT30ABC"),
+		rule{prefix: "adb devices -l", out: CmdOut{Stdout: "List of devices attached\nR5CT30ABC device model:SM_S911B\n"}},
+		rule{prefix: "xcrun simctl list -j", out: CmdOut{Stdout: simctlFixture}},
+		rule{prefix: "xcrun simctl ui BBBB-26 appearance", out: CmdOut{Stdout: "light\n"}},
+	)}
+	cfg := testConfig()
+	cfg.Lanes[0].Device = "BBBB-26"
+	tool := newTool(t, cfg, fx)
+	ctx := context.Background()
+	for _, bad := range []string{"1.3; touch /sdcard/x", "$(reboot)", "abc", "0.1", "9", "NaN", "Inf", " 1.3"} {
+		_, err := tool.Set(ctx, SetOptions{Lane: "android", Text: bad})
+		var de runx.DiagError
+		if !errors.As(err, &de) || de.Diag.Code != DiagUsage || !strings.Contains(de.Diag.Detail, "between 0.5 and 3") {
+			t.Fatalf("%q must be refused with the range: %v", bad, err)
+		}
+	}
+	if len(fx.calls) != 0 {
+		t.Fatalf("a refused value must not touch the device: %v", fx.calls)
+	}
+	res, err := tool.Set(ctx, SetOptions{Lane: "android", Text: "1.3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var put []string
+	for _, c := range fx.calls {
+		if slices.Contains(c, "font_scale") {
+			put = c
+		}
+	}
+	if put == nil || put[len(put)-1] != "'1.3'" || strings.Count(strings.Join(put, " "), "'") != 2 {
+		t.Fatalf("font_scale argv must carry the value quoted exactly once: %v", put)
+	}
+	if got := res.Data.(SetData).Applied; !slices.Equal(got, []string{"adb -s R5CT30ABC shell settings put system font_scale '1.3'"}) {
+		t.Fatalf("applied: %v", got)
+	}
+	// iOS: the finite simctl name set
+	_, err = tool.Set(ctx, SetOptions{Lane: "ios26", Text: "huge; rm -rf /"})
+	var de runx.DiagError
+	if !errors.As(err, &de) || de.Diag.Code != DiagUsage || !strings.Contains(de.Diag.Detail, "accessibility-medium") {
+		t.Fatalf("ios: %v", err)
+	}
+	// the config's own textSizes are held to the same rule
+	bad := testConfig()
+	bad.Lanes[0].TextSizes = []string{"giant"}
+	bad.Lanes[1].TextSizes = []string{"4"}
+	problems := bad.Validate()
+	if len(problems) != 2 || !strings.Contains(problems[0], "lane ios26: textSizes") || !strings.Contains(problems[1], "between 0.5 and 3") {
+		t.Fatalf("config textSizes: %v", problems)
 	}
 }
 
