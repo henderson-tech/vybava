@@ -342,6 +342,13 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 			if d != nil || err != nil {
 				return finish(s, nil, nil, nil, diagOrErr(d, err))
 			}
+			// A Devbox guest's pull-only clone keeps the Mac's render: neither
+			// --check nor a write judges it, so automation is never sent a
+			// render fix the guest skips.
+			if memo.MirrorHome(h, "") != nil {
+				results = append(results, map[string]any{"home": h.Path, "mirror": true})
+				continue
+			}
 			// A tracked MEMORY.md is left as committed, so --check has no
 			// drift to judge and a write has nothing to do: both answer with
 			// the untracking fix instead.
@@ -360,10 +367,6 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 					return finish(s, map[string]any{"home": h.Path, "drift": true}, nil, nil, &memo.Diag{Code: memo.DiagRenderDrift, Severity: "error", Detail: filepath.Join(h.Path, memo.IndexFile) + " differs from the render", Fix: "memo render --home " + h.Path + " --json"})
 				}
 				results = append(results, map[string]any{"home": h.Path, "drift": false})
-				continue
-			}
-			if memo.MirrorHome(h, "") != nil { // a Devbox guest's pull-only clone keeps the Mac's render
-				results = append(results, map[string]any{"home": h.Path, "mirror": true})
 				continue
 			}
 			changed, _, err := memo.WriteIndex(l, events, now)

@@ -131,6 +131,9 @@ func TestMemoMirrorHomeIsReadOnlyOnDevboxGuest(t *testing.T) {
 	if env, err := run("ensure"); err != nil || !env.OK {
 		t.Fatalf("ensure must pass over the mirror home: %+v %v", env, err)
 	}
+	if env, err := run("render", "--check"); err != nil || !env.OK {
+		t.Fatalf("render --check must pass over the mirror home, never send a render fix the guest skips: %+v %v", env, err)
+	}
 	for _, f := range []string{memo.UsageFile, memo.IndexFile} {
 		if _, err := os.Stat(filepath.Join(personal.Path, f)); !os.IsNotExist(err) {
 			t.Errorf("show or ensure wrote %s into the mirror home: %v", f, err)
