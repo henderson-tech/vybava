@@ -72,11 +72,13 @@ EOF
 
 **Fallback.** Use one `general-purpose` Agent with `model: "opus"` per lane. Give it
 the same brief plus the contract essentials: test files only, no git, the same
-result shape. Keep it persistent through SendMessage for the lane and shut it down
-when the lane ends. A lane briefed to lead the `e2e` skill (`e2e-write`, a full
-`e2e-run`) is the exception: don't forward its Codex-lead brief, since a subagent has no `sol_explorer`
-or `sol_tester`. Follow the `e2e` skill's exit-3 path instead, where Claude leads
-Phases 1-2 and spawns one named Opus writer per lane. Tell the user in one line:
+result shape. Strip every Codex-only step, because a subagent has no `sol_explorer`
+or `sol_tester`: an `explore` lane maps its clusters itself, one after another. Keep
+the agent persistent through SendMessage for the lane and shut it down when the lane
+ends. A lane briefed to lead the `e2e` skill (`e2e-write`, a full `e2e-run`) is the
+exception: don't forward its Codex-lead brief. Follow the `e2e` skill's exit-3 path
+instead, where Claude leads Phases 1-2 and spawns one named Opus writer per lane.
+Tell the user in one line:
 "Codex unavailable: <lane> ran on an Opus subagent."
 
 ## Browser and device etiquette
