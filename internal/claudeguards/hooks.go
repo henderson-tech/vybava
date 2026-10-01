@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 )
 
 // HookWiring is one settings.json hook entry claude-guards expects to exist.
@@ -169,6 +171,13 @@ func hookPresent(groups map[string][]hookGroup, w HookWiring) bool {
 	return false
 }
 
+// isGitWorkTree reports whether dir is a git checkout's root (.git as a
+// directory or, in a worktree, a file).
+func isGitWorkTree(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
 // Doctor is the hook entry point. It never fails the session: an unreadable
 // or malformed file is one warning on stderr and a nil return. Missing hooks
 // are printed to stdout — at SessionStart that text enters the model's
@@ -191,15 +200,22 @@ func Doctor(settingsPath string, fix bool, stdout, stderr io.Writer) error {
 	if len(missing) == 0 && len(retired) == 0 {
 		return nil
 	}
+	fixCmd := "claude-guards doctor --fix"
+	// A Devbox portal box's ~/.claude is a pull-only clone of the Mac's: a
+	// write there is overwritten by the next pull, or blocks it. Report only,
+	// and name the fix the Mac runs.
+	if devboxguest.Detected() && isGitWorkTree(filepath.Dir(settingsPath)) {
+		fix, fixCmd = false, fixCmd+" on the Mac — this Devbox guest's ~/.claude is a pull-only mirror of it"
+	}
 	if !fix {
 		if len(missing) > 0 {
-			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: claude-guards doctor --fix\n", len(missing), settingsPath)
+			fmt.Fprintf(stdout, "🚨 claude-guards: %d hook(s) missing from %s — this session runs partly unguarded. Fix: %s\n", len(missing), settingsPath, fixCmd)
 			for _, w := range missing {
 				fmt.Fprintf(stdout, "   %s\n", w.describe())
 			}
 		}
 		if len(retired) > 0 {
-			fmt.Fprintf(stdout, "ℹ️ claude-guards: %d retired hook(s) still wired in %s. Fix: claude-guards doctor --fix\n", len(retired), settingsPath)
+			fmt.Fprintf(stdout, "ℹ️ claude-guards: %d retired hook(s) still wired in %s. Fix: %s\n", len(retired), settingsPath, fixCmd)
 			for _, w := range retired {
 				fmt.Fprintf(stdout, "   %s\n", w.describe())
 			}

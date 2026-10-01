@@ -77,3 +77,25 @@ func TestMacMachineRulesStandDownOnDevboxGuest(t *testing.T) {
 		t.Errorf("test-worker-cap must still refuse on a Devbox guest, without routing to devbox run: %+v", d)
 	}
 }
+
+// A portal box's ~/.claude is a pull-only Claudik clone: doctor --fix there
+// reports what is missing and names the Mac's fix, never writes the tracked
+// settings.json (the next pull would overwrite it, or refuse to).
+func TestDoctorFixStandsDownOnAGuestMirror(t *testing.T) {
+	onDevboxGuest(t)
+	path := fullSettings(t, "~/.local/bin/claude-guards", "read")
+	if err := os.Mkdir(filepath.Join(filepath.Dir(path), ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	var out, errOut strings.Builder
+	if err := Doctor(path, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("doctor --fix wrote the mirror's settings.json")
+	}
+	if !strings.Contains(out.String(), "1 hook(s) missing") || !strings.Contains(out.String(), "on the Mac") {
+		t.Errorf("the report must name the missing hook and the Mac's fix:\n%s", out.String())
+	}
+}
