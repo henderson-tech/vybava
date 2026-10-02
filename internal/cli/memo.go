@@ -38,7 +38,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		Long: "memo owns LEDGER.md (append-only truth), MEMORY.md (rendered) and usage.jsonl.\n" +
 			"  memo add <type>/<topic>[!] \"<sentence>.\" [--link <l>]... [--supersedes N] [--retires N]\n" +
 			"  memo show <ref> · memo find <words>... · memo touch <ref> · memo render [--check] · memo ensure\n" +
-			"  memo import <file> · memo migrate <home> · memo homes [register <alias> <path>]\n" +
+			"  memo import <file> · memo renumber [--base <ref>] [--dry-run] · memo migrate <home> · memo homes [register <alias> <path>]\n" +
 			"  memo vault [--path ~/Memory] · memo snapshot [-m msg] · memo log [-n N] · memo restore <rev> <file>\n" +
 			"  memo hook  (Claude Code PreToolUse + Stop payload on stdin)",
 	}
@@ -472,6 +472,46 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		return finish(s, result, []string{"memorylint check " + l.Home()}, []*memo.Diag{tracked}, nil)
 	}
 
+	// renumber
+	var renumberBase string
+	var renumberDry bool
+	renumber := &cobra.Command{Use: "renumber [--base <ref>] [--dry-run]", Short: "Settle a team ledger onto the base a merge brings in: base ids win, the branch's rows and citations move", Args: cobra.NoArgs}
+	renumber.RunE = func(cmd *cobra.Command, _ []string) error {
+		s := session(cmd)
+		env := memoEnv()
+		homes, d, err := env.Resolve(homeSpec, "project")
+		if d != nil || err != nil {
+			return finish(s, nil, nil, nil, diagOrErr(d, err))
+		}
+		res, warnings, err := memo.Renumber(homes[0].Path, renumberBase, renumberDry, time.Now())
+		if err != nil {
+			return finish(s, res, nil, warnings, err)
+		}
+		check := "memorylint check " + shellword.Quote(res.Home) + " --base " + shellword.Quote(res.Base)
+		next := []string{}
+		switch {
+		case res.NoBaseLedger:
+			next = append(next, check)
+		case renumberDry && (res.Changed || len(res.Files) > 0):
+			retry := "memo renumber --home " + shellword.Quote(res.Home) + " --base " + shellword.Quote(res.Base)
+			if !res.Merging {
+				retry = "git -C " + shellword.Quote(res.Root) + " merge " + shellword.Quote(res.Base) + "; " + retry
+			}
+			next = append(next, retry)
+		case len(res.Paths) > 0:
+			add := "git -C " + shellword.Quote(res.Root) + " add --"
+			for _, p := range res.Paths {
+				add += " " + shellword.Quote(p)
+			}
+			next = append(next, add, check)
+		default:
+			next = append(next, check)
+		}
+		return finish(s, res, next, warnings, nil)
+	}
+	renumber.Flags().StringVar(&renumberBase, "base", "", "ref whose ids win (default: the merge in progress, else origin's default branch)")
+	renumber.Flags().BoolVar(&renumberDry, "dry-run", false, "report the moves and rewrites, write nothing (works before the merge too)")
+
 	// migrate
 	migrate := &cobra.Command{Use: "migrate <home>", Short: "List v2 notes and print an import template (helper, not the judgment)", Args: cobra.ArbitraryArgs}
 	migrate.RunE = func(cmd *cobra.Command, args []string) error {
@@ -668,7 +708,7 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		return nil
 	}
 
-	root.AddCommand(add, show, find, touch, render, ensure, imp, migrate, homesCmd, vault, snapshot, logCmd, restore, hook)
+	root.AddCommand(add, show, find, touch, render, ensure, imp, renumber, migrate, homesCmd, vault, snapshot, logCmd, restore, hook)
 	return root
 }
 

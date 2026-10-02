@@ -817,13 +817,13 @@ func (rt *runtime) memorylintApplet() *cobra.Command {
 }
 
 func (rt *runtime) memoryLintCommand(use string) *cobra.Command {
-	var failOn string
+	var failOn, base string
 	command := &cobra.Command{
 		Use:   use,
 		Short: "Lint memory homes",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, paths []string) error {
-			report, err := memorylint.Lint(paths)
+			report, err := memorylint.LintWith(paths, memorylint.Options{Base: base})
 			if err != nil {
 				return err
 			}
@@ -853,6 +853,7 @@ func (rt *runtime) memoryLintCommand(use string) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&failOn, "fail-on", "warning", "minimum finding severity that produces a non-zero exit (warning, error, never)")
+	command.Flags().StringVar(&base, "base", "auto", "ref a team ledger's ids must agree with (L009): auto = the branch's base when one resolves, none = skip")
 	return command
 }
 

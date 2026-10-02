@@ -1,12 +1,15 @@
 package memo
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // Finding is one lint result; memorylint converts it into its own shape.
@@ -22,7 +25,8 @@ type Finding struct {
 // sentences, length cap), L002 id order, L003 supersede/retire target,
 // L004 link resolution, L005 length warning, L006 MEMORY.md drift, L007
 // note not linked from any row, L008 a team home's hot surface (MEMORY.md,
-// usage.jsonl) is committed instead of gitignored.
+// usage.jsonl) is committed instead of gitignored, L009 a team row id that
+// names a different row on the base branch (LintBase).
 const (
 	RuleGrammar          = "L001"
 	RuleIDOrder          = "L002"
@@ -32,7 +36,75 @@ const (
 	RuleDrift            = "L006"
 	RuleNoteOrphan       = "L007"
 	RuleSurfaceCommitted = "L008"
+	RuleIDCollision      = "L009"
 )
+
+// Base specs for ResolveBase: auto finds the branch's base (DefaultBase) and
+// skips quietly when none resolves; none turns L009 off.
+const (
+	BaseAuto = "auto"
+	BaseNone = "none"
+)
+
+// ResolveBase turns a --base spec into a ref for LintBase: "" means skip.
+// An explicit ref that does not resolve is a BASE_UNRESOLVED diag, never a
+// silent skip, so a CI step that names its base cannot pass unchecked.
+func ResolveBase(home, spec string) (string, *Diag) {
+	switch spec {
+	case BaseNone:
+		return "", nil
+	case "", BaseAuto:
+		if _, ok := gitToplevel(home); !ok {
+			return "", nil
+		}
+		return DefaultBase(home), nil
+	}
+	if !refResolves(home, spec) {
+		root, _ := gitToplevel(home)
+		return "", errorDiag(DiagBaseUnresolved, "base "+spec+" does not resolve to a commit (a shallow CI checkout must fetch it first)", "git -C "+shellword.Quote(root)+" fetch origin")
+	}
+	return spec, nil
+}
+
+// LintBase is L009: every row of a team home's ledger whose id names a
+// different row in base's copy of the same ledger. Two branches that both
+// appended after their fork collide this way; the merge settles it with
+// `memo renumber`, and until then a citation of that id means two facts.
+// A ledger that does not load is L001's to report; a base without the
+// ledger has nothing to collide with.
+func LintBase(home, base string) []Finding {
+	path := filepath.Join(home, LedgerFile)
+	l, d, err := Load(path)
+	if err != nil || d != nil || l.Kind != KindTeam {
+		return nil
+	}
+	text, err := gitStdout(home, "show", base+":./"+LedgerFile)
+	if err != nil {
+		if gitStdoutOr(home, "missing", "cat-file", "-t", base+":./"+LedgerFile) == "missing" {
+			return nil
+		}
+		return []Finding{{Rule: RuleIDCollision, Severity: "error", Path: path, Line: 1, Message: "the ledger on " + base + " could not be read: " + err.Error()}}
+	}
+	bl, d, err := parse(base+":LEDGER.md", bytes.NewReader(text))
+	if err != nil || d != nil {
+		return []Finding{{Rule: RuleIDCollision, Severity: "warning", Path: path, Line: 1, Message: "the ledger on " + base + " does not parse, so its ids were not compared: " + diagOrErrDiag(d, err, base).Detail}}
+	}
+	byID := make(map[int]Row, len(bl.Rows))
+	for _, r := range bl.Rows {
+		byID[r.ID] = r
+	}
+	var out []Finding
+	for _, r := range l.Rows {
+		b, ok := byID[r.ID]
+		if !ok || b.key() == r.key() {
+			continue
+		}
+		out = append(out, Finding{Rule: RuleIDCollision, Severity: "error", Path: path, Line: r.Line, Message: fmt.Sprintf(
+			"row %s is %s/%s here but %s/%s on %s: one id names two facts; settle it when merging %s (`git merge %s`, then `memo renumber --base %s --home %s`; --dry-run previews the moves)",
+			r.Cite(), r.Type, r.Topic, b.Type, b.Topic, base, base, base, base, shellword.Quote(home))})
+	}
+	return out
+}
 
 // HasLedger reports whether a home is a memo ledger home.
 func HasLedger(home string) bool { return hasLedger(home) }

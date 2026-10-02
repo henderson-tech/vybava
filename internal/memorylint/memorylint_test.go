@@ -347,3 +347,54 @@ func TestLintLedgerTeamHomeLocalSurface(t *testing.T) {
 		t.Errorf("a gitignored hot surface must not warn: %v", seen)
 	}
 }
+
+// TestLintWithBaseFlagsAnIDTheBaseGaveAnotherRow: `check --base` compares a
+// team ledger's ids with the base's copy (L009); the write hook's Lint never
+// does, and a named base that does not resolve fails instead of skipping.
+func TestLintWithBaseFlagsAnIDTheBaseGaveAnotherRow(t *testing.T) {
+	repo := t.TempDir()
+	root := filepath.Join(repo, ".claude", "memory")
+	ledger := filepath.Join(root, "LEDGER.md")
+	head := "---\nmemo: 1\nalias: t\nkind: team\n---\n- #t1 project/api Shared fact. ^t1\n"
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@x"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s", args, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	writeDeep(t, filepath.Join(root, ".gitignore"), "MEMORY.md\nusage.jsonl\n")
+	write(t, ledger, head+"- #t2 project/api Main's second fact. ^t2\n")
+	git("add", "-A")
+	git("commit", "-qm", "main")
+	git("checkout", "-qb", "work/x", "HEAD")
+	write(t, ledger, head+"- #t2 project/perf The branch's second fact. ^t2\n")
+
+	collisions := func(base string) []memorylint.Finding {
+		t.Helper()
+		report, err := memorylint.LintWith([]string{root}, memorylint.Options{Base: base})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []memorylint.Finding
+		for _, f := range report.Findings {
+			if f.Rule == "L009" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	if got := collisions("main"); len(got) != 1 || got[0].Line != 7 || got[0].Severity != memorylint.SeverityError || !strings.Contains(got[0].Message, "memo renumber --base main") {
+		t.Errorf("t2 names two rows: want one L009 error on line 7 naming the fix, got %#v", got)
+	}
+	if got := collisions("none"); len(got) != 0 {
+		t.Errorf("--base none must not compare: %#v", got)
+	}
+	if got := collisions("origin/nope"); len(got) != 1 || !strings.Contains(got[0].Message, "does not resolve") {
+		t.Errorf("an unresolvable named base must fail: %#v", got)
+	}
+	if report, err := memorylint.Lint([]string{root}); err != nil || len(report.Findings) != 0 {
+		t.Errorf("the hook's Lint must not compare ids with a base: %#v %v", report.Findings, err)
+	}
+}

@@ -3,11 +3,14 @@ package memo
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // File names inside a home. usage.jsonl and MEMORY.md are derived; LEDGER.md
@@ -249,8 +252,14 @@ func Load(path string) (*Ledger, *Diag, error) {
 		return nil, nil, err
 	}
 	defer f.Close()
+	return parse(path, f)
+}
+
+// parse reads a ledger from r; path names it in diagnostics (a base ref's
+// copy is read from `git show`, never from disk).
+func parse(path string, r io.Reader) (*Ledger, *Diag, error) {
 	l := &Ledger{Path: path}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	line, inFront, seenFront := 0, false, false
 	for sc.Scan() {
@@ -283,7 +292,7 @@ func Load(path string) (*Ledger, *Diag, error) {
 			return nil, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("row #%s%d: a %s ledger uses the %s id prefix", row.IDPrefix(), row.ID, l.Kind, map[Kind]string{KindTeam: "#t / ^t", KindPersonal: "bare # / ^m"}[l.Kind]), Fix: fmt.Sprintf("fix %s:%d by hand, then `memorylint check %s`", path, line, filepath.Dir(path))}, nil
 		}
 		if n := len(l.Rows); n > 0 && row.ID <= l.Rows[n-1].ID {
-			return nil, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("row #%d follows #%d; ids are strictly increasing", row.ID, l.Rows[n-1].ID), Fix: fmt.Sprintf("renumber %s:%d by hand, then `memorylint check %s`", path, line, filepath.Dir(path))}, nil
+			return nil, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: line, Detail: fmt.Sprintf("row #%d follows #%d; ids are strictly increasing", row.ID, l.Rows[n-1].ID), Fix: fmt.Sprintf("memo renumber --home %s  # a merge kept both sides of LEDGER.md; it settles them onto the base", shellword.Quote(filepath.Dir(path)))}, nil
 		}
 		l.Rows = append(l.Rows, row)
 	}
