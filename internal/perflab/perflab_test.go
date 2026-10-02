@@ -142,3 +142,18 @@ func TestDiagnosticsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// The skill's protocol runs `build find --platform <p>` without --kind: on
+// android that must name the one kind there is, never a USAGE refusal.
+func TestBuildTargetKindDefault(t *testing.T) {
+	for _, tc := range []struct{ platform, kind, want string }{
+		{"ios", "", "shell"},
+		{"android", "", "bundled"},
+		{"ios", "bundled", "bundled"},
+		{"android", "shell", "shell"}, // explicit misuse stays visible to validate
+	} {
+		if got := (BuildOptions{Platform: tc.platform, Profile: "perf", Kind: tc.kind}).target().Kind; got != tc.want {
+			t.Errorf("%s kind %q: got %q, want %q", tc.platform, tc.kind, got, tc.want)
+		}
+	}
+}

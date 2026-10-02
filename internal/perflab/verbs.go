@@ -217,8 +217,12 @@ type BuildOptions struct {
 }
 
 func (o BuildOptions) target() buildindex.Target {
+	// Android has one kind (Gradle always bundles the JS), so the protocol's
+	// kind-less `build find --platform android` names it.
 	kind := o.Kind
-	if kind == "" {
+	if kind == "" && o.Platform == "android" {
+		kind = buildindex.KindBundled
+	} else if kind == "" {
 		kind = buildindex.KindShell
 	}
 	return buildindex.Target{Platform: o.Platform, Profile: o.Profile, Kind: kind}

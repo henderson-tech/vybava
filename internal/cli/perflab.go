@@ -391,7 +391,7 @@ func buildFlags(cmd *cobra.Command, o *perflab.BuildOptions, kind bool) {
 	cmd.Flags().StringVar(&o.Platform, "platform", "", "ios | android")
 	cmd.Flags().StringVar(&o.Profile, "profile", "perf", "a key of perflab.profiles")
 	if kind {
-		cmd.Flags().StringVar(&o.Kind, "kind", "shell", "shell (no JS, needs pack) | bundled (as shipped)")
+		cmd.Flags().StringVar(&o.Kind, "kind", "", "shell (no JS, needs pack) | bundled (as shipped); default shell on ios, bundled on android")
 	}
 }
 
