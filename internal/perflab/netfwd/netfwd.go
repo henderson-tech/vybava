@@ -603,6 +603,19 @@ type Result struct {
 	Next        []string
 }
 
+// Serving returns the live perflab forward for the same device port and
+// origin whose every link answers (a standalone `net forward` running as a
+// background task, which doctor's FORWARD_DOWN fix starts). `net forward`
+// and `run` reuse it: a second listener on the port fails "already in use".
+func Serving(ctx context.Context, env Env, s Spec) (Record, bool) {
+	rec, ok := readRecord(env, s)
+	if !ok || rec.Origin != s.Origin || rec.PID == env.Pid || !slices.Contains(listeners(ctx, env, rec.DevicePort), rec.PID) {
+		return Record{}, false
+	}
+	st, err := Status(ctx, env, s)
+	return rec, err == nil && len(st.Diagnostics) == 0
+}
+
 // Forward is the `net forward` verb: it brings the chain up, records the
 // owning pid, prints a `phase=forwarding` progress line once the phone is
 // proven to reach the origin, re-adds the reverse when a USB drop removes
@@ -613,12 +626,9 @@ func Forward(ctx context.Context, env Env, s Spec) (Result, error) {
 		return Result{}, err
 	}
 	statusNext := fmt.Sprintf("perflab net status --device %s --device-port %d --json", orDefault(s.DeviceID, s.Serial), s.DevicePort)
-	if rec, ok := readRecord(env, s); ok && rec.Origin == s.Origin && rec.PID != env.Pid && slices.Contains(listeners(ctx, env, rec.DevicePort), rec.PID) {
-		st, err := Status(ctx, env, s)
-		if err == nil && len(st.Diagnostics) == 0 {
-			return Result{Data: ForwardData{Device: s.DeviceID, Serial: s.Serial, DevicePort: s.DevicePort, Origin: Redact(s.Origin), PID: rec.PID, Reused: true, StartedAt: rec.StartedAt,
-				Reverse: fmt.Sprintf("tcp:%d tcp:%d", s.DevicePort, rec.HostPort)}, Next: []string{statusNext}}, nil
-		}
+	if rec, ok := Serving(ctx, env, s); ok {
+		return Result{Data: ForwardData{Device: s.DeviceID, Serial: s.Serial, DevicePort: s.DevicePort, Origin: Redact(s.Origin), PID: rec.PID, Reused: true, StartedAt: rec.StartedAt,
+			Reverse: fmt.Sprintf("tcp:%d tcp:%d", s.DevicePort, rec.HostPort)}, Next: []string{statusNext}}, nil
 	}
 	prog := hostexec.NewProgress(env.Log, "net "+orDefault(s.DeviceID, s.Serial), env.Now)
 	prog.Phase("start", fmt.Sprintf("port=%d", s.DevicePort), "origin="+Redact(s.Origin))

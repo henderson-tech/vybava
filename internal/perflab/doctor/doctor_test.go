@@ -460,6 +460,19 @@ func TestS20ForwardCheck(t *testing.T) {
 	if c.Code != netfwd.DiagForwardDown || c.Fix != "perflab net forward --device s20 --lease tok-2 --device-port 23936" {
 		t.Fatalf("forward %+v", c)
 	}
+	// run's own preflight: run starts (or reuses) the forward after it, so
+	// a missing forward never refuses the run (the 2026-10-02 S20 run did).
+	starts := o
+	starts.StartsForward = true
+	res, err = Run(context.Background(), w.env, starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range res.Data.Checks {
+		if c.ID == "api-forward" {
+			t.Fatalf("run's preflight checked the forward it starts itself: %+v", c)
+		}
+	}
 	// With the reverse and a healthy perflab forward the chain passes.
 	w.lab.handlers["adb -s RF8N21PY1BF reverse --list"] = out("UsbFfs tcp:23936 tcp:23936\n")
 	w.lab.handlers["lsof"] = out("4242\n")

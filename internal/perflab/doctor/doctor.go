@@ -105,6 +105,9 @@ type Options struct {
 	TunnelRegistry string
 	// Then is the verb the preflight was for, appended to next.
 	Then string
+	// StartsForward skips the Android forward check: `run` starts (or
+	// reuses) the forward after its preflight, so a missing one is expected.
+	StartsForward bool
 }
 
 // DefaultTunnelRegistry is the xcuitest driver's RemoteXPC registry.

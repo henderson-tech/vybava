@@ -49,6 +49,9 @@ type DoctorOptions struct {
 	Wake     bool
 	// Then is the verb the preflight serves (appended to next).
 	Then string
+	// StartsForward: the caller (run) brings the Android API forward up
+	// itself, so its absence is not a preflight failure.
+	StartsForward bool
 }
 
 func (t *Tool) doctorEnv() (doctor.Env, error) {
@@ -130,7 +133,7 @@ func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 		return Result{}, err
 	}
 	opts := doctor.Options{For: doctor.Purpose(o.For), Platform: o.Platform, Lease: o.Lease, Wake: o.Wake,
-		ProjectDir: t.ProjectDir, CacheDir: t.Store.Dirs.Cache, TunnelRegistry: tunnelRegistry(t.Getenv), Then: o.Then}
+		ProjectDir: t.ProjectDir, CacheDir: t.Store.Dirs.Cache, TunnelRegistry: tunnelRegistry(t.Getenv), Then: o.Then, StartsForward: o.StartsForward}
 	switch opts.For {
 	case "", doctor.ForBuild, doctor.ForRun, doctor.ForProbe, doctor.ForAll:
 	default:

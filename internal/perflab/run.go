@@ -215,7 +215,7 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 
 	// Preflight before the hold: doctor's device probe takes the device
 	// lock itself.
-	pre, err := t.Doctor(ctx, DoctorOptions{Device: id, Lease: o.Lease, For: string(doctor.ForRun), Wake: true})
+	pre, err := t.Doctor(ctx, DoctorOptions{Device: id, Lease: o.Lease, For: string(doctor.ForRun), Wake: true, StartsForward: true})
 	if err != nil {
 		return Result{}, err
 	}
@@ -291,12 +291,17 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 			if err != nil {
 				return Result{}, err
 			}
-			fwd, fd, err := netfwd.Start(ctx, env, netfwd.Spec{DeviceID: id, Serial: dev.Serial, Lease: o.Lease, DevicePort: a.Device.Android.DevicePort, Origin: origin, Health: a.Health})
-			diags = append(diags, fd...)
-			if err != nil {
-				return Result{Data: data, Diagnostics: diags}, err
+			spec := netfwd.Spec{DeviceID: id, Serial: dev.Serial, Lease: o.Lease, DevicePort: a.Device.Android.DevicePort, Origin: origin, Health: a.Health}
+			// A standalone `net forward` (doctor's FORWARD_DOWN fix) already
+			// serving this phone is reused; a second listener would fail.
+			if _, serving := netfwd.Serving(ctx, env, spec); !serving {
+				fwd, fd, err := netfwd.Start(ctx, env, spec)
+				diags = append(diags, fd...)
+				if err != nil {
+					return Result{Data: data, Diagnostics: diags}, err
+				}
+				defer func() { _ = fwd.Close(context.Background()) }()
 			}
-			defer func() { _ = fwd.Close(context.Background()) }()
 		}
 	}
 

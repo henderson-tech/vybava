@@ -212,7 +212,7 @@ func (r *run) focus() {
 func (r *run) forward() {
 	st := r.level("", Fail, "")
 	a := r.o.API
-	if st == "" || a == nil || a.DevicePort == 0 || a.Origin == "" {
+	if st == "" || r.o.StartsForward || a == nil || a.DevicePort == 0 || a.Origin == "" {
 		return
 	}
 	d := r.o.Device

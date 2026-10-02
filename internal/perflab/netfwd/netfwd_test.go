@@ -253,6 +253,13 @@ func TestForwardLifecycle(t *testing.T) {
 	if err != nil || !again.Data.(ForwardData).Reused || again.Data.(ForwardData).PID != testPID {
 		t.Fatalf("second forward: %v %+v", err, again.Data)
 	}
+	// `run` asks the same question before starting its own forward.
+	if rec, ok := Serving(context.Background(), other, s); !ok || rec.PID != testPID {
+		t.Fatalf("Serving = %+v %v, want the live forward %d", rec, ok, testPID)
+	}
+	if _, ok := Serving(context.Background(), env, s); ok {
+		t.Fatal("a process never reuses its own forward record")
+	}
 	cancel()
 	<-done
 	if ferr != nil {
