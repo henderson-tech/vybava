@@ -1,6 +1,6 @@
 ---
 name: sync
-description: "Use when the user asks to sync, pull, or bring a checkout up to date ('sync this', 'pull latest', 'get up to date with main', 'update my branch'). Two modes by branch identity: default branch commits + pulls ff-only + pushes; feature branch aligns with origin, merges the default branch with triaged conflicts, then deps → backup+migrate → regen → verify → restart."
+description: "Use when the user asks to sync, pull, or bring a checkout up to date — 'sync this', 'pull latest', 'get up to date with main', 'update my branch'."
 ---
 
 # sync — bring this checkout up to date, whichever branch it's on
