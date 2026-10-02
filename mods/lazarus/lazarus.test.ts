@@ -57,7 +57,9 @@ function session(on: On): string[] {
   on('session.id', () => ({ value: SESSION }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('prompt.submit', (_$, e) => {
-    if (e.origin.kind === 'plugin') {
+    // An engine before 2.1.287 leaves origin unset on a plugin's own submit; in
+    // this test only the mod submits without an explicit origin.
+    if ((e.origin?.kind ?? 'plugin') === 'plugin') {
       submitted.push(e.text)
     }
     return { text: e.text }

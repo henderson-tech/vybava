@@ -57,7 +57,7 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    const done = e.origin.kind === 'task-notification' ? TASK_ID.exec(e.text)?.[1] : undefined
+    const done = e.origin?.kind === 'task-notification' ? TASK_ID.exec(e.text)?.[1] : undefined
     if (done !== undefined) {
       await update($, background, ids => ids.filter(id => id !== done))
     }

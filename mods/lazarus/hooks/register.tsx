@@ -129,7 +129,7 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'task-notification') {
+    if (e.origin?.kind === 'task-notification') {
       const id = TASK_ID.exec(e.text)?.[1]
       const status = TASK_STATUS.exec(e.text)?.[1]
       if (id !== undefined && status !== undefined) {
