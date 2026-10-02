@@ -1,6 +1,6 @@
 ---
 name: codex-sidekick
-description: "Claude Code only. Use when manual or verification work should run on a Codex sidekick thread instead of in this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex high', 'codex xhigh' or 'sidekick', or asks to hand work to the Codex sidekick. Claude stays the orchestrator and the only author of app source; the sidekick runs through `switcheroo codex run`."
+description: "Claude Code only. Use when manual or verification work should run on a Codex sidekick thread instead of in this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex high', 'codex xhigh' or 'sidekick', or asks to hand work to the Codex sidekick. Claude stays the orchestrator and the only author of app source; the sidekick is the native `codex` subagent inside `cc` sessions, else `switcheroo codex run`."
 ---
 
 # codex-sidekick: hand the manual work to a Codex thread
@@ -15,6 +15,35 @@ and run state: claude-switcheroo's `docs/specs/2026-10-01-codex-sidekick-run-dec
 
 **If you are Codex, this skill is not for you.** You are the sidekick: do the brief
 yourself and never call `switcheroo codex run` from inside a run.
+
+## Inside a `cc` session: the `codex` subagent first
+
+A `cc` session with a Codex account registered carries two native subagents:
+`codex` (medium) and `codex-high` (for "codex high"). Only their model turns bill a
+Codex account, and those fail over like `cx`. Otherwise they are ordinary subagents,
+with a row in the subagent view, background runs and `SendMessage`. They exist when
+the Agent tool lists them. Rules: claude-switcheroo's
+`docs/specs/2026-10-02-codex-subagent-decisions.md`.
+
+| Lane | Door |
+|---|---|
+| `verify`, `computer-use`, `explore`, `rework` | the `codex` subagent |
+| `usertest`, `e2e-write`, `e2e-run` (they lead a skill), "codex xhigh", or no `codex` agent listed | `switcheroo codex run`, below |
+
+- Spawn it with the Agent tool: `subagent_type: "codex"` (`"codex-high"` for "codex
+  high"), the brief from the templates below, in the background. Keep one agent per
+  lane and continue it with `SendMessage`, which replaces `--resume`. Never spawn a
+  fresh agent for each step.
+- Its final message opens with `STATUS: done|blocked|failed`. After that come the
+  summary, findings, files written, tests and the blocker. Act on it as the exit-code
+  table says for 0, 10 and 1. There is no `findings.md` and no Exports run dir, so
+  skip commit duty 3.
+- A brief for parallel lanes names each lane's browser
+  (`browser_start(session: "$CLAUDE_CODE_SESSION_ID-<lane>")`). Without that line,
+  the agent takes the session's own browser.
+- An agent that ends with `No Codex account …` means exit 3: fall back as below.
+- An `explore` brief drops the `sol_explorer` fan-out. The subagent maps the clusters
+  itself, one after another.
 
 ## Route
 
