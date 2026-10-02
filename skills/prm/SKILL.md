@@ -183,8 +183,9 @@ head moved ⇒ stale ⇒ re-run. Inconclusive counts as BLOCK.
 `--auto` never implies `--admin` (carve-out aside) and never self-approves; `--admin`
 never implies `--auto` — without it the ready PR is still offered, not merged. Applies
 to `all` per-PR as each reaches ready (+ PASS when audited). `--once --auto`: merge
-only if already ready; a blocked PR is reported, not waited on. Non-thread findings
-and open DEFERs still block the auto-merge even though `merge-precheck` can't see
+only if already ready; a blocked PR is reported, not waited on. Non-thread findings,
+open DEFERs and unmet `before:` items (`merge.md` hard guards) still block the
+auto-merge even though `merge-precheck` can't see
 them. An audited auto-merge prints its audit line (`audit @ <sha7>: PASS …`) next to
 the PR URL.
 
