@@ -215,8 +215,12 @@ registered alias wins over the alias in a ledger's frontmatter.
   (`memo add`, `memo render`, `memo touch`). Files under `notes/` stay under
   memorylint's hook. Shell segmentation is the one definition
   (`shellseg.Segments`), so quoted mentions never trip it.
-- **Stop / SessionEnd**: opens `transcript_path`, collects citations from
-  assistant text and tool inputs (`#NN` / `^mNN` / `[[LEDGER#^mNN]]` credit
+- **Stop / SessionEnd**: reads `transcript_path` through
+  `internal/transcripts` from where the previous Stop stopped (cursor and
+  accumulated citations per transcript in
+  `~/.local/state/vybava/memo/scans/`, pruned after 35 days untouched; a
+  replaced or truncated transcript is read again from byte 0), collects
+  citations from assistant text and tool inputs (`#NN` / `^mNN` / `[[LEDGER#^mNN]]` credit
   the personal home, `#tNN` / `^tNN` / `[[LEDGER#^tNN]]` the team home,
   alias-scoped forms that alias only; word boundaries throughout), Read
   calls on `<home>/notes/*.md` (a `read` event for every row linking the

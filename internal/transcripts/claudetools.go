@@ -43,6 +43,25 @@ func (m ClaudeMessage) blocks() []contentBlock {
 	return out
 }
 
+// Texts lists the text of a message, in order: a plain-string content is one
+// text, an array contributes its text blocks.
+func (m ClaudeMessage) Texts() []string {
+	var s string
+	if len(m.Content) > 0 && m.Content[0] == '"' {
+		if json.Unmarshal(m.Content, &s) == nil && s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+	var out []string
+	for _, b := range m.blocks() {
+		if b.Type == "text" {
+			out = append(out, b.Text)
+		}
+	}
+	return out
+}
+
 // ToolUses lists the tool calls of an assistant message, in order.
 func (m ClaudeMessage) ToolUses() []ToolUse {
 	var out []ToolUse
