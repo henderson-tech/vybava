@@ -94,6 +94,14 @@ func segmentDeviceUse(assign []string, seg string) deviceUse {
 	}
 	at := -1
 	for j, t := range rest {
+		// A runner's own NAME=value words (`env FIXIT_APPIUM_IOS_UDID=<udid>
+		// bun run …`) point the command at a device as a prefix would.
+		if j > 0 && shellseg.AssignPrefix.MatchString(t) {
+			_, val, _ := strings.Cut(t, "=")
+			u.handles = append(u.handles, val)
+			serialSet = serialSet || strings.HasPrefix(t, "ANDROID_SERIAL=")
+			continue
+		}
 		b := baseName(t)
 		if deviceTools[b] || (strings.HasPrefix(b, "idevice") && b != "idevice") {
 			at = j
@@ -118,7 +126,8 @@ func segmentDeviceUse(assign []string, seg string) deviceUse {
 		named, verb := serialSet, ""
 		for j := 0; j < len(args); j++ {
 			a := args[j]
-			if a == "-s" {
+			// -s names a device; -e reaches only an emulator, never a phone.
+			if a == "-s" || a == "-e" {
 				named = true
 			}
 			if adbValueFlags[a] {
