@@ -25,9 +25,10 @@ type Price struct {
 // (https://platform.claude.com/docs/en/about-claude/pricing) as cached by the
 // claude-api skill on 2026-06-24 plus the Opus 5.5 / Fable 5.1 cache-read
 // rates it documents, and OpenAI's pricing page
-// (https://developers.openai.com/api/docs/pricing) read 2026-09-23. Standard
-// tier, short-context rates; OpenAI's long-context surcharge is not applied.
-const PricesAsOf = "2026-09-23"
+// (https://developers.openai.com/api/docs/pricing) read 2026-09-23, gpt-6.1-sol
+// on 2026-10-02. Standard tier, short-context rates; OpenAI's long-context
+// surcharge is not applied.
+const PricesAsOf = "2026-10-02"
 
 // claude builds an Anthropic row from its input/output rates and the standard
 // cache multipliers: 1.25× 5-minute writes, 2× 1-hour writes, 0.1× reads.
@@ -54,6 +55,7 @@ var builtinPrices = map[string]Price{
 	"claude-sonnet-4-6": claude(3, 15),
 	"claude-haiku-4-5":  claude(1, 5),
 
+	"gpt-6.1-sol":   openai(2, 0.1, 2.5, 10),
 	"gpt-6-astra":   openai(10, 1, 12.5, 50),
 	"gpt-5.6-sol":   openai(4, 0.4, 5, 20), // promotional through 2026-11-21
 	"gpt-5.6-terra": openai(2, 0.2, 2.5, 12),
