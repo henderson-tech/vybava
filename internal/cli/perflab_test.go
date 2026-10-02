@@ -55,6 +55,8 @@ func TestPerflabEnvelopeSurface(t *testing.T) {
 		{[]string{"build", "gc", "--max-size", "lots"}, false, "USAGE"},
 		{[]string{"wda", "list"}, true, ""},
 		{[]string{"wda", "find"}, false, "CONFIG_MISSING"},
+		// HOST_BUSY_BUILDING's retry line for a WDA build: the flag must parse.
+		{[]string{"wda", "build", "--json", "--wait", "60m"}, false, "CONFIG_MISSING"},
 		{[]string{"bundle", "list"}, true, ""},
 		{[]string{"bundle", "export", "--platform", "ios"}, false, "CONFIG_MISSING"},
 		{[]string{"pack"}, false, "USAGE"},
@@ -129,5 +131,21 @@ func TestPerflabEnvelopeSurface(t *testing.T) {
 				t.Fatalf("code = %s, want %s: %s", env.Diagnostics[0].Code, c.code, raw)
 			}
 		})
+	}
+}
+
+// A misused sub-verb's USAGE fix is its own usage line, never the help dump:
+// `wda build --wait` once answered "perflab --help".
+func TestPerflabUsageFixNamesTheSubVerb(t *testing.T) {
+	for _, tc := range []struct{ verb, prefix string }{
+		{"wda build", "perflab wda find|build "},
+		{"build find", "perflab build find|native "},
+		{"device shell", "perflab device shell "},
+		{"pack", "perflab pack "},
+		{"nope", "perflab --help"},
+	} {
+		if got := usageFix(tc.verb); !strings.HasPrefix(got, tc.prefix) {
+			t.Errorf("usageFix(%q) = %q, want prefix %q", tc.verb, got, tc.prefix)
+		}
 	}
 }

@@ -259,7 +259,7 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		wres, err := wda.Find(ctx, t.wdaEnv(), spec)
+		wres, err := wda.Find(ctx, t.wdaEnv(0), spec)
 		if err != nil {
 			return Result{}, err
 		}

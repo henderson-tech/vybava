@@ -63,13 +63,16 @@ func (t *Tool) doctorEnv() (doctor.Env, error) {
 		}
 		return h.String(), nil
 	}
-	env.WDA.HostLock = t.hostLock
+	env.WDA.HostLock = t.hostLockFor(0)
 	return env, nil
 }
 
-// hostLock is wda's hook onto buildindex's Mac-wide build lock.
-func (t *Tool) hostLock(_ context.Context, key string) (func(), error) {
-	return buildindex.AcquireHostBuild(t.Store.Dirs, 0, buildindex.LockHolder{PID: os.Getpid(), Verb: "wda build", Key: key, Worktree: t.ProjectDir, Since: t.Now()}, "perflab wda build --json")
+// hostLockFor is wda's hook onto buildindex's Mac-wide build lock, waiting up
+// to wait for a running build (`wda build --wait`, the lock's own retry line).
+func (t *Tool) hostLockFor(wait time.Duration) func(context.Context, string) (func(), error) {
+	return func(_ context.Context, key string) (func(), error) {
+		return buildindex.AcquireHostBuild(t.Store.Dirs, wait, buildindex.LockHolder{PID: os.Getpid(), Verb: "wda build", Key: key, Worktree: t.ProjectDir, Since: t.Now()}, "perflab wda build --json")
+	}
 }
 
 // wdaSpec is the prebuilt WDA the adapter's runner would use.
@@ -505,9 +508,9 @@ func wdaResult(res wda.Result) Result {
 	return Result{Data: res.Data, Diagnostics: res.Diagnostics, Next: res.Next}
 }
 
-func (t *Tool) wdaEnv() wda.Env {
+func (t *Tool) wdaEnv(wait time.Duration) wda.Env {
 	env := wda.DefaultEnv(t.Log)
-	env.HostLock = t.hostLock
+	env.HostLock = t.hostLockFor(wait)
 	return env
 }
 
@@ -517,17 +520,17 @@ func (t *Tool) WDAFind(ctx context.Context, team, bundleID string) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := wda.Find(ctx, t.wdaEnv(), s)
+	res, err := wda.Find(ctx, t.wdaEnv(0), s)
 	return wdaResult(res), err
 }
 
 // WDABuild builds the prebuilt WDA (a hit returns it).
-func (t *Tool) WDABuild(ctx context.Context, team, bundleID string, stall, timeout time.Duration) (Result, error) {
+func (t *Tool) WDABuild(ctx context.Context, team, bundleID string, stall, timeout, wait time.Duration) (Result, error) {
 	s, err := t.wdaSpec(team, bundleID)
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := wda.Build(ctx, t.wdaEnv(), s, wda.BuildOptions{Stall: stall, Timeout: timeout})
+	res, err := wda.Build(ctx, t.wdaEnv(wait), s, wda.BuildOptions{Stall: stall, Timeout: timeout})
 	return wdaResult(res), err
 }
 
@@ -537,7 +540,7 @@ func (t *Tool) WDAImport(ctx context.Context, dir, team, bundleID string) (Resul
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := wda.Import(ctx, t.wdaEnv(), s, dir)
+	res, err := wda.Import(ctx, t.wdaEnv(0), s, dir)
 	return wdaResult(res), err
 }
 

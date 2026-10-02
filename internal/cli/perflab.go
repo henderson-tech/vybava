@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,7 +35,7 @@ perflab lease release <d> --lease <t> | reap [--dry-run] | break <d> --reason "<
 perflab doctor [--device <d> --lease <t>] [--platform ios|android] [--for build|run|probe|all] [--wake]
 perflab fingerprint --platform <p> [--profile perf] [--kind shell|bundled]
 perflab build find|native --platform <p> [--profile perf] [--kind shell|bundled] | import <artifact> | list | gc
-perflab wda find|build [--team t] [--bundle-id id] | import <derivedData> | list
+perflab wda find|build [--team t] [--bundle-id id] [--wait d] | import <derivedData> | list
 perflab bundle export --platform <p> [--profile perf] [--ref <git ref>] [--label <name>] | list
 perflab pack --native <key> --bundle <sha>
 perflab install <variant|key> --device <d> --lease <t>
@@ -99,10 +100,19 @@ func leadingWords(args []string, n int) []string {
 	return out
 }
 
-// usageFix is the usage line for a verb, else the help pointer.
+// usageFix is the usage line for a verb, else the help pointer. A sub-verb
+// shares its group's line (`wda build` is `perflab wda find|build ...`).
 func usageFix(verb string) string {
+	words := strings.Fields(verb)
 	for _, line := range strings.Split(perflabUsage, "\n") {
-		if verb != "" && strings.HasPrefix(line, "perflab "+verb) {
+		if verb == "" {
+			break
+		}
+		if strings.HasPrefix(line, "perflab "+verb) {
+			return line + " --json"
+		}
+		f := strings.Fields(line)
+		if len(words) == 2 && len(f) > 2 && f[1] == words[0] && slices.Contains(strings.Split(f[2], "|"), words[1]) {
 			return line + " --json"
 		}
 	}
@@ -463,7 +473,7 @@ func parseSize(s string) (int64, error) {
 func (rt *runtime) perflabWDA(run verbRunner) *cobra.Command {
 	w := &cobra.Command{Use: "wda", Short: "The prebuilt WebDriverAgent index"}
 	var team, bundle string
-	var stall, timeout time.Duration
+	var stall, timeout, wait time.Duration
 	flags := func(c *cobra.Command) {
 		c.Flags().StringVar(&team, "team", "", "signing team (default app.ios.team)")
 		c.Flags().StringVar(&bundle, "bundle-id", "", "WDA bundle id (default <app bundle id>.WebDriverAgentRunner)")
@@ -475,11 +485,12 @@ func (rt *runtime) perflabWDA(run verbRunner) *cobra.Command {
 	flags(find)
 	build := &cobra.Command{Use: "build", Short: "Build the WDA once (build-for-testing) under the host build lock", Args: cobra.NoArgs,
 		RunE: run(func(ctx context.Context, t *perflab.Tool, _ []string) (perflab.Result, error) {
-			return t.WDABuild(ctx, team, bundle, stall, timeout)
+			return t.WDABuild(ctx, team, bundle, stall, timeout, wait)
 		})}
 	flags(build)
 	build.Flags().DurationVar(&stall, "stall", 10*time.Minute, "stop when no output arrives for this long")
 	build.Flags().DurationVar(&timeout, "build-timeout", 20*time.Minute, "hard limit")
+	build.Flags().DurationVar(&wait, "wait", 0, "wait this long for another perflab build to free the Mac-wide build lock")
 	imp := &cobra.Command{Use: "import <derivedData>", Short: "Adopt a WDA derived-data dir built by this Xcode", Args: cobra.ExactArgs(1),
 		RunE: run(func(ctx context.Context, t *perflab.Tool, args []string) (perflab.Result, error) {
 			return t.WDAImport(ctx, args[0], team, bundle)

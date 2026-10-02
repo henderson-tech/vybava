@@ -85,8 +85,8 @@ every number.
 | `lease status [<d>]` / `renew <d> --lease <t>` / `release <d> --lease <t>` / `reap [--dry-run]` / `break <d> --reason` | Lease upkeep; no force-steal exists. |
 | `doctor [--device --lease] [--platform] [--for build\|run\|probe\|all] [--wake]` | Every preflight; `next` lists the fixes in dependency order. |
 | `fingerprint --platform [--profile] [--kind]` | The portable native key. |
-| `build find\|native\|import <artifact>\|list\|gc` | The native build index. |
-| `wda find\|build\|import <dir>\|list` | The prebuilt WebDriverAgent. |
+| `build find\|native\|import <artifact>\|list\|gc` | The native build index; `--kind` defaults to `shell` on iOS and `bundled` (the only kind) on Android. Import refuses another app id or app version. |
+| `wda find\|build [--wait]\|import <dir>\|list` | The prebuilt WebDriverAgent. |
 | `bundle export --platform [--profile] [--ref] [--label]` / `bundle list` | JS bundles, content-addressed. |
 | `pack --native <key> --bundle <sha>` | A variant: the bundle inside a copy of the native build. |
 | `install <variant\|key> --device --lease` | Install, verify, record the fence. |
