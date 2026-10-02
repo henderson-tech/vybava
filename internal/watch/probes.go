@@ -75,6 +75,9 @@ func DefaultProbes(run Runner) []Probe {
 	}
 }
 
+// selfVerbWaitDelay is how long a cancelled child may hold its pipes open.
+var selfVerbWaitDelay = 5 * time.Second
+
 // selfVerb runs `vybava gitkit <verb>` as a child of this binary so the
 // probe's context bounds it: the in-process verb shells out under contexts
 // of its own and could outlive probeTimeout. WaitDelay returns even while a
@@ -93,7 +96,7 @@ func selfVerb(verb string) Verb {
 		}
 		cmd := exec.CommandContext(ctx, self, append([]string{"gitkit", verb}, args...)...)
 		cmd.Stdout, cmd.Stderr = stdout, stderr
-		cmd.WaitDelay = 5 * time.Second
+		cmd.WaitDelay = selfVerbWaitDelay
 		err = cmd.Run()
 		var exit *exec.ExitError
 		switch {
