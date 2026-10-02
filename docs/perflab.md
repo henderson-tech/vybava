@@ -189,6 +189,10 @@ capturing and perflab analyzes the evidence it leaves.
   A native input the Expo fingerprint misses (Reanimated `staticFeatureFlags`
   in the app's `package.json`) belongs in the app's `fingerprint.config.js`
   `extraSources`; packages with a null dir hash are covered by path only.
+  A `--ref` tree (`bundle export --ref`, `build native --isolated --ref`) is
+  fingerprinted under the PROJECT's rule files (`fingerprint.config.js`,
+  `.fingerprintignore`; the tree is restored after): its native inputs judged
+  by today's rules, so a "before" ref older than the config still packs.
 - Layout: `builds/<platform>/<profile>/<kind>/<key>/`, `bundles/<sha16>/`,
   `variants/<key12>-<sha12>/`. Writes are staged and renamed in; an entry is
   never overwritten; a deleted artifact is `BUILD_ARTIFACT_MISSING`. `build

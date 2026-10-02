@@ -76,3 +76,59 @@ func EnsureSourceWorktree(ctx context.Context, r Runner, repoRoot, ref string, p
 	}
 	return tree, nil
 }
+
+// fingerprintRuleFiles configure the Expo fingerprint itself (what it
+// hashes), as opposed to the native inputs it hashes.
+var fingerprintRuleFiles = []string{"fingerprint.config.js", "fingerprint.config.cjs", ".fingerprintignore"}
+
+// withProjectRules runs fn with the project's fingerprint rule files laid
+// over a source tree's app root, then restores the tree byte for byte. A
+// --ref key is then the ref's native inputs judged by the project's rules:
+// a ref older than the app's fingerprint.config.js (the Reanimated
+// staticFeatureFlags extraSources) otherwise keys differently with identical
+// native inputs, and pack refuses every such "before" bundle. projectApp ==
+// treeApp (no --ref) is a no-op.
+func withProjectRules(projectApp, treeApp string, fn func() error) (err error) {
+	if filepath.Clean(projectApp) == filepath.Clean(treeApp) {
+		return fn()
+	}
+	type saved struct {
+		path string
+		data []byte
+		had  bool
+	}
+	var restore []saved
+	defer func() {
+		for _, s := range restore {
+			var rerr error
+			if s.had {
+				rerr = writeFileAtomic(s.path, s.data)
+			} else {
+				rerr = os.Remove(s.path)
+			}
+			if rerr != nil && err == nil {
+				err = fmt.Errorf("restoring %s after the fingerprint: %w", s.path, rerr)
+			}
+		}
+	}()
+	for _, name := range fingerprintRuleFiles {
+		want, werr := os.ReadFile(filepath.Join(projectApp, name))
+		path := filepath.Join(treeApp, name)
+		have, herr := os.ReadFile(path)
+		switch {
+		case werr != nil && herr != nil: // neither has it
+		case werr == nil && herr == nil && string(want) == string(have):
+		case werr == nil:
+			restore = append(restore, saved{path: path, data: have, had: herr == nil})
+			if err := writeFileAtomic(path, want); err != nil {
+				return err
+			}
+		default: // only the ref has it: judge without it, like the project
+			restore = append(restore, saved{path: path, data: have, had: true})
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	return fn()
+}

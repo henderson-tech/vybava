@@ -84,6 +84,7 @@ func (s Store) BuildNative(ctx context.Context, r Runner, spec BuildSpec) (Build
 	if err := spec.Target.validate(); err != nil {
 		return BuildResult{}, err
 	}
+	projectApp := spec.Project.appRootAbs()
 	if spec.Ref != "" {
 		src, err := EnsureSourceWorktree(ctx, r, spec.Project.RepoRoot, spec.Ref, spec.Progress)
 		if err != nil {
@@ -93,7 +94,11 @@ func (s Store) BuildNative(ctx context.Context, r Runner, spec BuildSpec) (Build
 		spec.Fingerprint = nil
 	}
 	phase(spec.Progress, "fingerprint")
-	fp, err := spec.fingerprint(ctx, r)
+	var fp Fingerprint
+	err := withProjectRules(projectApp, spec.Project.appRootAbs(), func() (ferr error) {
+		fp, ferr = spec.fingerprint(ctx, r)
+		return ferr
+	})
 	if err != nil {
 		return BuildResult{}, err
 	}

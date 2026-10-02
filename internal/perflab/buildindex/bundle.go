@@ -67,6 +67,7 @@ func (s Store) ExportBundle(ctx context.Context, r Runner, spec BundleSpec) (Bun
 	}
 	p := spec.Project
 	var src *SourceTree
+	projectApp := p.appRootAbs()
 	if spec.Ref != "" {
 		tree, err := EnsureSourceWorktree(ctx, r, p.RepoRoot, spec.Ref, spec.Progress)
 		if err != nil {
@@ -75,7 +76,11 @@ func (s Store) ExportBundle(ctx context.Context, r Runner, spec BundleSpec) (Bun
 		p.RepoRoot, src = tree.Dir, &tree
 	}
 	phase(spec.Progress, "fingerprint")
-	fp, err := RunFingerprint(ctx, r, FingerprintSpec{Project: p, Target: t, Env: spec.Env.Vars, Signing: &Signing{}, Toolchain: &Toolchain{}})
+	var fp Fingerprint
+	err := withProjectRules(projectApp, p.appRootAbs(), func() (ferr error) {
+		fp, ferr = RunFingerprint(ctx, r, FingerprintSpec{Project: p, Target: t, Env: spec.Env.Vars, Signing: &Signing{}, Toolchain: &Toolchain{}})
+		return ferr
+	})
 	if err != nil {
 		return BundleResult{}, err
 	}
