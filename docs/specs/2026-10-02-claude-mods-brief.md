@@ -47,10 +47,10 @@ Lukáš runs a median of 17 and a peak of 67 Claude sessions. He loses time poll
 - `internal/installer` (mod adapter) — does: stages under `~/.cache/vybava/stage`, renames into `~/.claude/skills/<id>`, writes the marker, never touches `.claude-plugin/types/` · depends on: catalog payload.
 - `internal/doctor` — does: `claude plugin validate` on installed mods; flags a Claude Code newer than the mods were tested on.
 - `internal/fleet` + `vybava fleet` — does: reads the session registry and decides liveness (pid plus procStart); adds Codex rows from codexusage's live view; owns the ledger (`fleet ledger record|show`, atomic, one file per session) and `fleet revive` · used by: fleet and lazarus mods, watch.
-- `internal/watch` + `vybava watch` — does: `watch serve` daemon (LaunchAgent via a `[]Step` plan), subscriptions, dedupe, backoff, gh budget, probes (gh and gitkit Eve, devbox, vitrinka, deployik); serves a unix-socket API; publishes `~/.local/state/vybava/fleet-summary.json` · used by: wake mod, fleet mod, Monitor, Codex.
+- `internal/watch` + `vybava watch` — does: `watch serve` daemon (LaunchAgent via a `[]Step` plan), subscriptions, dedupe, backoff, gh budget, probes (gh and gitkit Eve, devbox, vitrinka, deployik); serves a unix-socket API; publishes `~/.local/state/vybava/fleet/summary.json` · used by: wake mod, fleet mod, Monitor, Codex.
 - `mods/peek` — does: a `tool.call` ledger in `$.state` drives the `Spinner` suffix, plus the long-turn line on `turn.complete` · depends on: nothing outside the engine.
 - `mods/lazarus` — does: records jobs (Workflow runId+scriptPath, background Bash, Monitor, Agent) through `vybava fleet ledger`; band row on resume; limit-reset timer; `/park` · depends on: fleet.
-- `mods/fleet` — does: `/fleet` pane over `vybava fleet --json`, polled only while open; status line from the published summary · depends on: fleet, watch.
+- `mods/fleet-pane` — does: `/fleet` pane over `vybava fleet --json`, polled only while open; status line from the published summary · depends on: fleet, watch.
 - `mods/wake` — does: `wake_when` tool; ≤ 25 s long-poll slices only while subscriptions exist; idle wake via `$.prompt.submit`; band row and toasts on transitions · depends on: watch.
 
 ## Decisions that matter
@@ -82,7 +82,7 @@ Lukáš runs a median of 17 and a peak of 67 Claude sessions. He loses time poll
 8. S7 · lazarus test (mock clock): a limit stall submits a prompt at `resetsAt` plus jitter, never before, and none if a turn started meanwhile.
 9. S8 · lazarus test: `/park` lists the running jobs and gives a safe or not-safe verdict.
 10. S9 · `internal/fleet` unit over fixture registry files: grouping, waiting first, died-while-busy detection, and an unknown registry shape fails loudly.
-11. S10 S11 · `mods/fleet` test: the pane renders fixture JSON; `[y]` sends the typed text via `$.session.send`; the status line counts from the summary file.
+11. S10 S11 · `mods/fleet-pane` test: the pane renders fixture JSON; `[y]` sends the typed text via `$.session.send`; the status line counts from the summary file.
 12. S12 S13 · `mods/wake` test: `wake_when` runs `vybava watch add …`; an event while idle submits a facts-only prompt; while busy it waits for `turn.complete`; a transition draws the band row and toast, and `[4]` runs `/prm`.
 13. S14 S15 · `internal/watch` unit (fake gh): two subscriptions on one PR produce one probe per interval; `watch … --until` exits 0 on the condition; backoff and the gh budget hold.
 14. S1–S13 · live: `vybava install claude-mods` on the Mac; a fresh 2.1.287 session exercises peek, `/park`, `/fleet` and `wake_when` on a real PR; a vitrinka board of the terminal shots.
@@ -94,7 +94,7 @@ Phases: 1 → 2 (parallel) → 3 (parallel) → 4. Shared files (`catalog/catalo
 3. watch Go — files: `internal/watch/**`, `internal/cli/watch.go`, `docs/watch.md` · done when: AC 13 passes and the LaunchAgent plan renders with `--dry-run`.
 4. Applet wiring (lead) — files: `internal/cli/cli.go`, the `fleet` and `watch` entries in `catalog/catalog.yaml` · done when: `go run ./cmd/vybava fleet --json` and `watch --help` work.
 5. lazarus mod — files: `mods/lazarus/**` · done when: AC 7–9 pass.
-6. fleet mod — files: `mods/fleet/**` · done when: AC 11 passes.
+6. fleet-pane mod — files: `mods/fleet-pane/**` · done when: AC 11 passes.
 7. wake mod — files: `mods/wake/**`, `skills/prm/**` (prefers `wake_when` or `vybava watch` over pr-events Monitors) · done when: AC 12 passes.
 8. Integration — files: the mod entries and the `claude-mods` group in `catalog/catalog.yaml`, `CLAUDE.md` pointer lines · done when: AC 14 holds, verify is green and the PR is opened via /prm.
 
