@@ -7,10 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,11 +26,18 @@ func (t *Tool) git(args ...string) (CmdOut, error) {
 	return RealExec(context.Background(), Cmd{Dir: t.Root, Args: append([]string{"git"}, args...)})
 }
 
-func (t *Tool) sourceUnchanged(head string) (bool, error) {
-	if len(head) != 40 && len(head) != 64 {
-		return false, nil
-	}
-	if _, err := hex.DecodeString(head); err != nil {
+// isRevision accepts a full SHA-1 or SHA-256 object name, never a ref.
+func isRevision(s string) bool {
+	_, err := hex.DecodeString(s)
+	return (len(s) == 40 || len(s) == 64) && err == nil
+}
+
+// sourceUnchanged reports whether the tree (tracked edits and untracked files)
+// still matches head, Config.Out, .vitrinka and the ignore dirs aside. Capture
+// counts the rig (Config.Dir) as source; a skip or block judges the app and
+// passes it in ignore.
+func (t *Tool) sourceUnchanged(head string, ignore ...string) (bool, error) {
+	if !isRevision(head) {
 		return false, nil
 	}
 	out, err := t.git("diff", "--name-only", head, "--")
@@ -45,8 +56,12 @@ func (t *Tool) sourceUnchanged(head string) (bool, error) {
 		return false, nil
 	}
 	files = append(files, strings.Split(strings.TrimSpace(out.Stdout), "\n")...)
+	ignore = append([]string{t.Config.Out, ".vitrinka"}, ignore...)
 	for _, file := range files {
-		if file != "" && file != t.Config.Out && !strings.HasPrefix(file, strings.TrimRight(t.Config.Out, "/")+"/") && file != ".vitrinka" && !strings.HasPrefix(file, ".vitrinka/") {
+		if file != "" && !slices.ContainsFunc(ignore, func(dir string) bool {
+			dir = strings.TrimRight(dir, "/")
+			return file == dir || strings.HasPrefix(file, dir+"/")
+		}) {
 			return false, nil
 		}
 	}
@@ -114,9 +129,14 @@ func (t *Tool) captureProvenance(pass int, resume bool) error {
 	return writeJSON(file, marker)
 }
 
-// Content basis: compact JSON of sorted [relative filename, SHA256(bytes)] pairs.
+// Content basis: compact JSON of sorted [relative filename, SHA256(bytes)]
+// pairs over the pass's shots, the manifest (*.ts under Config.Dir, vendor/
+// skipped) and the spec. A pass's evidence is immutable: with provenance its
+// manifest is read at the captured revision, so a rig repair committed after
+// capture never stales the reviews, backlog and checkpoints of that pass. The
+// spec is the owner's live rule set and stays a working-tree read.
 func (t *Tool) reviewBasis(pass int) (string, error) {
-	basis, _, err := t.reviewEvidence(pass)
+	basis, _, _, err := t.reviewEvidence(pass)
 	return basis, err
 }
 
@@ -127,7 +147,10 @@ func (t *Tool) cachedReviewBasis(pass int, known []string) (string, error) {
 	return t.reviewBasis(pass)
 }
 
-func (t *Tool) reviewEvidence(pass int) (string, map[string]string, error) {
+// reviewEvidence is the basis, the per-file hashes it covers (keyed relative to
+// Root) and a warning when a strict pass's manifest had to be read from the
+// working tree because its captured revision is not in this clone.
+func (t *Tool) reviewEvidence(pass int) (string, map[string]string, []runxDiagnostic, error) {
 	entries := [][2]string{}
 	hashes := map[string]string{}
 	add := func(file string) error {
@@ -146,7 +169,33 @@ func (t *Tool) reviewEvidence(pass int) (string, map[string]string, error) {
 		entries = append(entries, [2]string{filepath.ToSlash(rel), hashes[filepath.ToSlash(rel)]})
 		return nil
 	}
-	for _, dir := range []string{filepath.Join(t.passAbs(pass), "shots"), t.abs(t.Config.Dir)} {
+	dirs := []string{filepath.Join(t.passAbs(pass), "shots")}
+	var marker captureEvidence
+	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	var diags []runxDiagnostic
+	committed := false
+	if strict && isRevision(marker.HeadSHA) {
+		var manifest map[string]string
+		if manifest, committed, err = t.committedManifest(marker.HeadSHA); err != nil {
+			return "", nil, nil, err
+		}
+		if !committed {
+			diags = append(diags, warn(DiagCaptureRevisionMissing,
+				fmt.Sprintf("%s was captured at %s, which is not in this clone; its manifest basis is read from the working tree, so a rig change since capture stales its reviews, backlog and checkpoints", t.PassDir(pass), marker.HeadSHA),
+				"fetch that revision, or capture a new pass"))
+		}
+		for rel, hash := range manifest {
+			hashes[rel] = hash
+			entries = append(entries, [2]string{rel, hash})
+		}
+	}
+	if !committed {
+		dirs = append(dirs, t.abs(t.Config.Dir))
+	}
+	for _, dir := range dirs {
 		err := filepath.WalkDir(dir, func(file string, d fs.DirEntry, err error) error {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
@@ -167,12 +216,12 @@ func (t *Tool) reviewEvidence(pass int) (string, map[string]string, error) {
 			return nil
 		})
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
 	if t.Config.Spec != "" {
 		if err := add(t.abs(t.Config.Spec)); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i][0] < entries[j][0] })
@@ -180,9 +229,72 @@ func (t *Tool) reviewEvidence(pass int) (string, map[string]string, error) {
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(entries); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return digest(strings.TrimSuffix(b.String(), "\n"), 64), hashes, nil
+	return digest(strings.TrimSuffix(b.String(), "\n"), 64), hashes, diags, nil
+}
+
+// committedManifest hashes the manifest's blobs at head, keyed like the
+// working-tree walk (paths relative to Root). ok is false only when this clone
+// lacks head (gc'd after its branch went, a pass copied from another clone):
+// the caller reads the working tree as a legacy pass does and warns. Config
+// validation keeps Dir inside Root, so any other git failure is an error.
+func (t *Tool) committedManifest(head string) (hashes map[string]string, ok bool, err error) {
+	present, err := t.git("cat-file", "-e", head+"^{commit}")
+	if err != nil || present.Code != 0 {
+		return nil, false, err
+	}
+	dir, err := filepath.Rel(t.Root, t.abs(t.Config.Dir))
+	if err != nil {
+		return nil, false, err
+	}
+	dir = filepath.ToSlash(dir)
+	tree, err := t.git("ls-tree", "-r", "-z", head, "--", dir)
+	if err != nil {
+		return nil, false, err
+	}
+	if tree.Code != 0 {
+		return nil, false, fmt.Errorf("git ls-tree %s -- %s: exit %d: %s", head, dir, tree.Code, strings.TrimSpace(tree.Stderr))
+	}
+	var files, oids []string
+	for _, row := range strings.Split(tree.Stdout, "\x00") {
+		meta, file, _ := strings.Cut(row, "\t")
+		f := strings.Fields(meta) // mode, type, object
+		if len(f) != 3 || f[1] != "blob" || path.Ext(file) != ".ts" ||
+			slices.Contains(strings.Split(path.Dir(strings.TrimPrefix(file, dir+"/")), "/"), "vendor") {
+			continue
+		}
+		files, oids = append(files, file), append(oids, f[2])
+	}
+	hashes = map[string]string{}
+	if len(files) == 0 {
+		return hashes, true, nil
+	}
+	out, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: []string{"git", "cat-file", "--batch"}, Stdin: strings.NewReader(strings.Join(oids, "\n") + "\n")})
+	if err != nil {
+		return nil, false, err
+	}
+	if out.Code != 0 {
+		return nil, false, fmt.Errorf("git cat-file --batch at %s: exit %d: %s", head, out.Code, strings.TrimSpace(out.Stderr))
+	}
+	rest := out.Stdout
+	for i, file := range files {
+		// Each record is "<object> <type> <size>\n<size bytes>\n".
+		header, body, _ := strings.Cut(rest, "\n")
+		f := strings.Fields(header)
+		size := -1
+		if len(f) == 3 && f[0] == oids[i] {
+			if n, err := strconv.Atoi(f[2]); err == nil {
+				size = n
+			}
+		}
+		if size < 0 || len(body) <= size {
+			return nil, false, fmt.Errorf("git cat-file --batch at %s: %s: unexpected record %q", head, file, header)
+		}
+		hashes[file] = digest(body[:size], 64)
+		rest = body[size+1:]
+	}
+	return hashes, true, nil
 }
 
 func (t *Tool) scoreBasis(pass int, basis string) (string, error) {
@@ -202,10 +314,7 @@ func (t *Tool) scoreBasis(pass int, basis string) (string, error) {
 }
 
 func (t *Tool) validCheckpoint(c Checkpoint, basis string) (bool, error) {
-	if c.Basis != basis || (len(c.Commit) != 40 && len(c.Commit) != 64) {
-		return false, nil
-	}
-	if _, err := hex.DecodeString(c.Commit); err != nil {
+	if c.Basis != basis || !isRevision(c.Commit) {
 		return false, nil
 	}
 	out, err := t.git("merge-base", "--is-ancestor", c.Commit, "HEAD")
@@ -216,7 +325,8 @@ func (t *Tool) validCheckpoint(c Checkpoint, basis string) (bool, error) {
 		return false, nil
 	}
 	if c.Status != "done" {
-		return t.sourceUnchanged(c.Commit)
+		// A rig repair committed after the round leaves the app it judged alone.
+		return t.sourceUnchanged(c.Commit, t.Config.Dir)
 	}
 	if len(c.FileDigests) == 0 {
 		return false, nil

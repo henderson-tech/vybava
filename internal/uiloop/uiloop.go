@@ -62,6 +62,7 @@ type Cmd struct {
 	Args []string
 	// Stream, when set, receives stdout and stderr live instead of capturing them.
 	Stream  io.Writer
+	Stdin   io.Reader // nil reads nothing
 	Timeout time.Duration
 }
 
@@ -83,7 +84,7 @@ func RealExec(ctx context.Context, c Cmd) (CmdOut, error) {
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, c.Args[0], c.Args[1:]...)
-	cmd.Dir = c.Dir
+	cmd.Dir, cmd.Stdin = c.Dir, c.Stdin
 	cmd.Env = append(os.Environ(), c.Env...)
 	var stdout, stderr bytes.Buffer
 	if c.Stream != nil {
