@@ -19,9 +19,9 @@ func TestScanTranscriptCitations(t *testing.T) {
 		`not json`,
 		`{"type":"assistant","message":{"content":"plain string #50."}}`,
 	}
-	c, err := scanTranscript(strings.NewReader(strings.Join(lines, "\n") + "\n"))
-	if err != nil {
-		t.Fatal(err)
+	c := newCitations()
+	for _, line := range lines {
+		c.collectLine([]byte(line))
 	}
 	for _, id := range []int{45, 46, 47, 50, 1550} {
 		if !c.Cites[id] {
@@ -41,6 +41,62 @@ func TestScanTranscriptCitations(t *testing.T) {
 	}
 	if !c.Reads["/h/notes/git-stash-race.md"] {
 		t.Errorf("read missing: %v", c.Reads)
+	}
+}
+
+// assistantLine is a transcript record whose text is padded past the
+// transcripts cursor's 256-byte prefix, so editing the text leaves the prefix
+// digest alone.
+func assistantLine(text string) string {
+	return `{"type":"assistant","message":{"content":[{"type":"text","text":"` + strings.Repeat(".", 300) + text + `"}]}}` + "\n"
+}
+
+func TestScanTranscriptReadsOnlyNewBytes(t *testing.T) {
+	env := Env{UserHome: t.TempDir()}
+	transcript := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(transcript, []byte(assistantLine("#1")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := env.ScanTranscript(transcript); err != nil || !c.Cites[1] {
+		t.Fatalf("first scan: %v %v", c.Cites, err)
+	}
+	// Same length, same prefix: an already-read record changed in place is
+	// not read again, which proves the second scan starts at the cursor.
+	if err := os.WriteFile(transcript, []byte(assistantLine("#2")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(assistantLine("#3")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := env.ScanTranscript(transcript)
+	if err != nil || !c.Cites[1] || c.Cites[2] || !c.Cites[3] {
+		t.Fatalf("second scan must keep #1, read only the appended #3: %v %v", c.Cites, err)
+	}
+}
+
+func TestScanTranscriptRescansReplacedTranscript(t *testing.T) {
+	env := Env{UserHome: t.TempDir()}
+	transcript := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(transcript, []byte(assistantLine("#1")+assistantLine("#2")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ScanTranscript(transcript); err != nil {
+		t.Fatal(err)
+	}
+	replaced := `{"type":"assistant","message":{"content":"a different file, #4"}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := env.ScanTranscript(transcript)
+	if err != nil || c.Cites[1] || c.Cites[2] || !c.Cites[4] {
+		t.Fatalf("a replaced transcript is read from byte 0 alone: %v %v", c.Cites, err)
 	}
 }
 

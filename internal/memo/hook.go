@@ -270,7 +270,7 @@ func (e Env) harvest(p HookPayload, now time.Time) (HookResult, error) {
 	if p.TranscriptPath == "" {
 		return res, nil
 	}
-	cites, err := ScanTranscript(p.TranscriptPath)
+	cites, err := e.ScanTranscript(p.TranscriptPath)
 	if os.IsNotExist(err) {
 		return res, nil
 	}
