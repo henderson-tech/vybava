@@ -1,7 +1,7 @@
 ---
 disable-model-invocation: true
 name: push-back
-description: Verify a claim against code+docs+memory before acting. Run when a finding/audit/recommendation looks suspect, or proactively when something conflicts with a project rule.
+description: "Verify a claim against code, docs and memory before acting; validate an audit or findings doc."
 ---
 
 # Push Back

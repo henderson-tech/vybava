@@ -1,6 +1,6 @@
 ---
 name: push-all
-description: "Use when the user asks to commit and/or push — 'push all', 'commit and push', 'commit everything', 'commit this'. Owns all commit doctrine: full-tree sweep by default, surgical single-change-set on request, commit-only when no push is wanted. Never fires without an explicit ask — the global never-commit-unasked policy stands."
+description: "Use when the user asks to commit and/or push — 'push all', 'commit and push', 'commit everything', 'commit this'. Never fires without an explicit ask."
 ---
 
 # push-all — sweep the tree into Conventional Commits, then push

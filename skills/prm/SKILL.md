@@ -1,6 +1,6 @@
 ---
 name: prm
-description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked). The one PR verb — create, review, merge and teardown all live here."
+description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, tearing down after merge, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked)."
 ---
 
 # prm — the PR verb: create → review rounds → merge → teardown

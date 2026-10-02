@@ -1,6 +1,6 @@
 ---
 name: cli-craft
-description: "Use when building or changing an agent-facing CLI or its thin-wrapper skill. AI-first CLI doctrine — envelope contract, closed diagnostics, Go/Charm patterns, thin-wrapper skills. Reference: devbox."
+description: "Use when building or changing an agent-facing CLI (Go/Charm) or the thin-wrapper skill in front of it — its output envelope, diagnostics or exit contract."
 ---
 
 # cli-craft — AI-first CLI tools and their thin-wrapper skills
