@@ -71,8 +71,9 @@ func TestCaptureProvenanceSurvivesAnInterruptedUnpublishedPass(t *testing.T) {
 	}
 }
 
-// A screen the pass could not shoot is only ever "unreviewed"; it must not hold
-// its batch open, while an unread or unreviewed shot screen still does.
+// A batch is complete once every shot screen is read; an unreviewed entry is a
+// capture defect for the backlog and never holds the batch open, while an
+// unread shot screen still does.
 func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
 	tool := newTool(t, testConfig())
 	evidenceRepo(t, tool)
@@ -90,15 +91,18 @@ func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
 	}
 	raw := filepath.Join(tool.passAbs(1), "review/raw/tasks-1.json")
 	for _, c := range []struct {
-		name, body string
-		done       bool
+		name, basis, body string
+		done              bool
 	}{
-		{"unshot screen unreviewed", `"screensRead":["tasks","task-detail"],"unreviewed":["task-ghost (unreachable: no shot)"]`, true},
-		{"shot screen unreviewed", `"screensRead":["tasks"],"unreviewed":["task-detail (blank)","task-ghost (unreachable)"]`, false},
-		{"shot screen's shot unreviewed", `"screensRead":["tasks","task-detail"],"unreviewed":["task-detail@phone.light (blank)"]`, false},
-		{"shot screen unread", `"screensRead":["tasks"],"unreviewed":["task-ghost (unreachable)"]`, false},
+		{"unshot screen unreviewed and unread", basis, `"screensRead":["tasks","task-detail"],"unreviewed":["task-ghost (unreachable: no shot)"]`, true},
+		{"read shot screen unreviewed", basis, `"screensRead":["tasks","task-detail"],"unreviewed":["task-detail (recipe-failed on the dock button)"]`, true},
+		{"read shot screen's shot unreviewed", basis, `"screensRead":["tasks","task-detail"],"unreviewed":["task-detail@phone.light (blank)"]`, true},
+		{"unread shot screen unreviewed", basis, `"screensRead":["tasks"],"unreviewed":["task-detail (blank)","task-ghost (unreachable)"]`, false},
+		{"shot screen unread", basis, `"screensRead":["tasks"],"unreviewed":["task-ghost (unreachable)"]`, false},
+		{"screen read outside the batch", basis, `"screensRead":["tasks","task-detail","admin"]`, false},
+		{"stale basis", "stale", `"screensRead":["tasks","task-detail"]`, false},
 	} {
-		writeFile(t, raw, `{"batch":"tasks-1","basis":"`+basis+`",`+c.body+`}`)
+		writeFile(t, raw, `{"batch":"tasks-1","basis":"`+c.basis+`",`+c.body+`}`)
 		ids, err := tool.rawBatchIDs(1)
 		if err != nil {
 			t.Fatal(err)
@@ -106,6 +110,15 @@ func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
 		if ids["tasks-1"] != c.done {
 			t.Errorf("%s: done=%v, want %v", c.name, ids["tasks-1"], c.done)
 		}
+	}
+	// The completed batch still hands its unreviewed screen to the backlog.
+	writeFile(t, raw, `{"batch":"tasks-1","basis":"`+basis+`","screensRead":["tasks","task-detail"],"unreviewed":["task-detail (recipe-failed)"]}`)
+	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := merged.Data.(MergeReviewData); len(md.Left) != 0 || !slices.Contains(md.Unreviewed, "task-detail") || md.Reviewed != 1 {
+		t.Fatalf("merge of a complete batch with an unreviewed screen: %+v", md)
 	}
 }
 

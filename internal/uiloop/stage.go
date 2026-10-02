@@ -266,7 +266,10 @@ func (t *Tool) loadBatches(pass int, records []Record, size int) (BatchesFile, b
 	return BatchesFile{V: 1, Pass: pass, Size: size, Batches: ComputeBatches(passScreens(records), t.Config.Areas, size)}, false, nil
 }
 
-// rawBatchIDs lists the batch ids that have a review/raw/<id>.json.
+// rawBatchIDs lists the batch ids whose review/raw/<id>.json completes the
+// batch. With provenance (capture.json) that means the current basis, the
+// file's own batch id, screensRead inside the batch and covering every batch
+// screen with an ok shot.
 func (t *Tool) rawBatchIDs(pass int, knownBasis ...string) (map[string]bool, error) {
 	return t.rawBatchEvidence(pass, false, knownBasis...)
 }
@@ -288,7 +291,11 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	// shot names the screens with at least one ok record. A batch also holds
 	// screens the pass could not shoot (unreachable, recipe-failed, error);
 	// a reviewer can only list those as unreviewed, so they never hold a
-	// batch open.
+	// batch open. A shot screen must be in screensRead. An unreviewed entry
+	// never blocks: it is a capture or recipe defect the reviewer could not
+	// judge from the shots, and re-reviewing the same shots cannot change it.
+	// merge-review still keeps a screen-level entry out of reviewed and lists
+	// it as unreviewed.
 	shot := map[string]bool{}
 	if strict {
 		basis, err = t.cachedReviewBasis(pass, knownBasis)
@@ -335,7 +342,7 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 					}
 				}
 			}
-			if !valid || (!partial && slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return shot[unreviewedOf(entry)] })) {
+			if !valid {
 				continue
 			}
 		}
@@ -905,17 +912,6 @@ func BacklogKey(screen, title string) string {
 // unreviewedScreen reads a reviewer's unreviewed entry: a screen id, maybe
 // followed by a parenthesised why. An entry naming one shot (<id>@<viewport>)
 // is not a screen-level skip: the screen was judged at its other shots.
-// unreviewedOf is the screen an unreviewed entry is about, a shot-level
-// entry ("<screen>@<viewport>.<theme> (why)") included.
-func unreviewedOf(entry string) string {
-	id := strings.TrimSpace(entry)
-	if i := strings.IndexAny(id, " (\t"); i >= 0 {
-		id = id[:i]
-	}
-	screen, _, _ := strings.Cut(id, "@")
-	return screen
-}
-
 func unreviewedScreen(entry string) string {
 	id := strings.TrimSpace(entry)
 	if i := strings.IndexAny(id, " (\t"); i >= 0 {

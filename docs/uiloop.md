@@ -277,7 +277,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 ```
 
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
-- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists. An area is reviewed when none of its batches is left.
+- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts `fix/*.json`, `lanes.json` excluded.
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
 - `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
@@ -361,8 +361,12 @@ The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
 resume retains that revision and refuses application drift. Workflows recapture
 legacy passes without provenance. Captures outside git have no verified revision.
 
-For passes with provenance, raw reviews need the current `basis` and explicit
-`screensRead` covering their batch. Backlogs use `review/basis.json` as a sidecar.
+For passes with provenance, a raw review completes its batch when it carries the
+current `basis` and its own batch id, and its `screensRead` stays inside the batch
+and names every batch screen with an `ok` shot. A screen the pass could not shoot
+need not be read. `unreviewed` entries never hold a batch open: they are capture or
+recipe defects the reviewer could not judge, and `merge-review` still keeps a
+screen-level one out of `reviewed` and lists it as `unreviewed`. Backlogs use `review/basis.json` as a sidecar.
 Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
 are reevaluated. Skips/blocks are reusable only with unchanged application source.
