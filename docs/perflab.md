@@ -201,6 +201,10 @@ capturing and perflab analyzes the evidence it leaves.
   measure lock that `run` and `probe` hold: a build never starts while a
   run measures and a run never starts during a build (`HOST_BUSY_BUILDING`
   names the holder).
+  Runs from ONE project checkout also take turns (one runner lock per
+  checkout): the adapter's runner owns per-checkout resources such as its
+  Appium port, so a second phone's `run` waits at `phase=runner-wait`
+  within its `--max` (then `RUN_TIMEOUT`); runs from two checkouts overlap.
 - Recipes: iOS `shell` = `expo prebuild` + `xcodebuild … SKIP_BUNDLING=1`;
   iOS `bundled` = the adapter's `build.iosBundled` writing one `.app` into
   `{outDir}` (a `*build-metadata.json` beside it is read as provenance);

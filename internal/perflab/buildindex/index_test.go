@@ -2,6 +2,7 @@ package buildindex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,4 +209,30 @@ func TestImportAppID(t *testing.T) {
 			t.Errorf("%s %s: fix %q, want %q", tc.target.Platform, tc.got, d.Diag.Fix, tc.wantFix)
 		}
 	}
+}
+
+// Two phones' runs from one checkout share the adapter's runner resources
+// (FixIt's Appium port 14021 on 2026-10-02: the S20 case died EADDRINUSE
+// while the iPhone 11 run held it); another checkout runs alongside.
+func TestProjectRunnerSerialisesOneCheckout(t *testing.T) {
+	s := testStore(t)
+	release, _, err := AcquireProjectRunner(s.Dirs, "/wt/perflab-acceptance", 0, LockHolder{PID: 4242, Verb: "run", Device: "iphone11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, busy, err := AcquireProjectRunner(s.Dirs, "/wt/perflab-acceptance/", 50*time.Millisecond, LockHolder{Verb: "run", Device: "s20"})
+	if !errors.Is(err, ErrRunnerBusy) || busy == nil || busy.Device != "iphone11" {
+		t.Fatalf("second run from the same checkout: err %v holder %+v", err, busy)
+	}
+	other, _, err := AcquireProjectRunner(s.Dirs, "/wt/another-checkout", 0, LockHolder{Verb: "run", Device: "s20"})
+	if err != nil {
+		t.Fatalf("another checkout must not wait: %v", err)
+	}
+	other()
+	release()
+	again, _, err := AcquireProjectRunner(s.Dirs, "/wt/perflab-acceptance", 0, LockHolder{Verb: "run", Device: "s20"})
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	again()
 }

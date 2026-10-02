@@ -1,6 +1,8 @@
 package buildindex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,6 +118,24 @@ func HostBuildHolder(d Dirs) (*LockHolder, error) {
 	}
 	unlock()
 	return nil, nil
+}
+
+// ErrRunnerBusy: another run from the same project checkout held its runner
+// for the whole wait.
+var ErrRunnerBusy = errors.New("the project's runner is busy")
+
+// AcquireProjectRunner serialises `run`s from one project checkout. The
+// adapter's runner owns per-checkout resources (FixIt's Appium server port
+// is the worktree's slot), so a second phone's run from the same checkout
+// waits for the first instead of dying EADDRINUSE in its first case. On a
+// timeout it returns the holder (best effort) and ErrRunnerBusy.
+func AcquireProjectRunner(d Dirs, projectDir string, wait time.Duration, holder LockHolder) (func(), *LockHolder, error) {
+	sum := sha256.Sum256([]byte(filepath.Clean(projectDir)))
+	unlock, current, err := d.takeExclusive("runner-"+hex.EncodeToString(sum[:6])+".lock", wait, holder)
+	if errors.Is(err, errLockTimeout) {
+		return nil, current, ErrRunnerBusy
+	}
+	return unlock, nil, err
 }
 
 // AcquireMeasure marks a measuring window (run, probe) for its whole

@@ -309,6 +309,33 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		}
 	}
 
+	// One runner per project checkout at a time: the adapter's runner owns
+	// per-checkout resources (FixIt's Appium port), so a second phone's run
+	// from this checkout waits here, within its --max, for the first.
+	runner := buildindex.LockHolder{PID: os.Getpid(), Verb: "run", Device: id, Worktree: t.ProjectDir, Since: t.Now()}
+	releaseRunner, busy, err := buildindex.AcquireProjectRunner(t.Store.Dirs, t.ProjectDir, 0, runner)
+	if errors.Is(err, buildindex.ErrRunnerBusy) {
+		prog.Phase("runner-wait", "held="+strings.ReplaceAll(busy.String(), " ", "_"))
+		wait := o.Max
+		if dl, ok := ctx.Deadline(); ok {
+			wait = time.Until(dl)
+		}
+		releaseRunner, busy, err = buildindex.AcquireProjectRunner(t.Store.Dirs, t.ProjectDir, wait, runner)
+	}
+	if errors.Is(err, buildindex.ErrRunnerBusy) {
+		holder := "another run"
+		if busy != nil {
+			holder = busy.String()
+		}
+		return Result{Data: data, Diagnostics: append(diags, errDiag(DiagRunTimeout,
+			fmt.Sprintf("this checkout's runner stayed busy (%s) for the whole --max %s", holder, o.Max),
+			"perflab lease status --json, then re-run once that run ends"))}, nil
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	defer releaseRunner()
+
 	blocks := planBlocks(variants, o.Repeat, o.Alternate)
 	window := time.Duration(0)
 	for _, r := range picked {
