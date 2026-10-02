@@ -380,8 +380,10 @@ recipe repair or `knownIssues` correction committed after capture leaves the
 reviews, backlog and checkpoints of that pass current. The verify pass is the one
 that captures with the repaired rig. Shots and the spec still move the basis: the
 spec is the owner's live rule set and is read from the working tree. A pass
-without provenance, or one whose revision this clone cannot list, reads the
-manifest from the working tree as before.
+without provenance reads the manifest from the working tree as before. So does a
+pass whose revision this clone lacks (gc'd after its branch went, or copied from
+another clone), and `state` warns `CAPTURE_REVISION_MISSING` for it: fetch the
+revision or capture a new pass.
 
 For passes with provenance, a raw review completes its batch when it carries the
 current `basis` and its own batch id, and its `screensRead` stays inside the batch
@@ -392,7 +394,8 @@ screen out of `reviewed` and lists it as `unreviewed` (a screen-level entry, or
 shot entries naming every `ok` shot of the screen). Backlogs use `review/basis.json` as a sidecar.
 Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
-are reevaluated. Skips/blocks are reusable only with unchanged application source.
+are reevaluated. Skips/blocks are reusable only with unchanged application source,
+where the rig under `dir` does not count (only capture and its resume count it).
 The spec stays unchanged during fixes, since an edit stales the pass. Manifest
 repairs may land between review and verify. API notes live beside source
 and in ignored checkpoints. The state reader keeps item bodies on disk.

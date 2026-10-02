@@ -96,6 +96,12 @@ const (
 	// repo (an absolute path into another repo); no lane owns them (warning)
 	// — checkpoint them blocked with where the fix lands, or repair their files.
 	DiagForeignItems = "FOREIGN_ITEMS"
+	// DiagCaptureRevisionMissing: a pass's capture.json names a revision this
+	// clone does not have (gc'd after its branch went, or the pass was copied
+	// from another clone), so its manifest basis is read from the working tree
+	// and a rig change since capture stales the pass (warning) — fetch that
+	// revision, or capture a new pass.
+	DiagCaptureRevisionMissing = "CAPTURE_REVISION_MISSING"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

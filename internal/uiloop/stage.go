@@ -688,7 +688,8 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	var err error
 	var hashes map[string]string
-	data.ReviewBasis, hashes, err = t.reviewEvidence(pass)
+	var evidenceDiags []runxDiagnostic
+	data.ReviewBasis, hashes, evidenceDiags, err = t.reviewEvidence(pass)
 	if err != nil {
 		return Result{}, err
 	}
@@ -784,6 +785,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	diags = append(evidenceDiags, diags...)
 	data.Checkpoints.Total = len(checkpoints)
 	for _, cp := range checkpoints {
 		data.Checkpoints.ByStatus[cp.Status]++
