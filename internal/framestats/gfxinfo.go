@@ -42,6 +42,9 @@ type ParseOptions struct {
 	AfterReleaseMs float64
 	// Rows adds one Row per kept frame to the summary.
 	Rows bool
+	// Window keeps only the blocks of `Window: <Window>/...` (the app id), so a
+	// popup's own window never counts as the screen's frames. Empty keeps all.
+	Window string
 }
 
 // Window counts the frames that START inside a window after a release.
@@ -210,7 +213,7 @@ func newParser(opts ParseOptions) *parser {
 
 func (p *parser) read(name string, r io.Reader) error {
 	p.s.Files = append(p.s.Files, name)
-	n, malformed, err := readBlocks(name, r, func(r frameRow) {
+	n, malformed, err := readBlocks(name, r, p.opts.Window, func(r frameRow) {
 		iv := r["IntendedVsync"]
 		if _, dup := p.seen[iv]; dup {
 			return
@@ -258,14 +261,23 @@ func (p *parser) finish() (Summary, error) {
 
 // readBlocks streams the well-formed rows of every PROFILEDATA block and
 // returns how many blocks it saw and how many rows it rejected (parseRow).
-// A header lacking a required column is MISSING_COLUMNS.
-func readBlocks(name string, r io.Reader, emit func(frameRow)) (blocks, malformed int, err error) {
+// A header lacking a required column is MISSING_COLUMNS. A non-empty window
+// skips the blocks of every other `Window: ` (popups, other activities).
+func readBlocks(name string, r io.Reader, window string, emit func(frameRow)) (blocks, malformed int, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	in := false
 	var header []string
+	keep := window == ""
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
+		if w, ok := strings.CutPrefix(line, "Window: "); ok {
+			keep = window == "" || strings.HasPrefix(w, window+"/")
+			continue
+		}
+		if !keep {
+			continue
+		}
 		if line == "---PROFILEDATA---" {
 			in = !in
 			if in {

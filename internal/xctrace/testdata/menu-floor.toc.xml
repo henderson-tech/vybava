@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+
+<trace-toc>
+    <run number="1">
+        <info>
+            <target>
+                <device platform="iOS" model="iPhone Air" name="Lab iPhone" os-version="26.6.2 (23G90)" uuid="00008150-00116D4C1E40401C"/>
+                <host-device platform="macOS" model="MacBook Pro" name="Lab Mac" os-version="26.6.2 (25G83)" uuid="ABF48ABE-4E14-53C7-9463-872006919B3D"/>
+                <process type="attached" return-exit-status="0" name="FixIt" pid="10887" termination-reason="exit(0)"/>
+            </target>
+            <summary>
+                <start-date>2026-10-02T00:02:34.521+02:00</start-date>
+                <end-date>2026-10-02T00:03:02.494+02:00</end-date>
+                <duration>27.973094</duration>
+                <end-reason>User pressed Stop</end-reason>
+                <instruments-version>16.0 (17F42)</instruments-version>
+                <template-name>Blank</template-name>
+                <recording-mode>Deferred</recording-mode>
+                <time-limit>35 seconds</time-limit>
+            </summary>
+        </info>
+        <processes>
+            <process name="FixIt" pid="10887" path="/var/containers/Bundle/Application/968D21E1-F581-4701-854D-A53A4681A17E/app.fixit.client.app/FixIt"/>
+            <process name="kernel" pid="0" path="Unknown"/>
+        </processes>
+        <data>
+            <table schema="hitches-framewait"/>
+            <table schema="hitches-gpu"/>
+            <table schema="hitches-updates"/>
+            <table schema="hitches-frame-lifetimes"/>
+            <table codes="&quot;0x07,0x00&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x1,0x25&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x31,0xca&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x2b,0x87&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table sample-rate-micro-seconds="1000" target="SINGLE" schema="time-sample" callstack="user" all-thread-states="NO" documentation="Holds a raw CPU profiling sample."/>
+            <table codes="&quot;0x1f,0x7&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table schema="process-info" documentation="Associates processes with their process names."/>
+            <table schema="life-cycle-period" target-pid="SINGLE" documentation="Identifies where an application is in its lifecycle."/>
+            <table codes="&quot;0x2b,0xd8&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x2b,0xdc&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x2d,*&quot;" schema="kdebug" callstack="user" target="SINGLE" documentation="Tracing the kernel and some system frameworks."/>
+            <table codes="&quot;0x07,0x00&quot; &quot;0x1f,0x05&quot;" target="SINGLE" schema="kdebug" documentation="Tracing the kernel and some system frameworks."/>
+            <table schema="hitches"/>
+            <table schema="hitches-renders"/>
+            <table schema="dyld-library-load" target-pid="SINGLE"/>
+            <table schema="thread-info" documentation="Associates threads with their owning process."/>
+            <table codes="&quot;0x1f,0x05&quot;" target="SINGLE" schema="kdebug-strings" documentation="Associates numeric arguments with strings in kdebug trace points."/>
+            <table target-pid="SINGLE" context-switch-sampling="0" high-frequency-sampling="0" schema="time-profile" needs-kernel-callstack="0" record-waiting-threads="0" documentation="When combined with other time-profile samples, creates a statistical picture of where your application is spending its time."/>
+            <table schema="tick" frequency="10" documentation="Provides modelers with a regular reference time for modeling fixed time-based statistics. The ticks are evenly spaced with a configurable frequency specifying the number of events to generate per second, so a tick schema with a frequency of 10 will generate a row every 100ms."/>
+            <table schema="tick" frequency="1" documentation="Provides modelers with a regular reference time for modeling fixed time-based statistics. The ticks are evenly spaced with a configurable frequency specifying the number of events to generate per second, so a tick schema with a frequency of 10 will generate a row every 100ms."/>
+        </data>
+        <tracks/>
+    </run>
+</trace-toc>

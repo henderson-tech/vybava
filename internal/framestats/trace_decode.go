@@ -10,7 +10,7 @@ import (
 // Perfetto field numbers (perfetto/protos, stable across releases):
 // Trace.packet=1; TracePacket.ftrace_events=1, process_tree=2,
 // timestamp=8, frame_timeline_event=76; FtraceEventBundle.cpu=1, event=2;
-// FtraceEvent.timestamp=1, pid=2, print=3, sched_switch=4;
+// FtraceEvent.timestamp=1, pid=2, print=3, sched_switch=4, cpu_frequency=11;
 // PrintFtraceEvent.buf=2; SchedSwitchFtraceEvent prev_comm=1 prev_pid=2
 // next_comm=5 next_pid=6; ProcessTree.processes=1 (Process pid=1,
 // cmdline=3), threads=2 (Thread tid=1 name=2 tgid=5); FrameTimelineEvent
@@ -53,6 +53,8 @@ type timelineEvent struct {
 	layer        string
 	presentType  int
 	jankType     int
+	// gpuComposition: SurfaceFlinger composited the frame on the GPU.
+	gpuComposition bool
 }
 
 // rawTrace is what one walk over the packets collects.
@@ -62,6 +64,24 @@ type rawTrace struct {
 	comms    map[int]string // tid -> comm, from sched_switch
 	cmdlines map[int]string // pid -> cmdline[0], from process_tree
 	timeline []timelineEvent
+	// switches and freqs feed the CPU placement of RenderThread work.
+	switches []schedSwitch
+	freqs    []cpuFreq
+}
+
+// schedSwitch is one sched_switch on a CPU.
+type schedSwitch struct {
+	ts               int64
+	cpu              int
+	prevPid, nextPid int
+}
+
+// cpuFreq is one cpu_frequency event (FtraceEvent.cpu_frequency=11:
+// state=1 kHz, cpu_id=2).
+type cpuFreq struct {
+	ts  int64
+	cpu int
+	khz int64
 }
 
 // decodeTrace walks every packet. A malformed message anywhere returns an
@@ -85,6 +105,8 @@ func decodeTrace(raw []byte) (rawTrace, error) {
 	// Bundles arrive per CPU; slices need each thread's markers in order.
 	sort.SliceStable(t.prints, func(i, j int) bool { return t.prints[i].ts < t.prints[j].ts })
 	sort.SliceStable(t.timeline, func(i, j int) bool { return t.timeline[i].ts < t.timeline[j].ts })
+	sort.SliceStable(t.switches, func(i, j int) bool { return t.switches[i].ts < t.switches[j].ts })
+	sort.SliceStable(t.freqs, func(i, j int) bool { return t.freqs[i].ts < t.freqs[j].ts })
 	return t, nil
 }
 
@@ -123,6 +145,12 @@ func (t *rawTrace) decodeFtrace(bundle []byte) error {
 	if err != nil {
 		return fmt.Errorf("ftrace bundle: %w", err)
 	}
+	cpu := 0
+	for _, bf := range bfs {
+		if bf.num == 1 && bf.wt == 0 {
+			cpu = int(bf.u)
+		}
+	}
 	for _, bf := range bfs {
 		if bf.num != 2 || bf.wt != 2 {
 			continue
@@ -142,7 +170,7 @@ func (t *rawTrace) decodeFtrace(bundle []byte) error {
 			}
 		}
 		for _, ef := range efs {
-			if ef.wt != 2 || (ef.num != 3 && ef.num != 4) {
+			if ef.wt != 2 || (ef.num != 3 && ef.num != 4 && ef.num != 11) {
 				continue
 			}
 			xfs, err := fields(ef.data)
@@ -177,6 +205,18 @@ func (t *rawTrace) decodeFtrace(bundle []byte) error {
 				if nextComm != "" {
 					t.comms[nextPid] = nextComm
 				}
+				t.switches = append(t.switches, schedSwitch{ts: ets, cpu: cpu, prevPid: prevPid, nextPid: nextPid})
+			case 11: // cpu_frequency
+				f := cpuFreq{ts: ets}
+				for _, cf := range xfs {
+					switch {
+					case cf.num == 1 && cf.wt == 0:
+						f.khz = int64(cf.u)
+					case cf.num == 2 && cf.wt == 0:
+						f.cpu = int(cf.u)
+					}
+				}
+				t.freqs = append(t.freqs, f)
 			}
 		}
 	}
@@ -264,6 +304,8 @@ func (t *rawTrace) decodeTimeline(ts int64, event []byte) error {
 					e.layer = string(x.data)
 				case 6:
 					e.presentType = int(x.u)
+				case 8:
+					e.gpuComposition = x.u != 0
 				case 9:
 					e.jankType = int(x.u)
 				}
@@ -273,6 +315,8 @@ func (t *rawTrace) decodeTimeline(ts int64, event []byte) error {
 					e.pid = int(x.u)
 				case 4:
 					e.presentType = int(x.u)
+				case 6:
+					e.gpuComposition = x.u != 0
 				case 7:
 					e.jankType = int(x.u)
 				}

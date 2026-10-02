@@ -1,0 +1,7 @@
+-- damage: preset over {{package}} (perflab analyze --sql damage).
+WITH app AS (SELECT upid FROM process WHERE name = '{{package}}'),
+rt AS (SELECT utid FROM thread JOIN app USING (upid) WHERE thread.name = 'RenderThread')
+SELECT s.name, COUNT(*) AS n, ROUND(AVG(s.dur)/1e6, 2) AS avg_ms
+FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+WHERE tt.utid IN (SELECT utid FROM rt) AND s.name LIKE 'Drawing %'
+GROUP BY s.name ORDER BY n DESC LIMIT 8;
