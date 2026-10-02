@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, file, body string) {
@@ -72,6 +73,80 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "fix", "b.json"), `{"v":1,"key":"b","status":"skipped","note":"spec"}`)
 	if s = state(); s.Next.Stage != "verify" {
 		t.Errorf("checkpointed round: %+v", s.Next)
+	}
+}
+
+// checkpointStatus is loadCheckpoints of pass 1 as key → status, plus its warnings.
+func checkpointStatus(t *testing.T, tool *Tool) (map[string]string, []runxDiagnostic) {
+	t.Helper()
+	cps, diags, err := tool.loadCheckpoints(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range cps {
+		if _, dup := got[c.Key]; dup {
+			t.Fatalf("key %q counted twice: %+v", c.Key, cps)
+		}
+		got[c.Key] = c.Status
+	}
+	return got, diags
+}
+
+func TestASlashKeyCheckpointFinishesItsItem(t *testing.T) {
+	tool := newTool(t, testConfig())
+	dir := stagePass(t, tool)
+	writeFile(t, filepath.Join(dir, "publish", "index.json"), `{"pass":1,"sets":[
+		{"key":"ui-polish-tasks","area":"tasks","status":"pushed","url":"u1"},{"key":"ui-polish-admin","area":"admin","status":"pushed","url":"u2"}]}`)
+	writeFile(t, filepath.Join(dir, "review", "raw", "tasks-1.json"), `{"batch":"tasks-1","area":"tasks"}`)
+	writeFile(t, filepath.Join(dir, "review", "raw", "admin-1.json"), `{"batch":"admin-1","area":"admin"}`)
+	writeFile(t, filepath.Join(dir, "review", "backlog.json"), `{"v":1,"pass":1,"findings":[
+		{"key":"shell-6/topbar","screen":"tasks","area":"tasks","severity":"broken","status":"open","title":"t","files":["x.ts"],"acceptance":"x"}]}`)
+	// The writer names the file after the key, so "/" makes a subdirectory.
+	writeFile(t, filepath.Join(dir, "fix", "shell-6", "topbar.json"), `{"v":1,"key":"shell-6/topbar","status":"done"}`)
+	res, err := tool.State(StateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Data.(StateData); s.Checkpoints.Total != 1 || s.Next.Stage != "verify" {
+		t.Fatalf("slash-key checkpoint unread: %+v, next %+v", s.Checkpoints, s.Next)
+	}
+}
+
+func TestAnArchivedRoundNeverCountsAndOneKeyCountsOnce(t *testing.T) {
+	tool := newTool(t, testConfig())
+	fix := filepath.Join(stagePass(t, tool), "fix")
+	writeFile(t, filepath.Join(fix, "a.json"), `{"v":1,"key":"a","status":"done"}`)
+	writeFile(t, filepath.Join(fix, "shell-6", "topbar.json"), `{"v":1,"key":"shell-6/topbar","status":"done"}`)
+	// Round 1's originals, moved aside when round 2 rewrote them.
+	writeFile(t, filepath.Join(fix, "r1", "a.json"), `{"v":1,"key":"a","status":"blocked"}`)
+	writeFile(t, filepath.Join(fix, "r1", "shell-6", "topbar.json"), `{"v":1,"key":"shell-6/topbar","status":"blocked"}`)
+	writeFile(t, filepath.Join(fix, "r1", "gone.json"), `{"v":1,"key":"gone","status":"done"}`)
+	got, diags := checkpointStatus(t, tool)
+	if len(got) != 2 || got["a"] != "done" || got["shell-6/topbar"] != "done" || len(diags) != 0 {
+		t.Fatalf("archive counted: %v %+v", got, diags)
+	}
+	// Two live files claiming one key: the newer counts, once, with a warning.
+	writeFile(t, filepath.Join(fix, "shell-6--topbar.json"), `{"v":1,"key":"shell-6/topbar","status":"skipped"}`)
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(fix, "shell-6", "topbar.json"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	got, diags = checkpointStatus(t, tool)
+	if len(got) != 2 || got["shell-6/topbar"] != "skipped" || len(diags) != 1 || diags[0].Code != DiagCheckpointInvalid {
+		t.Fatalf("duplicate key: %v %+v", got, diags)
+	}
+}
+
+func TestACheckpointWithoutAKeyIsItsPath(t *testing.T) {
+	tool := newTool(t, testConfig())
+	fix := filepath.Join(stagePass(t, tool), "fix")
+	writeFile(t, filepath.Join(fix, "shell-6", "nav.json"), `{"v":1,"status":"blocked"}`)
+	writeFile(t, filepath.Join(fix, "b.json"), `{"v":1,"status":"done"}`)
+	writeFile(t, filepath.Join(fix, "empty.json"), `{"v":1}`)
+	got, diags := checkpointStatus(t, tool)
+	if len(got) != 2 || got["shell-6/nav"] != "blocked" || got["b"] != "done" || len(diags) != 1 || !strings.Contains(diags[0].Detail, "fix/empty.json") {
+		t.Fatalf("path fallback: %v %+v", got, diags)
 	}
 }
 

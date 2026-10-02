@@ -19,6 +19,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DefaultBatchSize is the screens a reviewer judges in one batch.
@@ -40,7 +41,9 @@ type BatchesFile struct {
 	Batches []Batch `json:"batches"`
 }
 
-// Checkpoint is one fix item's <pass>/fix/<key>.json.
+// Checkpoint is one fix item's <pass>/fix/<key>.json. A key with "/" is a
+// subdirectory; readers take the item from Key, else from that path
+// (loadCheckpoints).
 type Checkpoint struct {
 	Basis       string            `json:"basis"`
 	FileDigests map[string]string `json:"fileDigests,omitempty"`
@@ -121,7 +124,7 @@ type PreviousBacklog struct {
 	Open int    `json:"open"`
 }
 
-// CheckpointCounts summarizes <pass>/fix/*.json.
+// CheckpointCounts summarizes the pass's checkpoints (loadCheckpoints).
 type CheckpointCounts struct {
 	Total    int            `json:"total"`
 	ByStatus map[string]int `json:"byStatus"`
@@ -352,15 +355,98 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	return ids, nil
 }
 
-// loadCheckpoints reads every <pass>/fix/*.json except lanes.json. A file
-// that does not decode (cut off mid-write) is skipped with a warning.
+// archivedRound is a <pass>/fix/r<N>/ directory: an earlier fix round's
+// checkpoints, moved aside when a later round rewrote their items. It never counts.
+var archivedRound = regexp.MustCompile(`^r[0-9]+$`)
+
+// checkpointFile is one candidate checkpoint: its slash-separated path under
+// <pass>/fix/ and when it was last written.
+type checkpointFile struct {
+	rel     string
+	modTime time.Time
+}
+
+// checkpointFiles walks <pass>/fix/ for checkpoint files. Writers name a
+// checkpoint after its backlog key, so a key with "/" lands in a
+// subdirectory; the walk descends into those, never into a top-level r<N>/
+// round archive, and leaves out lanes.json and recovery.json.
+func checkpointFiles(dir string) ([]checkpointFile, error) {
+	var out []checkpointFile
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if p == dir && errors.Is(err, fs.ErrNotExist) {
+				return fs.SkipAll
+			}
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if archivedRound.MatchString(rel) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".json") || rel == lanesFile || rel == "recovery.json" {
+			return nil
+		}
+		info, err := d.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // renamed away mid-walk
+		}
+		if err != nil {
+			return err
+		}
+		out = append(out, checkpointFile{rel, info.ModTime()})
+		return nil
+	})
+	return out, err
+}
+
+// loadCheckpoints reads the pass's checkpoint files (checkpointFiles), one
+// per item: the item is the file's `key`, else its path under fix/ without
+// .json. A file that does not decode (cut off mid-write) or has neither key
+// nor status is skipped with a warning; of two files that claim one key, the
+// newer counts.
 func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []runxDiagnostic, error) {
-	paths, err := filepath.Glob(filepath.Join(t.passAbs(pass), "fix", "*.json"))
+	dir := filepath.Join(t.passAbs(pass), "fix")
+	files, err := checkpointFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	var out []Checkpoint
 	var diags []runxDiagnostic
+	var keys []string
+	claims := map[string]checkpointFile{}
+	byKey := map[string]Checkpoint{}
+	for _, f := range files {
+		var c Checkpoint
+		if _, err := readJSON(filepath.Join(dir, filepath.FromSlash(f.rel)), &c); err != nil || (c.Key == "" && c.Status == "") {
+			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+f.rel+" is not a checkpoint ({key, status})",
+				"rewrite it, or delete it so its item is fixed again"))
+			continue
+		}
+		if c.Key == "" {
+			c.Key = strings.TrimSuffix(f.rel, ".json")
+		}
+		if prev, ok := claims[c.Key]; ok {
+			older, newer := prev, f
+			if f.modTime.Before(prev.modTime) {
+				older, newer = f, prev
+			}
+			diags = append(diags, warn(DiagCheckpointInvalid, fmt.Sprintf("%s/fix/%s and fix/%s both checkpoint %q; the newer fix/%s counts", t.PassDir(pass), older.rel, newer.rel, c.Key, newer.rel),
+				"delete fix/"+older.rel+", or move it into a fix/r<N>/ round archive"))
+			if newer.rel == prev.rel {
+				continue
+			}
+		} else {
+			keys = append(keys, c.Key)
+		}
+		claims[c.Key], byKey[c.Key] = f, c
+	}
+	var out []Checkpoint
 	var marker captureEvidence
 	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
 	if err != nil {
@@ -373,16 +459,8 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 			return nil, nil, err
 		}
 	}
-	for _, p := range paths {
-		if filepath.Base(p) == lanesFile || filepath.Base(p) == "recovery.json" {
-			continue
-		}
-		var c Checkpoint
-		if _, err := readJSON(p, &c); err != nil || c.Key == "" {
-			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+filepath.Base(p)+" is not a checkpoint ({key, status})",
-				"rewrite it, or delete it so its item is fixed again"))
-			continue
-		}
+	for _, key := range keys {
+		c := byKey[key]
 		if strict {
 			valid, err := t.validCheckpoint(c, basis)
 			if err != nil {

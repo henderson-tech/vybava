@@ -278,7 +278,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
-- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts `fix/*.json`, `lanes.json` excluded.
+- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
 - `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
   - `capture`: no shots yet, or the pass is unpublished (`resume`);
@@ -324,6 +324,8 @@ On pwf-ui pass 1 this planned 4 × ~62 primitive items and 4 × ~22 area items. 
 - **Frozen.** Area lanes never edit a `frozen` dir.
 - **Catalogs.** i18n catalogs are owned by nobody. Lanes return the keys they need (`{key, <locale>: text}`), and the fix stage's settle step applies them, type-checks, and resolves the `i18n` items.
 - **Foreign items** get a `blocked` checkpoint that names where the fix lands, so the round can finish.
+
+**Checkpoint files.** A lane writes each item's checkpoint to `fix/<key>.json`, so a key with `/` (`portal-shell-6/topbar-phone-touch-targets`) lands in a subdirectory. Readers (`state`, `lanes`) walk `fix/` recursively and take the item from the JSON `key` field, falling back to the path under `fix/` minus `.json` when the field is absent. `lanes.json`, `recovery.json` and the top-level `fix/r<N>/` directories are left out: a round that rewrites an earlier checkpoint moves the original into `fix/r<N>/`, and an archive never counts. A file that does not decode, or has neither `key` nor `status`, is skipped with `CHECKPOINT_INVALID`; so is the older of two files that checkpoint one key.
 
 ## Operational rules
 
