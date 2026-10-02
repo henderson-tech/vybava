@@ -55,7 +55,7 @@ type HitchKind string
 
 const (
 	// HitchCommit: the app's commit (a "Potentially expensive app update",
-	// iOS 18's "Pre-Commit(s) latency").
+	// iOS 18's "Pre-Commit(s) latency" and "Expensive Commit(s)").
 	HitchCommit HitchKind = "commit"
 	// HitchRender: the render server ("expensive render, N offscreen
 	// passes", "GPU work", iOS 18's "Commit to Render latency").
@@ -67,7 +67,7 @@ const (
 func classifyHitch(narrative string) HitchKind {
 	n := strings.ToLower(narrative)
 	switch {
-	case strings.Contains(n, "app update") || strings.Contains(n, "pre-commit"):
+	case strings.Contains(n, "app update") || strings.Contains(n, "pre-commit") || strings.Contains(n, "expensive commit"):
 		return HitchCommit
 	case strings.Contains(n, "render") || strings.Contains(n, "gpu") || strings.Contains(n, "offscreen"):
 		return HitchRender

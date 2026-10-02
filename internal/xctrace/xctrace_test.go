@@ -144,9 +144,12 @@ func TestHitchKindsSplitCommitFromRender(t *testing.T) {
 	for narrative, want := range map[string]HitchKind{
 		"Potentially expensive app update(s)": HitchCommit,
 		"Pre-Commit(s) latency":               HitchCommit,
+		"Expensive Commit(s)":                 HitchCommit, // iOS 18.7.8, iPhone 11, 2026-10-02 layer run
 		"Potentially expensive render, 64 offscreen passes), Potentially expensive GPU work": HitchRender,
-		"Commit to Render latency": HitchRender,
-		"":                         HitchUnknown,
+		"Commit to Render latency":                    HitchRender,
+		"Commit to Render latency - Expensive GPU":    HitchRender,
+		"Commit to Render latency - Delay Frame Swap": HitchRender,
+		"": HitchUnknown,
 	} {
 		if got := classifyHitch(narrative); got != want {
 			t.Errorf("%q = %s, want %s", narrative, got, want)
