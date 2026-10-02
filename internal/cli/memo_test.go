@@ -151,73 +151,92 @@ func TestMemoMirrorHomeIsReadOnlyOnDevboxGuest(t *testing.T) {
 }
 
 // Mid-merge, `memo renumber` settles LEDGER.md and its `next` is the
-// explicit `git add` of exactly the files it wrote (the home's .gitignore
-// its render created included), then the base check.
+// explicit `git add` of exactly the resolved files it wrote (the home's
+// .gitignore its render created included), then the base check; a file that
+// still conflicts is named for a hand resolution, never staged.
 func TestMemoRenumberNextStagesExactlyWhatItWrote(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
-	home := filepath.Join(repo, ".claude", "memory")
-	git := func(args ...string) error {
-		out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@x"}, args...)...).CombinedOutput()
-		if err != nil {
-			return &memo.Diag{Detail: string(out)}
-		}
-		return nil
+	cases := []struct {
+		name                     string
+		branchIgnore, mainIgnore string
+		add                      string
+		unmerged                 bool
+	}{
+		{name: "the .gitignore the render creates is staged", add: " add -- .claude/memory/LEDGER.md docs/x.md .claude/memory/.gitignore"},
+		{name: "a .gitignore that still conflicts is not", branchIgnore: "*.log\n", mainIgnore: "*.tmp\n", add: " add -- .claude/memory/LEDGER.md docs/x.md", unmerged: true},
 	}
-	write := func(rel, body string) {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, rel)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(repo, rel), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(msg string) {
-		for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", msg}} {
-			if err := git(args...); err != nil {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := t.TempDir()
+			home := filepath.Join(repo, ".claude", "memory")
+			git := func(args ...string) error {
+				out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@x"}, args...)...).CombinedOutput()
+				if err != nil {
+					return &memo.Diag{Detail: string(out)}
+				}
+				return nil
+			}
+			write := func(rel, body string) {
+				if body == "" {
+					return
+				}
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, rel)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(repo, rel), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			step := func(args ...string) {
+				if err := git(args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			head := "---\nmemo: 1\nalias: acme-team\nkind: team\n---\n- #t1 project/api Shared fact. ^t1\n"
+			step("init", "-q", "-b", "main")
+			write(".claude/memory/LEDGER.md", head)
+			step("add", "-A")
+			step("commit", "-qm", "fork")
+			step("checkout", "-qb", "work/x")
+			write(".claude/memory/LEDGER.md", head+"- #t2 project/perf The branch's fact. ^t2\n")
+			write(".claude/memory/.gitignore", tc.branchIgnore)
+			write("docs/x.md", "Per #t2.\n")
+			step("add", "-A")
+			step("commit", "-qm", "branch")
+			step("checkout", "-q", "main")
+			write(".claude/memory/LEDGER.md", head+"- #t2 project/api Main's fact. ^t2\n")
+			write(".claude/memory/.gitignore", tc.mainIgnore)
+			step("add", "-A")
+			step("commit", "-qm", "main")
+			step("checkout", "-q", "work/x")
+			if err := git("merge", "-q", "main", "-m", "merge"); err == nil {
+				t.Fatal("both sides appended a row, the merge must conflict")
+			}
+
+			var out bytes.Buffer
+			cmd, err := App{Stdout: &out, Stderr: io.Discard}.Command("memo")
+			if err != nil {
 				t.Fatal(err)
 			}
-		}
-	}
-	head := "---\nmemo: 1\nalias: acme-team\nkind: team\n---\n- #t1 project/api Shared fact. ^t1\n"
-	if err := git("init", "-q", "-b", "main"); err != nil {
-		t.Fatal(err)
-	}
-	write(".claude/memory/LEDGER.md", head)
-	commit("fork")
-	if err := git("checkout", "-qb", "work/x"); err != nil {
-		t.Fatal(err)
-	}
-	write(".claude/memory/LEDGER.md", head+"- #t2 project/perf The branch's fact. ^t2\n")
-	write("docs/x.md", "Per #t2.\n")
-	commit("branch")
-	if err := git("checkout", "-q", "main"); err != nil {
-		t.Fatal(err)
-	}
-	write(".claude/memory/LEDGER.md", head+"- #t2 project/api Main's fact. ^t2\n")
-	commit("main")
-	if err := git("checkout", "-q", "work/x"); err != nil {
-		t.Fatal(err)
-	}
-	if err := git("merge", "-q", "main", "-m", "merge"); err == nil {
-		t.Fatal("both sides appended a row, the merge must conflict")
-	}
-
-	var out bytes.Buffer
-	cmd, err := App{Stdout: &out, Stderr: io.Discard}.Command("memo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.SetArgs([]string{"renumber", "--home", home, "--json"})
-	runErr := cmd.Execute()
-	var env runx.Envelope
-	if err := json.Unmarshal(out.Bytes(), &env); err != nil || runErr != nil || !env.OK {
-		t.Fatalf("renumber: %v %v\n%s", err, runErr, out.String())
-	}
-	if len(env.Next) != 2 || !strings.HasPrefix(env.Next[0], "git -C ") || !strings.HasSuffix(env.Next[0], " add -- .claude/memory/LEDGER.md docs/x.md .claude/memory/.gitignore") || !strings.HasPrefix(env.Next[1], "memorylint check ") {
-		t.Fatalf("next = %q", env.Next)
-	}
-	if data, _ := os.ReadFile(filepath.Join(repo, "docs", "x.md")); string(data) != "Per #t3.\n" {
-		t.Fatalf("docs/x.md = %q, want the branch's citation moved to #t3", data)
+			cmd.SetArgs([]string{"renumber", "--home", home, "--json"})
+			runErr := cmd.Execute()
+			var env runx.Envelope
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil || runErr != nil || !env.OK {
+				t.Fatalf("renumber: %v %v\n%s", err, runErr, out.String())
+			}
+			want := 2
+			if tc.unmerged {
+				want = 3
+			}
+			if len(env.Next) != want || !strings.HasPrefix(env.Next[0], "git -C ") || !strings.HasSuffix(env.Next[0], tc.add) || !strings.HasPrefix(env.Next[1], "memorylint check ") {
+				t.Fatalf("next = %q", env.Next)
+			}
+			if tc.unmerged && !strings.Contains(env.Next[2], "--diff-filter=U") {
+				t.Fatalf("a conflicted .gitignore must be named for a hand resolution: %q", env.Next[2])
+			}
+			if data, _ := os.ReadFile(filepath.Join(repo, "docs", "x.md")); string(data) != "Per #t3.\n" {
+				t.Fatalf("docs/x.md = %q, want the branch's citation moved to #t3", data)
+			}
+		})
 	}
 }

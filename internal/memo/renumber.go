@@ -400,6 +400,11 @@ func Renumber(home, base string, dry bool, now time.Time) (RenumberResult, []*Di
 		}
 		return res, nil, d
 	}
+	// usage.jsonl is read as strictly as the render reads it before anything
+	// moves: an event it refuses stops the renumber while nothing is written.
+	if _, d, err := LoadEvents(home); err != nil || d != nil {
+		return res, nil, diagOrErrDiag(d, err, "usage.jsonl, nothing was renumbered")
+	}
 	res.Moves, res.Added = reb.Moves, len(reb.Added)
 	res.Changed = !bytes.Equal(reb.Text, branchText)
 	var warnings []*Diag
@@ -448,28 +453,43 @@ func Renumber(home, base string, dry bool, now time.Time) (RenumberResult, []*Di
 		return res, warnings, err
 	}
 	res.Written = len(writes) > 0
+	// The settle is done; the render is a projection of it. A render that
+	// fails is a RENDER_DRIFT warning with its fix, never a failed renumber
+	// whose files are already written.
 	gitignore := filepath.Join(home, GitignoreFile)
 	ignoreBefore, _ := os.ReadFile(gitignore)
-	settled, d, err := Load(res.Ledger)
-	if err != nil || d != nil {
-		return res, warnings, diagOrErrDiag(d, err, "the settled ledger does not load")
-	}
-	events, d, err := LoadEvents(home)
-	if err != nil || d != nil {
-		return res, warnings, diagOrErrDiag(d, err, "usage.jsonl")
-	}
-	if _, tracked, err := WriteIndex(settled, events, now); err != nil {
-		return res, warnings, err
+	if tracked, err := renderSettled(res.Ledger, home, now); err != nil {
+		warnings = append(warnings, &Diag{Code: DiagRenderDrift, Severity: "warning", Detail: "the ledger is settled but MEMORY.md was not rendered: " + err.Error(), Fix: "memo render --home " + shellword.Quote(home) + " --json"})
 	} else if tracked != nil {
 		warnings = append(warnings, tracked)
 	}
 	// The render may have written the home's .gitignore (EnsureGitignore): a
-	// repo file this verb changed, so it rides the same staging list.
+	// repo file this verb changed, so it rides the staging list unless it
+	// still holds a conflict of its own.
 	if ignoreAfter, err := os.ReadFile(gitignore); err == nil && !bytes.Equal(ignoreBefore, ignoreAfter) {
-		res.Paths = append(res.Paths, filepath.ToSlash(filepath.Join(prefix, GitignoreFile)))
+		rel := filepath.ToSlash(filepath.Join(prefix, GitignoreFile))
+		if out, _ := gitStdout(root, "diff", "--name-only", "--no-relative", "--diff-filter=U", "--", rel); len(bytes.TrimSpace(out)) > 0 {
+			res.Unmerged = append(res.Unmerged, rel)
+		} else {
+			res.Paths = append(res.Paths, rel)
+		}
 		res.Written = true
 	}
 	return res, warnings, nil
+}
+
+// renderSettled renders MEMORY.md from the settled ledger and its usage.
+func renderSettled(ledger, home string, now time.Time) (*Diag, error) {
+	settled, d, err := Load(ledger)
+	if err != nil || d != nil {
+		return nil, diagOrErrDiag(d, err, "the settled ledger does not load")
+	}
+	events, d, err := LoadEvents(home)
+	if err != nil || d != nil {
+		return nil, diagOrErrDiag(d, err, "usage.jsonl")
+	}
+	_, tracked, err := WriteIndex(settled, events, now)
+	return tracked, err
 }
 
 // rewriteBranchRefs moves the citations on every line the branch wrote: a
@@ -571,7 +591,7 @@ func remapUsage(home string, moves map[int]int) (*pendingWrite, int, error) {
 			continue
 		}
 		var e Event
-		if err := json.Unmarshal([]byte(body), &e); err != nil {
+		if err := json.Unmarshal([]byte(body), &e); err != nil || e.Row <= 0 || e.Kind == "" || e.At == "" {
 			return nil, 0, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: i + 1, Detail: fmt.Sprintf("%s:%d is not a usage event; nothing was renumbered", path, i+1), Fix: fmt.Sprintf("remove %s:%d by hand, then re-run memo renumber", path, i+1)}
 		}
 		to, ok := moves[e.Row]
@@ -636,16 +656,29 @@ func writeAll(writes []pendingWrite) error {
 	return nil
 }
 
+// replaceFile writes data through a temp file only this call created (never
+// a predictable sibling that may already exist or be a symlink), sets mode
+// on it, and renames it over path.
 func replaceFile(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".renumber"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".renumber-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	name := tmp.Name()
+	_, err = tmp.Write(data)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	return nil
+	if err == nil {
+		err = os.Chmod(name, mode)
+	}
+	if err == nil {
+		err = os.Rename(name, path)
+	}
+	if err != nil {
+		_ = os.Remove(name) // the original error is the one to report
+	}
+	return err
 }
 
 // DefaultBase is the ref a home's branch merges into: the pull request's base

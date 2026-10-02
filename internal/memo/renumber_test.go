@@ -223,8 +223,9 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	if _, err := git(repo, "-c", "merge.conflictStyle=merge", "merge", "-q", "main", "-m", "merge main"); err == nil {
 		t.Fatal("the real fork merged without a LEDGER.md conflict")
 	}
-	// A bad usage line refuses the whole renumber before any file is written.
-	write(".claude/memory/usage.jsonl", []byte(usage+"not json\n"))
+	// A usage line the render would refuse (valid JSON, not an event) stops
+	// the whole renumber before any file is written.
+	write(".claude/memory/usage.jsonl", []byte(usage+`{"row":335}`+"\n"))
 	conflictedLedger := read(".claude/memory/LEDGER.md")
 	if _, _, err := Renumber(home, "", false, now); err == nil {
 		t.Fatal("a bad usage.jsonl line must refuse the renumber")
@@ -233,9 +234,22 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 		t.Fatal("a refused renumber wrote files: a re-run would move their citations twice")
 	}
 	write(".claude/memory/usage.jsonl", []byte(usage))
+	// A render that fails after the settle (MEMORY.md is a directory) is a
+	// RENDER_DRIFT warning, never a failed renumber with its files written.
+	if err := os.Mkdir(filepath.Join(home, IndexFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling that happens to carry the old temp name is not ours to clobber.
+	write("docs/perf.md.renumber", []byte("keep me\n"))
 	res, warnings, err := Renumber(home, "", false, now)
-	if err != nil || len(warnings) > 0 {
-		t.Fatalf("renumber: %v %v", err, warnings)
+	if err != nil || len(warnings) != 1 || warnings[0].Code != DiagRenderDrift || warnings[0].Severity != "warning" {
+		t.Fatalf("renumber: %v %+v", err, warnings)
+	}
+	if err := os.Remove(filepath.Join(home, IndexFile)); err != nil {
+		t.Fatal(err)
+	}
+	if got := read("docs/perf.md.renumber"); got != "keep me\n" {
+		t.Fatalf("renumber clobbered an unrelated sibling: %q", got)
 	}
 	if !res.Merging || res.Base == "" || len(res.Moves) != 10 || res.Added != 5 {
 		t.Fatalf("result: %+v", res)
@@ -272,9 +286,6 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	if !reflect.DeepEqual(rows, []int{363, 329}) {
 		t.Fatalf("usage rows = %v, want the branch's #t335 credited to #t363", rows)
 	}
-	if _, err := os.Stat(filepath.Join(home, IndexFile)); err != nil {
-		t.Fatalf("MEMORY.md not rendered: %v", err)
-	}
 
 	run("add", "--", ".claude/memory/LEDGER.md", "docs/clash.md")
 	run("commit", "-qm", "settled")
@@ -284,6 +295,9 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	again, _, err := Renumber(home, "main", false, now)
 	if err != nil || again.Written || len(again.Moves) != 0 {
 		t.Fatalf("second run is not a no-op: %+v %v", again, err)
+	}
+	if info, err := os.Stat(filepath.Join(home, IndexFile)); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("MEMORY.md not rendered: %v", err)
 	}
 }
 

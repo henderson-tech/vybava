@@ -220,9 +220,12 @@ memorylint check <home> --base origin/main
 - **Local usage moves too.** The home's `usage.jsonl` (gitignored, this
   checkout's citations) credited the branch's rows, so its events move to
   the new ids; `MEMORY.md` is rendered after.
-- **All or nothing.** Every edit is computed, and `usage.jsonl` validated,
-  before a file is written; a write that fails restores the files written
-  before it. A half-applied move map, re-run, would move a citation twice.
+- **All or nothing.** Every edit is computed, and `usage.jsonl` read as
+  strictly as the render reads it, before a file is written; each file is
+  replaced through a temp file only that write created, and a write that
+  fails restores the files written before it. A half-applied move map,
+  re-run, would move a citation twice. The `MEMORY.md` render comes after
+  the settle: its failure is a `RENDER_DRIFT` warning naming `memo render`.
 - **The staging list is exact.** `next` names `git add` of the settled
   ledger, the files whose citations moved and the home's `.gitignore` when
   the render wrote it. A file that still holds its own conflict has its
