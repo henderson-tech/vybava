@@ -88,8 +88,9 @@ const (
 	DiagReviewIncomplete = "REVIEW_INCOMPLETE"
 	// DiagCheckpointInvalid: a <pass>/fix/**/*.json is not a checkpoint (it
 	// does not decode, or has neither key nor status) and is skipped, so its
-	// item counts as not finished; or two files checkpoint one key and the
-	// older is skipped (warning) — rewrite, delete or archive the file.
+	// item counts as not finished; or two admitted files checkpoint one key
+	// and the one not at fix/<key>.json (else the older) is skipped
+	// (warning) — rewrite, delete or archive the file.
 	DiagCheckpointInvalid = "CHECKPOINT_INVALID"
 	// DiagForeignItems: lanes found open items that name no file inside the
 	// repo (an absolute path into another repo); no lane owns them (warning)

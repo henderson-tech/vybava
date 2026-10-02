@@ -14,7 +14,7 @@ The applet owns what must not depend on judgment:
 - the pass directory and its `run.json`;
 - the split into vitrinka sets and the publish;
 - the scoreboard;
-- the stage state the review-loop reads back: `state`, the review `batches`, `merge-review` and the fix `lanes`.
+- the stage state the review-loop reads back: `state`, the review `batches`, `merge-review`, the fix `lanes` and the fix `checkpoints`.
 
 The orchestration (reviewers per area, synthesis, fix lanes, boards) lives in the vitrinka `map` and `review-loop` workflows, which drive this CLI. There is no Výbava skill for it.
 
@@ -36,6 +36,7 @@ ui-loop state       [--pass N] [--cap 6]
 ui-loop batches     [--pass N] [--size 14] [--areas a,b]
 ui-loop merge-review [--pass N]
 ui-loop lanes       [--pass N] [--primitives dir,dir] [--max 4]
+ui-loop checkpoints [--pass N]
 ```
 
 Every verb emits the `{v, ok, verb, data, diagnostics, next}` envelope (`--json` for machines). The output of the commands a verb runs streams to stderr. Exit codes: 0 ok, 1 infra, 2 diagnostics. The codes are the closed enum in `internal/uiloop/diag.go`.
@@ -325,7 +326,15 @@ On pwf-ui pass 1 this planned 4 × ~62 primitive items and 4 × ~22 area items. 
 - **Catalogs.** i18n catalogs are owned by nobody. Lanes return the keys they need (`{key, <locale>: text}`), and the fix stage's settle step applies them, type-checks, and resolves the `i18n` items.
 - **Foreign items** get a `blocked` checkpoint that names where the fix lands, so the round can finish.
 
-**Checkpoint files.** A lane writes each item's checkpoint to `fix/<key>.json`, so a key with `/` (`portal-shell-6/topbar-phone-touch-targets`) lands in a subdirectory. Readers (`state`, `lanes`) walk `fix/` recursively and take the item from the JSON `key` field, falling back to the path under `fix/` minus `.json` when the field is absent. `lanes.json`, `recovery.json` and the top-level `fix/r<N>/` directories are left out: a round that rewrites an earlier checkpoint moves the original into `fix/r<N>/`, and an archive never counts. A file that does not decode, or has neither `key` nor `status`, is skipped with `CHECKPOINT_INVALID`; so is the older of two files that checkpoint one key.
+**Checkpoint files.** A lane writes each item's checkpoint to `fix/<key>.json`, so a key with `/` (`portal-shell-6/topbar-phone-touch-targets`) lands in a subdirectory. One reader maps those files to items, and `state`, `lanes` and `checkpoints` all go through it:
+
+1. It walks `fix/` recursively. `lanes.json`, `recovery.json` and the top-level `fix/r<N>/` directories are left out: a round that rewrites an earlier checkpoint moves the original into `fix/r<N>/`, and an archive never counts.
+2. The item is the JSON `key` field, else the path under `fix/` minus `.json`.
+3. A file that does not decode, or has neither `key` nor `status`, is skipped with `CHECKPOINT_INVALID`.
+4. In a pass with provenance, a stale file (see Durable workflow evidence) is not admitted.
+5. Only admitted files compete for a key, so a stale file never hides a current one. The file at `fix/<key>.json` counts first, then the newer one; each other file is warned `CHECKPOINT_INVALID`, and the warning names the file that counts.
+
+A workflow never globs `fix/*.json`: the glob misses a slash key's subdirectory and admits stale files. It reads **`checkpoints [--pass N]`**, which returns `{v, pass, passDir, checkpoints: [{key, status, lane, basis, commit, fileDigests, apiChanges, screens, i18n, note}]}`, one per item, with `i18n` passed through verbatim. For example, the screens a round changed are `vybava ui-loop checkpoints --pass N --json | jq -r '.data.checkpoints[] | select(.status == "done") | .screens[]?'`, and the strings it needs are `… | jq -c '.data.checkpoints[].i18n[]?'`.
 
 ## Operational rules
 

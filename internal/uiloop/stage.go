@@ -2,11 +2,12 @@ package uiloop
 
 // stage.go owns the pass state the vitrinka review-loop reads back between
 // its stages: `state` (compact counts and the next stage), `batches` (the
-// reviewer batches, persisted), `merge-review` (the backlog draft) and
-// `lanes` (the fix lanes by ownership, in lanes.go). The workflow's agents
-// relay these envelopes; they never enumerate screens, raw files or backlog
-// items themselves, because a large list handed through an agent's return
-// value gets dropped or summarized (pwf-ui pass 1).
+// reviewer batches, persisted), `merge-review` (the backlog draft), `lanes`
+// (the fix lanes by ownership, in lanes.go) and `checkpoints` (the fix
+// checkpoints that count). The workflow's agents relay these envelopes; they
+// never enumerate screens, raw files, backlog items or checkpoints themselves,
+// because a large list handed through an agent's return value gets dropped or
+// summarized (pwf-ui pass 1).
 
 import (
 	"encoding/json"
@@ -53,7 +54,11 @@ type Checkpoint struct {
 	Status      string            `json:"status"` // done | skipped | blocked
 	Commit      string            `json:"commit,omitempty"`
 	Screens     []string          `json:"screens,omitempty"`
-	Note        string            `json:"note,omitempty"`
+	// I18n is the strings the fix needs ({key, <locale>: text}), passed
+	// through verbatim: its shape is the settle step's, never a reason to
+	// refuse the checkpoint.
+	I18n json.RawMessage `json:"i18n,omitempty"`
+	Note string          `json:"note,omitempty"`
 }
 
 // Finishes reports whether the checkpoint closes its item for this round.
@@ -409,44 +414,16 @@ func checkpointFiles(dir string) ([]checkpointFile, error) {
 // loadCheckpoints reads the pass's checkpoint files (checkpointFiles), one
 // per item: the item is the file's `key`, else its path under fix/ without
 // .json. A file that does not decode (cut off mid-write) or has neither key
-// nor status is skipped with a warning; of two files that claim one key, the
-// newer counts.
+// nor status is skipped with a warning; in a pass with provenance a stale
+// file (validCheckpoint) is not admitted. Only then are duplicates resolved:
+// of two admitted files that claim one key, one counts (supersedes) and the
+// other is warned, so a stale file can never shadow a current one.
 func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []runxDiagnostic, error) {
 	dir := filepath.Join(t.passAbs(pass), "fix")
 	files, err := checkpointFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	var diags []runxDiagnostic
-	var keys []string
-	claims := map[string]checkpointFile{}
-	byKey := map[string]Checkpoint{}
-	for _, f := range files {
-		var c Checkpoint
-		if _, err := readJSON(filepath.Join(dir, filepath.FromSlash(f.rel)), &c); err != nil || (c.Key == "" && c.Status == "") {
-			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+f.rel+" is not a checkpoint ({key, status})",
-				"rewrite it, or delete it so its item is fixed again"))
-			continue
-		}
-		if c.Key == "" {
-			c.Key = strings.TrimSuffix(f.rel, ".json")
-		}
-		if prev, ok := claims[c.Key]; ok {
-			older, newer := prev, f
-			if f.modTime.Before(prev.modTime) {
-				older, newer = f, prev
-			}
-			diags = append(diags, warn(DiagCheckpointInvalid, fmt.Sprintf("%s/fix/%s and fix/%s both checkpoint %q; the newer fix/%s counts", t.PassDir(pass), older.rel, newer.rel, c.Key, newer.rel),
-				"delete fix/"+older.rel+", or move it into a fix/r<N>/ round archive"))
-			if newer.rel == prev.rel {
-				continue
-			}
-		} else {
-			keys = append(keys, c.Key)
-		}
-		claims[c.Key], byKey[c.Key] = f, c
-	}
-	var out []Checkpoint
 	var marker captureEvidence
 	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
 	if err != nil {
@@ -459,8 +436,24 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 			return nil, nil, err
 		}
 	}
-	for _, key := range keys {
-		c := byKey[key]
+	type admitted struct {
+		file checkpointFile
+		cp   Checkpoint
+	}
+	var diags []runxDiagnostic
+	var keys []string
+	counts := map[string]admitted{}
+	shadowed := map[string][]string{}
+	for _, f := range files {
+		var c Checkpoint
+		if _, err := readJSON(filepath.Join(dir, filepath.FromSlash(f.rel)), &c); err != nil || (c.Key == "" && c.Status == "") {
+			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+f.rel+" is not a checkpoint ({key, status})",
+				"rewrite it, or delete it so its item is fixed again"))
+			continue
+		}
+		if c.Key == "" {
+			c.Key = strings.TrimSuffix(f.rel, ".json")
+		}
 		if strict {
 			valid, err := t.validCheckpoint(c, basis)
 			if err != nil {
@@ -470,9 +463,71 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 				continue
 			}
 		}
-		out = append(out, c)
+		prev, ok := counts[c.Key]
+		switch {
+		case !ok:
+			keys = append(keys, c.Key)
+		case supersedes(f, prev.file, c.Key):
+			shadowed[c.Key] = append(shadowed[c.Key], prev.file.rel)
+		default:
+			shadowed[c.Key] = append(shadowed[c.Key], f.rel)
+			continue
+		}
+		counts[c.Key] = admitted{f, c}
+	}
+	out := make([]Checkpoint, 0, len(keys))
+	for _, key := range keys {
+		won := counts[key]
+		for _, rel := range shadowed[key] {
+			diags = append(diags, warn(DiagCheckpointInvalid, fmt.Sprintf("%s/fix/%s and fix/%s both checkpoint %q; fix/%s counts", t.PassDir(pass), rel, won.file.rel, key, won.file.rel),
+				"delete fix/"+rel+", or move it into a fix/r<N>/ round archive"))
+		}
+		out = append(out, won.cp)
 	}
 	return out, diags, nil
+}
+
+// supersedes reports whether checkpoint file a counts over b, both admitted
+// for key: the writers' own path fix/<key>.json first, then the newer write,
+// then the lower path so the choice never depends on walk order.
+func supersedes(a, b checkpointFile, key string) bool {
+	canonical := key + ".json"
+	if (a.rel == canonical) != (b.rel == canonical) {
+		return a.rel == canonical
+	}
+	if !a.modTime.Equal(b.modTime) {
+		return a.modTime.After(b.modTime)
+	}
+	return a.rel < b.rel
+}
+
+// CheckpointsData is `ui-loop checkpoints`: the pass's checkpoints exactly as
+// state and lanes count them (loadCheckpoints), one per item. A workflow reads
+// a round's changed screens and i18n strings here, never by globbing
+// fix/*.json, which misses a slash key's subdirectory and admits stale files.
+type CheckpointsData struct {
+	V           int          `json:"v"`
+	Pass        int          `json:"pass"`
+	PassDir     string       `json:"passDir"`
+	Checkpoints []Checkpoint `json:"checkpoints"`
+}
+
+// CheckpointsOptions are `checkpoints`' flags.
+type CheckpointsOptions struct {
+	Pass int
+}
+
+// Checkpoints lists the checkpoints that count for the pass: `ui-loop checkpoints`.
+func (t *Tool) Checkpoints(o CheckpointsOptions) (Result, error) {
+	pass, err := t.resolveShotPass(o.Pass)
+	if err != nil {
+		return Result{}, err
+	}
+	cps, diags, err := t.loadCheckpoints(pass)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Data: CheckpointsData{V: 1, Pass: pass, PassDir: t.PassDir(pass), Checkpoints: cps}, Diagnostics: diags}, nil
 }
 
 // previousBacklog finds the newest pass before `pass` that has a backlog.
