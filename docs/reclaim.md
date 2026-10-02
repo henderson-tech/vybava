@@ -66,7 +66,7 @@ own. No `du`, no classification pass — the first delete starts immediately.
 | 2 | `xcode-caches` | Xcode + CoreSimulator caches | next run |
 | 2 | `sim-unavailable` | `simctl delete unavailable` | nothing |
 | 3 | `device-support` | iOS / watchOS / tvOS DeviceSupport symbols | re-sync from a plugged device |
-| 3 | `sim-runtimes` | simulator runtimes no device uses | re-download via Xcode |
+| 3 | `sim-runtimes` | simulator runtimes no device uses (matched by `runtimeIdentifier`), never the installed Xcode's own simulator SDK; refuses when `xcodebuild -showsdks` cannot be read | re-download via Xcode |
 | 3 | `sim-logs` | per-sim diagnostics logs (shuts sims down; apps + data survive) | nothing |
 | 3 | `messages-tmp` | Messages sandbox tmp, files older than keep-days (quits Messages) | iCloud re-fetch |
 | 3 | `sandbox-tmp` | every app sandbox tmp, aged slice only | app re-creates |

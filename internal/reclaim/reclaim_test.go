@@ -264,16 +264,22 @@ func TestDryRunDeletesNothing(t *testing.T) {
 	}
 }
 
+// Fixtures are the real simctl/xcodebuild JSON shapes (Xcode 26.5): a runtime
+// is matched to its devices by runtimeIdentifier, never rebuilt from
+// platformIdentifier (com.apple.platform.iphonesimulator, not "iOS").
 func TestUnusedRuntimes(t *testing.T) {
 	runtimes := []byte(`{
-	  "A": {"identifier":"A","version":"18.2","platformIdentifier":"iOS","sizeBytes":8000000000},
-	  "B": {"identifier":"B","version":"17.5","platformIdentifier":"iOS","sizeBytes":7000000000},
-	  "C": {"identifier":"C","version":"11.2","platformIdentifier":"watchOS","sizeBytes":3000000000}}`)
+	  "A": {"identifier":"A","version":"18.6","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-6","sizeBytes":7600000000},
+	  "B": {"identifier":"B","version":"17.5","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-5","sizeBytes":7000000000},
+	  "C": {"identifier":"C","version":"11.2","platformIdentifier":"com.apple.platform.watchsimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.watchOS-11-2","sizeBytes":3000000000},
+	  "D": {"identifier":"D","version":"26.5","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":8500000000},
+	  "E": {"identifier":"E","version":"26.5","platformIdentifier":"com.apple.platform.iphonesimulator","sizeBytes":8500000000}}`)
 	devices := []byte(`{"devices":{
-	  "com.apple.CoreSimulator.SimRuntime.iOS-18-2":[{"isAvailable":true}],
+	  "com.apple.CoreSimulator.SimRuntime.iOS-18-6":[{"isAvailable":true}],
 	  "com.apple.CoreSimulator.SimRuntime.iOS-17-5":[],
 	  "com.apple.CoreSimulator.SimRuntime.watchOS-11-2":[]}}`)
-	unused, err := UnusedRuntimes(runtimes, devices)
+	sdks := []byte(`[{"platform":"iphonesimulator","sdkVersion":"26.5"},{"platform":"macosx","sdkVersion":"26.5"}]`)
+	unused, err := UnusedRuntimes(runtimes, devices, sdks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,8 +287,12 @@ func TestUnusedRuntimes(t *testing.T) {
 	for _, rt := range unused {
 		got[rt.Identifier] = true
 	}
-	if got["A"] || !got["B"] || !got["C"] {
+	// A has a device, D is Xcode's own simulator SDK, E cannot be matched: all stay.
+	if got["A"] || !got["B"] || !got["C"] || got["D"] || got["E"] {
 		t.Fatalf("unused = %v", got)
+	}
+	if _, err := UnusedRuntimes(runtimes, devices, []byte("xcodebuild: error")); err == nil {
+		t.Fatal("an unreadable SDK list must refuse, never delete")
 	}
 }
 

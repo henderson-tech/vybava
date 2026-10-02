@@ -93,7 +93,7 @@ func Ladder(env Env) []Step {
 		// ---- tier 3: aggressive, still reversible -----------------------
 		{ID: "device-support", Tier: TierAggressive, Title: "iOS DeviceSupport symbols", Regenerates: "re-syncs from the next plugged-in device",
 			Paths: []string{"~/Library/Developer/Xcode/iOS DeviceSupport/*", "~/Library/Developer/Xcode/watchOS DeviceSupport/*", "~/Library/Developer/Xcode/tvOS DeviceSupport/*"}},
-		{ID: "sim-runtimes", Tier: TierAggressive, Title: "simulator runtimes with no device", Regenerates: "re-download via Xcode", Needs: "xcrun",
+		{ID: "sim-runtimes", Tier: TierAggressive, Title: "simulator runtimes with no device (keeps Xcode's SDK)", Regenerates: "re-download via Xcode", Needs: "xcrun",
 			Run: deleteUnusedRuntimes, Size: sizeUnusedRuntimes},
 		{ID: "sim-logs", Tier: TierAggressive, Title: "simulator diagnostics logs (shuts sims down; apps + data survive)", Regenerates: "nothing", Needs: "xcrun",
 			Run: func(ctx context.Context, env Env) (int64, error) {
@@ -193,17 +193,34 @@ func dockerDF(row string) func(context.Context, Env) (int64, error) {
 type simRuntime struct {
 	Identifier string `json:"identifier"`
 	Version    string `json:"version"`
-	Platform   string `json:"platformIdentifier"`
-	SizeBytes  int64  `json:"sizeBytes"`
-	Build      string `json:"build"`
+	Platform   string `json:"platformIdentifier"` // com.apple.platform.iphonesimulator
+	// RuntimeIdentifier is the key `simctl list devices -j` files devices
+	// under: com.apple.CoreSimulator.SimRuntime.iOS-26-5.
+	RuntimeIdentifier string `json:"runtimeIdentifier"`
+	SizeBytes         int64  `json:"sizeBytes"`
+	Build             string `json:"build"`
 }
 
-// UnusedRuntimes returns runtimes that no simulator device uses, from the
-// two simctl JSON listings. Exported for the test fixtures.
-func UnusedRuntimes(runtimeListJSON, deviceListJSON []byte) ([]simRuntime, error) {
+// UnusedRuntimes returns runtimes that no simulator device uses and that do
+// not match a simulator SDK of the installed Xcode (its default build
+// destination), from `simctl runtime list -j`, `simctl list devices -j` and
+// `xcodebuild -showsdks -json`. A runtime without a runtimeIdentifier is kept:
+// what cannot be matched to its devices is never proven unused.
+func UnusedRuntimes(runtimeListJSON, deviceListJSON, sdkListJSON []byte) ([]simRuntime, error) {
 	var runtimes map[string]simRuntime
 	if err := json.Unmarshal(runtimeListJSON, &runtimes); err != nil {
 		return nil, fmt.Errorf("runtime list: %w", err)
+	}
+	var sdks []struct {
+		Platform   string `json:"platform"`
+		SDKVersion string `json:"sdkVersion"`
+	}
+	if err := json.Unmarshal(sdkListJSON, &sdks); err != nil {
+		return nil, fmt.Errorf("sdk list: %w", err)
+	}
+	xcodeSDK := map[string]bool{}
+	for _, sdk := range sdks {
+		xcodeSDK["com.apple.platform."+sdk.Platform+" "+sdk.SDKVersion] = true
 	}
 	var devices struct {
 		Devices map[string][]struct {
@@ -221,19 +238,12 @@ func UnusedRuntimes(runtimeListJSON, deviceListJSON []byte) ([]simRuntime, error
 	}
 	var unused []simRuntime
 	for _, rt := range runtimes {
-		key := runtimeKey(rt)
-		if used[key] {
+		if rt.RuntimeIdentifier == "" || used[rt.RuntimeIdentifier] || xcodeSDK[rt.Platform+" "+rt.Version] {
 			continue
 		}
 		unused = append(unused, rt)
 	}
 	return unused, nil
-}
-
-// runtimeKey is how `simctl list devices -j` names a runtime:
-// com.apple.CoreSimulator.SimRuntime.iOS-18-2.
-func runtimeKey(rt simRuntime) string {
-	return "com.apple.CoreSimulator.SimRuntime." + strings.ReplaceAll(rt.Platform, " ", "") + "-" + strings.ReplaceAll(rt.Version, ".", "-")
 }
 
 func listUnusedRuntimes(ctx context.Context, env Env) ([]simRuntime, error) {
@@ -245,7 +255,11 @@ func listUnusedRuntimes(ctx context.Context, env Env) ([]simRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return UnusedRuntimes(rts, devs)
+	sdks, err := env.Exec(ctx, "xcodebuild", "-showsdks", "-json")
+	if err != nil {
+		return nil, err
+	}
+	return UnusedRuntimes(rts, devs, sdks)
 }
 
 func deleteUnusedRuntimes(ctx context.Context, env Env) (int64, error) {
