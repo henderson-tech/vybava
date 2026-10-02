@@ -29,6 +29,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"readeff", "readeff"},
 		{"vpn", "vpn"},
 		{"redact", "redact"},
+		{"journeys", "journeys"},
 		{"blip", "blip"},
 		{"polish-kit", "polish-kit"},
 		{"ui-loop", "ui-loop"},

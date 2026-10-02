@@ -31,6 +31,17 @@ in `docs/`; lessons in `.claude/memory/MEMORY.md`.
 
 ## Commands
 
+`internal/journeys` owns the reusable human journey document engine, frozen
+plans, adapter protocol, private append-only journals and reviewed publication
+projections/checkpoints. `verification.go` owns read-only adapter probes with
+sealed-plan/request bindings and immutable private outcome receipts; these
+never automatically promote a journey verdict. Its multicall applet
+is `journeys`; product-specific seed/device/runtime adapters stay in consumer
+repos. Contract and recovery commands: `docs/journeys.md`.
+`skills/journey-campaign/` carries the real-device campaign and handoff workflow;
+changing run IDs, device handles and product-specific recipes stay in consumer
+checkpoints/docs, not the reusable skill.
+
 ```sh
 go test ./...  &&  go vet ./...
 go run ./cmd/vybava catalog list
