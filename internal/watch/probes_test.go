@@ -31,7 +31,7 @@ const precheckJSON = `{
 }`
 
 func precheck(checks string, ciOK, botOK bool, failed, pending, state string) Verb {
-	return func(args []string, stdout, _ io.Writer) int {
+	return func(_ context.Context, args []string, stdout, _ io.Writer) int {
 		if len(args) != 2 || args[0] != "155" || args[1] != "--repo=/w/vybava" {
 			panic(fmt.Sprintf("merge-precheck argv %v", args))
 		}
@@ -88,7 +88,7 @@ func TestPRProbeReadsGitkitMergePrecheck(t *testing.T) {
 	if _, err := p.Observe(ctx, "henderson-tech/vybava#155", ""); err == nil {
 		t.Fatal("a PR without an anchor checkout was probed")
 	}
-	p.Precheck = func(_ []string, _, stderr io.Writer) int {
+	p.Precheck = func(_ context.Context, _ []string, _, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: gh: Could not resolve to a PullRequest")
 		return 1
 	}

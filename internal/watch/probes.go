@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,19 +60,51 @@ func tail(s string) string {
 	return s
 }
 
-// Verb is an in-process gitkit verb (gitkit.Verb's shape).
-type Verb func(args []string, stdout, stderr io.Writer) int
+// Verb runs one gitkit verb, bounded by ctx.
+type Verb func(ctx context.Context, args []string, stdout, stderr io.Writer) int
 
 // DefaultProbes are the production probes: gitkit's merge-precheck for PRs
 // and the devbox, vitrinka and deployik CLIs.
 func DefaultProbes(run Runner) []Probe {
-	precheck, _ := gitkit.Native("merge-precheck")
 	return []Probe{
-		PRProbe{Run: run, Precheck: Verb(precheck)},
+		PRProbe{Run: run, Precheck: selfVerb("merge-precheck")},
 		DevboxProbe{Run: run},
 		DevboxRunProbe{Run: run},
 		VitrinkaProbe{Run: run},
 		DeployikProbe{Run: run},
+	}
+}
+
+// selfVerb runs `vybava gitkit <verb>` as a child of this binary so the
+// probe's context bounds it: the in-process verb shells out under contexts
+// of its own and could outlive probeTimeout. WaitDelay returns even while a
+// grandchild (gh, git) still holds the pipes.
+func selfVerb(verb string) Verb {
+	return func(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+		self, err := os.Executable()
+		if err == nil {
+			// An applet link would dispatch by its own name; the real binary
+			// dispatches `gitkit`.
+			self, err = filepath.EvalSymlinks(self)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "locate the vybava binary: %v", err)
+			return 1
+		}
+		cmd := exec.CommandContext(ctx, self, append([]string{"gitkit", verb}, args...)...)
+		cmd.Stdout, cmd.Stderr = stdout, stderr
+		cmd.WaitDelay = 5 * time.Second
+		err = cmd.Run()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return 0
+		case errors.As(err, &exit) && ctx.Err() == nil:
+			return exit.ExitCode()
+		default:
+			fmt.Fprintf(stderr, "gitkit %s: %v", verb, err)
+			return 1
+		}
 	}
 }
 
@@ -157,7 +191,7 @@ func (p PRProbe) Observe(ctx context.Context, ref, dir string) (Observation, err
 		return Observation{}, errors.New("gitkit merge-precheck is not available in this build")
 	}
 	var stdout, stderr bytes.Buffer
-	if code := p.Precheck([]string{m[2], "--repo=" + dir}, &stdout, &stderr); code != 0 {
+	if code := p.Precheck(ctx, []string{m[2], "--repo=" + dir}, &stdout, &stderr); code != 0 {
 		return Observation{}, fmt.Errorf("gitkit merge-precheck %s exited %d: %s", m[2], code, tail(stderr.String()))
 	}
 	var pc gitkit.Precheck

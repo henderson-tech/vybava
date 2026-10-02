@@ -34,7 +34,7 @@ fields below.
 
 | Kind | Ref | Read through | Fields | Conditions |
 |---|---|---|---|---|
-| `pr` | `155`, `#155`, `owner/name#155` or a PR URL | gitkit `merge-precheck`, in-process, anchored at the subscriber's `--dir` | `state` `checks` `ci` (green/waived/red/pending/absent) `review` `bots` (`ok` or `pending: <bots>`) `mergeable` `draft` `failed` | `merged` `closed` `checks-settled` `checks-green` `checks-red` `eve-approved` `ready` |
+| `pr` | `155`, `#155`, `owner/name#155` or a PR URL | gitkit `merge-precheck` as a child of the binary (killed at the probe timeout), anchored at the subscriber's `--dir` | `state` `checks` `ci` (green/waived/red/pending/absent) `review` `bots` (`ok` or `pending: <bots>`) `mergeable` `draft` `failed` | `merged` `closed` `checks-settled` `checks-green` `checks-red` `eve-approved` `ready` |
 | `devbox` | a box name (`a`, `b`) | `devbox boxes --json` | `state` `reachable` `health` | `up` `down` |
 | `devbox-run` | a workspace name | `devbox status <ws> --json` (`data.runs`) | `runs` `running` `ids` | `idle` (its runs finished) `running` |
 | `vitrinka` | `<id>` or `<workspace>/<id>` | `vitrinka task get <ref> --json` | `state` `status` | `done` `closed` |
@@ -70,7 +70,10 @@ that already holds on a reading younger than the kind's interval is met in the
 Delivery is at-least-once: `next --after <seq>` acknowledges (deletes) the
 session's events up to `seq` and answers newer ones, waiting up to `--timeout`
 (capped at 60 s) for the first. A caller that crashes before acknowledging gets
-the same events again. Each session's queue keeps its newest 100 events.
+the same events again. Each session's queue keeps its newest 100 events;
+`rm` drops the subscription's unacknowledged events with it (`watch until`
+removes its own on exit), and an event nobody acknowledged for 7 days is
+dropped.
 
 ## Scheduling: dedupe, backoff, budget
 
@@ -96,14 +99,14 @@ The state holds the subscriptions (with their baselines) and the
 unacknowledged events, versioned (`StateVersion`); a file of another version is
 refused, never re-read. Readings, backoff and the budget are rebuilt on start:
 a restart re-probes every target and neither replays nor swallows a change.
-The daemon holds `watchd.sock.lock` (flock) for its lifetime before it judges
-the socket, so two daemons starting together can never both call it stale. A
+The daemon holds `watchd.sock.lock` (flock) for its lifetime, taken before it
+reads `state.json` or judges the socket, so two daemons starting together can never both call it stale. A
 socket file nobody answers on is then replaced; a live one refuses a second
 daemon. SIGTERM stops accepting, lets in-flight probes finish and exits.
 
 `Engine.Every(name, every, fn)` registers periodic work beside the probes (the
 fleet summary publisher is the first); a failed task is logged, never
-swallowed. A panic inside a probe (the pr probe runs gitkit in-process) or a
+swallowed. A panic inside a probe or a
 task is recovered into that reading's error and goes through the backoff; it
 never takes the daemon down.
 
