@@ -3,6 +3,7 @@ package reclaim
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,11 +33,12 @@ func tempStep(list func(context.Context, Env) ([]string, error)) (run, size func
 				return 0, skipError("no per-user temp dir")
 			}
 			paths, err := list(ctx, env)
-			if err != nil {
+			var skip skipError
+			if errors.As(err, &skip) {
 				return 0, err
 			}
 			var total int64
-			var errs []error
+			errs := []error{err} // an incomplete listing still deletes what it proved stale
 			for _, p := range paths {
 				n, err := removeTree(ctx, p, dry)
 				total += n
@@ -50,32 +52,61 @@ func tempStep(list func(context.Context, Env) ([]string, error)) (run, size func
 	return do(false), do(true)
 }
 
-// staleEntries returns the glob matches whose own mtime is at least minAge old
-// and whose base name passes match (nil = any).
-func staleEntries(env Env, glob string, minAge time.Duration, match func(string) bool) []string {
-	matches, _ := filepath.Glob(glob)
-	var out []string
-	for _, m := range matches {
-		if match != nil && !match(filepath.Base(m)) {
-			continue
-		}
-		info, err := os.Lstat(m)
-		if err != nil || env.Now.Sub(info.ModTime()) < minAge {
-			continue
-		}
-		out = append(out, m)
+// staleChildren lists dir's direct children whose name passes match and whose
+// own mtime is at least minAge old (0 = any age). dir must be a real directory, never a
+// symlink, and with dirsOnly so must every child returned — a symlinked level
+// would carry the recursive delete outside the temp root. A missing dir is
+// empty; every other read or stat error is returned with what was listed.
+func staleChildren(env Env, dir string, minAge time.Duration, match func(string) bool, dirsOnly bool) ([]string, error) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	return out
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s: not a real directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	var errs []error
+	for _, e := range entries {
+		if !match(e.Name()) || (dirsOnly && !e.IsDir()) {
+			continue
+		}
+		if minAge == 0 { // a container level: its mtime moves whenever a child goes
+			out = append(out, filepath.Join(dir, e.Name()))
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if env.Now.Sub(fi.ModTime()) < minAge {
+			continue
+		}
+		out = append(out, filepath.Join(dir, e.Name()))
+	}
+	return out, errors.Join(errs...)
 }
 
 // instrumentsTraces: raw recording scratch xctrace leaves when a recording is
 // interrupted; saved .trace documents live elsewhere.
 func instrumentsTraces(_ context.Context, env Env) ([]string, error) {
-	return staleEntries(env, filepath.Join(env.TempDir, "instruments*.ktrace"), instrumentsMinAge, nil), nil
+	return staleChildren(env, filepath.Clean(env.TempDir), instrumentsMinAge, func(name string) bool {
+		return strings.HasPrefix(name, "instruments") && strings.HasSuffix(name, ".ktrace")
+	}, false)
 }
 
 func bunInstallTemp(_ context.Context, env Env) ([]string, error) {
-	return staleEntries(env, filepath.Join(env.TempDir, ".*"), bunTmpMinAge, bunTmpRe.MatchString), nil
+	return staleChildren(env, filepath.Clean(env.TempDir), bunTmpMinAge, bunTmpRe.MatchString, false)
 }
 
 // browserClones: Chromium browsers clone their app bundle into
@@ -85,9 +116,16 @@ func bunInstallTemp(_ context.Context, env Env) ([]string, error) {
 // running process of that app started may belong to it and stays.
 func browserClones(ctx context.Context, env Env) ([]string, error) {
 	x := filepath.Join(filepath.Dir(filepath.Clean(env.TempDir)), "X")
-	candidates := staleEntries(env, filepath.Join(x, "*.code_sign_clone", "code_sign_clone.*"), cloneMinAge, nil)
+	parents, err := staleChildren(env, x, 0, func(name string) bool { return strings.HasSuffix(name, ".code_sign_clone") }, true)
+	errs := []error{err}
+	var candidates []string
+	for _, parent := range parents {
+		clones, err := staleChildren(env, parent, cloneMinAge, func(name string) bool { return strings.HasPrefix(name, "code_sign_clone.") }, true)
+		candidates = append(candidates, clones...)
+		errs = append(errs, err)
+	}
 	if len(candidates) == 0 {
-		return nil, nil
+		return nil, errors.Join(errs...)
 	}
 	out, err := env.Exec(ctx, "ps", "-axo", "etime=,command=")
 	if err != nil {
@@ -107,7 +145,7 @@ func browserClones(ctx context.Context, env Env) ([]string, error) {
 		}
 		free = append(free, c)
 	}
-	return free, nil
+	return free, errors.Join(errs...)
 }
 
 // oldestStarts maps an app name to the start time of its oldest running main

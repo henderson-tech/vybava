@@ -951,6 +951,15 @@ func TestTempLeftoversRemoveOnlyOldMatches(t *testing.T) {
 	if strings.Join(names, ",") != ".DS_Store,.fdfa7bff-0000000A.zod,instrumentsNEW.ktrace" {
 		t.Fatalf("left behind: %v", names)
 	}
+	// An unreadable temp root is a failed step, never an empty one.
+	if err := os.Chmod(tmp, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmp, 0o755) })
+	rep, _ = Run(context.Background(), env.Env, Options{Only: []string{"tmp-bun"}}, nil)
+	if rep.Results[0].Status != StatusFailed {
+		t.Fatalf("unreadable temp root must fail the step: %+v", rep.Results[0])
+	}
 }
 
 // A clone created before the oldest running process of its app is orphaned;
@@ -963,6 +972,13 @@ func TestBrowserClonesKeepWhatARunningBrowserMayOwn(t *testing.T) {
 		write(t, filepath.Join(clones, name, "Google Chrome.app.bundle", "Contents", "bin"), 7, 0)
 		age(t, filepath.Join(clones, name), d)
 	}
+	// A symlinked clone parent must never carry the delete outside the temp root.
+	outside := filepath.Join(root, "outside")
+	write(t, filepath.Join(outside, "code_sign_clone.evil", "Foo.app.bundle", "sentinel"), 1, 0)
+	age(t, filepath.Join(outside, "code_sign_clone.evil"), 5*time.Hour)
+	if err := os.Symlink(outside, filepath.Join(root, "X", "com.example.code_sign_clone")); err != nil {
+		t.Fatal(err)
+	}
 	env := newFakeEnv(t, root, 1<<30)
 	env.TempDir = tmp + "/"
 	env.Exec = func(_ context.Context, name string, _ ...string) ([]byte, error) {
@@ -974,6 +990,9 @@ func TestBrowserClonesKeepWhatARunningBrowserMayOwn(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(clones, "code_sign_clone.live")); err != nil {
 		t.Fatal("the clone a running Chrome may own must stay")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "code_sign_clone.evil", "Foo.app.bundle", "sentinel")); err != nil {
+		t.Fatal("a clone behind a symlinked parent must stay")
 	}
 	env.Exec = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("no ps") }
 	age(t, filepath.Join(clones, "code_sign_clone.live"), 5*time.Hour)
