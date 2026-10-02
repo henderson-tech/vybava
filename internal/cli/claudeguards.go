@@ -34,7 +34,7 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 			"  PreToolUse Bash → claude-guards bash · PreToolUse Read → claude-guards read\n" +
 			"  PreToolUse mcp__playwright__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.* → claude-guards browser\n" +
 			"  SessionStart → claude-guards doctor --fix · claude-guards weather --reap · claude-guards swarm-teardown --dead-only\n" +
-			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap · claude-guards redact-session\n" +
+			"  SessionEnd → claude-guards swarm-teardown · claude-guards browser-teardown · claude-guards reap · claude-guards device-lease-release · claude-guards redact-session\n" +
 			"  Codex (~/.codex/hooks.json): PreToolUse Bash|shell → claude-guards codex (the safety rules)\n" +
 			"`claude-guards hooks` prints this wiring as JSON; `doctor` checks the live files against it.\n" +
 			"A block prints its reason and the sanctioned alternative on stderr and exits 2.",
@@ -237,6 +237,28 @@ func (rt *runtime) claudeGuardsCommand(use string) *cobra.Command {
 	}
 	browserTeardown.Flags().StringVar(&session, "session", "", "session id to stop (default: the hook payload's, else CLAUDE_CODE_SESSION_ID)")
 	root.AddCommand(browserTeardown)
+
+	var leaseSession string
+	deviceLeaseRelease := &cobra.Command{
+		Use:   "device-lease-release",
+		Short: "Release this session's perflab device leases and stop their recorded processes (SessionEnd; stdin: hook JSON)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			// The flag before stdin, as for browser-teardown: a hand-run at a
+			// terminal never sends EOF. Fails open: every problem is a line
+			// on stderr, never a failed session end.
+			in := &claudeguards.HookInput{}
+			if s := strings.TrimSpace(leaseSession); s != "" {
+				in.SessionID = s
+			} else if payload, err := claudeguards.ReadInput(rt.stdin); err == nil {
+				in = payload
+			}
+			claudeguards.DeviceLeaseRelease(in, rt.stderr)
+			return nil
+		},
+	}
+	deviceLeaseRelease.Flags().StringVar(&leaseSession, "session", "", "session id whose leases to release (default: the hook payload's, else CLAUDE_CODE_SESSION_ID)")
+	root.AddCommand(deviceLeaseRelease)
 
 	var redactTarget string
 	redactSessionCmd := &cobra.Command{

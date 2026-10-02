@@ -1,0 +1,29 @@
+{
+  "status": "OK",
+  "tunnels": {
+    "00008150-00116D4C1E40401C": {
+      "udid": "00008150-00116D4C1E40401C",
+      "deviceId": 7556,
+      "address": "fdd7:dc03:bca5::1",
+      "rsdPort": 63650,
+      "connectionType": "Network",
+      "createdAt": 1790876068218,
+      "lastUpdated": 1790876068219
+    },
+    "00008030-001E6D961122802E": {
+      "udid": "00008030-001E6D961122802E",
+      "deviceId": 7548,
+      "address": "fdcc:a1a5:582b::1",
+      "rsdPort": 55936,
+      "connectionType": "USB",
+      "productId": 4776,
+      "createdAt": 1790876068836,
+      "lastUpdated": 1790876068836
+    }
+  },
+  "metadata": {
+    "lastUpdated": "2026-10-01T18:37:17.394Z",
+    "totalTunnels": 2,
+    "activeTunnels": 2
+  }
+}

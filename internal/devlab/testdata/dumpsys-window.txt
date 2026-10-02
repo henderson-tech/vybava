@@ -1,0 +1,5 @@
+    KeyguardServiceDelegate
+      showing=false
+  mCurrentFocus=Window{1e6ab08 u0 android/com.android.internal.app.ResolverActivity}
+  mFocusedApp=ActivityRecord{494ea5f u0 android/com.android.internal.app.ResolverActivity} t173}
+    isKeyguardShowing=false
