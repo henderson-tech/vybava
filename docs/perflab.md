@@ -335,7 +335,14 @@ The runner contract:
    `--alternate` (the noise rule). Each block installs its variant inside
    the lock when the fence differs, verifies it, runs the runner with
    `runner.env` and without `runner.unset`, under a limit of the windows
-   plus 20 min per scenario. Watchdogs: `WDA_REBUILDING` (a
+   plus 20 min per scenario. One `runner.env` serves both platforms: an
+   entry whose tokens resolve to nothing on this platform (`{wdaBundleId}`
+   on Android, `{serial}` on iOS) is unset, and an Android runner gets
+   `ANDROID_SERIAL` of the leased phone unless `runner.env` sets it. A
+   watchdog kill or `--max` takes the runner's whole process tree (WDA's
+   xcodebuild sits in a group of its own). The plan (`--alternate`,
+   `--repeat`) is not stored: a `--resume` repeats it (the printed resume
+   line does). Watchdogs: `WDA_REBUILDING` (a
    `build-for-testing` under the runner), `WDA_STALLED` (no WDA start line
    in the Appium server log 180 s after its xcodebuild), `RUN_TIMEOUT`;
    failures are classified from the log and the device
