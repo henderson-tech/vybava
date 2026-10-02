@@ -161,7 +161,13 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
-                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1) ·
+                  a raw adb / devicectl / xctrace / go-ios / Appium command,
+                  or a NAME=value assignment, naming a phone perflab has
+                  leased (holder included), a bare adb device command or
+                  adb kill-server while an Android phone is leased; use
+                  `perflab device shell <id> --lease <t> -- …` (no escape;
+                  docs/perflab.md "claude-guards")
 memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   destination, rm) to a memo home's LEDGER.md, MEMORY.md or
                   usage.jsonl — memo's own RefuseHandWrite, run here so memo's

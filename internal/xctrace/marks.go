@@ -51,7 +51,18 @@ func LoadMarks(path string) ([]Mark, error) {
 	}
 	var marks []Mark
 	if err := json.Unmarshal(raw, &marks); err != nil {
-		return nil, diag(DiagFileUnreadable, fmt.Sprintf("marks %s is not a JSON array of {label, atMs} or {label, from, to}: %v", path, err), "pass the marks file the scenario wrote beside its trace")
+		// A runner that appends one mark per step writes JSONL instead.
+		marks = nil
+		for n, line := range strings.Split(string(raw), "\n") {
+			if line = strings.TrimSpace(line); line == "" {
+				continue
+			}
+			var m Mark
+			if lerr := json.Unmarshal([]byte(line), &m); lerr != nil {
+				return nil, diag(DiagFileUnreadable, fmt.Sprintf("marks %s is neither a JSON array nor JSONL of {label, atMs} or {label, from, to} (line %d: %v)", path, n+1, lerr), "pass the marks file the scenario wrote beside its trace")
+			}
+			marks = append(marks, m)
+		}
 	}
 	for i, m := range marks {
 		if m.Label == "" || (m.AtMs == nil && (m.From == nil || m.To == nil)) {

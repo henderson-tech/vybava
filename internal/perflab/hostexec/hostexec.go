@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,14 @@ type Cmd struct {
 	// Stall stops the group when no output arrives for this long; 0 means
 	// no watchdog.
 	Stall time.Duration
+	// Unset names variables removed from the base environment before Env
+	// applies (an adapter's runner.unset).
+	Unset []string
+	// Stdin feeds the process (a Perfetto config over `perfetto -c -`).
+	Stdin io.Reader
+	// Started, when set, receives the child's pid (its own process group)
+	// once it runs, so a lease can record it for the SessionEnd release.
+	Started func(pid int)
 }
 
 // Result is a finished process. A non-zero Exit is not an error: Run
@@ -110,7 +119,17 @@ func (r OS) Run(ctx context.Context, c Cmd) (Result, error) {
 
 	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
 	cmd.Dir = c.Dir
+	if len(c.Unset) > 0 {
+		kept := make([]string, 0, len(base))
+		for _, kv := range base {
+			if k, _, _ := strings.Cut(kv, "="); !slices.Contains(c.Unset, k) {
+				kept = append(kept, kv)
+			}
+		}
+		base = kept
+	}
 	cmd.Env = MergeEnv(base, c.Env)
+	cmd.Stdin = c.Stdin
 	setProcessGroup(cmd)
 	cmd.Cancel = func() error { return stopGroup(cmd) }
 	cmd.WaitDelay = 10 * time.Second
@@ -130,6 +149,9 @@ func (r OS) Run(ctx context.Context, c Cmd) (Result, error) {
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return Result{Exit: -1}, err
+	}
+	if c.Started != nil {
+		c.Started(cmd.Process.Pid)
 	}
 	var stalled atomic.Bool
 	done := make(chan struct{})

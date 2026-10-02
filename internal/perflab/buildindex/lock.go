@@ -181,6 +181,12 @@ func (d Dirs) measuringHolders() ([]LockHolder, bool, error) {
 	return out, true, nil
 }
 
+// AcquireHostBuild is acquireHostBuild for a build this package does not
+// run (`perflab wda build`): the same Mac-wide lock and measure check.
+func AcquireHostBuild(d Dirs, wait time.Duration, holder LockHolder, retry string) (func(), error) {
+	return d.acquireHostBuild(wait, holder, retry)
+}
+
 // acquireHostBuild takes the host build lock (waiting up to wait) and then
 // refuses while a run or probe measures. The caller holds the key lock.
 func (d Dirs) acquireHostBuild(wait time.Duration, holder LockHolder, retry string) (func(), error) {

@@ -65,3 +65,6 @@ func Terminate(pid int) error {
 	}
 	return p.Kill()
 }
+
+// ProcessGroup is the pid itself: Windows has no process groups to signal.
+func ProcessGroup() int { return os.Getpid() }

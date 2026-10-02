@@ -281,12 +281,70 @@ export interface PolishConfig {
   screens?: PolishScreen[];
 }
 
+/**
+ * perflab: the project adapter of the physical-device perf lab (docs/perflab.md "Adapter").
+ * Go twin: internal/perflab/config.go; change both together. Commands run with sh -c from the
+ * repo root; {token} values are closed per field and checked by `perflab adapter check`.
+ */
+export interface PerflabConfig {
+  app: {
+    /** The Expo app, relative to the repo root ('apps/client'). */
+    root: string;
+    /** JS entry relative to root (default 'index.js'). */
+    entry?: string;
+    ios?: { scheme: string; bundleId: string; team?: string };
+    android?: { package: string; activity?: string };
+  };
+  /** Build profiles: env prints KEY=VALUE lines; {platform} {profile} {apiOrigin} {deviceApiOrigin} {devicePort} {ws} {appRoot}. */
+  profiles: Record<string, { env: string }>;
+  /** Default `bunx @expo/fingerprint fingerprint:generate {appRoot} --platform {platform} --debug`; extraNativeInputs are '<file>#<json pointer>'. */
+  fingerprint?: { cmd?: string; extraNativeInputs?: string[] };
+  /** Project build recipes; each writes exactly one .app / .apk into {outDir}. */
+  build?: { iosBundled?: string; android?: string };
+  /** Prints the scenario rows as JSON: [{name, windowMs, platforms?, budget?, stepCycle?, stepGroups?}]. */
+  scenarios: string;
+  runner: {
+    /** Runs the scenarios; {platform} {scenarios} {runDir} {timeoutMs} {variant} {udid} {serial} … */
+    cmd: string;
+    /** Env for the runner; values take the run tokens. */
+    env?: Record<string, string>;
+    /** Removed from the runner's environment. */
+    unset?: string[];
+    appiumHome?: string;
+    appiumServerLog?: string;
+  };
+  api?: {
+    /** The API workspace name; {branch} {branchSlug}. */
+    ws?: string;
+    /** Prints the host-side API origin; {ws}. */
+    origin: string;
+    /** DEVBOX_PARKED fix; {ws}. */
+    hold?: string;
+    /** Health path, e.g. '/api/v1/health/ready'. */
+    health?: string;
+    device?: {
+      android?: { strategy: 'reverse'; devicePort: number };
+      ios?: { strategy: 'bake'; origin?: string };
+    };
+  };
+  hooks?: {
+    /** Prints a sign-in deep link; {account} {route} {platform} {apiOrigin} {deviceApiOrigin} {ws}. */
+    signInLink?: string;
+    /** Resets the seeded world; {world} {scenario} {platform} {apiOrigin} {deviceApiOrigin} {ws}. */
+    resetWorld?: string;
+  };
+  /** Run dir root; {date} {topic}; default '~/Exports/perflab/{date}-{topic}'. */
+  out?: string;
+  hazards?: { ambientGates?: string[]; visibilityHint?: string[]; exclude?: string[] };
+}
+
 export interface VybavaConfig {
   lok?: LokConfig;
   merge?: MergeConfig;
   readiness?: ReadinessConfig;
   uiLoop?: UiLoopConfig;
   polish?: PolishConfig;
+  perflab?: PerflabConfig;
   guards?: {
     /** Repository-relative globs; ** spans directories. Query these files with rg. */
     noRead?: string[];

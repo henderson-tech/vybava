@@ -97,3 +97,7 @@ func Terminate(pid int) error {
 	}
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
+
+// ProcessGroup is this process's group: a lease records it for a verb that
+// streams in-process (net forward), so a release's group SIGTERM reaches it.
+func ProcessGroup() int { return syscall.Getpgrp() }

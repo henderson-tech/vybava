@@ -91,6 +91,18 @@ items:
     description: Android frame metrics from `dumpsys gfxinfo framestats` dumps and Perfetto traces - cadence, present intervals, per-gesture first-input and release frames, per-frame UI/RenderThread work, texture uploads, ART pauses, FrameTimeline jank.
     applet: framestats
 
+  - id: perflab
+    kind: applet
+    status: experimental
+    description: Device frames on physical phones for Expo / React Native apps - a machine-global ledger of phones with one lease holder each, a native build index keyed by a portable Expo fingerprint, JS bundle variants packed without native rebuilds, measured scenario runs through the project's adapter, Perfetto and xctrace probes, and every number re-derived from kept evidence (hitch ratio, display-rate fps, present gaps, RenderThread draw) with compare and budget gates.
+    applet: perflab
+
+  - id: expo-device-perf
+    kind: skill
+    status: experimental
+    description: Thin wrapper skill for perflab - the measured-perf loop on physical iPhones and Android phones (lease, doctor, build once, bundle variants, alternate runs, compare), which instrument answers which question, the budgets, the React Native render-cost rules with their evidence, and the hard laws (perflab verbs only on a leased phone).
+    source: skills/expo-device-perf
+
   - id: shrt
     kind: applet
     status: experimental
@@ -484,6 +496,8 @@ groups:
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - press
       - press-pdf
@@ -590,6 +604,8 @@ groups:
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - ingressgen
       - reconcile
