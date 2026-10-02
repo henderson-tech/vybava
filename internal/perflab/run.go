@@ -435,10 +435,25 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		next = []string{"perflab report " + shellword.Quote(runDir) + " --gate --json"}
 	}
 	if HasErrors(diags) {
-		next = append([]string{"perflab run " + strings.Join(o.Scenarios, " ") + " --device " + id + " --lease " + o.Lease + " " + variantFlags(o.Variants) + " --resume " + shellword.Quote(runDir) + " --json"}, next...)
+		next = append([]string{o.resumeCommand(id, runDir)}, next...)
 	}
 	return Result{Data: data, Diagnostics: diags, Next: next,
 		Lines: []string{fmt.Sprintf("run dir %s: %d blocks, runner exit %d", runDir, len(blocks), data.Runner.Exit)}}, nil
+}
+
+// resumeCommand re-runs the same plan into runDir: the plan (--alternate,
+// --repeat) is not in perflab.run.json, so a resume without it re-plans
+// one block per variant and silently skips every later failed block (the
+// 2026-10-02 iPhone 11 resume never re-ran block 4).
+func (o RunOptions) resumeCommand(device, runDir string) string {
+	cmd := "perflab run " + strings.Join(o.Scenarios, " ") + " --device " + device + " --lease " + o.Lease + " " + variantFlags(o.Variants)
+	if o.Alternate {
+		cmd += " --alternate"
+	}
+	if o.Repeat > 1 {
+		cmd += " --repeat " + strconv.Itoa(o.Repeat)
+	}
+	return cmd + " --resume " + shellword.Quote(runDir) + " --json"
 }
 
 func variantFlags(vs []string) string {
@@ -687,7 +702,7 @@ func (r caseResult) fix(t *Tool, o RunOptions, runDir string) string {
 	case DiagXctraceAttachFailed, DiagXctraceNotReady:
 		return "perflab doctor --device " + o.Device + " --lease " + o.Lease + " --wake --json"
 	}
-	return "read " + r.log + ", then perflab run " + strings.Join(o.Scenarios, " ") + " --device " + o.Device + " --lease " + o.Lease + " " + variantFlags(o.Variants) + " --resume " + shellword.Quote(runDir) + " --json"
+	return "read " + r.log + ", then " + o.resumeCommand(o.Device, runDir)
 }
 
 // traceStampRe is the epoch-ms stamp a perf window puts in a trace name.
@@ -715,14 +730,37 @@ func (t *Tool) runCase(ctx context.Context, h *devlab.Hold, caseDir, cmd string,
 	defer stop()
 	var mu sync.Mutex
 	why := ""
+	runnerPID := 0
+	// sweep terminates the runner's whole tree BEFORE its group is killed:
+	// Appium starts WDA's xcodebuild in a process group of its own, so a
+	// group kill orphaned it, still holding the phone's XCTest session for
+	// the next case (2026-10-02, iPhone 11).
+	sweep := func() {
+		mu.Lock()
+		pid := runnerPID
+		mu.Unlock()
+		if pid > 0 {
+			t.terminateDescendants(context.WithoutCancel(ctx), pid)
+		}
+	}
 	kill := func(code string) {
 		mu.Lock()
 		if why == "" {
 			why = code
 		}
 		mu.Unlock()
+		sweep()
 		stop()
 	}
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done(): // --max or SIGINT: best effort, the group kill races it
+			sweep()
+		case <-finished:
+		}
+	}()
 	pidCh := make(chan int, 1)
 	hbCtx, hbStop := context.WithCancel(ctx)
 	defer hbStop()
@@ -731,6 +769,9 @@ func (t *Tool) runCase(ctx context.Context, h *devlab.Hold, caseDir, cmd string,
 	res, err := t.Exec.Run(caseCtx, hostexec.Cmd{
 		Argv: []string{"/bin/sh", "-c", cmd}, Dir: t.ProjectDir, Env: env, Unset: unset, Log: lf, Timeout: timeout,
 		Started: func(pid int) {
+			mu.Lock()
+			runnerPID = pid
+			mu.Unlock()
 			_ = h.RecordChild(devlab.Child{PID: pid, PGID: pid, What: "perflab run: " + cmd})
 			pidCh <- pid
 		},
@@ -879,6 +920,50 @@ func readFrom(path string, off int64) string {
 	}
 	raw, _ := io.ReadAll(io.LimitReader(f, 8<<20))
 	return string(raw)
+}
+
+// terminateDescendants SIGTERMs every process under root (literal pids from
+// one ps snapshot, never a pattern), whatever process group it moved to.
+func (t *Tool) terminateDescendants(ctx context.Context, root int) {
+	res, err := t.Exec.Run(ctx, hostexec.Cmd{Argv: []string{"ps", "-axo", "pid=,ppid=,command="}, Timeout: 10 * time.Second})
+	if err != nil || res.Exit != 0 {
+		return
+	}
+	for _, pid := range descendantPIDs(string(res.Stdout), root) {
+		_ = hostexec.Terminate(pid)
+	}
+}
+
+// descendantPIDs lists the pids under root in a `ps -axo pid=,ppid=,...`
+// listing, parents before children.
+func descendantPIDs(ps string, root int) []int {
+	children := map[int][]int{}
+	for _, line := range strings.Split(ps, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			children[ppid] = append(children[ppid], pid)
+		}
+	}
+	var out []int
+	queue := []int{root}
+	seen := map[int]bool{root: true}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		for _, c := range children[p] {
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+				queue = append(queue, c)
+			}
+		}
+	}
+	return out
 }
 
 // descendants lists the commands of every process under root in a

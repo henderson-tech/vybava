@@ -265,3 +265,31 @@ func TestReadFromSeesATruncatedServerLog(t *testing.T) {
 		t.Fatalf("appended read %q", got)
 	}
 }
+
+// A watchdog kill reaches the runner's whole tree: Appium's WDA xcodebuild
+// sits in a process group of its own and survived the group kill, holding
+// the iPhone 11's XCTest session into the next case (2026-10-02).
+func TestDescendantPIDsFollowTheTreeNotTheGroup(t *testing.T) {
+	ps := ` 42613     1 perflab run calendar-view-switch-smooth --device iphone11
+ 50001 42613 /bin/sh -c bun scripts/perf/perflab-adapter.ts run ios calendar-view-switch-smooth
+ 50002 50001 bun scripts/perf/perflab-adapter.ts run ios calendar-view-switch-smooth
+ 50003 50002 node node_modules/.bin/wdio run appium/config/wdio.conf.ts
+ 50004 50003 node node_modules/.bin/appium --base-path / --address 127.0.0.1 --port 14021
+ 30256 50004 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -destination id=00008030-001E6D961122802E
+ 99688     1 ios forward --udid=00008030-001E6D961122802E 8120 8100
+`
+	if got, want := descendantPIDs(ps, 50001), []int{50002, 50003, 50004, 30256}; !slices.Equal(got, want) {
+		t.Fatalf("descendants = %v, want %v (never the perflab parent or an unrelated forward)", got, want)
+	}
+}
+
+// The resume line keeps the plan: without --alternate --repeat 2 a resume
+// re-planned one block per variant and never re-ran the failed block 4.
+func TestResumeCommandKeepsThePlan(t *testing.T) {
+	o := RunOptions{Scenarios: []string{"calendar-view-switch-smooth"}, Lease: "plt_x",
+		Variants: []string{"before=pf1-102b3c20-c341225a7536", "after=pf1-102b3c20-602c1c785cbf"}, Alternate: true, Repeat: 2}
+	want := "perflab run calendar-view-switch-smooth --device iphone11 --lease plt_x --variant before=pf1-102b3c20-c341225a7536 --variant after=pf1-102b3c20-602c1c785cbf --alternate --repeat 2 --resume '/x/My runs' --json"
+	if got := o.resumeCommand("iphone11", "/x/My runs"); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
