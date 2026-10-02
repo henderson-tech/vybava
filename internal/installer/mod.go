@@ -15,6 +15,10 @@ import (
 // shipped from the payload, and carried across an upgrade, never deleted.
 const engineTypes = ".claude-plugin/types"
 
+// engineTSConfig is the root tsconfig.json the engine writes beside a mod it
+// loads from a folder (extending engineTypes); it is never shipped either.
+const engineTSConfig = "tsconfig.json"
+
 // installMod swaps a mod payload into a Claude skills folder, where every
 // live session hot-reloads it on change. The payload is staged outside that
 // folder and moved in by rename, and the prior copy is moved out before it
@@ -123,6 +127,9 @@ func (i Installer) stageModPayload(itemID, staging string) error {
 		}
 		if filepath.ToSlash(relative) == engineTypes {
 			return fs.SkipDir
+		}
+		if relative == engineTSConfig {
+			return nil
 		}
 		if entry.Name() == ".DS_Store" {
 			return nil

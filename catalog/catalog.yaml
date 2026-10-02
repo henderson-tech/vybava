@@ -349,6 +349,24 @@ items:
     description: Claude Code mod — the spinner says what the turn is waiting on and for how long, with foreground agents and background tasks counted; a turn past 30 minutes ends with its time and token breakdown.
     source: mods/peek
 
+  - id: lazarus
+    kind: mod
+    status: experimental
+    description: Claude Code mod — records the background workflows, shells, monitors and agents a session starts; after a crash or restart one key resumes what died, a usage-limit stall continues by itself at the reset, and /park says whether a restart is safe.
+    source: mods/lazarus
+
+  - id: fleet-pane
+    kind: mod
+    status: experimental
+    description: Claude Code mod — /fleet opens a pane of every Claude session on the Mac (waiting on you first, dead ones with their resume line, Codex read-only) with reply and copy-resume keys, and a quiet status line counts the sessions waiting on you.
+    source: mods/fleet-pane
+
+  - id: wake
+    kind: mod
+    status: experimental
+    description: Claude Code mod — a wake_when tool lets an agent end its turn and be woken when a PR, Eve, devbox, vitrinka or deployik condition holds, through the shared watch daemon instead of its own sleep loop; transitions toast and offer /prm.
+    source: mods/wake
+
   # Tools: external apps and CLIs installed through their product's own
   # published channel and probed live (internal/toolsetup, docs/setup-team.md).
   - id: node
@@ -526,6 +544,9 @@ groups:
       - cli-craft
       - codex-sidekick
       - peek
+      - lazarus
+      - fleet-pane
+      - wake
 
   - id: press-family
     description: Document production — the press CLI plus the PDF, logo, and offer skills that drive it.
@@ -574,6 +595,16 @@ groups:
       - push-all
       - sync
       - push-back
+
+  - id: claude-mods
+    description: The Claude Code mods (peek, lazarus, fleet-pane, wake) plus the fleet and watch applets they call, so `watch until` is on PATH for Monitor and Codex; `vybava watch agent install` starts the shared daemon.
+    items:
+      - peek
+      - lazarus
+      - fleet-pane
+      - wake
+      - fleet
+      - watch
 
   - id: everything
     description: Every package currently published by Výbava.
@@ -649,3 +680,6 @@ groups:
       - cli-craft
       - codex-sidekick
       - peek
+      - lazarus
+      - fleet-pane
+      - wake

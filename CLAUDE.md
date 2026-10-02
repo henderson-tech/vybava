@@ -228,3 +228,17 @@ the applet never edits app code and its one network call is a GET of a
 configured lane URL. `run.json` carries `RunVersion`: bump it on a breaking
 change of `RunFile` or `Cell`, and a pass written by another version answers
 `run-version` (fix: `run init --force`), never a silent re-read.
+
+`mods/<id>` are Claude Code mods (catalog kind `mod`, `docs/mods.md`): one
+plugin of function hooks per capability, installed into `~/.claude/skills/<id>`
+by one atomic exchange (every live 2.1.287+ session hot-reloads that folder, so
+a half-copied module must never be visible). A mod is wiring and UI only: it
+calls `vybava <applet> … --json` and renders; domain logic stays in Go. Mods
+fail open and never run in Codex, so a hard ban never moves into one, and no
+mod answers or rewrites a `tool.call` (they run above claude-guards). No mod
+spawns a process from a background timer (fleet-pane refreshes only while its
+pane is open): one producer writes, ~45 sessions read (`watch serve`
+publishes the fleet summary). `fleet schema --ts`
+is a Go→TS contract copied into `mods/*/types/fleet.gen.d.ts`, held by a drift
+test; `.claude-plugin/types/` is engine-written and gitignored. Applets:
+`docs/fleet.md`, `docs/watch.md`.

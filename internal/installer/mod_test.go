@@ -19,6 +19,7 @@ func modPayload(module string) fstest.MapFS {
 		"mods/demo/hooks/register.ts":                           {Data: []byte(module)},
 		"mods/demo/.claude-plugin/types/claude-code/index.d.ts": {Data: []byte("// engine-written, never shipped")},
 		"mods/demo/.DS_Store":                                   {Data: []byte("finder")},
+		"mods/demo/tsconfig.json":                               {Data: []byte(`{"extends":"./.claude-plugin/types/tsconfig.json"}`)},
 	}
 }
 
@@ -60,7 +61,7 @@ func TestModInstallsIntoClaudeSkillsWithoutEngineFilesOrStaging(t *testing.T) {
 			t.Errorf("installed mod lacks %s: %v", want, err)
 		}
 	}
-	for _, unwanted := range []string{".claude-plugin/types", ".DS_Store"} {
+	for _, unwanted := range []string{".claude-plugin/types", ".DS_Store", "tsconfig.json"} {
 		if _, err := os.Stat(filepath.Join(installed, unwanted)); err == nil {
 			t.Errorf("installed mod carries %s from the payload", unwanted)
 		}
