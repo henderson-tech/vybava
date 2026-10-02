@@ -175,6 +175,18 @@ items:
     description: Mac load sampler with owner attribution - append load, memory and the heaviest processes to a TSV every interval, each tagged with project, directory and the claude/codex session that spawned it; report integrates the file into offenders, per-project and per-session totals and a spike ledger (text, Markdown, JSON).
     applet: macwatch
 
+  - id: fleet
+    kind: applet
+    status: experimental
+    description: Every Claude session on the Mac from the engine's session registry - waiting-on-you first, grouped by project, dead only when proven (pid gone or recycled) - plus read-only Codex rows, a per-session job ledger for lazarus and the resume lines of sessions that died while busy.
+    applet: fleet
+
+  - id: watch
+    kind: applet
+    status: experimental
+    description: One machine-wide poller (LaunchAgent vybava.watchd) for PR checks, Eve, merges, devbox, vitrinka and deployik - each target probed once however many sessions subscribe - with a long-poll socket for the wake mod and a blocking `watch until` for Monitor and Codex.
+    applet: watch
+
   - id: plugin-gc
     kind: applet
     status: experimental
@@ -489,6 +501,8 @@ groups:
       - ui-loop
       - reclaim
       - macwatch
+      - fleet
+      - watch
       - plugin-gc
       - handoffs
       - plaud-cli
@@ -616,6 +630,8 @@ groups:
       - reconcile
       - reclaim
       - macwatch
+      - fleet
+      - watch
       - plugin-gc
       - handoffs
       - plaud-cli

@@ -374,12 +374,18 @@ func loadLedger(dir, sessionID string) (Ledger, error) {
 
 // writeLedger replaces the file atomically: a reader sees the old ledger or
 // the new one, never half of either.
-func writeLedger(dir string, ledger Ledger) (err error) {
+func writeLedger(dir string, ledger Ledger) error {
 	body, err := json.MarshalIndent(ledger, "", "  ")
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(dir, "."+ledger.SessionID+"-*.tmp")
+	return writeAtomic(ledgerPath(dir, ledger.SessionID), append(body, '\n'))
+}
+
+// writeAtomic replaces path through a synced temp file in the same
+// directory and one rename.
+func writeAtomic(path string, body []byte) (err error) {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -388,7 +394,7 @@ func writeLedger(dir string, ledger Ledger) (err error) {
 			_ = os.Remove(file.Name())
 		}
 	}()
-	if _, err = file.Write(append(body, '\n')); err != nil {
+	if _, err = file.Write(body); err != nil {
 		file.Close()
 		return err
 	}
@@ -399,7 +405,7 @@ func writeLedger(dir string, ledger Ledger) (err error) {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), ledgerPath(dir, ledger.SessionID))
+	return os.Rename(file.Name(), path)
 }
 
 // listLedgers names every session that has a ledger.

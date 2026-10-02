@@ -106,13 +106,22 @@ an owner stamp, or whose owner's liveness is unknown, is never offered
 `cd '<cwd>' && claude --resume <id>`. `fleet ledger close` marks a session's
 open jobs `stopped` so revive stops offering them.
 
+## The published summary
+
+`vybava watch serve` publishes `~/.local/state/vybava/fleet/summary.json`
+every 15 s (`FleetSummary`: counts plus the sessions waiting on you, oldest
+first), atomically. Every session's fleet mod reads that one file for its
+status line instead of running `fleet --json` on a timer — one producer, ~45
+readers, no process spawned per session. Without the daemon the file goes
+stale; a reader shows its `generatedAt` age rather than trusting old counts.
+
 ## JSON contract and the TypeScript copies
 
 `fleet schema --ts` renders the contracts from the Go types by reflection:
 `Envelope<T>` (with `v` pinned to the runx envelope version),
 `FleetSnapshot`, `FleetSession`, `FleetCounts`, `FleetProject`, `CodexRow`,
 `FleetRevive`, `ReviveSession`, `Ledger`, `LedgerOwner`, `LedgerJob`,
-`LedgerEvent`, and the unions `FleetState`, `Liveness`, `ReviveSource`,
+`LedgerEvent`, `FleetSummary`, `FleetSummarySession`, and the unions `FleetState`, `Liveness`, `ReviveSource`,
 `JobKind`, `JobStatus`. Keys are camelCase; optional keys are `?`; times are
 RFC 3339 strings.
 

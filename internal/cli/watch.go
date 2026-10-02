@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/fleet"
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/watch"
 	"github.com/spf13/cobra"
@@ -65,7 +66,22 @@ func (rt *runtime) watchCommand(use string) *cobra.Command {
 		runPlan:    watch.RunPlan,
 		pathEnv:    os.Getenv("PATH"),
 		cwd:        os.Getwd,
+		serveTasks: []func(*watch.Engine){func(e *watch.Engine) {
+			e.Every("fleet-summary", 15*time.Second, func(ctx context.Context) error {
+				return publishFleetSummary(ctx, home)
+			})
+		}},
 	})
+}
+
+// publishFleetSummary writes the file every session's fleet mod reads, so
+// ~45 sessions never each run `fleet --json` on a timer.
+func publishFleetSummary(ctx context.Context, home string) error {
+	snap, _, err := fleet.Read(ctx, fleet.Env{Home: home, Now: time.Now()})
+	if err != nil {
+		return err
+	}
+	return fleet.WriteSummary(fleet.SummaryPath(home), fleet.Summarize(snap))
 }
 
 // stableExecutable is the real binary behind the applet link — what the

@@ -27,6 +27,8 @@ var tsNamed = []struct {
 	{reflect.TypeOf(Owner{}), "LedgerOwner"},
 	{reflect.TypeOf(Job{}), "LedgerJob"},
 	{reflect.TypeOf(Event{}), "LedgerEvent"},
+	{reflect.TypeOf(Summary{}), "FleetSummary"},
+	{reflect.TypeOf(SummarySession{}), "FleetSummarySession"},
 }
 
 // tsUnions are the string enums, rendered as literal unions.

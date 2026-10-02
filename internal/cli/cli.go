@@ -128,6 +128,12 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "macwatch" {
 		return rt.macwatchApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "fleet" {
+		return rt.fleetApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "watch" {
+		return rt.watchApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "plugin-gc" {
 		return rt.pluginGCApplet(), nil
 	}
@@ -229,6 +235,8 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.gitkitCommand("gitkit"),
 		rt.reclaimCommand("reclaim"),
 		rt.macwatchCommand("macwatch"),
+		rt.fleetCommand("fleet"),
+		rt.watchCommand("watch"),
 		rt.pluginGCCommand("plugin-gc"),
 		rt.skipCICommand("skipci"),
 		rt.redactCommand("redact"),
