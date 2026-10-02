@@ -236,3 +236,32 @@ func TestRunnerCommandLeavesForeignPlatformEnvUnset(t *testing.T) {
 		}
 	}
 }
+
+// Appium truncates its --log on every start: a case's server log can be
+// shorter than the previous case's, and the WDA watchdog must still see the
+// "started" line (it killed two healthy iPhone 11 cases at 196 s).
+func TestReadFromSeesATruncatedServerLog(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "appium-server.log")
+	if err := os.WriteFile(log, []byte(strings.Repeat("previous case line\n", 40)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := st.Size()
+	line := "2026-10-02 21:46:49:675 [b3f2a28c][XCUITestDriver@6a6c] WebDriverAgent successfully started after 4817ms\n"
+	if err := os.WriteFile(log, []byte("2026-10-02 22:21:09:570 [Appium] Welcome to Appium v3.4.2\n"+line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFrom(log, off); !wdaStartedRe.MatchString(got) {
+		t.Fatalf("the truncated log read %q", got)
+	}
+	// An appended log still reads only what this case wrote.
+	if err := os.WriteFile(log, []byte(strings.Repeat("x\n", 200)+line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFrom(log, 400); got != line {
+		t.Fatalf("appended read %q", got)
+	}
+}

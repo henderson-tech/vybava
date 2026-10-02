@@ -860,12 +860,20 @@ func (t *Tool) watchRunner(ctx context.Context, pidCh <-chan int, kill func(stri
 	}
 }
 
+// readFrom reads path from off, the size it had when the case began. Each
+// Appium server truncates its --log file on start, so a file now shorter
+// than off was rewritten: read it whole. Seeking past its end read nothing,
+// the "started" line was never seen and WDA_STALLED killed a healthy
+// measurement 180 s in (the 2026-10-02 iPhone 11 acceptance, twice).
 func readFrom(path string, off int64) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() < off {
+		off = 0
+	}
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return ""
 	}
