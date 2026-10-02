@@ -912,3 +912,76 @@ func TestParseLsofCwds(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func age(t *testing.T, path string, d time.Duration) {
+	t.Helper()
+	when := time.Now().Add(-d)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Temp leftovers go by the entry's own age and name: an old trace and an old
+// bun extract go; a recent trace, a recent extract and a foreign dotfile stay.
+func TestTempLeftoversRemoveOnlyOldMatches(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, "T")
+	write(t, filepath.Join(tmp, "instrumentsOLD.ktrace"), 100, 13*time.Hour)
+	write(t, filepath.Join(tmp, "instrumentsNEW.ktrace"), 1000, time.Hour)
+	write(t, filepath.Join(tmp, ".fdfd7cd7-0000001B.react-icons/index.js"), 10, 0)
+	age(t, filepath.Join(tmp, ".fdfd7cd7-0000001B.react-icons"), 25*time.Hour)
+	write(t, filepath.Join(tmp, ".fdfa7bff-0000000A.zod/index.js"), 1000, 0)
+	write(t, filepath.Join(tmp, ".DS_Store"), 1000, 90*24*time.Hour)
+	env := newFakeEnv(t, root, 1<<30)
+	env.TempDir = tmp + "/"
+	rep, err := Run(context.Background(), env.Env, Options{Only: []string{"tmp-instruments", "tmp-bun"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rep.Results {
+		if want := map[string]int64{"tmp-instruments": 100, "tmp-bun": 10}[r.ID]; r.Bytes != want || r.Status != StatusDone {
+			t.Fatalf("%s: %d bytes, %s %s", r.ID, r.Bytes, r.Status, r.Error)
+		}
+	}
+	left, _ := os.ReadDir(tmp)
+	var names []string
+	for _, e := range left {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != ".DS_Store,.fdfa7bff-0000000A.zod,instrumentsNEW.ktrace" {
+		t.Fatalf("left behind: %v", names)
+	}
+}
+
+// A clone created before the oldest running process of its app is orphaned;
+// one created after it may be that process's own and stays. No ps, no delete.
+func TestBrowserClonesKeepWhatARunningBrowserMayOwn(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, "T")
+	clones := filepath.Join(root, "X", "com.google.Chrome.code_sign_clone")
+	for name, d := range map[string]time.Duration{"code_sign_clone.old": 5 * time.Hour, "code_sign_clone.live": 2 * time.Hour} {
+		write(t, filepath.Join(clones, name, "Google Chrome.app.bundle", "Contents", "bin"), 7, 0)
+		age(t, filepath.Join(clones, name), d)
+	}
+	env := newFakeEnv(t, root, 1<<30)
+	env.TempDir = tmp + "/"
+	env.Exec = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		return []byte("  02:30:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n  1-00:00:00 /usr/sbin/cfprefsd agent\n"), nil
+	}
+	rep, err := Run(context.Background(), env.Env, Options{Only: []string{"tmp-browser-clones"}}, nil)
+	if err != nil || rep.Results[0].Bytes != 7 {
+		t.Fatalf("want only the old clone (7 bytes): %+v %v", rep.Results, err)
+	}
+	if _, err := os.Stat(filepath.Join(clones, "code_sign_clone.live")); err != nil {
+		t.Fatal("the clone a running Chrome may own must stay")
+	}
+	env.Exec = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("no ps") }
+	age(t, filepath.Join(clones, "code_sign_clone.live"), 5*time.Hour)
+	rep, _ = Run(context.Background(), env.Env, Options{Only: []string{"tmp-browser-clones"}}, nil)
+	if rep.Results[0].Status != StatusSkipped {
+		t.Fatalf("without ps the step must skip: %+v", rep.Results[0])
+	}
+	if d, ok := parseEtime("2-03:04:05"); !ok || d != 51*time.Hour+4*time.Minute+5*time.Second {
+		t.Fatalf("parseEtime: %v %v", d, ok)
+	}
+}

@@ -34,6 +34,9 @@ own. No `du`, no classification pass — the first delete starts immediately.
 - Aged steps (`messages-tmp`, `sandbox-tmp`) delete only files older than
   `--keep-days` (60) and never the tree — a warm media cache is not garbage,
   purging it just costs an iCloud re-fetch and a slow app.
+- `tmp-*` steps read the per-user temp root from `getconf DARWIN_USER_TEMP_DIR`,
+  never `$TMPDIR` (a sandboxed caller repoints it), and judge each direct
+  child by its own mtime.
 - A missing tool (`docker`, `pnpm`, `xcrun`, `brew`, `pwmcp`) skips its step;
   a failing one reports and the ladder continues.
 
@@ -53,6 +56,9 @@ own. No `du`, no classification pass — the first delete starts immediately.
 | 1 | `py` | pip / uv caches | next install |
 | 2 | `tool-caches` | playwright-mcp, CocoaPods, dotslash, claude, codex, copilot, composer, yarn, turbo, nx, JetBrains | next use |
 | 2 | `browser-caches` | Brave, Chrome, Spotify caches | next launch |
+| 2 | `tmp-instruments` | `instruments*.ktrace` in the per-user temp root, older than 12 h (interrupted-recording scratch, 7-17G each) | nothing |
+| 2 | `tmp-browser-clones` | `X/*.code_sign_clone/*` a killed Chromium browser left, older than 1 h and created before that app's oldest running process (skips without `ps`); APFS clones, so the df delta is far below the listed size | next launch |
+| 2 | `tmp-bun` | bun's `.<hex>-<HEX>.<pkg>` extraction dirs in the per-user temp root, older than 24 h | nothing |
 | 2 | `playwright` | `pwmcp prune` — unpinned browser revisions only | nothing |
 | 2 | `brew` | `brew cleanup -s` + `~/Library/Caches/Homebrew` | next `brew install` |
 | 2 | `maven` | `~/.m2/repository` | next `mvn` build |

@@ -155,7 +155,10 @@ type Progress interface {
 
 // Env is the machine the ladder runs against; tests substitute it.
 type Env struct {
-	Home     string
+	Home string
+	// TempDir is the per-user temp root (getconf DARWIN_USER_TEMP_DIR), not
+	// $TMPDIR, which a sandboxed caller may point elsewhere.
+	TempDir  string
 	Volume   string
 	Now      time.Time
 	LookPath func(string) (string, error)
