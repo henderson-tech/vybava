@@ -256,7 +256,7 @@ items:
   - id: codex-sidekick
     kind: skill
     status: experimental
-    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to a persistent Codex thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
+    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to Codex — the native `codex` subagent inside a `cc` session, else a persistent thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
     source: skills/codex-sidekick
 
   - id: memo-ledger
