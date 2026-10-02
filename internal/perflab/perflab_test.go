@@ -157,3 +157,23 @@ func TestBuildTargetKindDefault(t *testing.T) {
 		}
 	}
 }
+
+// adb shell joins its argv into one device shell line: the sign-in link's
+// `&` must reach `am start` inside one quoted word (the 2026-10-02 S20 link
+// died with "app.fixit.client.dev: inaccessible or not found", exit 127).
+func TestAndroidLaunchArgsQuoteTheLink(t *testing.T) {
+	link := "fixitapp-dev://e2e/login?email=partner1%40e2e-fixit.test&force=1&apiUrl=http%3A%2F%2Flocalhost%3A23936"
+	for _, tc := range []struct {
+		payload, activity string
+		want              string
+	}{
+		{link, ".MainActivity", "shell am start -a android.intent.action.VIEW -d '" + link + "' app.fixit.client.dev"},
+		{"fixitapp-dev://home", "", "shell am start -a android.intent.action.VIEW -d fixitapp-dev://home app.fixit.client.dev"},
+		{"", ".MainActivity", "shell am start -n app.fixit.client.dev/.MainActivity"},
+		{"", "", "shell monkey -p app.fixit.client.dev -c android.intent.category.LAUNCHER 1"},
+	} {
+		if got := strings.Join(androidLaunchArgs(tc.payload, tc.activity, "app.fixit.client.dev"), " "); got != tc.want {
+			t.Errorf("got  %s\nwant %s", got, tc.want)
+		}
+	}
+}

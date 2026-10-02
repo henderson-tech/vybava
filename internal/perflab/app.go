@@ -10,6 +10,7 @@ import (
 	"github.com/henderson-tech/vybava/internal/devlab"
 	"github.com/henderson-tech/vybava/internal/perflab/buildindex"
 	"github.com/henderson-tech/vybava/internal/perflab/hostexec"
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // AppOptions are the app verb flags.
@@ -72,15 +73,7 @@ func (t *Tool) launch(ctx context.Context, h *devlab.Hold, payload string) error
 		}
 	case devlab.PlatformAndroid:
 		_, _ = t.adb(ctx, h.Device.Serial, 10*time.Second, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
-		var args []string
-		switch {
-		case payload != "":
-			args = []string{"shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", payload, id}
-		case activity != "":
-			args = []string{"shell", "am", "start", "-n", id + "/" + activity}
-		default:
-			args = []string{"shell", "monkey", "-p", id, "-c", "android.intent.category.LAUNCHER", "1"}
-		}
+		args := androidLaunchArgs(payload, activity, id)
 		res, err := t.adb(ctx, h.Device.Serial, 30*time.Second, args...)
 		if err != nil || res.Exit != 0 || strings.Contains(res.Combined(), "Error:") {
 			return t.deviceFail(h, "adb "+strings.Join(args[1:3], " "), res, err)
@@ -179,4 +172,19 @@ func (t *Tool) AppReset(ctx context.Context, o AppOptions) (Result, error) {
 	}
 	return Result{Data: map[string]any{"device": id, "world": o.World, "reset": true}, Lines: []string{"world " + o.World + " reset"},
 		Next: []string{fmt.Sprintf("perflab app link --device %s --lease %s --account <email> --json", id, o.Lease)}}, nil
+}
+
+// androidLaunchArgs is the adb argv that starts the app: a deep link, the
+// adapter's activity, or the launcher intent. adb shell joins its argv into
+// ONE device shell line, so the link is quoted: an unquoted `&` in a sign-in
+// link backgrounded `am start` and ran the rest as a command (exit 127).
+func androidLaunchArgs(payload, activity, id string) []string {
+	switch {
+	case payload != "":
+		return []string{"shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", shellword.Quote(payload), id}
+	case activity != "":
+		return []string{"shell", "am", "start", "-n", id + "/" + activity}
+	default:
+		return []string{"shell", "monkey", "-p", id, "-c", "android.intent.category.LAUNCHER", "1"}
+	}
 }
