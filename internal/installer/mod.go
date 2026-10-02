@@ -75,7 +75,14 @@ func (i Installer) swapMod(root, itemID, destination string) error {
 	if err != nil {
 		return fmt.Errorf("create staging directory: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(staging) }()
+	// keep is set when staging (the prior copy, after the exchange) must
+	// outlive this call.
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.RemoveAll(staging)
+		}
+	}()
 	if err := i.stageModPayload(itemID, staging); err != nil {
 		return err
 	}
@@ -94,6 +101,7 @@ func (i Installer) swapMod(root, itemID, destination string) error {
 	err = exchange(staging, destination)
 	if err == nil {
 		if err := carryEngineTypes(staging, destination); err != nil {
+			keep = true
 			return keepPrior(staging, err)
 		}
 		return nil
@@ -114,22 +122,20 @@ func (i Installer) swapMod(root, itemID, destination string) error {
 		}
 		return fmt.Errorf("activate mod: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(aside) }()
 	if err := carryEngineTypes(aside, destination); err != nil {
 		return keepPrior(aside, err)
+	}
+	if err := os.RemoveAll(aside); err != nil {
+		return fmt.Errorf("the new mod is active; remove the prior copy at %s: %w", aside, err)
 	}
 	return nil
 }
 
-// keepPrior is a failed carry's path: the new mod is already active, so the
-// prior copy (its engine types included) is moved out of the deferred
-// cleanup's way and named instead of deleted.
+// keepPrior is a failed carry's path: the new mod is already active, and the
+// prior copy (its engine types included) stays where it is — its caller
+// skips the cleanup — and is named instead of deleted.
 func keepPrior(prior string, carryErr error) error {
-	kept := prior + ".kept"
-	if err := os.Rename(prior, kept); err != nil {
-		return errors.Join(carryErr, fmt.Errorf("keep prior mod: %w", err))
-	}
-	return fmt.Errorf("the new mod is active, but %w; the prior copy is kept at %s (the engine re-lays the types at its next load)", carryErr, kept)
+	return fmt.Errorf("the new mod is active, but %w; the prior copy is kept at %s (the engine re-lays the types at its next load)", carryErr, prior)
 }
 
 func (i Installer) stageModPayload(itemID, staging string) error {
