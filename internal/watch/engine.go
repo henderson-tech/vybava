@@ -25,6 +25,8 @@ const (
 	DefaultTTL = 24 * time.Hour
 	// DefaultMaxEvents is the per-session queue bound; the oldest go first.
 	DefaultMaxEvents = 100
+	// eventTTL drops an event nobody acknowledged for this long.
+	eventTTL = 7 * 24 * time.Hour
 	// MaxWait caps one long-poll.
 	MaxWait = 60 * time.Second
 )
@@ -234,9 +236,18 @@ func (e *Engine) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 func (e *Engine) Remove(id string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	queued := len(e.st.Events)
+	// The client is done with it: its unacknowledged events go too, or a
+	// subscription that already ended (met, expired) and whose session never
+	// polls again (`watch until` uses a fresh one each run) leaves them in
+	// state.json for good.
+	e.st.Events = slices.DeleteFunc(e.st.Events, func(ev Event) bool { return ev.Subscription == id })
 	i := slices.IndexFunc(e.st.Subscriptions, func(s Subscription) bool { return s.ID == id })
 	if i < 0 {
-		return false, nil
+		if len(e.st.Events) == queued {
+			return false, nil
+		}
+		return false, e.persist()
 	}
 	e.st.Subscriptions = slices.Delete(e.st.Subscriptions, i, i+1)
 	e.syncTargets(e.now())
@@ -531,7 +542,11 @@ func (e *Engine) drop(ids map[string]bool) {
 }
 
 func (e *Engine) expire(now time.Time) {
-	expired := false
+	queued := len(e.st.Events)
+	// A queue nobody acknowledged for eventTTL belongs to a session that is
+	// gone (a crashed wake, an interrupted until).
+	e.st.Events = slices.DeleteFunc(e.st.Events, func(ev Event) bool { return now.Sub(ev.At) > eventTTL })
+	expired := len(e.st.Events) != queued
 	e.st.Subscriptions = slices.DeleteFunc(e.st.Subscriptions, func(s Subscription) bool {
 		if !now.After(s.ExpiresAt) {
 			return false

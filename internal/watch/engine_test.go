@@ -327,6 +327,36 @@ func TestAddMeetsAtOnceFromAFreshReading(t *testing.T) {
 	}
 }
 
+func TestRemoveDropsTheQueueOfAnEndedSubscription(t *testing.T) {
+	c := newClock()
+	f := newFake(func(string, int) (Observation, error) { return status("done"), nil })
+	e, _ := NewEngine([]Probe{f}, Options{Now: c.now})
+	res, err := e.Add(context.Background(), AddRequest{Session: "until-1", Target: "fake:x", Until: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(e)
+	if _, err := e.Remove(res.Subscription.ID); err != nil {
+		t.Fatal(err)
+	}
+	if events := drain(t, e, "until-1"); len(events) != 0 {
+		t.Fatalf("a removed subscription's events stayed queued: %v", kinds(events))
+	}
+}
+
+func TestUnacknowledgedEventsAgeOut(t *testing.T) {
+	c := newClock()
+	f := newFake(func(string, int) (Observation, error) { return status("done"), nil })
+	e, _ := NewEngine([]Probe{f}, Options{Now: c.now})
+	_, _ = e.Add(context.Background(), AddRequest{Session: "gone", Target: "fake:x", Until: "done"})
+	tick(e)
+	c.advance(eventTTL + time.Minute)
+	tick(e)
+	if events := drain(t, e, "gone"); len(events) != 0 {
+		t.Fatalf("a queue nobody acknowledged for %s survived: %v", eventTTL, kinds(events))
+	}
+}
+
 func TestAddRefusesUnknownKindsAndConditions(t *testing.T) {
 	e, _ := NewEngine([]Probe{newFake(nil)}, Options{})
 	ctx := context.Background()
