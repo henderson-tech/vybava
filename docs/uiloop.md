@@ -372,6 +372,17 @@ The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
 resume retains that revision and refuses application drift. Workflows recapture
 legacy passes without provenance. Captures outside git have no verified revision.
 
+`reviewBasis` is the SHA256 of the sorted `[path, SHA256(bytes)]` pairs over the
+pass's shots (`*.png`, `*.json`), the manifest (`*.ts` under `dir`, `vendor/`
+skipped) and the `spec`. **A pass's evidence is immutable**: with provenance, the
+manifest is read from git at `capturedHeadSha`, never from the working tree, so a
+recipe repair or `knownIssues` correction committed after capture leaves the
+reviews, backlog and checkpoints of that pass current. The verify pass is the one
+that captures with the repaired rig. Shots and the spec still move the basis: the
+spec is the owner's live rule set and is read from the working tree. A pass
+without provenance, or one whose revision this clone cannot list, reads the
+manifest from the working tree as before.
+
 For passes with provenance, a raw review completes its batch when it carries the
 current `basis` and its own batch id, and its `screensRead` stays inside the batch
 and names every batch screen with an `ok` shot. A screen the pass could not shoot
@@ -382,7 +393,8 @@ shot entries naming every `ok` shot of the screen). Backlogs use `review/basis.j
 Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
 are reevaluated. Skips/blocks are reusable only with unchanged application source.
-The spec and manifests stay unchanged during fixes; API notes live beside source
+The spec stays unchanged during fixes, since an edit stales the pass. Manifest
+repairs may land between review and verify. API notes live beside source
 and in ignored checkpoints. The state reader keeps item bodies on disk.
 
 After scoreboard callouts are confirmed by board readback, the workflow writes

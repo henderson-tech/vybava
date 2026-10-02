@@ -233,3 +233,72 @@ func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 		}
 	}
 }
+
+// A pass's evidence is immutable: with provenance the manifest part of its
+// basis is read at the captured revision, so a rig repair committed between
+// review and verify keeps the reviewed pass current. Shots and the spec (the
+// owner's live rule set) still move it; a legacy pass still follows the tree.
+func TestReviewBasisReadsTheManifestAtTheCapturedRevision(t *testing.T) {
+	untouched := map[bool]string{}
+	for _, strict := range []bool{true, false} {
+		cfg := testConfig()
+		cfg.Spec = "docs/ui-spec.md"
+		tool := newTool(t, cfg)
+		writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/tasks.ts"), "recipe v1\n")
+		writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/vendor/capture.spec.ts"), "harness\n")
+		writeFile(t, filepath.Join(tool.Root, cfg.Spec), "rules v1\n")
+		evidenceRepo(t, tool)
+		if strict {
+			if err := tool.captureProvenance(1, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := stagePass(t, tool)
+		basis := func() string {
+			t.Helper()
+			b, err := tool.reviewBasis(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
+		captured := basis()
+		untouched[strict] = captured
+		writeFile(t, filepath.Join(dir, "review/backlog.json"), `{"v":1,"pass":1,"reviewed":["tasks","admin"],"findings":[]}`)
+		writeFile(t, filepath.Join(dir, "review/basis.json"), `{"basis":"`+captured+`"}`)
+
+		writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/tasks.ts"), "recipe v2 (repaired)\n")
+		writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/added.ts"), "new recipe\n")
+		for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "rig repair"}} {
+			if out, err := tool.git(args...); err != nil || out.Code != 0 {
+				t.Fatalf("git %v: %+v %v", args, out, err)
+			}
+		}
+		res, err := tool.State(StateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := res.Data.(StateData)
+		// A legacy pass never checks its backlog's basis, so only a strict one can lose it.
+		if repaired := basis(); (repaired == captured) != strict || s.ReviewBasis != repaired || (strict && !s.HasBacklog) {
+			t.Fatalf("strict=%v: rig repair moved the basis %v (state %s, hasBacklog %v)", strict, repaired != captured, s.ReviewBasis, s.HasBacklog)
+		}
+		if !strict {
+			continue
+		}
+		writeFile(t, filepath.Join(dir, "shots/tasks/phone.light.png"), "new pixels")
+		shot := basis()
+		if shot == captured {
+			t.Fatal("a shot change kept the basis")
+		}
+		writeFile(t, filepath.Join(tool.Root, cfg.Spec), "rules v2\n")
+		if basis() == shot {
+			t.Fatal("a spec change kept the basis")
+		}
+	}
+	// An untouched tree hashes alike either way (vendor/ skipped in both), so a
+	// receipt written before this rule stays current.
+	if untouched[true] != untouched[false] {
+		t.Fatalf("committed manifest basis %s, working-tree basis %s", untouched[true], untouched[false])
+	}
+}
