@@ -368,7 +368,7 @@ func AnalyzeRunFile(ctx context.Context, rf RunFile, opts Options) (RunAnalysis,
 		}
 		if !rec.Build.ProductionEquivalent {
 			diags = append(diags, info(DiagNotProductionEquivalent,
-				fmt.Sprintf("%s #%d ran variant %s, a bundle swap (EXUpdatesEnabled NO), not the as-shipped binary", rec.Scenario, rec.Attempt, rec.Build.Variant),
+				fmt.Sprintf("%s #%d ran %s, not a build perflab can vouch for as the as-shipped binary (a packed variant runs with EXUpdatesEnabled NO; a native build counts only with production-equivalent provenance)", rec.Scenario, rec.Attempt, rec.Build.Variant),
 				"for the as-shipped confirmation: perflab build native --kind bundled ..."))
 		}
 		ra.Records = append(ra.Records, rr)
