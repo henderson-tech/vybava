@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/shellword"
 )
 
 // Device is the install target, taken from the caller's ledger row. The
@@ -81,6 +82,14 @@ func Install(ctx context.Context, r Runner, spec InstallSpec) (InstallResult, er
 	}
 	res.ID, res.Device, res.AppID = it.ID, dev.ID, it.AppID
 	res.DurationMs = time.Since(started).Milliseconds()
+	// An install under a protected id replaces the owner's app in place (the
+	// iOS perf build signs the store bundle id): nothing was uninstalled or
+	// cleared, but the phone's production app is now this build.
+	if err == nil && dev.protects(it.AppID) {
+		res.Diagnostics = append(res.Diagnostics, runx.Diagnostic{Code: DiagPackageProtected, Severity: "warning",
+			Detail: fmt.Sprintf("%s replaced the owner's %s on %s in place (data kept): the phone's production app is now this build", it.ID, it.AppID, dev.ID),
+			Fix:    "when the lab is done, reinstall " + it.AppID + " from the store; a dev bundle id (perflab.app.ios.bundleId) keeps the owner's app untouched"})
+	}
 	return res, err
 }
 
@@ -102,7 +111,7 @@ func installIOS(ctx context.Context, r Runner, it Installable, dev Device, timeo
 			code = DiagInstallTransport
 		}
 		return InstallResult{}, diag(code, "devicectl install of "+it.ID+" on "+dev.ID+" failed: "+lastLines([]byte(out), 3),
-			"reconnect the phone (USB, unlocked), then re-run perflab install "+it.ID+" --device "+dev.ID+" --lease <token>")
+			"reconnect the phone (USB, unlocked), then re-run perflab install "+it.ID+" --device "+dev.ID+" --lease <token> --json")
 	}
 	out2 := InstallResult{Stamp: it.Stamp}
 	phase(progress, "launch")
@@ -114,7 +123,7 @@ func installIOS(ctx context.Context, r Runner, it Installable, dev Device, timeo
 		text := string(res.Stdout) + string(res.Stderr)
 		if strings.Contains(strings.ToLower(text), "locked") {
 			return out2, diag(DiagDeviceLocked, dev.ID+" is locked, so the installed app could not launch",
-				"unlock the phone (Auto-Lock: Never for lab runs), then perflab app launch --device "+dev.ID+" --lease <token>")
+				"unlock the phone (Auto-Lock: Never for lab runs), then perflab app launch --device "+dev.ID+" --lease <token> --json")
 		}
 		return out2, diag(DiagInstallFailed, "the installed app does not launch: "+lastLines([]byte(text), 3),
 			"perflab crashes --device "+dev.ID+" --lease <token> --json")
@@ -128,7 +137,7 @@ func installIOS(ctx context.Context, r Runner, it Installable, dev Device, timeo
 	if got != it.Stamp.BundleVersion {
 		return out2, diag(DiagInstallFailed,
 			fmt.Sprintf("after the install %s reports %s bundleVersion %q, expected %q", dev.ID, it.AppID, got, it.Stamp.BundleVersion),
-			"perflab install "+it.ID+" --device "+dev.ID+" --lease <token> (again)")
+			"perflab install "+it.ID+" --device "+dev.ID+" --lease <token> --json")
 	}
 	return out2, nil
 }
@@ -184,6 +193,18 @@ func adb(dev Device, args ...string) []string {
 	return append([]string{"adb", "-s", dev.Serial}, args...)
 }
 
+// deviceShellFix is a fix that reaches the leased device. A raw `adb -s
+// <serial>` is refused by claude-guards' machine:device-leased, so the fix
+// goes through perflab's token-checked passthrough; the caller, which holds
+// the token, fills <token>.
+func deviceShellFix(dev Device, args ...string) string {
+	words := make([]string, len(args))
+	for i, a := range args {
+		words[i] = shellword.Quote(a)
+	}
+	return "perflab device shell " + dev.ID + " --lease <token> --json -- " + strings.Join(words, " ")
+}
+
 func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, timeout time.Duration, progress *Progress) (InstallResult, error) {
 	if dev.Serial == "" {
 		return InstallResult{}, diag(DiagUsage, "device "+dev.ID+" has no adb serial in the ledger", "perflab device add "+dev.ID+" --serial <serial>")
@@ -208,12 +229,12 @@ func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, t
 		}
 		if res.TimedOut || adbTransport.MatchString(text) {
 			return "", diag(DiagInstallTransport, "adb lost "+dev.ID+" during the install: "+lastLines([]byte(text), 2),
-				"reconnect the USB cable, then re-run perflab install "+it.ID+" --device "+dev.ID+" --lease <token>")
+				"reconnect the USB cable, then re-run perflab install "+it.ID+" --device "+dev.ID+" --lease <token> --json")
 		}
 		if m := adbFailure.FindStringSubmatch(text); m != nil {
 			return m[1], nil
 		}
-		return "", diag(DiagInstallFailed, "adb install failed: "+lastLines([]byte(text), 3), "adb -s "+dev.Serial+" install -r "+it.Path)
+		return "", diag(DiagInstallFailed, "adb install failed: "+lastLines([]byte(text), 3), deviceShellFix(dev, "install", "-r", it.Path))
 	}
 	failure, err := install()
 	if err != nil {
@@ -232,7 +253,7 @@ func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, t
 		}
 		if res.Exit != 0 || !strings.Contains(string(res.Stdout), "Success") {
 			return out, diag(DiagInstallFailed, "adb uninstall "+it.AppID+" failed: "+lastLines(append(res.Stdout, res.Stderr...), 2),
-				"adb -s "+dev.Serial+" uninstall "+it.AppID)
+				deviceShellFix(dev, "uninstall", it.AppID))
 		}
 		out.Uninstalled = true
 		if failure, err = install(); err != nil {
@@ -241,7 +262,7 @@ func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, t
 	}
 	if failure != "" {
 		return out, diag(DiagInstallFailed, it.ID+" was rejected by "+dev.ID+": "+failure,
-			"adb -s "+dev.Serial+" install -r "+it.Path+" (read the reason)")
+			deviceShellFix(dev, "install", "-r", it.Path))
 	}
 	phase(progress, "compile")
 	res, err := run(ctx, r, Cmd{Argv: adb(dev, "shell", "cmd", "package", "compile", "-m", "speed", "-f", it.AppID), Timeout: 5 * time.Minute})
@@ -253,7 +274,7 @@ func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, t
 	} else {
 		out.Diagnostics = append(out.Diagnostics, runx.Diagnostic{Code: DiagInstallFailed, Severity: "warning",
 			Detail: "the AOT compile (cmd package compile -m speed) failed, so JIT warm-up adds variance: " + lastLines(append(res.Stdout, res.Stderr...), 2),
-			Fix:    "adb -s " + dev.Serial + " shell cmd package compile -m speed -f " + it.AppID})
+			Fix:    deviceShellFix(dev, "shell", "cmd", "package", "compile", "-m", "speed", "-f", it.AppID)})
 	}
 	phase(progress, "verify")
 	got, err := androidInstalledSHA(ctx, r, dev, it.AppID)
@@ -263,7 +284,7 @@ func installAndroid(ctx context.Context, r Runner, it Installable, dev Device, t
 	if got != out.Stamp.APKSHA256 {
 		return out, diag(DiagInstallFailed,
 			fmt.Sprintf("after the install %s holds a base APK %s, expected %s", dev.ID, short(got), short(out.Stamp.APKSHA256)),
-			"perflab install "+it.ID+" --device "+dev.ID+" --lease <token> (again)")
+			"perflab install "+it.ID+" --device "+dev.ID+" --lease <token> --json")
 	}
 	return out, nil
 }
@@ -295,7 +316,7 @@ func androidInstalledSHA(ctx context.Context, r Runner, dev Device, pkg string) 
 	fields := strings.Fields(string(res.Stdout))
 	if res.Exit != 0 || len(fields) == 0 || len(fields[0]) != 64 {
 		return "", diag(DiagInstallTransport, "sha256sum of "+base+" on "+dev.ID+" failed: "+lastLines(append(res.Stdout, res.Stderr...), 2),
-			"adb -s "+dev.Serial+" shell sha256sum "+base)
+			deviceShellFix(dev, "shell", "sha256sum", base))
 	}
 	return fields[0], nil
 }

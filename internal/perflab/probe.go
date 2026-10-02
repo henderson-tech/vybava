@@ -143,10 +143,10 @@ func probeBudget(kind, platform string) json.RawMessage {
 // read it like any run.
 func (t *Tool) Probe(ctx context.Context, o ProbeOptions) (Result, error) {
 	if !contains(ProbeKinds, o.Kind) {
-		return Result{}, diag(DiagUsage, fmt.Sprintf("probe kind %q is not rest, drag, fling or custom", o.Kind), "perflab probe rest --device <id> --lease <token> --json")
+		return Result{}, diag(DiagUsage, fmt.Sprintf("probe kind %q is not rest, drag, fling or custom", o.Kind), "perflab probe rest --device "+orElse(o.Device, "<id>")+" --lease "+orElse(o.Lease, "<token>")+" --json")
 	}
 	if o.Kind == "custom" && o.GestureFile == "" {
-		return Result{}, diag(DiagUsage, "probe custom needs --gesture-file <json>", "perflab probe custom --gesture-file <json> --device <id> --lease <token> --json")
+		return Result{}, diag(DiagUsage, "probe custom needs --gesture-file <json>", "perflab probe custom --gesture-file <json> --device "+orElse(o.Device, "<id>")+" --lease "+orElse(o.Lease, "<token>")+" --json")
 	}
 	if o.Seconds <= 0 {
 		o.Seconds = 20
@@ -285,7 +285,7 @@ func (t *Tool) probeFence(ctx context.Context, h *devlab.Hold, pkg string) []run
 			fmt.Sprintf("perflab install <variant> --device %s --lease %s --json", h.ID, h.Token))}
 	}
 	if err := buildindex.VerifyInstalled(ctx, t.Exec, bdevice(h), stampOf(string(h.Device.Platform), li), li.VariantID); err != nil {
-		if de, ok := err.(runx.DiagError); ok {
+		if de, ok := withToken(err, h.Token).(runx.DiagError); ok {
 			return []runx.Diagnostic{de.Diag}
 		}
 		return []runx.Diagnostic{errDiag(DiagInfraError, err.Error(), "")}

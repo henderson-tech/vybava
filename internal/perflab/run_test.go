@@ -120,6 +120,24 @@ func TestRunDirRoundTrip(t *testing.T) {
 	}
 }
 
+// A result JSON may name its evidence relative to the case dir, under a
+// name the <scenario>-<platform>- fallback would not find.
+func TestDiscoverRecordReadsCaseRelativeResultPaths(t *testing.T) {
+	runDir := t.TempDir()
+	scenario := "calendar-view-switch-smooth"
+	caseDir := filepath.Join(runDir, "01-before-1")
+	copyTo(t, filepath.Join(framestatsData, "lab120-before."+scenario+"-android-2026-10-02T10-33-10-748Z.json.gz"), filepath.Join(caseDir, "evidence", "frames.json.gz"))
+	result := `{"platform":"android","scenario":"` + scenario + `","recordedAt":"2026-10-02T10:33:10.748Z","framesPath":"evidence/frames.json.gz"}`
+	if err := os.WriteFile(filepath.Join(caseDir, "result.json"), []byte(result), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &Tool{Config: &Config{}, Now: time.Now}
+	rec, missing := tool.discoverRecord(runDir, caseDir, "android", ScenarioRow{Name: scenario}, RunVariant{Label: "before"}, 1, time.Now(), nil, nil)
+	if missing || rec.Evidence.Frames != "01-before-1/evidence/frames.json.gz" {
+		t.Fatalf("frames %q (missing=%v): a case-relative framesPath is read against the case dir", rec.Evidence.Frames, missing)
+	}
+}
+
 func TestDescendantsAndClassify(t *testing.T) {
 	ps := `  100     1 /bin/sh -c bun scripts/perf/run.ts ios calendar
   101   100 bun scripts/perf/run.ts ios calendar

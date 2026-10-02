@@ -31,6 +31,7 @@ func TestInstallAndroid(t *testing.T) {
 		code          string
 		uninstalled   bool
 		mustNotCalled string
+		warn          string
 	}{
 		{name: "replaces in place", pkg: "app.fixit.client.dev", script: func(f *fakeRunner, sum string) *fakeRunner {
 			return f.on("install -r", ok("Performing Streamed Install\nSuccess\n"))
@@ -39,6 +40,9 @@ func TestInstallAndroid(t *testing.T) {
 			return f.once("install -r", Result{Exit: 1, Stderr: []byte("adb: failed to install x.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package app.fixit.client.dev signatures do not match newer version; ignoring!]\n")}).
 				on("uninstall app.fixit.client.dev", ok("Success\n")).
 				on("install -r", ok("Success\n"))
+		}},
+		{name: "a protected package replaced in place warns", pkg: "app.fixit.client", warn: DiagPackageProtected, script: func(f *fakeRunner, sum string) *fakeRunner {
+			return f.on("install -r", ok("Success\n"))
 		}},
 		{name: "a protected package is never uninstalled", pkg: "app.fixit.client", code: DiagPackageProtected, mustNotCalled: "RF8N21PY1BF uninstall", script: func(f *fakeRunner, sum string) *fakeRunner {
 			return f.on("install -r", Result{Exit: 1, Stdout: []byte("Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected: Update version code 1 is older than current 2]\n")})
@@ -68,6 +72,9 @@ func TestInstallAndroid(t *testing.T) {
 				t.Fatal(err)
 			} else if !res.Compiled || res.Stamp.APKSHA256 != it.Stamp.APKSHA256 {
 				t.Fatalf("result = %+v", res)
+			}
+			if warned := len(res.Diagnostics) > 0 && res.Diagnostics[0].Code == tc.warn && res.Diagnostics[0].Severity == "warning"; warned != (tc.warn != "") {
+				t.Fatalf("diagnostics = %+v, want warning %q", res.Diagnostics, tc.warn)
 			}
 			if res.Uninstalled != tc.uninstalled {
 				t.Fatalf("uninstalled = %v, want %v", res.Uninstalled, tc.uninstalled)

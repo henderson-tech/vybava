@@ -51,7 +51,7 @@ type CommandData struct {
 // `--device <coreDeviceId>` placed after the subcommand.
 func (l *Lab) Shell(ctx context.Context, handle, token string, args []string, opts ShellOptions) (Result, error) {
 	if len(args) == 0 {
-		return Result{}, usage("device shell needs the adb or devicectl arguments after --", fmt.Sprintf("perflab device shell %s --lease <token> -- shell getprop ro.build.version.release", handle))
+		return Result{}, usage("device shell needs the adb or devicectl arguments after --", fmt.Sprintf("perflab device shell %s --lease %s --json -- shell getprop ro.build.version.release", handle, orElse(token, "<token>")))
 	}
 	h, err := l.Hold(handle, token, "device shell")
 	if err != nil {

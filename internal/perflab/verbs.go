@@ -494,10 +494,10 @@ func (t *Tool) Install(ctx context.Context, handle, token, id string, timeout ti
 	defer h.Done()
 	res, attempts, err := t.installHeld(ctx, h, id, timeout)
 	if err != nil {
-		return Result{}, err
+		return Result{}, withToken(err, token)
 	}
 	data := map[string]any{"install": res, "attempts": attempts}
-	return Result{Data: data, Diagnostics: res.Diagnostics,
+	return Result{Data: data, Diagnostics: diagsWithToken(res.Diagnostics, token),
 		Lines: []string{fmt.Sprintf("%s installed on %s in %dms", res.ID, h.ID, res.DurationMs)},
 		Next: []string{
 			fmt.Sprintf("perflab run <scenario> --device %s --lease %s --variant %s --json", h.ID, token, res.ID),

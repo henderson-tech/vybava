@@ -174,6 +174,12 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		if rv.Platform != platform {
 			return Result{}, diag(DiagUsage, fmt.Sprintf("variant %s is a %s artifact and %s a %s device", rv.ID, rv.Platform, id, platform), "perflab build list --json")
 		}
+		// Blocks, case dirs and records key on the label: a second variant
+		// under one label would be measured as the first.
+		if slices.ContainsFunc(variants, func(x RunVariant) bool { return x.Label == rv.Label }) {
+			return Result{}, diag(DiagUsage, fmt.Sprintf("two --variant flags share the label %q", rv.Label),
+				"perflab run "+strings.Join(o.Scenarios, " ")+" --device "+o.Device+" --lease "+o.Lease+" --variant before=<id> --variant after=<id> --alternate --repeat 2 --json")
+		}
 		variants = append(variants, rv)
 	}
 	rows, err := t.Scenarios(ctx, platform)
@@ -355,8 +361,14 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		}
 		blockStart := t.Now().UTC()
 		prog.Phase("install", "variant="+rv.Label, "block="+strconv.Itoa(b.Seq))
-		if err := t.ensureInstalled(ctx, h, rv); err != nil {
+		installDiags, err := t.ensureInstalled(ctx, h, rv)
+		if err != nil {
 			return t.runFailed(data, rf, runDir, diags, err)
+		}
+		for _, d := range installDiags {
+			if !slices.Contains(diags, d) {
+				diags = append(diags, d)
+			}
 		}
 		before := t.deviceState(ctx, h)
 		caseDir := filepath.Join(runDir, b.CaseDir)
@@ -588,22 +600,25 @@ func blockDone(rf analysis.RunFile, b *RunBlock, rows []ScenarioRow) bool {
 }
 
 // ensureInstalled installs the variant inside the hold when the lease's
-// last install differs, then verifies the device still carries it.
-func (t *Tool) ensureInstalled(ctx context.Context, h *devlab.Hold, rv RunVariant) error {
+// last install differs, then verifies the device still carries it. The
+// install's warnings (a protected app replaced in place) ride along.
+func (t *Tool) ensureInstalled(ctx context.Context, h *devlab.Hold, rv RunVariant) ([]runx.Diagnostic, error) {
 	_, _, ls, err := t.Lab.Verify(h.ID, h.Token)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var diags []runx.Diagnostic
 	last := ls.LastInstalled
 	if last == nil || last.VariantID != rv.ID {
 		res, _, err := t.installHeld(ctx, h, rv.ID, 0)
 		if err != nil {
-			return err
+			return nil, withToken(err, h.Token)
 		}
+		diags = diagsWithToken(res.Diagnostics, h.Token)
 		in := installedOf(res)
 		last = &in
 	}
-	return buildindex.VerifyInstalled(ctx, t.Exec, bdevice(h), stampOf(string(h.Device.Platform), last), rv.ID)
+	return diags, withToken(buildindex.VerifyInstalled(ctx, t.Exec, bdevice(h), stampOf(string(h.Device.Platform), last), rv.ID), h.Token)
 }
 
 // runnerCommand resolves runner.cmd and runner.env, and the names the child
@@ -785,6 +800,14 @@ func (t *Tool) runCase(ctx context.Context, h *devlab.Hold, caseDir, cmd string,
 		},
 	})
 	fmt.Fprintf(lf, "EXIT=%d\n", res.Exit)
+	// The runner's group is gone: drop it from the lease, so lease status
+	// lists only live children.
+	mu.Lock()
+	ran := runnerPID
+	mu.Unlock()
+	if ran > 0 {
+		_ = h.ForgetChild(ran)
+	}
 	out := caseResult{exit: res.Exit, log: logPath}
 	if err != nil {
 		out.code, out.detail = DiagRunnerFailed, "the runner could not start: "+err.Error()
@@ -1067,12 +1090,20 @@ func (t *Tool) discoverRecord(runDir, caseDir, platform string, row ScenarioRow,
 		if at, err := time.Parse(time.RFC3339Nano, rf.RecordedAt); err == nil {
 			rec.RecordedAt = at.UTC()
 		}
+		// A relative path in the result JSON is relative to the case dir
+		// (as rel reads it), never to perflab's working directory.
+		inCase := func(p string) string {
+			if p != "" && !filepath.IsAbs(p) {
+				return filepath.Join(caseDir, p)
+			}
+			return p
+		}
 		switch {
-		case rf.TracePath != "" && fileExists(rf.TracePath):
+		case rf.TracePath != "" && fileExists(inCase(rf.TracePath)):
 			ev.Trace = rel(rf.TracePath)
-		case rf.FramesPath != "" && fileExists(rf.FramesPath):
+		case rf.FramesPath != "" && fileExists(inCase(rf.FramesPath)):
 			ev.Frames = rel(rf.FramesPath)
-		case rf.PftracePath != "" && fileExists(rf.PftracePath):
+		case rf.PftracePath != "" && fileExists(inCase(rf.PftracePath)):
 			ev.Pftrace = rel(rf.PftracePath)
 		}
 	}

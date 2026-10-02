@@ -1,7 +1,9 @@
 package perflab
 
 import (
+	"errors"
 	"sort"
+	"strings"
 
 	"github.com/henderson-tech/vybava/internal/devlab"
 	"github.com/henderson-tech/vybava/internal/framestats"
@@ -152,4 +154,31 @@ func HasErrors(diags []runx.Diagnostic) bool {
 		}
 	}
 	return false
+}
+
+// tokenPlaceholder is what a package below the verb layer writes where the
+// lease token goes in a fix: buildindex installs and verifies under a hold
+// it never sees the token of.
+const tokenPlaceholder = "<token>"
+
+// withToken fills the token into a DiagError's fix, so the `next` it
+// becomes is a command the holder can run as printed.
+func withToken(err error, token string) error {
+	var de runx.DiagError
+	if token == "" || !errors.As(err, &de) || !strings.Contains(de.Diag.Fix, tokenPlaceholder) {
+		return err
+	}
+	de.Diag.Fix = strings.ReplaceAll(de.Diag.Fix, tokenPlaceholder, token)
+	return de
+}
+
+// diagsWithToken is withToken over diagnostic rows.
+func diagsWithToken(diags []runx.Diagnostic, token string) []runx.Diagnostic {
+	if token == "" {
+		return diags
+	}
+	for i := range diags {
+		diags[i].Fix = strings.ReplaceAll(diags[i].Fix, tokenPlaceholder, token)
+	}
+	return diags
 }

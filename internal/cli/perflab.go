@@ -305,7 +305,7 @@ func (rt *runtime) perflabDevice(lab labRunner) *cobra.Command {
 	})
 	shell.Flags().StringVar(&shellLease, "lease", "", "lease token")
 	shell.Flags().StringVar(&shellOpts.Out, "out", "", "write the command's stdout to this file instead of the envelope")
-	shell.Flags().DurationVar(&shellOpts.Timeout, "cmd-timeout", 0, "limit for the wrapped command (default 2m)")
+	shell.Flags().DurationVar(&shellOpts.Timeout, "cmd-timeout", 0, "limit for the wrapped command (default 5m)")
 
 	var capLease string
 	var capOpts devlab.ScreencapOptions

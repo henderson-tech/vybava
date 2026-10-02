@@ -69,7 +69,9 @@ const (
 	DiagInstallTransport = "INSTALL_TRANSPORT"
 	// DiagPackageProtected: an install needs an uninstall (version downgrade
 	// or another signing key) of a package the device protects; the fix is
-	// the adapter's dev package.
+	// the adapter's dev package. As a warning: an install replaced a
+	// protected app in place (the iOS perf build signs the store bundle id);
+	// the fix is the store reinstall when the lab is done.
 	DiagPackageProtected = "PACKAGE_PROTECTED"
 	// DiagDeviceStateChanged: the installed artifact is not the one perflab
 	// installed last (someone installed outside perflab); the fix re-installs.

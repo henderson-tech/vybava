@@ -2,11 +2,14 @@ package perflab
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // fixitSection is the FixIt adapter section from design 6.1, as JSON.
@@ -175,5 +178,23 @@ func TestAndroidLaunchArgsQuoteTheLink(t *testing.T) {
 		if got := strings.Join(androidLaunchArgs(tc.payload, tc.activity, "app.fixit.client.dev"), " "); got != tc.want {
 			t.Errorf("got  %s\nwant %s", got, tc.want)
 		}
+	}
+}
+
+// A fix a package below the verb layer wrote with the <token> placeholder
+// reaches `next` with the holder's token in it.
+func TestWithTokenFillsTheFix(t *testing.T) {
+	const token = "plt_abc"
+	placeholder := runx.DiagError{Diag: runx.Diagnostic{Code: DiagUsage, Fix: "perflab install v1 --device s20 --lease <token> --json"}}
+	if de, ok := withToken(placeholder, token).(runx.DiagError); !ok || de.Diag.Fix != "perflab install v1 --device s20 --lease plt_abc --json" {
+		t.Fatalf("filled fix: %+v", de)
+	}
+	plain := errors.New("disk full")
+	if withToken(plain, token) != plain || withToken(nil, token) != nil || withToken(placeholder, "") != error(placeholder) {
+		t.Fatal("a plain error, nil and an unknown token pass through unchanged")
+	}
+	rows := diagsWithToken([]runx.Diagnostic{{Fix: "perflab device shell s20 --lease <token> --json -- shell cmd package compile -m speed -f app.fixit.client.dev"}}, token)
+	if !strings.Contains(rows[0].Fix, "--lease plt_abc ") {
+		t.Fatalf("rows: %+v", rows)
 	}
 }

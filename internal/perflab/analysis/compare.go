@@ -333,7 +333,7 @@ func stateWarnings(ss []sample) []runx.Diagnostic {
 			}
 			if st.SwapUsedMb != nil && *st.SwapUsedMb > SwapWarnMb {
 				diags = append(diags, warn(DiagMemoryPressure, fmt.Sprintf("%s on %s ran with %.0f MB swap in use", s.scenario, s.device, *st.SwapUsedMb),
-					"adb shell am kill-all, then re-run"))
+					"perflab device shell "+s.device+" --lease <token> --json -- shell am kill-all, then re-run"))
 			}
 		}
 	}
