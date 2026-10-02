@@ -93,7 +93,10 @@ func (i Installer) swapMod(root, itemID, destination string) error {
 	// staging then holds the prior copy, which the deferred RemoveAll deletes.
 	err = exchange(staging, destination)
 	if err == nil {
-		return carryEngineTypes(staging, destination)
+		if err := carryEngineTypes(staging, destination); err != nil {
+			return keepPrior(staging, err)
+		}
+		return nil
 	}
 	if !exchangeUnsupported(err) {
 		return fmt.Errorf("swap mod: %w", err)
@@ -112,7 +115,21 @@ func (i Installer) swapMod(root, itemID, destination string) error {
 		return fmt.Errorf("activate mod: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(aside) }()
-	return carryEngineTypes(aside, destination)
+	if err := carryEngineTypes(aside, destination); err != nil {
+		return keepPrior(aside, err)
+	}
+	return nil
+}
+
+// keepPrior is a failed carry's path: the new mod is already active, so the
+// prior copy (its engine types included) is moved out of the deferred
+// cleanup's way and named instead of deleted.
+func keepPrior(prior string, carryErr error) error {
+	kept := prior + ".kept"
+	if err := os.Rename(prior, kept); err != nil {
+		return errors.Join(carryErr, fmt.Errorf("keep prior mod: %w", err))
+	}
+	return fmt.Errorf("the new mod is active, but %w; the prior copy is kept at %s (the engine re-lays the types at its next load)", carryErr, kept)
 }
 
 func (i Installer) stageModPayload(itemID, staging string) error {
@@ -172,6 +189,10 @@ func carryEngineTypes(aside, destination string) error {
 		return nil
 	}
 	if err := os.Rename(from, to); err != nil {
+		if _, statErr := os.Stat(to); statErr == nil {
+			// A hot reload laid fresh types between the Stat and the Rename.
+			return nil
+		}
 		return fmt.Errorf("carry engine types: %w", err)
 	}
 	return nil
