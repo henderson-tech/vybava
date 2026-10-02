@@ -331,6 +331,12 @@ items:
     description: Client and prospect emails as one Outlook-paste HTML per project — inline-styled house markup, project fact sheet, browser-verified links.
     source: skills/press-email
 
+  - id: peek
+    kind: mod
+    status: experimental
+    description: Claude Code mod — the spinner says what the turn is waiting on and for how long, with foreground agents and background tasks counted; a turn past 30 minutes ends with its time and token breakdown.
+    source: mods/peek
+
   # Tools: external apps and CLIs installed through their product's own
   # published channel and probed live (internal/toolsetup, docs/setup-team.md).
   - id: node
@@ -505,6 +511,7 @@ groups:
       - ingressgen
       - cli-craft
       - codex-sidekick
+      - peek
 
   - id: press-family
     description: Document production — the press CLI plus the PDF, logo, and offer skills that drive it.
@@ -625,3 +632,4 @@ groups:
       - press-email
       - cli-craft
       - codex-sidekick
+      - peek

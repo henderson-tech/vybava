@@ -10,5 +10,9 @@ import "embed"
 // Without the all: prefix Go skips _ and . prefixed entries, which keeps
 // __pycache__ and editor droppings out of the binary for free.
 //
-//go:embed catalog/catalog.yaml skills
+// Mods need the all: prefix: the plugin manifest lives in .claude-plugin/.
+// The installer skips what that drags in — the engine-written
+// .claude-plugin/types/ a local load lays beside a mod, and .DS_Store.
+//
+//go:embed catalog/catalog.yaml skills all:mods
 var FS embed.FS

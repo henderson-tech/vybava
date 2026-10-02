@@ -4,3 +4,5 @@
 /.worktrees/
 .DS_Store
 coverage.out
+# Claude Code writes the API declarations beside a mod each time it loads it.
+mods/*/.claude-plugin/types/
