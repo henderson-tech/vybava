@@ -1,0 +1,18 @@
+[
+  {
+    "canonicalName": "iphoneos26.5",
+    "displayName": "iOS 26.5",
+    "platform": "iphoneos",
+    "platformVersion": "26.5",
+    "productBuildVersion": "23F73",
+    "sdkVersion": "26.5"
+  },
+  {
+    "canonicalName": "iphonesimulator26.5",
+    "displayName": "Simulator - iOS 26.5",
+    "platform": "iphonesimulator",
+    "platformVersion": "26.5",
+    "productBuildVersion": "23F73",
+    "sdkVersion": "26.5"
+  }
+]

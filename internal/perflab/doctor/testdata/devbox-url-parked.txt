@@ -1,0 +1,1 @@
+devbox: WS_NOT_RUNNING: fixit-work-marketplace-ui-vt-4229 holds no runtime lease (parked or stopped), so it has no address; devbox up leases one, normally the one it last ran on - devbox up fixit-work-marketplace-ui-vt-4229 --box a

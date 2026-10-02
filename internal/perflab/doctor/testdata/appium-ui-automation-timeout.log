@@ -1,0 +1,4 @@
+2026-10-01 18:28:38:808 [Appium] Welcome to Appium v3.4.2 (REV d01ff190e021461ba352302911e08210a8182064)
+2026-10-01 18:34:04:842 [589553b8][Xcode] 2026-10-01 20:34:04.851668+0200 WebDriverAgentRunner-Runner[10659:5423219] [Default] Failed to initialize for UI testing: Error Domain=com.apple.dt.XCTest.XCTFuture Code=1000 "Timed out while enabling automation mode." UserInfo={NSLocalizedDescription=Timed out while enabling automation mode.}
+2026-10-01 18:34:05:245 [589553b8][Xcode] 	WebDriverAgentRunner-Runner (10659) encountered an error (The test runner failed to initialize for UI testing. (Underlying Error: Timed out while enabling automation mode.))
+2026-10-01 18:34:05:253 [589553b8][Xcode] xcodebuild exited with code '65' and signal 'null'
