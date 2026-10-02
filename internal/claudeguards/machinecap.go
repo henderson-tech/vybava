@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
@@ -246,6 +247,9 @@ func guardMachineCap(in *HookInput) *Denial {
 	seg, kind := machineStartMatch(cmd, in.CWD)
 	if kind == "" {
 		return nil
+	}
+	if devboxguest.Detected() {
+		return nil // a portal session: the table is every workspace's, admitted by the box
 	}
 	table := machineProcTable()
 	if table == nil {

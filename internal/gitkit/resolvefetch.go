@@ -165,6 +165,7 @@ type Skipped struct {
 // the round. The eve patterns were found on FixIt #702 (2026-07-26): without
 // them a normal eve-reviewed PR opened every round with 8 fake findings.
 var botStatusPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)<!--\s*eve-review-status\s*-->`),
 	regexp.MustCompile(`(?i)^<!--\s*walkthrough`),
 	regexp.MustCompile(`(?i)actionable comments posted:`),
 	regexp.MustCompile(`(?im)^\s*##\s*walkthrough`),

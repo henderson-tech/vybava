@@ -60,13 +60,21 @@ export type Theme = 'light' | 'dark';
  * from the project's params (project.ts `params`). Selectors are Playwright
  * selectors; every locator step acts on the first VISIBLE match.
  * `clickRole` resolves the topmost overlay first (an open dialog wins over the
- * list behind it), which `clickText` does not.
+ * list behind it), which `clickText` does not. `clickText` takes the exact
+ * label (a substring is the last resort), or a `/regex/flags` string.
+ * `selectOption` picks a native `<select>` option by value or label. `wait`
+ * sleeps that many ms, at most 2000 — prefer `waitFor` for anything that has a
+ * selector.
  */
 export type Step =
   | { goto: string }
   | { click: string }
   | { clickText: string }
   | { clickRole: { role: string; name: string; exact?: boolean } }
+  | { check: string }
+  | { uncheck: string }
+  | { selectOption: { selector: string; value: string } }
+  | { wait: number }
   | { fill: { selector: string; value: string } }
   | { waitFor: string }
   | { press: string }
@@ -90,7 +98,11 @@ export interface RecipeContext {
 
 export type Recipe = (page: Page, ctx: RecipeContext) => Promise<void>;
 
-/** A recipe is data (steps, rendered into the app map verbatim) or a Playwright function. */
+/**
+ * A recipe is data (steps, rendered into the app map verbatim) or a Playwright
+ * function. A function mixes steps with code through `runSteps(page, steps, ctx)`
+ * from `capture.ts` (kept there so this file stays free of runtime imports).
+ */
 export type Open = readonly Step[] | Recipe;
 
 export interface Screen<Area extends string = string, As extends string = string> {
@@ -137,6 +149,12 @@ export interface Screen<Area extends string = string, As extends string = string
   unreachable?: string;
   /** The recipe writes data (claims, sends, creates): shot last and only with `--destructive`. */
   destructive?: true;
+  /**
+   * Shot at the first viewport × theme the run selects, and no other: a recipe
+   * with a side effect that must not repeat per shot (a real failed login that
+   * counts against a lockout).
+   */
+  once?: true;
 }
 
 /** Per-area open questions and cross-cutting findings, rendered into the app map. */
@@ -149,6 +167,31 @@ export interface ManifestNotes {
 /** Identity helper that keeps literal ids and areas inferred (`as const` without the ceremony). */
 export function defineScreens<const S extends readonly Screen[]>(screens: S): S {
   return screens;
+}
+
+/** A `wait` step's ceiling in ms (capture.ts caps it too). */
+export const MAX_WAIT_MS = 2_000;
+
+/** A `/source/flags` string is a regular expression (clickText); anything else is text. */
+export function textPattern(text: string): RegExp | null {
+  const m = /^\/([\s\S]+)\/([dgimsuy]*)$/.exec(text);
+  return m ? new RegExp(m[1]!, m[2]) : null;
+}
+
+function stepProblems(id: string, steps: readonly Step[]): string[] {
+  const problems: string[] = [];
+  steps.forEach((step, i) => {
+    if ('clickText' in step) {
+      try {
+        textPattern(step.clickText);
+      } catch (error) {
+        problems.push(`${id}: step ${i} clickText ${step.clickText} is not a valid regex (${error instanceof Error ? error.message : String(error)})`);
+      }
+    } else if ('wait' in step && !(Number.isFinite(step.wait) && step.wait >= 0)) {
+      problems.push(`${id}: step ${i} wait ${step.wait} must be a number of ms >= 0 (capped at ${MAX_WAIT_MS})`);
+    }
+  });
+  return problems;
 }
 
 /**
@@ -166,6 +209,7 @@ export function validateScreens(screens: readonly Screen[]): string[] {
     if ((s.kind === 'state') !== (s.state !== undefined))
       problems.push(`${s.id}: \`state\` belongs on kind 'state' screens only, and they need it`);
     if (!s.sourceFiles.length && !s.unreachable) problems.push(`${s.id}: no sourceFiles`);
+    if (Array.isArray(s.open)) problems.push(...stepProblems(s.id, s.open as readonly Step[]));
   }
   for (const s of screens) {
     if (s.parentId && !ids.has(s.parentId)) problems.push(`${s.id}: unknown parentId ${s.parentId}`);

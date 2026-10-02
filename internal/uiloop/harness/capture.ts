@@ -9,8 +9,8 @@ import * as path from 'node:path';
 
 import { type BrowserContextOptions, devices, type Page, type Request } from '@playwright/test';
 
-import { type LintResult, type LintRule, lintCounts } from './lint';
-import type { Open, RecipeContext, Screen, ScreenKind, ScreenState, Step, Theme } from './manifest';
+import { type LintKey, type LintResult, type LintRule, lintCounts, lintDistinct } from './lint';
+import { MAX_WAIT_MS, type Open, type RecipeContext, type Screen, type ScreenKind, type ScreenState, type Step, type Theme, textPattern } from './manifest';
 import { fill, fromRoot } from './run';
 import { DPR, hasInsets, insetsOf, type Viewport } from './viewports';
 
@@ -206,6 +206,21 @@ async function clickRole(page: Page, role: string, name: string, exact: boolean)
 }
 
 async function clickText(page: Page, text: string): Promise<void> {
+  const pattern = textPattern(text);
+  if (pattern) {
+    const named = { name: pattern };
+    await page
+      .getByRole('button', named)
+      .or(page.getByRole('link', named))
+      .or(page.getByRole('tab', named))
+      .or(page.getByRole('menuitem', named))
+      .or(page.getByRole('option', named))
+      .or(page.getByText(pattern))
+      .filter({ visible: true })
+      .first()
+      .click({ timeout: STEP_TIMEOUT });
+    return;
+  }
   const named = { name: text, exact: true };
   const exact = page
     .getByRole('button', named)
@@ -235,6 +250,15 @@ export async function runStep(page: Page, step: Step, params: Readonly<Record<st
     await clickText(page, f(step.clickText));
   } else if ('clickRole' in step) {
     await clickRole(page, step.clickRole.role, f(step.clickRole.name), step.clickRole.exact ?? true);
+  } else if ('check' in step) {
+    await visibleFirst(page, f(step.check)).check({ timeout: STEP_TIMEOUT });
+  } else if ('uncheck' in step) {
+    await visibleFirst(page, f(step.uncheck)).uncheck({ timeout: STEP_TIMEOUT });
+  } else if ('selectOption' in step) {
+    // Playwright matches the option's value or its label.
+    await visibleFirst(page, f(step.selectOption.selector)).selectOption(f(step.selectOption.value), { timeout: STEP_TIMEOUT });
+  } else if ('wait' in step) {
+    await page.waitForTimeout(Math.min(Math.max(step.wait, 0), MAX_WAIT_MS));
   } else if ('fill' in step) {
     const host = visibleFirst(page, f(step.fill.selector));
     await host.waitFor({ state: 'visible', timeout: STEP_TIMEOUT });
@@ -291,18 +315,47 @@ export async function runOpen(page: Page, open: Open | undefined, ctx: RecipeCon
       return null;
     } catch (error) {
       if (error instanceof UnresolvedParam) throw error;
+      if (error instanceof StepFailed) return { step: `open() → ${JSON.stringify(error.step)}`, stepIndex: error.index, error: error.message };
       return { step: 'open()', stepIndex: null, error: firstLine(error) };
     }
   }
-  for (const [index, step] of open.entries()) {
+  try {
+    await runSteps(page, open, ctx);
+    return null;
+  } catch (error) {
+    if (error instanceof StepFailed) return { step: JSON.stringify(error.step), stepIndex: error.index, error: error.message };
+    throw error;
+  }
+}
+
+/** A step of `runSteps` failed: which one, and its first error line. */
+export class StepFailed extends Error {
+  constructor(
+    readonly index: number,
+    readonly step: Step,
+    cause: unknown,
+  ) {
+    super(firstLine(cause));
+    this.name = 'StepFailed';
+  }
+}
+
+/**
+ * Runs declarative steps from inside a recipe function, so one can mix steps
+ * with code: `open: async (page, ctx) => { await runSteps(page, [{ click: '#menu' }], ctx); … }`.
+ * A failing step throws `StepFailed` (index, step, first error line); an
+ * unresolved `{PARAM}` throws `UnresolvedParam`, which records the shot
+ * `unreachable`.
+ */
+export async function runSteps(page: Page, steps: readonly Step[], ctx: RecipeContext): Promise<void> {
+  for (const [index, step] of steps.entries()) {
     try {
       await runStep(page, step, ctx.params, ctx.baseUrl);
     } catch (error) {
       if (error instanceof UnresolvedParam) throw error;
-      return { step: JSON.stringify(step), stepIndex: index, error: firstLine(error) };
+      throw new StepFailed(index, step, error);
     }
   }
-  return null;
 }
 
 /** Every `{PARAM}` the screen's route and steps need, so a missing one is `unreachable` before the browser starts. */
@@ -310,7 +363,7 @@ export function missingParams(screen: Screen, params: Readonly<Record<string, st
   const strings: string[] = [screen.route];
   if (Array.isArray(screen.open)) {
     for (const step of screen.open as readonly Step[]) {
-      if ('evaluate' in step || 'press' in step) continue;
+      if ('evaluate' in step || 'press' in step || 'wait' in step) continue;
       strings.push(...Object.values(step).flatMap((v) => (typeof v === 'string' ? [v] : Object.values(v as object).filter((x): x is string => typeof x === 'string'))));
     }
   }
@@ -753,7 +806,17 @@ export interface ShotRecord {
   files: { viewport: string | null; full: string | null };
   full: FullShot | null;
   safeArea: SafeAreaState & { emulated: boolean | null };
-  lint: { defects: Record<string, number>; info: Record<string, number>; result: LintResult } | null;
+  /**
+   * `distinct`: defect rule → the distinct element path + detail it hit here;
+   * `vybava ui-loop scoreboard` and report.json fold them into pass-level
+   * unique counts. Absent in records of harnesses before v0.23.
+   */
+  lint: {
+    defects: Record<string, number>;
+    info: Record<string, number>;
+    distinct?: Record<string, LintKey[]>;
+    result: LintResult;
+  } | null;
   consoleErrors: string[];
   settleNotes: string[];
   timings: Record<string, number>;
@@ -764,7 +827,7 @@ export interface ShotRecord {
 }
 
 export function lintSummary(result: LintResult): NonNullable<ShotRecord['lint']> {
-  return { ...lintCounts(result), result };
+  return { ...lintCounts(result), distinct: lintDistinct(result), result };
 }
 
 export function writeRecord(record: ShotRecord, file: string): void {

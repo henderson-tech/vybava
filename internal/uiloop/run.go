@@ -54,6 +54,8 @@ type RunLint struct {
 	TouchTarget int       `json:"touchTarget"`
 	Off         []string  `json:"off"`
 	Ramp        []float64 `json:"ramp"`
+	// Allow: rule id → selectors whose hits count as info (never nil).
+	Allow map[string][]string `json:"allow"`
 }
 
 // RunOptions are the run verb's flags.
@@ -106,6 +108,17 @@ func (t *Tool) Passes() ([]int, error) {
 
 // PassDir is the repo-relative <out>/pass-<n>.
 func (t *Tool) PassDir(n int) string { return path.Join(t.Config.Out, fmt.Sprintf("pass-%d", n)) }
+
+// CheckPassFlag refuses an explicit --pass below 1. Passes are numbered from
+// 1 (pass-<n>) and 0 is the options' "not given", so `--pass 0` used to fall
+// through to the next (or latest) pass without a word.
+func CheckPassFlag(n int, given bool) error {
+	if given && n < 1 {
+		return diag(DiagSelectionInvalid, fmt.Sprintf("--pass %d names no pass: passes are numbered from 1", n),
+			"omit --pass for the next pass (the latest with --resume, split, publish and scoreboard)")
+	}
+	return nil
+}
 
 // ResolvePass picks a pass: explicit n, else the latest (latest=true) or the next.
 func (t *Tool) ResolvePass(n int, latest bool) (int, error) {
@@ -251,11 +264,15 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	if ramp == nil {
 		ramp = []float64{}
 	}
+	allow := c.Lint.Allow
+	if allow == nil {
+		allow = map[string][]string{}
+	}
 	run := RunFile{
 		V: RunVersion, Pass: pass, PassDir: passDir, Dir: c.Dir, AppMap: c.AppMap, Vybava: t.Version,
 		CreatedAt: t.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		Areas:     c.Areas, Apps: apps, Viewports: c.ResolvedViewports(), Selection: sel,
-		Lint:      RunLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget, Off: off, Ramp: ramp},
+		Lint:      RunLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget, Off: off, Ramp: ramp, Allow: allow},
 		BuildWait: o.BuildWait, Workers: o.Workers,
 	}
 	runFile := path.Join(passDir, "run.json")
@@ -267,6 +284,9 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		return Result{}, err
 	}
 	if err := os.WriteFile(t.abs(runFile), append(b, '\n'), 0o644); err != nil {
+		return Result{}, err
+	}
+	if err := t.captureProvenance(pass, o.Selection.Resume); err != nil {
 		return Result{}, err
 	}
 	command := t.CaptureCommand(passDir)

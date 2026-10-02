@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/henderson-tech/vybava/internal/devboxguest"
 	"github.com/henderson-tech/vybava/internal/shellseg"
 	"github.com/henderson-tech/vybava/internal/shellword"
 )
@@ -301,6 +302,9 @@ func guardDevboxOnly(in *HookInput) *Denial {
 	cfg := in.guards()
 	if len(cfg.DevboxOnly) == 0 {
 		return nil
+	}
+	if devboxguest.Detected() {
+		return nil // a portal session: the command already runs on the Devbox
 	}
 	hits := devboxMatches(cmd, in.CWD, compileDevboxPatterns(cfg.DevboxOnly))
 	if len(hits) == 0 {

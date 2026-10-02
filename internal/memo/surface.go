@@ -67,7 +67,7 @@ func EnsureGitignore(home string, kind Kind) (bool, error) {
 // EnsureResult is what EnsureIndex decided for one home.
 type EnsureResult struct {
 	Home     string `json:"home"`
-	Reason   string `json:"reason"` // missing | stale | current
+	Reason   string `json:"reason"` // missing | stale | current | mirror (a Devbox guest's clone, left as the Mac's)
 	Rendered bool   `json:"rendered"`
 	Tracked  *Diag  `json:"tracked,omitempty"` // SURFACE_TRACKED: left as committed
 }

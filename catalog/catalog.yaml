@@ -85,6 +85,12 @@ items:
     description: Orchestrate a performance drill from a testing/<project>/perf manifest — neighbor guard, staged push-to-first-failure ramp, and percentile-vs-concurrency report; projects supply seed/auth/generator commands.
     applet: perfrig
 
+  - id: framestats
+    kind: applet
+    status: experimental
+    description: Android frame metrics from `dumpsys gfxinfo framestats` dumps and Perfetto traces - cadence, present intervals, per-gesture first-input and release frames, per-frame UI/RenderThread work, texture uploads, ART pauses, FrameTimeline jank.
+    applet: framestats
+
   - id: shrt
     kind: applet
     status: experimental
@@ -150,6 +156,12 @@ items:
     status: experimental
     description: Chaos proxy for polish passes — an HTTP-aware or raw-TCP proxy per name (app→API, server→Postgres) whose faults (delay, drop, error, timeout, slow, flap, cut) are toggled live from the CLI, scoped by path/method/count/duration, plus an access-control replay (record the flow, replay it as another identity, list what still succeeds); never touches the machine's network.
     applet: blip
+
+  - id: polish-kit
+    kind: applet
+    status: experimental
+    description: Deterministic layer of the polish skill (target app|ui|api x intensity quick|default|full) - infers targets from the diff through vybava.config.ts polish globs, resolves device lanes (simulators, phones, emulators, URLs) with exact create/boot fixes, keeps the pass ledger (run.json cell table of lane x screen x theme x nav x text size plus adverse-condition matrix cells), shoots simulators and Android devices natively, renders contact and edge-zoom sheets and the pass report with a delta; never touches the network, never edits app code.
+    applet: polish-kit
 
   - id: reclaim
     kind: applet
@@ -253,6 +265,12 @@ items:
     description: Doctrine for building AI-first CLI tools and their thin-wrapper skills — envelope contract, closed diagnostics, Go/Charm patterns.
     source: skills/cli-craft
 
+  - id: codex-sidekick
+    kind: skill
+    status: experimental
+    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to Codex — the native `codex` subagent inside a `cc` session, else a persistent thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
+    source: skills/codex-sidekick
+
   - id: memo-ledger
     kind: skill
     status: experimental
@@ -268,7 +286,7 @@ items:
   - id: polish
     kind: skill
     status: experimental
-    description: Manual-only protocol — fix a branch's findings in its existing PR, then run the adverse-condition matrix (network, app lifecycle, web, backend, DB) with blip until a clean pass.
+    description: Manual-only protocol on two axes, target (app | ui | api, inferred from the diff, the findings and the cwd) × intensity (quick | default | full) — fix a branch's findings in its existing PR, then run the target's adverse-condition matrix with blip, and at full the target's deep pass (the app chrome matrix over iOS 26, iOS 18 and Android via polish-kit, the ui-loop capture pass, the API concurrency and log pass) until a clean pass.
     source: skills/polish
 
   - id: readiness
@@ -458,6 +476,7 @@ groups:
       - hotfix
       - hotfix-lane
       - blip
+      - polish-kit
       - polish
       - readiness
       - release-readiness
@@ -476,6 +495,7 @@ groups:
       - merge-assist
       - fontfreeze
       - perfrig
+      - framestats
       - shrt
       - press
       - press-pdf
@@ -484,6 +504,7 @@ groups:
       - press-email
       - ingressgen
       - cli-craft
+      - codex-sidekick
 
   - id: press-family
     description: Document production — the press CLI plus the PDF, logo, and offer skills that drive it.
@@ -493,6 +514,13 @@ groups:
       - press-logo
       - press-offer
       - press-email
+
+  - id: claude-hooks
+    description: The applets a Claude Code settings.json's hooks call (claude-guards, memo, memorylint), linked into ~/.local/bin where the hooks look — one install wires a Claude home on the Mac or a Linux Devbox portal box.
+    items:
+      - claude-guards
+      - memo
+      - memorylint
 
   - id: ai-git
     description: The git family — commit, sync, PR create → review → merge, and the gitkit layer they run on.
@@ -564,6 +592,7 @@ groups:
       - hotfix
       - hotfix-lane
       - blip
+      - polish-kit
       - polish
       - readiness
       - release-readiness
@@ -574,6 +603,7 @@ groups:
       - memo-ledger
       - fontfreeze
       - perfrig
+      - framestats
       - shrt
       - ingressgen
       - reconcile
@@ -594,3 +624,4 @@ groups:
       - press-offer
       - press-email
       - cli-craft
+      - codex-sidekick

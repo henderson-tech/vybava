@@ -53,6 +53,8 @@ type CheckData struct {
 	Project  bool          `json:"project"`
 	Manifest ManifestCheck `json:"manifest"`
 	AppMap   AppMapCheck   `json:"appMap"`
+	// DevboxSync: Devbox apps that sync this repo without the capture's sync_ignores.
+	DevboxSync []SyncGap `json:"devboxSync"`
 }
 
 const tsTimeout = 3 * time.Minute
@@ -103,7 +105,7 @@ func (t *Tool) Check(skipTS bool) (Result, error) {
 		Manifest: ManifestCheck{Status: "skipped", Problems: []string{}},
 		AppMap:   AppMapCheck{Status: "skipped", File: t.Config.AppMap},
 	}
-	res := Result{Data: &data}
+	res := Result{Data: &data, Diagnostics: t.Config.Deprecations()}
 	vendor, err := t.Vendor()
 	if err != nil {
 		return res, err
@@ -141,14 +143,17 @@ func (t *Tool) Check(skipTS bool) (Result, error) {
 		t.checkManifest(&data, &res)
 		t.checkAppMap(&data, &res)
 	}
-	if len(res.Diagnostics) == 0 {
-		res.Next = []string{"vybava ui-loop run --print --json"}
-	} else {
-		for _, d := range res.Diagnostics {
-			if d.Fix != "" && d.Severity == "error" {
-				res.Next = append(res.Next, d.Fix)
-			}
+	data.DevboxSync = t.devboxSyncGaps()
+	for _, g := range data.DevboxSync {
+		res.Diagnostics = append(res.Diagnostics, syncGapDiag(g))
+	}
+	for _, d := range res.Diagnostics {
+		if d.Fix != "" && d.Severity == "error" {
+			res.Next = append(res.Next, d.Fix)
 		}
+	}
+	if len(res.Next) == 0 {
+		res.Next = []string{"vybava ui-loop run --print --json"}
 	}
 	return res, nil
 }

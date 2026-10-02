@@ -114,9 +114,14 @@ func buildGitHubCommand(sub string, o flags) ([]string, error) {
 		}
 		argv = []string{"pr", "review", req("pr"), "--" + event, "--body", req("body"), "--repo", req("owner") + "/" + req("repo")}
 	case "create-pr":
-		// Ready-for-review by default; --draft is opt-in. --fill stays as the
-		// fallback: gh gives an explicit --title/--body precedence over it.
-		argv = []string{"pr", "create", "--head", req("head"), "--base", req("base"), "--fill"}
+		// Ready-for-review by default; --draft is opt-in. --fill backs up a
+		// missing title or body only: gh computes its defaults from a LOCAL
+		// branch ref even when both are explicit, so a head that exists only
+		// on the remote fails with `ambiguous argument 'origin/main...<head>'`.
+		argv = []string{"pr", "create", "--head", req("head"), "--base", req("base")}
+		if o["title"] == "" || o["body"] == "" {
+			argv = append(argv, "--fill")
+		}
 		if o["title"] != "" {
 			argv = append(argv, "--title", o["title"])
 		}

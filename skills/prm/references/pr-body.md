@@ -49,8 +49,9 @@ not do it itself), naming the exact command / key / file — or `None.`>
 <1–3 sentences: what was proven and how; what was NOT covered.>
 ```
 
-Sections and table rows are **never omitted** — `None.` / `—` tells the reader the
-question was asked. Rows: Task = the bound vitrinka task; Epic = its parent epic;
+Sections and table rows are **never omitted** — `None.` / `-` tells the reader the
+question was asked. The empty marker is a plain hyphen: repos that ban U+2013/U+2014
+in every artifact (FixIt) count a PR body as one. Rows: Task = the bound vitrinka task; Epic = its parent epic;
 Spec / design = brainstorming, decision-log and design boards; QA / testing = testing
 sets, journeys, recorded sessions; Review = the `pr-<N>-<repo>` board and Eve review
 boards; Opened by session = `printenv CLAUDE_CODE_SESSION_ID` at create time, never
@@ -71,7 +72,7 @@ Sweep the diff before writing `Blockers & risks` (same irreversibles lens as
 | **Config & infra** | compose, nginx, Dockerfile, CI, cron | whichever applies; name the file |
 | **Deployed clients** | API/shape change a mobile app or other service consumes | before — the consumer ships first |
 | **Package publish** | Version bump needing `npm publish` / a tag | after |
-| **Merge order** | A PR that must land first, a stacked branch | before, linked |
+| **Merge order** | A PR that must land first, a stacked branch | before, linked — plus the repo's machine-checked marker when it runs one (a `Depends on <owner>/<repo>#<N>` line its dependency-check workflow reads), so CI holds the merge |
 | **Manual verification** | Something only a human on prod can confirm | after |
 
 **Deploy-on-merge repos** (merge to default = ship — vitrinka via Deployik, for one):
@@ -82,14 +83,14 @@ anything the code needs to boot — env vars above all — is a `before:` bullet
 
 Before writing: `list_boards` scoped to this repo/branch (plus `pr-<N>-<repo>` when the
 PR exists) fills the three board rows; `get_task` on the `vt-<id>` from the branch or
-title fills Task and Epic. Nothing found → `—` (never `create_board` for the body's
+title fills Task and Epic. Nothing found → `-` (never `create_board` for the body's
 sake). A board or task appearing later in the PR's life lands in the table on the
 upkeep rewrite.
 
-**A links cell is a full URL or `—`, nothing else.** Never a description of where a
+**A links cell is a full URL or `-`, nothing else.** Never a description of where a
 link could be found ("see epic refs", "board published from this session", a bare
 `docs/specs/…` path). If a board publish or a task upload is still in flight when the
-body is written, either wait for its URL before creating the PR, or write `—` and
+body is written, either wait for its URL before creating the PR, or write `-` and
 rewrite the body the moment the URL lands (`gh pr edit <N> --body-file`) — the
 publisher's report and the vitrinka task refs both carry it. Repo files (specs,
 decision logs) link as `https://github.com/<owner>/<repo>/blob/<branch>/<path>`.
@@ -127,9 +128,9 @@ A new user connects an agent from `/connect` with one copy and zero tab switches
 | | |
 |---|---|
 | Task | https://…/t/vt-312 |
-| Epic | — |
+| Epic | - |
 | Spec / design | https://…/b/456 |
-| QA / testing | — |
+| QA / testing | - |
 | Review | https://…/b/pr-252-vitrinka |
 | Opened by session | `9c1e…` |
 

@@ -7,11 +7,41 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import project from '../project';
-import { SCREEN_KINDS, type Screen, type Theme } from './manifest';
+import { MAX_WAIT_MS, SCREEN_KINDS, type Screen, type Step, type Theme } from './manifest';
 import type { Project } from './project';
 import { type LoopConfig, appOf, fromRoot, loadConfigEnv } from './run';
 
 const code = (s: string): string => `\`${s}\``;
+
+/** One recipe step as the map shows it; exhaustive, so a new step cannot ship unrendered. */
+export function stepText(step: Step): string {
+  if ('goto' in step) return `goto ${code(step.goto)}`;
+  if ('click' in step) return `click ${code(step.click)}`;
+  if ('clickText' in step) return `click text ${code(step.clickText)}`;
+  if ('clickRole' in step) return `click ${step.clickRole.role} ${code(step.clickRole.name)}`;
+  if ('check' in step) return `check ${code(step.check)}`;
+  if ('uncheck' in step) return `uncheck ${code(step.uncheck)}`;
+  if ('selectOption' in step) return `select ${code(step.selectOption.value)} in ${code(step.selectOption.selector)}`;
+  if ('wait' in step) return `wait ${Math.min(step.wait, MAX_WAIT_MS)} ms`;
+  if ('fill' in step) return `fill ${code(step.fill.selector)}`;
+  if ('waitFor' in step) return `wait for ${code(step.waitFor)}`;
+  if ('press' in step) return `press ${code(step.press)}`;
+  if ('hover' in step) return `hover ${code(step.hover)}`;
+  if ('dblclick' in step) return `double-click ${code(step.dblclick)}`;
+  if ('longPress' in step) return `long-press ${code(step.longPress)}`;
+  if ('drag' in step) return `drag ${code(step.drag.from)} to ${code(step.drag.to)}`;
+  if ('evaluate' in step) return 'evaluate script';
+  if ('upload' in step) return `upload ${code(step.upload.file)} via ${code(step.upload.trigger)}`;
+  const unknown: never = step;
+  return JSON.stringify(unknown);
+}
+
+/** How a screen is opened after navigation: its steps, or that a recipe function does it. */
+function openText(open: Screen['open']): string {
+  if (!open) return '';
+  if (typeof open === 'function') return 'opens by recipe';
+  return open.length ? `opens by ${(open as readonly Step[]).map(stepText).join(' → ')}` : '';
+}
 
 export function renderAppMap(p: Project, config: LoopConfig): string {
   const screens = p.screens;
@@ -25,7 +55,10 @@ export function renderAppMap(p: Project, config: LoopConfig): string {
   };
   const viewportsOf = (s: Screen): readonly string[] => s.viewports ?? appCfg(s)?.cfg.viewports ?? [];
   const themesOf = (s: Screen): readonly Theme[] => s.themes ?? appCfg(s)?.cfg.themes ?? [];
-  const captures = (s: Screen): number => (s.unreachable ? 0 : viewportsOf(s).length * themesOf(s).length);
+  const captures = (s: Screen): number => {
+    const n = s.unreachable ? 0 : viewportsOf(s).length * themesOf(s).length;
+    return s.once ? Math.min(1, n) : n;
+  };
 
   const line = (s: Screen, note: string): string => {
     const what = s.kind === 'state' ? `state:${s.state ?? '?'}` : s.kind;
@@ -39,6 +72,8 @@ export function renderAppMap(p: Project, config: LoopConfig): string {
       variants.length ? `+ ${variants.map((v) => code(v.id)).join(', ')}` : '',
       s.unreachable ? '**unreachable**' : '',
       s.destructive ? '**destructive**' : '',
+      s.once ? 'once (first viewport × theme only)' : '',
+      openText(s.open),
       note,
     ].filter(Boolean);
     return [code(s.id), what, code(s.route), s.title, s.sourceFiles.map(code).join(', ') || 'no source files', ...extras].join(' · ');
@@ -53,7 +88,7 @@ export function renderAppMap(p: Project, config: LoopConfig): string {
     '',
     'Every screen: route × tab × panel/overlay × state, depth-first under the screen it opens from.',
     `Generated from the screen manifest (${code(`${config.dir}/project.ts`)}) by ${code('vybava ui-loop map')} — never edit it by hand; ${code('vybava ui-loop check')} fails when it is stale.`,
-    `A line reads ${code('id')} · kind · ${code('route')} · title · source files · extras (app, identity, non-default viewports or themes, re-shot variants). Defaults: ${appDefaults}.`,
+    `A line reads ${code('id')} · kind · ${code('route')} · title · source files · extras (app, identity, non-default viewports or themes, re-shot variants, how it opens). Defaults: ${appDefaults}.`,
     '',
     '| Area | Screens | States | Captures | Unreachable |',
     '|---|--:|--:|--:|--:|',

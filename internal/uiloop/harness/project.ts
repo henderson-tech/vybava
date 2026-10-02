@@ -33,6 +33,12 @@ export interface Project<Area extends string = string, As extends string = strin
    * the harness save the storage state, or return a storage-state file path.
    */
   login?(page: Page, as: As, app: string, run: RunContext): Promise<void | string>;
+  /**
+   * True when the page shows the sign-in screen instead of the screen (an
+   * expired session). A signed-in shot that lands there is `recipe-failed`,
+   * never `ok` — a `--resume` signs in again and re-takes it.
+   */
+  signedOut?(page: Page, as: As, app: string): Promise<boolean>;
   /** Puts the app into `theme` before navigation (a localStorage key, a class, a query flag). Default: emulate prefers-color-scheme. */
   theme?(context: BrowserContext, theme: Theme, app: string): Promise<void>;
   /** Reads the theme the page actually rendered, so a mismatch is recorded, never shot silently. */

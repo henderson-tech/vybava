@@ -154,6 +154,7 @@ func TestBucketNonThread(t *testing.T) {
 	}{
 		{"note to self", "bob", Skipped{Self: 1}},
 		{"**Actionable comments posted: 3**", "eve-bot-lovinka", Skipped{Informational: 1}},
+		{"🐉 eve review in progress\n<!-- eve-review-status -->", "eve-bot-lovinka", Skipped{Informational: 1}},
 		{"Deploy preview ready", "vercel[bot]", Skipped{Bots: 1}},
 	} {
 		if f, s := bucketNonThread(nil, []nonThreadComment{comment(5, &tc.body, tc.author)}, "bob"); len(f) != 0 || s != tc.want {

@@ -2,6 +2,7 @@ package uiloop
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
 	"regexp"
@@ -66,6 +67,10 @@ type Lint struct {
 	TouchTarget int       `json:"touchTarget,omitempty"`
 	Off         []string  `json:"off,omitempty"`
 	Ramp        []float64 `json:"ramp,omitempty"`
+	// Allow maps a defect rule id to CSS selectors: a hit on an element that
+	// matches one, or sits inside one, is counted as info, not as a defect
+	// (a spec that allows half steps inside primitive recipes only).
+	Allow map[string][]string `json:"allow,omitempty"`
 }
 
 // Vitrinka is where passes are published.
@@ -74,20 +79,25 @@ type Vitrinka struct {
 	BoardPrefix string `json:"boardPrefix"`
 }
 
-// Publish bounds one vitrinka set.
+// Publish says where `publish --follow` fetches a pass from.
 type Publish struct {
+	// MaxFiles and MaxBytes are deprecated and ignored (a pass publishes one
+	// set per area); still accepted so an older config decodes, with a
+	// CONFIG_DEPRECATED warning.
 	MaxFiles int   `json:"maxFiles,omitempty"`
 	MaxBytes int64 `json:"maxBytes,omitempty"`
+	// From is the rsync source of the repo on the capture box
+	// (devops:ws/<workspace>/<app-dir>); follow appends /<out>/pass-<n>/.
+	From string `json:"from,omitempty"`
 }
 
 // Defaults and hard limits.
 const (
 	DefaultGrid        = 4
 	DefaultTouchTarget = 44
-	DefaultMaxFiles    = 96
-	// MaxFilesCap: vitrinka rejects a set directory holding more than 100 files.
-	MaxFilesCap     = 100
-	DefaultMaxBytes = 4_000_000
+	// MaxSetFiles mirrors vitrinka's ingest.MaxSetFiles: the files one set
+	// holds on the per-file door, its manifest included.
+	MaxSetFiles = 20_000
 )
 
 // LintRules mirrors LINT_RULES in harness/lint.ts (a test keeps them equal).
@@ -95,6 +105,10 @@ var LintRules = []string{
 	"h-scroll", "h-scroller", "text-clipped", "text-spill", "truncated", "grid", "type-ramp",
 	"touch-target", "safe-area", "repeated-text", "contrast", "glass-on-content", "nested-surface", "glass-blur",
 }
+
+// LintInfoRules are the LintRules whose hits are listed for judgement, never
+// counted as defects (LINT_RULES kind 'info'; the same test keeps them equal).
+var LintInfoRules = []string{"h-scroller", "truncated", "repeated-text"}
 
 var (
 	kebab  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -108,12 +122,6 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Lint.TouchTarget == 0 {
 		c.Lint.TouchTarget = DefaultTouchTarget
-	}
-	if c.Publish.MaxFiles == 0 {
-		c.Publish.MaxFiles = DefaultMaxFiles
-	}
-	if c.Publish.MaxBytes == 0 {
-		c.Publish.MaxBytes = DefaultMaxBytes
 	}
 	c.TSRunner = c.TSRunnerOrDefault()
 	return c
@@ -150,6 +158,25 @@ func (c Config) AppNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// ThemeOrder: every theme an app shoots, in config order (apps sorted), then
+// light and dark.
+func (c Config) ThemeOrder() []string {
+	var out []string
+	for _, name := range c.AppNames() {
+		for _, th := range c.Apps[name].Themes {
+			if !slices.Contains(out, th) {
+				out = append(out, th)
+			}
+		}
+	}
+	for _, th := range []string{"light", "dark"} {
+		if !slices.Contains(out, th) {
+			out = append(out, th)
+		}
+	}
+	return out
 }
 
 // ViewportOrder: every viewport an app shoots, in config order (apps sorted), then the rest.
@@ -260,6 +287,21 @@ func (c Config) Validate() []string {
 			add(fmt.Sprintf("lint.off: unknown rule %q (rules: %s)", r, strings.Join(LintRules, ", ")))
 		}
 	}
+	for _, r := range slices.Sorted(maps.Keys(c.Lint.Allow)) {
+		switch {
+		case !slices.Contains(LintRules, r):
+			add(fmt.Sprintf("lint.allow: unknown rule %q (rules: %s)", r, strings.Join(LintRules, ", ")))
+		case slices.Contains(LintInfoRules, r):
+			add(fmt.Sprintf("lint.allow: %q is informational already; only defect rules take an allowlist", r))
+		case len(c.Lint.Allow[r]) == 0:
+			add(fmt.Sprintf("lint.allow.%s must list at least one selector", r))
+		}
+		for _, sel := range c.Lint.Allow[r] {
+			if strings.TrimSpace(sel) == "" {
+				add(fmt.Sprintf("lint.allow.%s holds an empty selector", r))
+			}
+		}
+	}
 	for _, r := range c.Lint.Ramp {
 		if r <= 0 {
 			add("lint.ramp holds font sizes in px, all positive")
@@ -274,11 +316,15 @@ func (c Config) Validate() []string {
 	} else if len(c.Vitrinka.BoardPrefix) > 24 {
 		add("vitrinka.boardPrefix must be at most 24 characters (set keys cap at 64)")
 	}
-	if c.Publish.MaxFiles < 0 || c.Publish.MaxFiles > MaxFilesCap {
-		add(fmt.Sprintf("publish.maxFiles must be 1..%d (vitrinka rejects a set of more than %d files)", MaxFilesCap, MaxFilesCap))
-	}
-	if c.Publish.MaxBytes < 0 {
-		add("publish.maxBytes must be positive")
-	}
 	return problems
+}
+
+// Deprecations warn about keys still accepted but ignored.
+func (c Config) Deprecations() []runxDiagnostic {
+	if c.Publish.MaxFiles == 0 && c.Publish.MaxBytes == 0 {
+		return nil
+	}
+	return []runxDiagnostic{warn(DiagConfigDeprecated,
+		"publish.maxFiles and publish.maxBytes are ignored: a pass publishes one vitrinka set per area",
+		"delete them from the uiLoop section of vybava.config.ts")}
 }

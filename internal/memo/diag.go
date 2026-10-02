@@ -71,6 +71,12 @@ const (
 	// branch. Fix: add a worktree and re-run there. Silenced by
 	// WORKTREE_POLICY=never in the repo's .claude/.claude.git.config.
 	DiagMainCheckout = "MAIN_CHECKOUT"
+	// DiagHomeMirror: a memo write (add, import, snapshot, touch, restore,
+	// homes alias) of a personal home in a Devbox guest's pull-only Claudik
+	// clone (a portal session), which never commits and whose memory never
+	// reaches the Mac. Fix: the same command for a Mac session (--home from
+	// ~); the box session names it in its hand-back.
+	DiagHomeMirror = "HOME_MIRROR"
 	// DiagImportInvalid: an import file line is not in the id-less grammar.
 	DiagImportInvalid = "IMPORT_INVALID"
 	// DiagRegistryInvalid: homes.json does not parse or carries unknown

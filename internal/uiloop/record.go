@@ -48,12 +48,23 @@ type Record struct {
 	Lint *struct {
 		Defects map[string]int `json:"defects"`
 		Info    map[string]int `json:"info"`
+		// Distinct: defect rule → the distinct element path + detail it hit
+		// on this shot; nil in records of a harness before v0.23.
+		Distinct map[string][]LintKey `json:"distinct"`
 	} `json:"lint"`
 	ConsoleErrors []string `json:"consoleErrors"`
-	SourceFiles   []string `json:"sourceFiles"`
+	// CapturedAt is when the shot's test started (ISO 8601, the box's clock).
+	CapturedAt  string   `json:"capturedAt"`
+	SourceFiles []string `json:"sourceFiles"`
 
 	// Dir is the record's directory relative to the pass directory (set on load).
 	Dir string `json:"-"`
+}
+
+// LintKey is one defect's identity across a pass (harness/lint.ts LintKey).
+type LintKey struct {
+	Path   string `json:"path"`
+	Detail string `json:"detail"`
 }
 
 // Defects sums the record's lint defects.

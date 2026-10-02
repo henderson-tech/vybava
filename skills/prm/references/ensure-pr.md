@@ -43,8 +43,9 @@ Steps:
      `before-review` JSON (never `cat` the config — most repos have none) → add
      `--label eve-ignore` (create the label first if missing: `gh label create eve-ignore --color ededed --description
      "skip eve's automatic PR review" --force`) so eve never reviews a PR nobody will
-     wait on; a labelled PR whose author later wants a review just removes the label. `--fill` stays in argv as a backstop, but
-     reaching it means step 0 was skipped — a bug, not an outcome. "No commits between
+     wait on; a labelled PR whose author later wants a review just removes the label. `--fill` joins argv only when the title or
+     body is missing — reaching it means step 0 was skipped, a bug, not an outcome.
+     With both set, create-pr also works for a head that exists only on the remote. "No commits between
      <base> and <branch>" → **STOP** and say so. Print the URL per `output.md`; return
      URL + number.
 4. **Attach the PR to its task (vitrinka, run publish 2026-09-09 D10).** When the
@@ -55,7 +56,7 @@ Steps:
    · PR #N"), the final artifact's § Delivery and the run door all read `pr`
    refs. Re-attaching the same (kind, ref) only updates meta, so re-running is
    safe. No `vt-<id>` or no binding → skip silently, never ask.
-5. **`--admin` → `vybava gitkit admin-labels <N> --repo <ABS repo path>`** (created,
+5. **`--admin`, or a code-free chore (SKILL.md Hard rules) → `vybava gitkit admin-labels <N> --repo <ABS repo path>`** (created,
    found or adopted alike). It creates `skip-ci` + `eve-ignore` in the repo when
    missing, adds whichever the PR lacks, and cancels every queued/running workflow run
    on the head SHA — the push that opened the PR queued them with an event payload

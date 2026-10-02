@@ -18,6 +18,9 @@ import (
 // line in docs/reclaim.md; nothing else knows the list.
 func Ladder(env Env) []Step {
 	mac := env.GOOS == "darwin"
+	tracesRun, tracesSize := tempStep(instrumentsTraces)
+	clonesRun, clonesSize := tempStep(browserClones)
+	bunTmpRun, bunTmpSize := tempStep(bunInstallTemp)
 	steps := []Step{
 		// ---- tier 1: seconds, huge ------------------------------------
 		{ID: "go-build", Tier: TierBulk, Title: "Go build cache", Regenerates: "next go build",
@@ -58,6 +61,12 @@ func Ladder(env Env) []Step {
 			}},
 		{ID: "browser-caches", Tier: TierCaches, Title: "browser & app caches (Brave, Chrome, Spotify)", Regenerates: "next launch",
 			Paths: []string{"~/Library/Caches/BraveSoftware", "~/Library/Caches/Google", "~/Library/Caches/com.spotify.client"}},
+		{ID: "tmp-instruments", Tier: TierCaches, Title: "Instruments raw traces in $TMPDIR, older than 12 h", Regenerates: "nothing — interrupted-recording scratch",
+			Run: tracesRun, Size: tracesSize},
+		{ID: "tmp-browser-clones", Tier: TierCaches, Title: "browser code-sign clones no running browser can own (APFS clones: frees less than listed)", Regenerates: "next browser launch",
+			Run: clonesRun, Size: clonesSize},
+		{ID: "tmp-bun", Tier: TierCaches, Title: "bun install extraction temp in $TMPDIR, older than 24 h", Regenerates: "nothing — abandoned extracts",
+			Run: bunTmpRun, Size: bunTmpSize},
 		{ID: "playwright", Tier: TierCaches, Title: "orphaned Playwright browser revisions", Regenerates: "nothing — only unpinned revisions go", Needs: "pwmcp",
 			Run: func(ctx context.Context, env Env) (int64, error) {
 				_, err := env.Exec(ctx, "pwmcp", "prune")
@@ -116,7 +125,7 @@ func Ladder(env Env) []Step {
 	if !mac {
 		var out []Step
 		for _, s := range steps {
-			if strings.Contains(s.ID, "sim") || s.ID == "device-support" || s.ID == "xcode-caches" || s.ID == "derived-data" || s.ID == "messages-tmp" || s.ID == "sandbox-tmp" || s.ID == "trash" || s.ID == "brew" {
+			if strings.Contains(s.ID, "sim") || strings.HasPrefix(s.ID, "tmp-") || s.ID == "device-support" || s.ID == "xcode-caches" || s.ID == "derived-data" || s.ID == "messages-tmp" || s.ID == "sandbox-tmp" || s.ID == "trash" || s.ID == "brew" {
 				continue
 			}
 			out = append(out, s)

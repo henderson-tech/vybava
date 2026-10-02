@@ -20,6 +20,11 @@ type Backlog struct {
 	V        int       `json:"v"`
 	Pass     int       `json:"pass"`
 	Findings []Finding `json:"findings"`
+	// Reviewed are the screen ids a reviewer actually judged this pass. Only
+	// these can be clean; a screen outside it is unreviewed, never clean.
+	// nil (the key absent: an older review-loop) scores every screen without
+	// an open finding as clean and warns REVIEWED_MISSING.
+	Reviewed []string `json:"reviewed,omitempty"`
 }
 
 // Finding is one reviewed defect.
@@ -90,6 +95,11 @@ func (b Backlog) Validate() []string {
 			problems = append(problems, at+": an open finding names the files a fix lane edits")
 		}
 	}
+	for i, id := range b.Reviewed {
+		if strings.TrimSpace(id) == "" {
+			problems = append(problems, fmt.Sprintf("reviewed[%d]: a screen id is required", i))
+		}
+	}
 	return problems
 }
 
@@ -121,33 +131,69 @@ type AreaScore struct {
 	Broken    int `json:"broken"`
 	NeedsWork int `json:"needsWork"`
 	Polish    int `json:"polish"`
-	Clean     int `json:"clean"`
+	// Clean: judged by a reviewer (in the backlog's reviewed) with no open
+	// finding. Unreviewed: no open finding and no reviewer judged it.
+	Clean      int `json:"clean"`
+	Unreviewed int `json:"unreviewed"`
 	// Findings by status.
-	Open          int            `json:"open"`
-	Met           int            `json:"met"`
-	Partly        int            `json:"partly"`
-	NotMet        int            `json:"notMet"`
-	LintDefects   int            `json:"lintDefects"`
-	Lint          map[string]int `json:"lint"`
-	ConsoleErrors int            `json:"consoleErrors"`
+	Open   int `json:"open"`
+	Met    int `json:"met"`
+	Partly int `json:"partly"`
+	NotMet int `json:"notMet"`
+	// LintDefects and Lint sum every shot's hits: one sidebar defect counts
+	// once per screen it is on.
+	LintDefects int            `json:"lintDefects"`
+	Lint        map[string]int `json:"lint"`
+	// LintDefectsUnique and LintUnique count each rule + element path +
+	// detail once across the area's shots (Scoreboard.UniqueKnown says
+	// whether the records carried the keys).
+	LintDefectsUnique int            `json:"lintDefectsUnique"`
+	LintUnique        map[string]int `json:"lintUnique"`
+	ConsoleErrors     int            `json:"consoleErrors"`
 }
 
 // Scoreboard is <passDir>/scoreboard.json.
 type Scoreboard struct {
-	V        int         `json:"v"`
-	Pass     int         `json:"pass"`
-	Reviewed bool        `json:"reviewed"`
-	Areas    []AreaScore `json:"areas"`
-	Totals   AreaScore   `json:"totals"`
-	Delta    *Delta      `json:"delta,omitempty"`
+	V        int  `json:"v"`
+	Pass     int  `json:"pass"`
+	Reviewed bool `json:"reviewed"`
+	// ReviewedKnown: the backlog named the screens it judged, so clean means
+	// judged clean and the unreviewed column is real.
+	ReviewedKnown bool        `json:"reviewedKnown"`
+	Areas         []AreaScore `json:"areas"`
+	Totals        AreaScore   `json:"totals"`
+	// UniqueKnown: every shot with lint defects carried its distinct keys
+	// (a harness before v0.23 did not), so the unique columns are real.
+	UniqueKnown bool `json:"uniqueKnown"`
+	// Offenders are the defects seen on the most screens (2 or more).
+	Offenders []Offender `json:"offenders"`
+	Delta     *Delta     `json:"delta,omitempty"`
 }
+
+// Offender is one defect repeated across screens: fix it once, where it lives.
+type Offender struct {
+	Rule   string `json:"rule"`
+	Path   string `json:"path"`
+	Detail string `json:"detail"`
+	// Screens it was seen on (distinct ids) and shots (screen × viewport × theme).
+	Screens int `json:"screens"`
+	Shots   int `json:"shots"`
+}
+
+// MaxOffenders bounds Scoreboard.Offenders.
+const MaxOffenders = 20
 
 // Delta is this pass minus the previous one; severity columns only when both were reviewed.
 type Delta struct {
-	Pass     int         `json:"pass"`
-	Reviewed bool        `json:"reviewed"`
-	Areas    []AreaScore `json:"areas"`
-	Totals   AreaScore   `json:"totals"`
+	Pass     int  `json:"pass"`
+	Reviewed bool `json:"reviewed"`
+	// ReviewedKnown: both passes named their reviewed screens, so the
+	// unreviewed delta is real.
+	ReviewedKnown bool `json:"reviewedKnown"`
+	// UniqueKnown: both passes carried distinct keys, so unique deltas are real.
+	UniqueKnown bool        `json:"uniqueKnown"`
+	Areas       []AreaScore `json:"areas"`
+	Totals      AreaScore   `json:"totals"`
 }
 
 // ScoreboardOptions are the scoreboard verb's flags.
@@ -159,7 +205,9 @@ type ScoreboardOptions struct {
 	Previous int
 }
 
-func newArea(area string) AreaScore { return AreaScore{Area: area, Lint: map[string]int{}} }
+func newArea(area string) AreaScore {
+	return AreaScore{Area: area, Lint: map[string]int{}, LintUnique: map[string]int{}}
+}
 
 func (a *AreaScore) add(b AreaScore) {
 	a.Shots += b.Shots
@@ -169,6 +217,7 @@ func (a *AreaScore) add(b AreaScore) {
 	a.NeedsWork += b.NeedsWork
 	a.Polish += b.Polish
 	a.Clean += b.Clean
+	a.Unreviewed += b.Unreviewed
 	a.Open += b.Open
 	a.Met += b.Met
 	a.Partly += b.Partly
@@ -211,6 +260,14 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 		screensOf[r.Area][r.ID] = true
 	}
 	worst := map[string]int{} // area\x00screen → severity index (lower = worse)
+	// judged is nil when the backlog does not say which screens were reviewed.
+	var judged map[string]bool
+	if backlog != nil && backlog.Reviewed != nil {
+		judged = map[string]bool{}
+		for _, id := range backlog.Reviewed {
+			judged[id] = true
+		}
+	}
 	if backlog != nil {
 		for _, f := range backlog.Findings {
 			a := get(f.Area)
@@ -247,6 +304,8 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 		for s := range screens {
 			sev, ok := worst[area+"\x00"+s]
 			switch {
+			case !ok && judged != nil && !judged[s]:
+				a.Unreviewed++
 			case !ok:
 				a.Clean++
 			case sev == 0:
@@ -258,7 +317,7 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 			}
 		}
 	}
-	sb := Scoreboard{V: 1, Pass: pass, Reviewed: backlog != nil, Totals: newArea("all"), Areas: []AreaScore{}}
+	sb := Scoreboard{V: 1, Pass: pass, Reviewed: backlog != nil, ReviewedKnown: judged != nil, Totals: newArea("all"), Areas: []AreaScore{}}
 	names := make([]string, 0, len(areas))
 	for n := range areas {
 		names = append(names, n)
@@ -271,13 +330,95 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 		sb.Areas = append(sb.Areas, *areas[n])
 		sb.Totals.add(*areas[n])
 	}
+	// Unique counts never sum: a chrome defect is on every area's screens.
+	for i := range sb.Areas {
+		addUnique(&sb.Areas[i], records, sb.Areas[i].Area)
+	}
+	addUnique(&sb.Totals, records, "")
+	sb.UniqueKnown = true
+	for _, r := range records {
+		if r.Defects() > 0 && r.Lint.Distinct == nil {
+			sb.UniqueKnown = false
+		}
+	}
+	sb.Offenders = repeatedOffenders(records, MaxOffenders)
 	return sb
+}
+
+func lintKey(rule string, k LintKey) string { return rule + "\x00" + k.Path + "\x00" + k.Detail }
+
+// addUnique counts each rule + path + detail once across the records of
+// area ("" = every area).
+func addUnique(a *AreaScore, records []Record, area string) {
+	seen := map[string]bool{}
+	for _, r := range records {
+		if r.Lint == nil || (area != "" && r.Area != area) {
+			continue
+		}
+		for rule, keys := range r.Lint.Distinct {
+			for _, k := range keys {
+				if key := lintKey(rule, k); !seen[key] {
+					seen[key] = true
+					a.LintUnique[rule]++
+					a.LintDefectsUnique++
+				}
+			}
+		}
+	}
+}
+
+// repeatedOffenders are the defects seen on 2+ screens, most screens first.
+func repeatedOffenders(records []Record, limit int) []Offender {
+	type acc struct {
+		o   Offender
+		ids map[string]bool
+	}
+	by := map[string]*acc{}
+	for _, r := range records {
+		if r.Lint == nil {
+			continue
+		}
+		for rule, keys := range r.Lint.Distinct {
+			for _, k := range keys {
+				key := lintKey(rule, k)
+				a := by[key]
+				if a == nil {
+					a = &acc{o: Offender{Rule: rule, Path: k.Path, Detail: k.Detail}, ids: map[string]bool{}}
+					by[key] = a
+				}
+				a.o.Shots++
+				a.ids[r.ID] = true
+				a.o.Screens = len(a.ids)
+			}
+		}
+	}
+	out := []Offender{}
+	for _, a := range by {
+		if a.o.Screens > 1 {
+			out = append(out, a.o)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		x, y := out[i], out[j]
+		if x.Screens != y.Screens {
+			return x.Screens > y.Screens
+		}
+		if x.Shots != y.Shots {
+			return x.Shots > y.Shots
+		}
+		return lintKey(x.Rule, LintKey{x.Path, x.Detail}) < lintKey(y.Rule, LintKey{y.Path, y.Detail})
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func minus(cur, prev AreaScore) AreaScore {
 	d := newArea(cur.Area)
 	d.Shots, d.NotOk, d.Screens = cur.Shots-prev.Shots, cur.NotOk-prev.NotOk, cur.Screens-prev.Screens
 	d.Broken, d.NeedsWork, d.Polish, d.Clean = cur.Broken-prev.Broken, cur.NeedsWork-prev.NeedsWork, cur.Polish-prev.Polish, cur.Clean-prev.Clean
+	d.Unreviewed = cur.Unreviewed - prev.Unreviewed
 	d.Open, d.Met, d.Partly, d.NotMet = cur.Open-prev.Open, cur.Met-prev.Met, cur.Partly-prev.Partly, cur.NotMet-prev.NotMet
 	d.LintDefects, d.ConsoleErrors = cur.LintDefects-prev.LintDefects, cur.ConsoleErrors-prev.ConsoleErrors
 	for k, v := range cur.Lint {
@@ -291,12 +432,24 @@ func minus(cur, prev AreaScore) AreaScore {
 			delete(d.Lint, k)
 		}
 	}
+	d.LintDefectsUnique = cur.LintDefectsUnique - prev.LintDefectsUnique
+	for k, v := range cur.LintUnique {
+		d.LintUnique[k] += v
+	}
+	for k, v := range prev.LintUnique {
+		d.LintUnique[k] -= v
+	}
+	for k, v := range d.LintUnique {
+		if v == 0 {
+			delete(d.LintUnique, k)
+		}
+	}
 	return d
 }
 
 // WithDelta attaches this-minus-previous per area (areas of either pass).
 func (sb *Scoreboard) WithDelta(prev Scoreboard) {
-	d := &Delta{Pass: prev.Pass, Reviewed: sb.Reviewed && prev.Reviewed}
+	d := &Delta{Pass: prev.Pass, Reviewed: sb.Reviewed && prev.Reviewed, ReviewedKnown: sb.ReviewedKnown && prev.ReviewedKnown, UniqueKnown: sb.UniqueKnown && prev.UniqueKnown}
 	prevBy := map[string]AreaScore{}
 	for _, a := range prev.Areas {
 		prevBy[a.Area] = a
@@ -343,6 +496,10 @@ func (sb Scoreboard) Markdown() string {
 	}
 	if !sb.Reviewed {
 		b.WriteString("Not reviewed yet: no backlog, so only the capture and lint columns are filled.\n\n")
+	} else if !sb.ReviewedKnown {
+		b.WriteString("The backlog names no reviewed screens, so clean means no finding, not judged clean.\n\n")
+	} else if sb.Totals.Unreviewed > 0 {
+		fmt.Fprintf(&b, "%d screens were never judged by a reviewer this pass: unreviewed, not clean.\n\n", sb.Totals.Unreviewed)
 	}
 	cell := func(area string, v int, pick func(AreaScore) int, severity bool) string {
 		if severity && !sb.Reviewed {
@@ -354,8 +511,30 @@ func (sb Scoreboard) Markdown() string {
 		}
 		return fmt.Sprintf("%d (%s)", v, signed(pick(d)))
 	}
-	b.WriteString("| Area | Screens | Broken | Needs work | Polish | Clean | Open · partly · not met · met | Lint defects | Console errors | Shots not ok |\n")
-	b.WriteString("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
+	// Unique columns need the records' distinct keys; their delta needs both passes'.
+	unique := func(area string, v int, pick func(AreaScore) int) string {
+		if !sb.UniqueKnown {
+			return "—"
+		}
+		d, ok := delta[area]
+		if !ok || !sb.Delta.UniqueKnown {
+			return fmt.Sprint(v)
+		}
+		return fmt.Sprintf("%d (%s)", v, signed(pick(d)))
+	}
+	// Unreviewed needs the backlog's reviewed list; its delta needs both passes'.
+	unreviewed := func(area string, v int) string {
+		if !sb.ReviewedKnown {
+			return "—"
+		}
+		d, ok := delta[area]
+		if !ok || !sb.Delta.ReviewedKnown {
+			return fmt.Sprint(v)
+		}
+		return fmt.Sprintf("%d (%s)", v, signed(d.Unreviewed))
+	}
+	b.WriteString("| Area | Screens | Broken | Needs work | Polish | Clean | Unreviewed | Open · partly · not met · met | Lint defects | Unique lint | Console errors | Shots not ok |\n")
+	b.WriteString("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
 	for _, a := range append(append([]AreaScore{}, sb.Areas...), sb.Totals) {
 		name := a.Area
 		if name == "all" {
@@ -365,13 +544,15 @@ func (sb Scoreboard) Markdown() string {
 		if sb.Reviewed {
 			findings = fmt.Sprintf("%d · %d · %d · %d", a.Open, a.Partly, a.NotMet, a.Met)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s |\n", name, a.Screens,
+		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", name, a.Screens,
 			cell(a.Area, a.Broken, func(d AreaScore) int { return d.Broken }, true),
 			cell(a.Area, a.NeedsWork, func(d AreaScore) int { return d.NeedsWork }, true),
 			cell(a.Area, a.Polish, func(d AreaScore) int { return d.Polish }, true),
 			cell(a.Area, a.Clean, func(d AreaScore) int { return d.Clean }, true),
+			unreviewed(a.Area, a.Unreviewed),
 			findings,
 			cell(a.Area, a.LintDefects, func(d AreaScore) int { return d.LintDefects }, false),
+			unique(a.Area, a.LintDefectsUnique, func(d AreaScore) int { return d.LintDefectsUnique }),
 			cell(a.Area, a.ConsoleErrors, func(d AreaScore) int { return d.ConsoleErrors }, false),
 			cell(a.Area, a.NotOk, func(d AreaScore) int { return d.NotOk }, false))
 	}
@@ -393,8 +574,24 @@ func (sb Scoreboard) Markdown() string {
 			if sb.Delta != nil {
 				fmt.Fprintf(&b, " (%s)", signed(sb.Delta.Totals.Lint[r]))
 			}
+			if sb.UniqueKnown {
+				fmt.Fprintf(&b, ", %d unique", sb.Totals.LintUnique[r])
+				if sb.Delta != nil && sb.Delta.UniqueKnown {
+					fmt.Fprintf(&b, " (%s)", signed(sb.Delta.Totals.LintUnique[r]))
+				}
+			}
 		}
 		b.WriteString("\n")
+	}
+	if len(sb.Offenders) > 0 {
+		b.WriteString("\nRepeated offenders — the same defect on several screens; fix it once, where it lives:\n\n")
+		for i, o := range sb.Offenders {
+			if i == 10 {
+				fmt.Fprintf(&b, "- … %d more in scoreboard.json\n", len(sb.Offenders)-10)
+				break
+			}
+			fmt.Fprintf(&b, "- `%s` %s · `%s` · %d screens, %d shots\n", o.Rule, o.Detail, o.Path, o.Screens, o.Shots)
+		}
 	}
 	return b.String()
 }
@@ -425,6 +622,13 @@ func (t *Tool) Scoreboard(o ScoreboardOptions) (Result, error) {
 		if backlog, err = LoadBacklog(file); err != nil {
 			return Result{}, err
 		}
+		current, err := t.backlogEvidenceCurrent(pass, file)
+		if err != nil {
+			return Result{}, err
+		}
+		if !current {
+			return Result{}, diag(DiagBacklogInvalid, file+" has stale or missing review evidence", "review the current captures and write the current basis.json beside the backlog")
+		}
 		// A previous pass's backlog would mark this pass reviewed with stale verdicts.
 		if backlog.Pass != pass {
 			return Result{}, diag(DiagBacklogInvalid, fmt.Sprintf("%s is the backlog of pass %d, not pass %d", file, backlog.Pass, pass),
@@ -433,6 +637,11 @@ func (t *Tool) Scoreboard(o ScoreboardOptions) (Result, error) {
 	}
 	sb := ComputeScoreboard(pass, t.Config.Areas, records, backlog)
 	var diags []runxDiagnostic
+	if backlog != nil && backlog.Reviewed == nil {
+		diags = append(diags, warn(DiagReviewedMissing,
+			file+" has no \"reviewed\" list, so a screen with no finding counts as clean even if no reviewer judged it",
+			"have the review stage write \"reviewed\": the screen ids its reviewers judged this pass (docs/uiloop.md)"))
+	}
 	prevPass := o.Previous
 	if prevPass == 0 {
 		prevPass = pass - 1

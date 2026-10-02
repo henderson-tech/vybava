@@ -1,7 +1,8 @@
 # skip-ci — the org standard for a PR that skips CI and Eve
 
 Two labels and one job guard, the same in every henderson-tech and Reservine
-repository. `prm --admin` applies them; `repolicy` holds the labels across
+repository. `prm --admin` applies them, and prm alone on a code-free chore
+(memory rows, spec prose); `repolicy` holds the labels across
 whole owners; `skipci` holds the workflows to the guard.
 
 | Label | Honoured by | Effect |

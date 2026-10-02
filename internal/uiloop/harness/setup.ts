@@ -1,7 +1,8 @@
 // Playwright globalSetup: once per run, before any shot — the repo's data
 // preparation, the `{PARAM}` values, and one signed-in storage state per
 // (app, identity) the selected screens use. A `--resume` run reuses the pass's
-// params and sessions and never prepares again.
+// params and never prepares again, but always signs in fresh: sessions expire,
+// and a resume hours later reusing them shot the sign-in page instead.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -53,7 +54,7 @@ export default async function setup(): Promise<void> {
   }
 
   const authFile = passPath(run, AUTH_FILE);
-  const auth: AuthMap = (resume ? readJson<AuthMap>(authFile) : null) ?? {};
+  const auth: AuthMap = {};
   const needed = identities(p, shots);
   if (p.login && needed.size) {
     const browser = await chromium.launch();
@@ -61,8 +62,6 @@ export default async function setup(): Promise<void> {
       for (const [app, set] of needed) {
         for (const as of set) {
           const key = authKey(app, as);
-          const known = auth[key];
-          if (known && fs.existsSync(known)) continue;
           const context = await browser.newContext({ baseURL: baseUrlOf(run, app) });
           try {
             const page = await context.newPage();

@@ -1,6 +1,6 @@
 ---
 name: prm
-description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked). The one PR verb — create, review, merge and teardown all live here."
+description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, tearing down after merge, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked)."
 ---
 
 # prm — the PR verb: create → review rounds → merge → teardown
@@ -67,7 +67,8 @@ it; without it `--auto` merges on the precheck gates alone) · `--admin` (the ad
 lane: at ensure-pr the PR gets the org skip labels `skip-ci` + `eve-ignore` via
 `vybava gitkit admin-labels` — its queued/running CI is cancelled and Eve never
 reviews it — and the merge is `--admin` over branch protection; standard:
-Výbava `docs/skip-ci.md`. The merge half alone is also reachable via merge.md's
+Výbava `docs/skip-ci.md`. A code-free chore takes this lane without the flag
+(Hard rules). The merge half alone is also reachable via merge.md's
 solo-owner carve-out) ·
 `--bg` (delegate rounds to fresh ephemeral subagents; implied for `all`) · `--once`
 (single round, no Monitor) · `--every <dur>` (watcher poll cadence, default 60s;
@@ -182,8 +183,9 @@ head moved ⇒ stale ⇒ re-run. Inconclusive counts as BLOCK.
 `--auto` never implies `--admin` (carve-out aside) and never self-approves; `--admin`
 never implies `--auto` — without it the ready PR is still offered, not merged. Applies
 to `all` per-PR as each reaches ready (+ PASS when audited). `--once --auto`: merge
-only if already ready; a blocked PR is reported, not waited on. Non-thread findings
-and open DEFERs still block the auto-merge even though `merge-precheck` can't see
+only if already ready; a blocked PR is reported, not waited on. Non-thread findings,
+open DEFERs and unmet `before:` items (`merge.md` hard guards) still block the
+auto-merge even though `merge-precheck` can't see
 them. An audited auto-merge prints its audit line (`audit @ <sha7>: PASS …`) next to
 the PR URL.
 
@@ -245,10 +247,13 @@ and never executed (`verdicts.md`).
 - Never leave a PR with a commit-log body, a missing `Blockers & risks` section, or a
   missing links table (`pr-body.md`).
 - `--audit`: audit lens-4 irreversibles land in `Blockers & risks` BEFORE merge.
-- The skip labels go on ONLY under `--admin` (or `eve-ignore` alone under
-  `MERGE_POLICY=self`); prm never labels a PR `skip-ci` on its own judgement, and a
-  PR someone hand-labelled `skip-ci` is reported as such (`gates.ciWaived`) and
-  needs `--admin` to land — never a plain merge attempt that branch protection
-  refuses.
+- The skip labels go on under `--admin`, on a **code-free chore** — every changed
+  path a memory home (`.claude/memory/**`: ledger rows, notes) or prose nothing
+  builds, tests, generates or deploys from (a spec, a decision log), which takes the
+  admin lane without the flag — or (`eve-ignore` alone) under `MERGE_POLICY=self`;
+  prm never labels any other PR `skip-ci` on its own judgement, and a PR someone
+  hand-labelled `skip-ci` is reported as such (`gates.ciWaived`) and needs `--admin`
+  to land — never a plain merge attempt that branch protection refuses. A chore's
+  merge is still offered, never auto-merged without `--auto`.
 - Write no files beyond code changes, the `refs/pr/<N>` ref, the lessons commit
   (`round.md`) and what a repo extension prescribes; scratchpad body files are fine.

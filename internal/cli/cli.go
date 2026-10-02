@@ -83,6 +83,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "perfrig" {
 		return rt.perfrigCommand("perfrig"), nil
 	}
+	if filepath.Base(invokedAs) == "framestats" {
+		return rt.framestatsApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "shrt" {
 		return rt.shrtApplet(), nil
 	}
@@ -97,6 +100,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	}
 	if filepath.Base(invokedAs) == "blip" {
 		return rt.blipApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "polish-kit" {
+		return rt.polishKitApplet(), nil
 	}
 	if filepath.Base(invokedAs) == "codexsync" {
 		return rt.codexsyncApplet(), nil
@@ -204,11 +210,13 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.memoryCommand(),
 		rt.fontfreezeCommand("fontfreeze [fonts.yaml]"),
 		rt.perfrigCommand("perfrig"),
+		rt.framestatsCommand("framestats"),
 		rt.shrtCommand("shrt [url...]"),
 		rt.pressCommand("press"),
 		rt.ingressgenCommand("ingressgen"),
 		rt.hotfixCommand("hotfix"),
 		rt.blipCommand("blip"),
+		rt.polishKitCommand("polish-kit"),
 		rt.readinessCommand("readiness"),
 		rt.uiLoopCommand("ui-loop"),
 		rt.codexsyncCommand("codexsync"),

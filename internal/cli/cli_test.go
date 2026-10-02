@@ -13,6 +13,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"memorylint", "memorylint"},
 		{"fontfreeze", "fontfreeze"},
 		{"perfrig", "perfrig"},
+		{"framestats", "framestats"},
 		{"shrt", "shrt"},
 		{"press", "press"},
 		{"ingressgen", "ingressgen"},
@@ -30,6 +31,7 @@ func TestMulticallDispatch(t *testing.T) {
 		{"redact", "redact"},
 		{"journeys", "journeys"},
 		{"blip", "blip"},
+		{"polish-kit", "polish-kit"},
 		{"ui-loop", "ui-loop"},
 		{"/usr/local/bin/perfrig", "perfrig"}, // dispatch is on the basename
 		{"vybava", "vybava"},

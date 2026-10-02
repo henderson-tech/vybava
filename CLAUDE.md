@@ -168,7 +168,7 @@ differs between Claude and Codex. `init` never overwrites run.json, a ledger or
 a copied script. `slot` and `uniq-shots.sh` are workarounds with named retirement
 conditions (`docs/readiness.md`).
 
-`internal/uiloop` is the `ui-loop` applet: it embeds the TypeScript/Playwright polish-loop harness (`internal/uiloop/harness/`) and syncs it verbatim into each repo's `<dir>/vendor` with a sha256 stamp; `check` fails on drift, so a harness change is made HERE and synced, never edited in a repo. The capture reads only `<pass>/run.json`, never the vybava binary, so it runs in a Devbox container that has just the repo. Run.json and the shot record are a Go↔TS contract (`run.go`/`record.go` ↔ `run.ts`/`capture.ts`): bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change. `BUILTIN_VIEWPORTS` and `LINT_RULES` are mirrored in Go and held equal by a test. The harness must keep the GPU launch flags and type-check under TS 5.3 strict in CJS and ESM packages. There is no skill: the vitrinka map / review-loop workflows drive the CLI. Rules: `docs/uiloop.md`.
+`internal/uiloop` is the `ui-loop` applet: it embeds the TypeScript/Playwright polish-loop harness (`internal/uiloop/harness/`) and syncs it verbatim into each repo's `<dir>/vendor` with a sha256 stamp; `check` fails on drift, so a harness change is made HERE and synced, never edited in a repo. The capture reads only `<pass>/run.json`, never the vybava binary, so it runs in a Devbox container that has just the repo. Run.json, the shot record and done.json are a Go↔TS contract (`run.go`/`record.go`/`follow.go` ↔ `run.ts`/`capture.ts`/`teardown.ts`): bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change. `BUILTIN_VIEWPORTS` and `LINT_RULES` are mirrored in Go and held equal by a test. The harness must keep the GPU launch flags and type-check under TS 5.3 strict in CJS and ESM packages. There is no skill: the vitrinka map / review-loop workflows drive the CLI. Rules: `docs/uiloop.md`.
 
 `internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
 state), install goes through the product's own channel, and credentials never
@@ -217,3 +217,14 @@ name, http (path/method-scoped faults, `error`, `record`/`authz` replay) or raw
 tcp; ONE fault at a time behind an atomic pointer, `set` replaces it; every
 verb goes through the control socket, never the state file, and `authz`
 substitutes only the identity given by `--as` — it never guesses credentials.
+
+`internal/polishkit` is the polish skill's deterministic layer (`docs/polish-kit.md`):
+target inference from the diff, device lanes, the pass ledger, native shots,
+contact sheets and the report; the skill owns judgement and the adverse-condition
+rows, the applet never knows them. The `polish` section is a Go/TS mirror
+(`config.go` / `config-helpers.ts` `PolishConfig`): change both together. Every
+device command goes through `Tool.Exec` (tests drive fixtures, never a device);
+the applet never edits app code and its one network call is a GET of a
+configured lane URL. `run.json` carries `RunVersion`: bump it on a breaking
+change of `RunFile` or `Cell`, and a pass written by another version answers
+`run-version` (fix: `run init --force`), never a silent re-read.
