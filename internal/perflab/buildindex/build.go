@@ -518,11 +518,16 @@ func (s Store) Import(ctx context.Context, r Runner, spec ImportSpec) (BuildResu
 	phase(spec.Progress, "read-artifact")
 	var signing Signing
 	var toolchain Toolchain
+	var version string // the artifact's marketing version
 	if t.Platform == "ios" {
 		info, err := iosAppInfo(ctx, r, src)
 		if err != nil {
 			return BuildResult{}, err
 		}
+		if err := importAppID(spec.Project, t, info.BundleID); err != nil {
+			return BuildResult{}, err
+		}
+		version = info.Version
 		if signing, err = iosSigningOf(ctx, r, src, s.Dirs.Cache); err != nil {
 			return BuildResult{}, err
 		}
@@ -532,6 +537,10 @@ func (s Store) Import(ctx context.Context, r Runner, spec ImportSpec) (BuildResu
 		if err != nil {
 			return BuildResult{}, err
 		}
+		if err := importAppID(spec.Project, t, info.Package); err != nil {
+			return BuildResult{}, err
+		}
+		version = info.VersionName
 		signing = Signing{KeystoreCertSHA256: info.CertSHA256}
 		if toolchain, err = ResolveToolchain(ctx, r, "android"); err != nil {
 			return BuildResult{}, err
@@ -541,6 +550,14 @@ func (s Store) Import(ctx context.Context, r Runner, spec ImportSpec) (BuildResu
 	fp, err := RunFingerprint(ctx, r, FingerprintSpec{Project: spec.Project, Target: t, Env: spec.Env.Vars, Signing: &signing, Toolchain: &toolchain})
 	if err != nil {
 		return BuildResult{}, err
+	}
+	if fp.AppVersion != "" && version != "" && version != fp.AppVersion {
+		// The key is recomputed from THIS checkout, so an artifact of another
+		// app version was built from other native inputs: adopting it would
+		// file a binary under a key that does not describe it.
+		return BuildResult{}, diag(DiagFingerprintMismatch,
+			fmt.Sprintf("the artifact is version %s, this checkout's app config says %s: it was built from other native inputs than key %s", version, fp.AppVersion, fp.Key),
+			fmt.Sprintf("perflab build native --platform %s --profile %s --kind %s --json", t.Platform, t.Profile, t.Kind))
 	}
 	if b, err := s.FindBuild(t, fp.Key); err == nil {
 		return BuildResult{Hit: true, Build: b, Fingerprint: fp, Next: nextAfterBuild(b)}, nil
@@ -581,6 +598,18 @@ func (s Store) Import(ctx context.Context, r Runner, spec ImportSpec) (BuildResu
 		return BuildResult{}, err
 	}
 	return s.commitBuild(st, m, fp)
+}
+
+// importAppID refuses an artifact of another app before anything is copied:
+// a store build beside the adapter's dev variant (another package id) is the
+// usual mix-up, and the way out is building the adapter's app once.
+func importAppID(p Project, t Target, got string) error {
+	want := p.appID(t.Platform)
+	if want == "" || got == want {
+		return nil
+	}
+	return diag(DiagBuildFailed, fmt.Sprintf("the artifact is %s, the adapter's app (perflab.app.%s in vybava.config.ts) is %s: importing it would measure another app", got, t.Platform, want),
+		fmt.Sprintf("perflab build native --platform %s --profile %s --kind %s --json", t.Platform, t.Profile, t.Kind))
 }
 
 // describeArtifact reads the app id, version and actual signing of a

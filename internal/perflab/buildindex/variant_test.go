@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -440,5 +441,36 @@ func TestApkResourcesParsesTheDump(t *testing.T) {
 		if got, _ := assetResourceKey(in); got != want {
 			t.Errorf("assetResourceKey(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// An import recomputes the key from THIS checkout, so an artifact whose
+// marketing version differs from the app config's (a 2.6.0 APK in a 4.0.0
+// checkout) was built from other native inputs and is never filed under it.
+func TestImportRefusesAnArtifactOfAnotherAppVersion(t *testing.T) {
+	fakeAndroidSDK(t)
+	s := testStore(t)
+	p := androidProject(t)
+	apk := filepath.Join(t.TempDir(), "app-release.apk")
+	nativeAPK(t, apk) // versionName 2.6.0 (scriptAndroidTools' badging)
+	var doc map[string]any
+	if err := json.Unmarshal(loadExcerpt(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["sources"] = append(doc["sources"].([]any), map[string]any{"type": "contents", "id": "expoConfig", "hash": "x",
+		"contents": `{"name":"FixIt","slug":"fixit-client","version":"4.0.0","runtimeVersion":{"policy":"appVersion"}}`})
+	fpJSON, _ := json.Marshal(doc)
+	r := scriptAndroidTools(newFake(t)).
+		on("java_home", ok("/opt/jdk21\n")).
+		on("java -version", Result{Stderr: []byte(`openjdk version "21.0.10" 2026-01-20` + "\n")}).
+		on("fingerprint:generate", ok(string(fpJSON)))
+	_, err := s.Import(context.Background(), r, ImportSpec{Project: p, Target: androidTarget, Artifact: apk})
+	d := wantCode(t, err, DiagFingerprintMismatch)
+	if !strings.Contains(d.Diag.Detail, "version 2.6.0") || !strings.Contains(d.Diag.Detail, "says 4.0.0") ||
+		d.Diag.Fix != "perflab build native --platform android --profile perf --kind bundled --json" {
+		t.Fatalf("diag = %+v", d.Diag)
+	}
+	if builds, _ := s.ListBuilds(); len(builds) != 0 {
+		t.Fatalf("a refused import left %d index entries", len(builds))
 	}
 }

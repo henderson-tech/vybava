@@ -251,3 +251,31 @@ func TestParseProfileEnv(t *testing.T) {
 	_, err = ParseProfileEnv([]byte("Loading env from .env.local\n"))
 	wantCode(t, err, DiagAdapterCommandFailed)
 }
+
+// The expoConfig source carries the app's marketing version (excerpt of the
+// FixIt 4.0.0 fingerprint); import compares it with the artifact's.
+func TestComputeKeyReadsTheAppVersion(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(loadExcerpt(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ contents, want string }{
+		{`{"name":"FixIt","slug":"fixit-client","version":"4.0.0","runtimeVersion":{"policy":"appVersion"}}`, "4.0.0"},
+		{`{"name":"FixIt","slug":"fixit-client"}`, ""},
+	} {
+		src := append([]any(nil), doc["sources"].([]any)...)
+		doc2 := map[string]any{"hash": doc["hash"], "sources": append(src, map[string]any{
+			"type": "contents", "id": "expoConfig", "contents": tc.contents, "reasons": []string{"expoConfig"}, "hash": "x"})}
+		raw, err := json.Marshal(doc2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fp, err := ComputeKey(raw, baseInputs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fp.AppVersion != tc.want {
+			t.Errorf("AppVersion = %q, want %q", fp.AppVersion, tc.want)
+		}
+	}
+}

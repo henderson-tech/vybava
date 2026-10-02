@@ -182,3 +182,30 @@ func TestBuildSerialisation(t *testing.T) {
 		release()
 	})
 }
+
+// An import of another app's artifact (the store build beside the dev
+// variant) is refused before the copy, and the fix is a runnable build.
+func TestImportAppID(t *testing.T) {
+	p := Project{IOS: IOSApp{BundleID: "app.fixit.client"}, Android: AndroidApp{Package: "app.fixit.client.dev"}}
+	for _, tc := range []struct {
+		target  Target
+		got     string
+		wantFix string
+	}{
+		{androidTarget, "app.fixit.client.dev", ""},
+		{androidTarget, "app.fixit.client", "perflab build native --platform android --profile perf --kind bundled --json"},
+		{Target{Platform: "ios", Profile: "perf", Kind: KindShell}, "app.fixit.client", ""},
+		{Target{Platform: "ios", Profile: "perf", Kind: KindShell}, "app.other", "perflab build native --platform ios --profile perf --kind shell --json"},
+	} {
+		err := importAppID(p, tc.target, tc.got)
+		if tc.wantFix == "" {
+			if err != nil {
+				t.Errorf("%s %s: unexpected %v", tc.target.Platform, tc.got, err)
+			}
+			continue
+		}
+		if d := wantCode(t, err, DiagBuildFailed); d.Diag.Fix != tc.wantFix {
+			t.Errorf("%s %s: fix %q, want %q", tc.target.Platform, tc.got, d.Diag.Fix, tc.wantFix)
+		}
+	}
+}

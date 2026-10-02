@@ -90,6 +90,9 @@ type Fingerprint struct {
 	ExtraInputs []ExtraInput `json:"extraInputs"`
 	Signing     Signing      `json:"signing"`
 	Toolchain   Toolchain    `json:"toolchain"`
+	// AppVersion is the app config's `version` (the expoConfig source): the
+	// marketing version a build of these inputs carries. Import compares it.
+	AppVersion string `json:"appVersion,omitempty"`
 	// Lines are the sorted key lines; the index stores them beside each
 	// build so two keys can be diffed when a lookup misses.
 	Lines []string `json:"-"`
@@ -170,6 +173,7 @@ func ComputeKey(raw []byte, in KeyInputs) (Fingerprint, error) {
 
 	lines := map[string]bool{}
 	var counts SourceCounts
+	var appVersion string
 	for _, s := range doc.Sources {
 		switch s.Type {
 		case "file":
@@ -197,6 +201,14 @@ func ComputeKey(raw []byte, in KeyInputs) (Fingerprint, error) {
 			sum := deref(s.Hash)
 			if s.Contents != nil {
 				sum = sha256Hex([]byte(normalizeContents(*s.Contents, roots)))
+				if s.ID == "expoConfig" {
+					var cfg struct {
+						Version string `json:"version"`
+					}
+					if json.Unmarshal([]byte(*s.Contents), &cfg) == nil {
+						appVersion = cfg.Version
+					}
+				}
 			}
 			lines["contents\t"+s.ID+"\t"+sum] = true
 		default:
@@ -236,6 +248,7 @@ func ComputeKey(raw []byte, in KeyInputs) (Fingerprint, error) {
 		ExtraInputs: extras,
 		Signing:     in.Signing,
 		Toolchain:   in.Toolchain,
+		AppVersion:  appVersion,
 		Lines:       all,
 	}, nil
 }
