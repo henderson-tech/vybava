@@ -284,12 +284,22 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated)")
 	lanesCmd.Flags().IntVar(&maxLanes, "max", 4, "lanes per phase")
 
+	checkpointsCmd := &cobra.Command{
+		Use:   "checkpoints",
+		Short: "List the fix checkpoints that count for the pass, one per item, as state and lanes count them",
+		Args:  cobra.NoArgs,
+		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.Checkpoints(uiloop.CheckpointsOptions{Pass: pass})
+		}),
+	}
+	checkpointsCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
+
 	// --pass is shared by the pass verbs; record whether it was given so an
 	// explicit 0 is refused instead of read as "not given".
-	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd} {
+	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd} {
 		c.PreRun = func(cmd *cobra.Command, _ []string) { passGiven = cmd.Flags().Changed("pass") }
 	}
 
-	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd)
+	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd)
 	return command
 }
