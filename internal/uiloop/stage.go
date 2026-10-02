@@ -294,8 +294,9 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	// batch open. A shot screen must be in screensRead. An unreviewed entry
 	// never blocks: it is a capture or recipe defect the reviewer could not
 	// judge from the shots, and re-reviewing the same shots cannot change it.
-	// merge-review still keeps a screen-level entry out of reviewed and lists
-	// it as unreviewed.
+	// merge-review still keeps such a screen (a screen-level entry, or shot
+	// entries naming every ok shot it has) out of reviewed and lists it as
+	// unreviewed.
 	shot := map[string]bool{}
 	if strict {
 		basis, err = t.cachedReviewBasis(pass, knownBasis)
@@ -909,18 +910,38 @@ func BacklogKey(screen, title string) string {
 	return strings.TrimRight(k, "-")
 }
 
-// unreviewedScreen reads a reviewer's unreviewed entry: a screen id, maybe
-// followed by a parenthesised why. An entry naming one shot (<id>@<viewport>)
-// is not a screen-level skip: the screen was judged at its other shots.
-func unreviewedScreen(entry string) string {
-	id := strings.TrimSpace(entry)
-	if i := strings.IndexAny(id, " (\t"); i >= 0 {
-		id = id[:i]
+// unreviewedScreens reads a reviewer's unreviewed entries into the screens
+// they take out of reviewed. An entry is a screen id or one shot
+// (<id>@<viewport>.<theme>, or <id>@<viewport> for every theme), maybe
+// followed by a parenthesised why. A screen-level entry skips its screen.
+// Shot entries skip it only when they name every ok shot it has (okShots:
+// screen id to its ok shot keys); otherwise it was judged at its other shots.
+func unreviewedScreens(entries []string, okShots map[string][]string) map[string]bool {
+	skipped, named := map[string]bool{}, map[string][]string{}
+	for _, e := range entries {
+		id := strings.TrimSpace(e)
+		if i := strings.IndexAny(id, " (\t"); i >= 0 {
+			id = id[:i]
+		}
+		screen, shot, isShot := strings.Cut(id, "@")
+		switch {
+		case screen == "":
+		case isShot:
+			named[screen] = append(named[screen], shot)
+		default:
+			skipped[screen] = true
+		}
 	}
-	if strings.Contains(id, "@") {
-		return ""
+	for screen, shots := range named {
+		judgedElsewhere := slices.ContainsFunc(okShots[screen], func(key string) bool {
+			_, vt, _ := strings.Cut(key, "@")
+			return !slices.ContainsFunc(shots, func(s string) bool { return vt == s || strings.HasPrefix(vt, s+".") })
+		})
+		if !judgedElsewhere {
+			skipped[screen] = true
+		}
 	}
-	return id
+	return skipped
 }
 
 func union(a, b []string) []string {
@@ -934,19 +955,24 @@ func union(a, b []string) []string {
 }
 
 // MergeReview folds the raw batches and the previous backlog into the draft.
-func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch) (Backlog, []string, []ReviewProblem, []string) {
+// okShots maps a screen id to its ok shot keys (<id>@<viewport>.<theme>).
+func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch, okShots map[string][]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
 	put := func(f Finding) {
 		order = append(order, f.Key)
 		items[f.Key] = &f
 	}
+	skips := make([]map[string]bool, len(raws))
+	for i, r := range raws {
+		skips[i] = unreviewedScreens(r.Unreviewed, okShots)
+	}
 	verdicts := map[string]string{}
-	for _, r := range raws {
+	for i, r := range raws {
 		for _, a := range r.Acceptance {
 			if r.Basis != "" && previous != nil {
 				read := slices.ContainsFunc(previous.Findings, func(f Finding) bool {
-					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return unreviewedScreen(entry) == f.Screen })
+					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !skips[i][f.Screen]
 				})
 				if !read {
 					continue
@@ -1036,7 +1062,7 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 		byID[bt.ID] = bt.Screens
 	}
 	judged, skipped := map[string]bool{}, map[string]bool{}
-	for _, r := range raws {
+	for i, r := range raws {
 		ids, known := byID[r.Batch]
 		if !known {
 			for _, msg := range r.Findings {
@@ -1055,10 +1081,8 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 			}
 			judged[id] = true
 		}
-		for _, e := range r.Unreviewed {
-			if id := unreviewedScreen(e); id != "" {
-				skipped[id] = true
-			}
+		for id := range skips[i] {
+			skipped[id] = true
 		}
 	}
 	b.Reviewed = []string{}
@@ -1148,7 +1172,13 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches.Batches)
+	okShots := map[string][]string{}
+	for _, r := range records {
+		if r.Status == "ok" {
+			okShots[r.ID] = append(okShots[r.ID], r.Key())
+		}
+	}
+	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches.Batches, okShots)
 	file := t.PassDir(pass) + "/review/backlog.draft.json"
 	if err := writeJSON(filepath.Join(t.reviewDir(pass), "backlog.draft.json"), backlog); err != nil {
 		return Result{}, err

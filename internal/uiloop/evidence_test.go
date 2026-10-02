@@ -1,6 +1,7 @@
 package uiloop
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,14 +112,42 @@ func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
 			t.Errorf("%s: done=%v, want %v", c.name, ids["tasks-1"], c.done)
 		}
 	}
-	// The completed batch still hands its unreviewed screen to the backlog.
-	writeFile(t, raw, `{"batch":"tasks-1","basis":"`+basis+`","screensRead":["tasks","task-detail"],"unreviewed":["task-detail (recipe-failed)"]}`)
-	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
-	if err != nil {
+	// The completed batch still hands its unreviewed screen to the backlog,
+	// also when shot entries name the screen's only ok shot.
+	for _, entry := range []string{"task-detail (recipe-failed)", "task-detail@phone.light (blank)", "task-detail@phone (blank)"} {
+		writeFile(t, raw, `{"batch":"tasks-1","basis":"`+basis+`","screensRead":["tasks","task-detail"],"unreviewed":["`+entry+`"]}`)
+		merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if md := merged.Data.(MergeReviewData); len(md.Left) != 0 || !slices.Contains(md.Unreviewed, "task-detail") || md.Reviewed != 1 {
+			t.Errorf("merge of a complete batch with %q unreviewed: %+v", entry, md)
+		}
+	}
+}
+
+// A previous finding's verdict counts only from a screen the raw judged: shot
+// entries naming every ok shot leave it unjudged, one of two shots does not.
+func TestMergeReviewTakesNoVerdictFromAScreenWithEveryShotUnreviewed(t *testing.T) {
+	previous := &Backlog{V: 1, Pass: 1, Findings: []Finding{{Key: "old", Screen: "task-detail", Area: "tasks", Severity: "broken", Status: "open", Title: "Old", Files: []string{"a.ts"}, Acceptance: "x"}}}
+	var raw rawReview
+	if err := json.Unmarshal([]byte(`{"batch":"tasks-1","basis":"b","screensRead":["tasks","task-detail"],"acceptance":[{"key":"old","verdict":"met"}],"unreviewed":["task-detail@phone.light (blank)"]}`), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if md := merged.Data.(MergeReviewData); len(md.Left) != 0 || !slices.Contains(md.Unreviewed, "task-detail") || md.Reviewed != 1 {
-		t.Fatalf("merge of a complete batch with an unreviewed screen: %+v", md)
+	batches := []Batch{{ID: "tasks-1", Area: "tasks", Screens: []string{"tasks", "task-detail"}}}
+	for _, c := range []struct {
+		name   string
+		shots  []string
+		judged bool
+	}{
+		{"only ok shot unreviewed", []string{"task-detail@phone.light"}, false},
+		{"judged at its other shot", []string{"task-detail@phone.light", "task-detail@phone.dark"}, true},
+	} {
+		b, unjudged, _, unreviewed := MergeReview(2, previous, []rawReview{raw}, batches, map[string][]string{"tasks": {"tasks@phone.light"}, "task-detail": c.shots})
+		if slices.Contains(b.Reviewed, "task-detail") != c.judged || slices.Contains(unreviewed, "task-detail") == c.judged ||
+			(b.Findings[0].Status == "met") != c.judged || slices.Contains(unjudged, "old") == c.judged {
+			t.Errorf("%s: reviewed %v, unreviewed %v, status %s, unjudged %v", c.name, b.Reviewed, unreviewed, b.Findings[0].Status, unjudged)
+		}
 	}
 }
 
