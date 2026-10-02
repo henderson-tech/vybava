@@ -131,7 +131,10 @@ capturing and perflab analyzes the evidence it leaves.
   holder process is dead (pid gone, or its start time changed). A dead
   holder within TTL is not stale: a session can restart and resume with its
   token. `lease break` works only on a dead holder or an expired lease.
-  TTL default 2 h, max 8 h.
+  TTL default 2 h, max 8 h. A running `run` heartbeats every 60 s and
+  keeps its lease at least 5 min ahead while it works, so a run started
+  near the end of the TTL is never cut mid-block; a holder that stopped is
+  bounded by the TTL.
 - Every device-touching verb takes the device lock for its duration
   (`DEVICE_BUSY` names the verb, pid and elapsed time), so even two copies
   holding one token never interleave adb or devicectl calls. `run` installs
@@ -163,9 +166,9 @@ capturing and perflab analyzes the evidence it leaves.
 - `machine:device-leased` (PreToolUse Bash, Claude and Codex) refuses any
   raw adb, devicectl, xctrace, go-ios, `idevice*` or Appium command naming
   a leased phone's UDID, CoreDevice id or serial (as an argument, a
-  `--flag=value`, or a `NAME=value` assignment such as `ANDROID_SERIAL` or
+  `--flag=value`, or a `NAME=value` assignment, also after `env`, such as `ANDROID_SERIAL` or
   an Appium UDID variable), the holder's own included; a bare `adb` device
-  command (no `-s`, no `ANDROID_SERIAL`) or `adb kill-server` while an
+  command (no `-s`, `-e` or `ANDROID_SERIAL`) or `adb kill-server` while an
   Android phone is leased. perflab itself is exempt (it checks the token).
   The holder uses `perflab device shell <id> --lease <t> -- <args>`. There
   is no escape hatch: the passthrough costs what the raw call costs. It is
@@ -233,14 +236,18 @@ capturing and perflab analyzes the evidence it leaves.
 - Install: iOS `devicectl device install app` + launch
   `--terminate-existing` + bundle version check; Android `install -r` (a
   downgrade or key change uninstalls first only for an unprotected package),
-  `cmd package compile -m speed -f`, base APK sha256 check.
+  `cmd package compile -m speed -f`, base APK sha256 check. An install
+  under a protected app id replaces the owner's app in place (the iOS perf
+  build signs the store bundle id) and warns `PACKAGE_PROTECTED`.
 
 ## Adapter
 
 The `perflab` section of `vybava.config.ts` (TypeScript twin
 `PerflabConfig` in `.vybava/config.ts`; refresh it with `vybava config init
 --force`). Commands run with `sh -c` from the repo root; `{token}` values
-are shell-quoted words there, raw text in `runner.env` values. FixIt's:
+are shell-quoted words there, raw text in `runner.env` values. FixIt's
+(every command a verb of its `scripts/perf/perflab-adapter.ts`; the team is
+a placeholder here):
 
 ```ts
 perflab: {
@@ -250,17 +257,20 @@ perflab: {
     ios: { scheme: 'FixIt', bundleId: 'app.fixit.client', team: 'XXXXXXXXXX' },
     android: { package: 'app.fixit.client.dev', activity: '.MainActivity' },
   },
-  profiles: { perf: { env: 'bun scripts/perf/perf-env.ts --platform {platform} --api {deviceApiOrigin}' } },
-  build: { iosBundled: 'FIXIT_PERF_DEVICE_KIND=physical FIXIT_PERF_API_URL={deviceApiOrigin} bun run e2e:build:perf -- --install --no-device-install --out {outDir}' },
-  scenarios: 'bun scripts/perf/scenarios.ts --json',
+  profiles: { perf: { env: 'bun scripts/perf/perflab-adapter.ts env --platform {platform} --api {deviceApiOrigin}' } },
+  build: {
+    iosBundled: 'FIXIT_PERF_DEVICE_KIND=physical FIXIT_PERF_API_URL={deviceApiOrigin} bun run e2e:build:perf -- --no-device-install --team {team} --out {outDir}',
+  },
+  scenarios: 'bun scripts/perf/perflab-adapter.ts scenarios',
   runner: {
-    cmd: 'bun scripts/perf/run.ts {platform} {scenarios}',
+    cmd: 'bun scripts/perf/perflab-adapter.ts run {platform} {scenarios}',
     env: {
-      FIXIT_APPIUM_PLATFORM: '{platform}', FIXIT_APPIUM_MODE: 'release', FIXIT_APPIUM_PREINSTALLED: '1',
+      FIXIT_APPIUM_PLATFORM: '{platform}', FIXIT_APPIUM_MODE: 'release', FIXIT_APPIUM_PREINSTALLED: 'true',
       FIXIT_APPIUM_IOS_UDID: '{udid}', FIXIT_APPIUM_ANDROID_UDID: '{serial}',
+      FIXIT_APPIUM_IOS_BUNDLE_ID: '{bundleId}', FIXIT_APPIUM_ANDROID_PACKAGE: '{package}',
       FIXIT_APPIUM_WDA_DERIVED_DATA: '{wdaDerivedData}', FIXIT_APPIUM_UPDATED_WDA_BUNDLE_ID: '{wdaBundleId}',
       FIXIT_APPIUM_API_URL: '{apiOrigin}', FIXIT_APPIUM_DEVICE_API_URL: '{deviceApiOrigin}',
-      FIXIT_APPIUM_MOCHA_TIMEOUT_MS: '{timeoutMs}', FIXIT_PERF_BUILD: '{variant}',
+      FIXIT_APPIUM_API_TIMEOUT_MS: '90000', FIXIT_APPIUM_MOCHA_TIMEOUT_MS: '{timeoutMs}', FIXIT_PERF_BUILD: '{variant}',
       FIXIT_PERF_OUT_DIR: '{runDir}', FIXIT_PERF_MARKS_FILE: '{runDir}/marks.jsonl',
     },
     unset: ['FIXIT_APPIUM_XCODE_ORG_ID', 'FIXIT_APPIUM_XCODE_SIGNING_ID'],
@@ -268,15 +278,17 @@ perflab: {
     appiumServerLog: 'appium/reports/appium-server.log',
   },
   api: {
-    ws: 'fixit-work-{branchSlug}',
-    origin: 'devbox url {ws} api',
-    hold: 'devbox hold {ws} --for 4h',
+    origin: 'bun scripts/perf/perflab-adapter.ts api origin',
+    hold: 'bun scripts/perf/perflab-adapter.ts api hold',
     health: '/api/v1/health/ready',
-    device: { android: { strategy: 'reverse', devicePort: 23936 }, ios: { strategy: 'bake', origin: 'devbox url {ws} api' } },
+    device: {
+      android: { strategy: 'reverse', devicePort: 23936 },
+      ios: { strategy: 'bake', origin: 'bun scripts/perf/perflab-adapter.ts api origin --device' },
+    },
   },
   hooks: {
-    signInLink: 'bun scripts/perf/login-link.ts --email {account} --redirect {route} --api {deviceApiOrigin}',
-    resetWorld: 'bun scripts/perf/reset-world.ts --scenario {world}',
+    signInLink: 'bun scripts/perf/perflab-adapter.ts sign-in-link --account {account} --route {route} --platform {platform} --api {deviceApiOrigin}',
+    resetWorld: 'bun scripts/perf/perflab-adapter.ts reset-world --world {world} --api {apiOrigin}',
   },
   out: '~/Exports/FixIt/perf/{date}-{topic}',
   hazards: { ambientGates: ['useAmbientMotion'], visibilityHint: ['shown', 'visible', 'isFocused'] },
@@ -443,7 +455,7 @@ exact command where one exists.
 | `LEDGER_LOCKED` | a ledger or lease-file lock stayed held 30 s | names the lock and its holder |
 | `DEVICE_BUSY` | another verb holds the device lock | names verb, pid, elapsed |
 | `DEVICE_STATE_CHANGED` | the installed artifact differs from the fence | `perflab install <variant> --device … --lease …` |
-| `PACKAGE_PROTECTED` | an uninstall or clear would hit a protected package | use the dev package |
+| `PACKAGE_PROTECTED` | an uninstall or clear would hit a protected package; as a warning, an install replaced a protected app in place (an iOS perf build under the store bundle id) | use the dev package; after the lab, reinstall the store app |
 | `DEVICE_COMMAND_FAILED` | a wrapped device command exited non-zero (its code in `data.exit`) | the doctor line |
 | `DEVICE_OFFLINE` / `DEVICE_UNPAIRED` / `DEVICE_LOCKED` | not reachable or Instruments cannot attach / not trusted / screen locked | `perflab doctor … --wake` / trust this Mac / unlock |
 | `DEVELOPER_MODE_OFF` | iOS Developer Mode is off | Settings > Privacy & Security > Developer Mode (human) |
