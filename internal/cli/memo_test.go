@@ -151,7 +151,8 @@ func TestMemoMirrorHomeIsReadOnlyOnDevboxGuest(t *testing.T) {
 }
 
 // Mid-merge, `memo renumber` settles LEDGER.md and its `next` is the
-// explicit `git add` of exactly the files it wrote, then the base check.
+// explicit `git add` of exactly the files it wrote (the home's .gitignore
+// its render created included), then the base check.
 func TestMemoRenumberNextStagesExactlyWhatItWrote(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := t.TempDir()
@@ -183,7 +184,6 @@ func TestMemoRenumberNextStagesExactlyWhatItWrote(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(".claude/memory/LEDGER.md", head)
-	write(".claude/memory/.gitignore", "MEMORY.md\nusage.jsonl\n")
 	commit("fork")
 	if err := git("checkout", "-qb", "work/x"); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestMemoRenumberNextStagesExactlyWhatItWrote(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil || runErr != nil || !env.OK {
 		t.Fatalf("renumber: %v %v\n%s", err, runErr, out.String())
 	}
-	if len(env.Next) != 2 || !strings.HasPrefix(env.Next[0], "git -C ") || !strings.HasSuffix(env.Next[0], " add -- .claude/memory/LEDGER.md docs/x.md") || !strings.HasPrefix(env.Next[1], "memorylint check ") {
+	if len(env.Next) != 2 || !strings.HasPrefix(env.Next[0], "git -C ") || !strings.HasSuffix(env.Next[0], " add -- .claude/memory/LEDGER.md docs/x.md .claude/memory/.gitignore") || !strings.HasPrefix(env.Next[1], "memorylint check ") {
 		t.Fatalf("next = %q", env.Next)
 	}
 	if data, _ := os.ReadFile(filepath.Join(repo, "docs", "x.md")); string(data) != "Per #t3.\n" {

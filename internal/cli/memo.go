@@ -507,6 +507,11 @@ func (rt *runtime) memoCommand(use string) *cobra.Command {
 		default:
 			next = append(next, check)
 		}
+		// A rewritten file that still conflicts is never staged here: adding
+		// it would mark its conflict resolved with the markers inside.
+		if !renumberDry && len(res.Unmerged) > 0 {
+			next = append(next, "git -C "+shellword.Quote(res.Root)+" diff --name-only --diff-filter=U  # resolve these conflicts by hand ("+strings.Join(res.Unmerged, ", ")+" had citations moved), then git add each")
+		}
 		return finish(s, res, next, warnings, nil)
 	}
 	renumber.Flags().StringVar(&renumberBase, "base", "", "ref whose ids win (default: the merge in progress, else origin's default branch)")

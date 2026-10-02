@@ -116,7 +116,7 @@ func TestRebaseRowsMovesTheBranchsOwnCitations(t *testing.T) {
 		t.Fatalf("diag: %+v", d)
 	}
 	want := base +
-		"- #t4 project/perf Branch fact cites #t1 and acme-team#t2 and other-team#t2. ^t4\n" +
+		"- #t4 project/perf Branch fact cites #t1 and acme-team#t4 and other-team#t2. ^t4\n" +
 		"- #t5 project/perf supersedes #t4: Branch fact again. -> [[LEDGER#^t4]] [[acme-team/LEDGER#^t4]] [[other-team/LEDGER#^t2]] ^t5\n" +
 		"- #t6 project/perf supersedes #t1: Branch also replaces it. ^t6\n"
 	if string(got.Text) != want {
@@ -186,6 +186,7 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	write(".claude/memory/LEDGER.md", fixture(t, "fork.md"))
 	write(".claude/memory/.gitignore", []byte("MEMORY.md\nusage.jsonl\n"))
 	write("docs/shared.md", []byte("# Shared\n\nmiddle\n"))
+	write("docs/clash.md", []byte("status: open\n"))
 	run("add", "-A")
 	run("commit", "-qm", "fork")
 	run("checkout", "-qb", "work/perf")
@@ -193,6 +194,7 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	write(".claude/memory/notes/skia-picture.md", []byte("Folds into #t330, extends #t338.\n"))
 	write("docs/perf.md", []byte("Judge 120 Hz by framestats (#t339), not #t329.\n"))
 	write("docs/shared.md", []byte("branch cites #t335\n# Shared\n\nmiddle\n"))
+	write("docs/clash.md", []byte("status: see #t336\n"))
 	run("add", "-A")
 	run("commit", "-qm", "branch rows")
 	usage := `{"row":335,"kind":"cite","at":"2026-10-01T10:00:00Z","session":"s1"}` + "\n" + `{"row":329,"kind":"cite","at":"2026-10-01T10:00:00Z","session":"s1"}` + "\n"
@@ -201,6 +203,7 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	write(".claude/memory/LEDGER.md", fixture(t, "main.md"))
 	write("docs/devbox.md", []byte("Web lanes need standard (#t335).\n"))
 	write("docs/shared.md", []byte("# Shared\n\nmiddle\nmain cites #t335\n"))
+	write("docs/clash.md", []byte("status: see #t336 on main\n"))
 	run("add", "-A")
 	run("commit", "-qm", "main rows")
 	run("checkout", "-q", "work/perf")
@@ -217,9 +220,19 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 		t.Fatalf("dry run wrote or misjudged: %+v", dry)
 	}
 
-	if _, err := git(repo, "merge", "-q", "main", "-m", "merge main"); err == nil {
+	if _, err := git(repo, "-c", "merge.conflictStyle=merge", "merge", "-q", "main", "-m", "merge main"); err == nil {
 		t.Fatal("the real fork merged without a LEDGER.md conflict")
 	}
+	// A bad usage line refuses the whole renumber before any file is written.
+	write(".claude/memory/usage.jsonl", []byte(usage+"not json\n"))
+	conflictedLedger := read(".claude/memory/LEDGER.md")
+	if _, _, err := Renumber(home, "", false, now); err == nil {
+		t.Fatal("a bad usage.jsonl line must refuse the renumber")
+	}
+	if read(".claude/memory/LEDGER.md") != conflictedLedger || read("docs/perf.md") != "Judge 120 Hz by framestats (#t339), not #t329.\n" {
+		t.Fatal("a refused renumber wrote files: a re-run would move their citations twice")
+	}
+	write(".claude/memory/usage.jsonl", []byte(usage))
 	res, warnings, err := Renumber(home, "", false, now)
 	if err != nil || len(warnings) > 0 {
 		t.Fatalf("renumber: %v %v", err, warnings)
@@ -235,6 +248,7 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 		"docs/perf.md":                         "Judge 120 Hz by framestats (#t367), not #t329.\n",
 		"docs/shared.md":                       "branch cites #t363\n# Shared\n\nmiddle\nmain cites #t335\n",
 		"docs/devbox.md":                       "Web lanes need standard (#t335).\n",
+		"docs/clash.md":                        "<<<<<<< HEAD\nstatus: see #t364\n=======\nstatus: see #t336 on main\n>>>>>>> main\n",
 	} {
 		if got := read(rel); got != want {
 			t.Errorf("%s = %q, want %q", rel, got, want)
@@ -243,6 +257,9 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 	wantPaths := []string{".claude/memory/LEDGER.md", ".claude/memory/notes/skia-picture.md", "docs/perf.md", "docs/shared.md"}
 	if !reflect.DeepEqual(res.Paths, wantPaths) {
 		t.Fatalf("paths = %v, want %v", res.Paths, wantPaths)
+	}
+	if want := []string{"docs/clash.md"}; !reflect.DeepEqual(res.Unmerged, want) {
+		t.Fatalf("unmerged = %v, want %v: a still-conflicted file is never in the staging list", res.Unmerged, want)
 	}
 	var rows []int
 	for _, line := range strings.Split(strings.TrimSpace(read(".claude/memory/usage.jsonl")), "\n") {
@@ -259,7 +276,7 @@ func TestRenumberSettlesAMergeOfTheRealCollision(t *testing.T) {
 		t.Fatalf("MEMORY.md not rendered: %v", err)
 	}
 
-	run("add", "--", ".claude/memory/LEDGER.md")
+	run("add", "--", ".claude/memory/LEDGER.md", "docs/clash.md")
 	run("commit", "-qm", "settled")
 	if f := LintBase(home, "main"); len(f) > 0 {
 		t.Fatalf("settled ledger still collides: %+v", f)

@@ -220,6 +220,14 @@ memorylint check <home> --base origin/main
 - **Local usage moves too.** The home's `usage.jsonl` (gitignored, this
   checkout's citations) credited the branch's rows, so its events move to
   the new ids; `MEMORY.md` is rendered after.
+- **All or nothing.** Every edit is computed, and `usage.jsonl` validated,
+  before a file is written; a write that fails restores the files written
+  before it. A half-applied move map, re-run, would move a citation twice.
+- **The staging list is exact.** `next` names `git add` of the settled
+  ledger, the files whose citations moved and the home's `.gitignore` when
+  the render wrote it. A file that still holds its own conflict has its
+  citations moved but is never in that list (`unmerged`): adding it would
+  mark the conflict resolved with its markers inside.
 - **Base**: `--base <ref>`, else the merge in progress (`MERGE_HEAD`), else
   the pull request's base (`origin/$GITHUB_BASE_REF`), `origin/HEAD` or
   `origin/main`. Without `--dry-run` it refuses `BASE_NOT_MERGED` on a

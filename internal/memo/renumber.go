@@ -89,6 +89,7 @@ func RebaseRows(baseText, branchText []byte) (Rebased, *Diag) {
 	out := Rebased{Alias: base.Alias, Moves: []Move{}}
 	moved := map[int]int{}
 	handled := map[int]string{} // branch id -> raw key, so a duplicate line is read once
+	var originals []Row         // the added rows as the branch wrote them
 	next := base.NextID()
 	for _, r := range rows {
 		raw := r.key()
@@ -98,7 +99,7 @@ func RebaseRows(baseText, branchText []byte) (Rebased, *Diag) {
 		if k, ok := handled[r.ID]; ok && k == raw {
 			continue
 		}
-		from, first := r.ID, true
+		from, first, original := r.ID, true, r
 		if _, ok := handled[r.ID]; ok {
 			first = false // two different branch rows share an id: refs keep the first
 		}
@@ -109,6 +110,7 @@ func RebaseRows(baseText, branchText []byte) (Rebased, *Diag) {
 			to, next = next, next+1
 			r.ID, r.Line = to, 0
 			out.Added = append(out.Added, r)
+			originals = append(originals, original)
 			byKey[r.key()] = to
 		}
 		if to != from {
@@ -117,6 +119,14 @@ func RebaseRows(baseText, branchText []byte) (Rebased, *Diag) {
 			}
 			out.Moves = append(out.Moves, Move{From: from, To: to, Topic: r.Type + "/" + r.Topic, Folded: folded})
 		}
+	}
+	// Folding needs each row rewritten with the moves before it; the text
+	// written is the branch's own wording rewritten once with the whole map,
+	// so a citation of the row itself or of a later row moves too.
+	for i, original := range originals {
+		r := original.rewritten(moved, base.Alias)
+		r.ID, r.Line = out.Added[i].ID, 0
+		out.Added[i] = r
 	}
 	var b bytes.Buffer
 	b.Write(baseText)
@@ -286,6 +296,19 @@ type RefEdit struct {
 	Path  string `json:"path"` // repo-relative
 	Lines []int  `json:"lines"`
 	Refs  int    `json:"refs"`
+	// Unmerged: the file still holds a conflict of its own merge. Its
+	// citations moved, but it is never in the staging list: adding it would
+	// declare that conflict resolved with its markers inside.
+	Unmerged bool `json:"unmerged,omitempty"`
+}
+
+// pendingWrite is one file Renumber rewrites, held until every edit has been
+// computed so a failure leaves the work tree as it was.
+type pendingWrite struct {
+	path     string
+	old, new []byte
+	existed  bool
+	mode     os.FileMode
 }
 
 // RenumberResult is what `memo renumber` settled (or, dry, would settle).
@@ -303,9 +326,11 @@ type RenumberResult struct {
 	// NoBaseLedger: the base carries no ledger at this path, so nothing
 	// can collide.
 	NoBaseLedger bool `json:"noBaseLedger,omitempty"`
-	// Paths are the repo-relative files written, for an explicit `git add`.
-	Paths []string `json:"paths"`
-	Root  string   `json:"root"`
+	// Paths are the repo-relative files written and resolved, for an explicit
+	// `git add`; Unmerged are rewritten files whose own conflicts remain.
+	Paths    []string `json:"paths"`
+	Unmerged []string `json:"unmerged"`
+	Root     string   `json:"root"`
 }
 
 // maxRefFile bounds the files the reference rewrite reads; a bigger one is
@@ -321,7 +346,7 @@ const maxRefFile = 4 << 20
 // and, unless dry, a branch that neither merges the base now nor has
 // merged it.
 func Renumber(home, base string, dry bool, now time.Time) (RenumberResult, []*Diag, error) {
-	res := RenumberResult{Home: home, Ledger: filepath.Join(home, LedgerFile), Moves: []Move{}, Files: []RefEdit{}, Paths: []string{}}
+	res := RenumberResult{Home: home, Ledger: filepath.Join(home, LedgerFile), Moves: []Move{}, Files: []RefEdit{}, Paths: []string{}, Unmerged: []string{}}
 	l, d, err := Load(res.Ledger)
 	switch {
 	case os.IsNotExist(err):
@@ -383,28 +408,48 @@ func Renumber(home, base string, dry bool, now time.Time) (RenumberResult, []*Di
 	}
 	moves := reb.MoveMap()
 	ledgerRel := filepath.ToSlash(filepath.Join(prefix, LedgerFile))
+	// Every edit is computed (and usage.jsonl validated) before anything is
+	// written: a half-applied move map, re-run, would move a citation twice.
+	var writes []pendingWrite
 	if len(moves) > 0 {
 		skip := map[string]bool{ledgerRel: true, filepath.ToSlash(filepath.Join(prefix, IndexFile)): true, filepath.ToSlash(filepath.Join(prefix, UsageFile)): true}
-		if res.Files, err = rewriteBranchRefs(root, base, moves, reb.Alias, skip, dry); err != nil {
+		var files []pendingWrite
+		if res.Files, files, err = rewriteBranchRefs(root, base, moves, reb.Alias, skip); err != nil {
 			return res, warnings, err
 		}
-		if res.Usage, err = remapUsage(home, moves, dry); err != nil {
+		writes = append(writes, files...)
+		usage, n, err := remapUsage(home, moves)
+		if err != nil {
 			return res, warnings, err
+		}
+		if res.Usage = n; usage != nil {
+			writes = append(writes, *usage)
 		}
 	}
 	if dry {
 		return res, warnings, nil
 	}
 	if res.Changed {
-		if err := writeKeepingMode(res.Ledger, reb.Text); err != nil {
+		w, err := pendingFile(res.Ledger, reb.Text)
+		if err != nil {
 			return res, warnings, err
 		}
+		writes = append(writes, w)
 		res.Paths = append(res.Paths, ledgerRel)
 	}
 	for _, f := range res.Files {
-		res.Paths = append(res.Paths, f.Path)
+		if f.Unmerged {
+			res.Unmerged = append(res.Unmerged, f.Path)
+		} else {
+			res.Paths = append(res.Paths, f.Path)
+		}
 	}
-	res.Written = res.Changed || len(res.Files) > 0
+	if err := writeAll(writes); err != nil {
+		return res, warnings, err
+	}
+	res.Written = len(writes) > 0
+	gitignore := filepath.Join(home, GitignoreFile)
+	ignoreBefore, _ := os.ReadFile(gitignore)
 	settled, d, err := Load(res.Ledger)
 	if err != nil || d != nil {
 		return res, warnings, diagOrErrDiag(d, err, "the settled ledger does not load")
@@ -418,21 +463,36 @@ func Renumber(home, base string, dry bool, now time.Time) (RenumberResult, []*Di
 	} else if tracked != nil {
 		warnings = append(warnings, tracked)
 	}
+	// The render may have written the home's .gitignore (EnsureGitignore): a
+	// repo file this verb changed, so it rides the same staging list.
+	if ignoreAfter, err := os.ReadFile(gitignore); err == nil && !bytes.Equal(ignoreBefore, ignoreAfter) {
+		res.Paths = append(res.Paths, filepath.ToSlash(filepath.Join(prefix, GitignoreFile)))
+		res.Written = true
+	}
 	return res, warnings, nil
 }
 
 // rewriteBranchRefs moves the citations on every line the branch wrote: a
 // line of a file that differs from base (or is untracked) and that base's
 // copy of the file does not hold verbatim. A line the base holds keeps the
-// base's meaning, whichever side it reached the work tree from.
-func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip map[string]bool, dry bool) ([]RefEdit, error) {
+// base's meaning, whichever side it reached the work tree from. Nothing is
+// written: the edits come back as pending writes.
+func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip map[string]bool) ([]RefEdit, []pendingWrite, error) {
 	changed, err := gitStdout(root, "diff", "--name-only", "--no-relative", "--no-renames", "-z", base, "--")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	untracked, err := gitStdout(root, "ls-files", "-z", "--others", "--exclude-standard")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	conflicted, err := gitStdout(root, "diff", "--name-only", "--no-relative", "--diff-filter=U", "-z")
+	if err != nil {
+		return nil, nil, err
+	}
+	unmerged := map[string]bool{}
+	for _, p := range strings.Split(string(conflicted), "\x00") {
+		unmerged[p] = p != ""
 	}
 	seen := map[string]bool{}
 	var paths []string
@@ -443,7 +503,7 @@ func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip 
 		}
 	}
 	sort.Strings(paths)
-	edits := []RefEdit{}
+	edits, writes := []RefEdit{}, []pendingWrite{}
 	for _, p := range paths {
 		full := filepath.Join(root, filepath.FromSlash(p))
 		info, err := os.Lstat(full)
@@ -452,7 +512,7 @@ func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip 
 		}
 		data, err := os.ReadFile(full)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 			continue
@@ -467,7 +527,7 @@ func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip 
 			}
 		}
 		lines := strings.SplitAfter(string(data), "\n")
-		edit := RefEdit{Path: p}
+		edit := RefEdit{Path: p, Unmerged: unmerged[p]}
 		for i, line := range lines {
 			body := strings.TrimRight(line, "\r\n")
 			if baseLines[body] {
@@ -484,27 +544,24 @@ func rewriteBranchRefs(root, base string, moves map[int]int, alias string, skip 
 		if edit.Refs == 0 {
 			continue
 		}
-		if !dry {
-			if err := os.WriteFile(full, []byte(strings.Join(lines, "")), info.Mode().Perm()); err != nil {
-				return nil, err
-			}
-		}
+		writes = append(writes, pendingWrite{path: full, old: data, new: []byte(strings.Join(lines, "")), existed: true, mode: info.Mode().Perm()})
 		edits = append(edits, edit)
 	}
-	return edits, nil
+	return edits, writes, nil
 }
 
-// remapUsage moves the home's local usage events onto the new ids: before
-// the settle every one of them credited the branch's row. Only the lines
-// that change are re-encoded; the file is replaced through a rename.
-func remapUsage(home string, moves map[int]int, dry bool) (int, error) {
+// remapUsage computes the home's local usage events moved onto the new ids:
+// before the settle every one of them credited the branch's row. Only the
+// lines that change are re-encoded. A line that is not an event refuses the
+// whole renumber before anything is written.
+func remapUsage(home string, moves map[int]int) (*pendingWrite, int, error) {
 	path := filepath.Join(home, UsageFile)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return 0, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	lines := strings.SplitAfter(string(data), "\n")
 	n := 0
@@ -515,7 +572,7 @@ func remapUsage(home string, moves map[int]int, dry bool) (int, error) {
 		}
 		var e Event
 		if err := json.Unmarshal([]byte(body), &e); err != nil {
-			return 0, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: i + 1, Detail: fmt.Sprintf("%s:%d is not a usage event", path, i+1), Fix: fmt.Sprintf("remove %s:%d by hand", path, i+1)}
+			return nil, 0, &Diag{Code: DiagLedgerInvalid, Severity: "error", Line: i + 1, Detail: fmt.Sprintf("%s:%d is not a usage event; nothing was renumbered", path, i+1), Fix: fmt.Sprintf("remove %s:%d by hand, then re-run memo renumber", path, i+1)}
 		}
 		to, ok := moves[e.Row]
 		if !ok {
@@ -524,27 +581,71 @@ func remapUsage(home string, moves map[int]int, dry bool) (int, error) {
 		e.Row = to
 		enc, err := json.Marshal(e)
 		if err != nil {
-			return 0, err
+			return nil, 0, err
 		}
 		lines[i] = string(enc) + line[len(body):]
 		n++
 	}
-	if n == 0 || dry {
-		return n, nil
+	if n == 0 {
+		return nil, 0, nil
 	}
-	tmp := path + ".renumber"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "")), 0o644); err != nil {
-		return 0, err
-	}
-	return n, os.Rename(tmp, path)
+	w, err := pendingFile(path, []byte(strings.Join(lines, "")))
+	return &w, n, err
 }
 
-func writeKeepingMode(path string, data []byte) error {
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
+// pendingFile holds the replacement of path, remembering what it replaces.
+func pendingFile(path string, data []byte) (pendingWrite, error) {
+	w := pendingWrite{path: path, new: data, mode: 0o644}
+	old, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		w.old, w.existed = old, true
+		if info, err := os.Stat(path); err == nil {
+			w.mode = info.Mode().Perm()
+		}
+	case !os.IsNotExist(err):
+		return w, err
 	}
-	return os.WriteFile(path, data, mode)
+	return w, nil
+}
+
+// writeAll replaces each file through a temp file and a rename. When one
+// fails, every file already replaced gets its old content back, so a
+// re-run starts from the same tree instead of moving citations twice.
+func writeAll(writes []pendingWrite) error {
+	for i, w := range writes {
+		if err := replaceFile(w.path, w.new, w.mode); err != nil {
+			var lost []string
+			for _, done := range writes[:i] {
+				if !done.existed {
+					if rmErr := os.Remove(done.path); rmErr != nil {
+						lost = append(lost, done.path)
+					}
+					continue
+				}
+				if rbErr := replaceFile(done.path, done.old, done.mode); rbErr != nil {
+					lost = append(lost, done.path)
+				}
+			}
+			if len(lost) > 0 {
+				return fmt.Errorf("renumber stopped at %s (%w) and could not restore %s: those files hold the moved ids, the rest do not", w.path, err, strings.Join(lost, ", "))
+			}
+			return fmt.Errorf("renumber stopped at %s (%w); every file written before it was restored, nothing moved", w.path, err)
+		}
+	}
+	return nil
+}
+
+func replaceFile(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".renumber"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // DefaultBase is the ref a home's branch merges into: the pull request's base
