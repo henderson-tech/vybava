@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -196,4 +197,42 @@ func TestScenarioRows(t *testing.T) {
 		}
 	}
 	_ = io.Discard
+}
+
+// One adapter runner.env serves both platforms: on the S20 the iOS-only
+// {wdaBundleId} once failed the whole run CONFIG_INVALID (2026-10-02). A
+// token that resolves to nothing leaves its variable unset in the child.
+func TestRunnerCommandLeavesForeignPlatformEnvUnset(t *testing.T) {
+	c := decodeSection(t, fixitSection)
+	tool := &Tool{Config: &c}
+	for _, tc := range []struct {
+		platform  string
+		vars      map[string]string
+		wantEnv   string
+		wantUnset string
+	}{
+		{"android", map[string]string{"udid": "", "serial": "RF8N21PY1BF", "wdaDerivedData": "", "timeoutMs": "1", "runDir": "/r"},
+			"FIXIT_APPIUM_ANDROID_UDID=RF8N21PY1BF", "FIXIT_APPIUM_IOS_UDID FIXIT_APPIUM_WDA_DERIVED_DATA"},
+		{"ios", map[string]string{"udid": "00008030-001E6D961122802E", "serial": "", "wdaDerivedData": "/c/wda", "timeoutMs": "1", "runDir": "/r"},
+			"FIXIT_APPIUM_IOS_UDID=00008030-001E6D961122802E", "FIXIT_APPIUM_ANDROID_UDID"},
+	} {
+		v := NewVars(tc.vars)
+		v.Set("platform", tc.platform)
+		v.SetList("scenarios", []string{"calendar-view-switch-smooth"})
+		_, env, unset, err := tool.runnerCommand(v)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.platform, err)
+		}
+		if !slices.Contains(env, tc.wantEnv) {
+			t.Errorf("%s: env %v lacks %s", tc.platform, env, tc.wantEnv)
+		}
+		for _, name := range strings.Fields(tc.wantUnset) {
+			if !slices.Contains(unset, name) {
+				t.Errorf("%s: %s not unset (%v)", tc.platform, name, unset)
+			}
+		}
+		if !slices.Contains(unset, "FIXIT_APPIUM_XCODE_ORG_ID") {
+			t.Errorf("%s: runner.unset dropped: %v", tc.platform, unset)
+		}
+	}
 }

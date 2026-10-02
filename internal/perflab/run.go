@@ -272,6 +272,10 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 			}
 		}
 	case devlab.PlatformAndroid:
+		// The prebuilt WDA is iOS-only: its tokens resolve to nothing here, so
+		// a runner.env shared by both platforms leaves them unset.
+		v.Set("wdaBundleId", "")
+		v.Set("wdaDerivedData", "")
 		// The screen must not sleep mid-window; background apps must not
 		// compete for the big cores. The crash buffer is read by time, so it
 		// is never cleared.
@@ -340,14 +344,14 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 		v.Set("timeoutMs", strconv.FormatInt(window.Milliseconds(), 10))
 		v.SetList("scenarios", o.Scenarios)
 		v.Set("scenario", o.Scenarios[0])
-		cmd, env, err := t.runnerCommand(v)
+		cmd, env, unset, err := t.runnerCommand(v)
 		if err != nil {
 			return Result{}, err
 		}
 		var res caseResult
 		for attempt := 1; ; attempt++ {
 			prog.Phase("runner", "variant="+rv.Label, "block="+strconv.Itoa(b.Seq), "attempt="+strconv.Itoa(attempt))
-			res = t.runCase(ctx, h, caseDir, cmd, env, c.Runner.Unset, window, prog)
+			res = t.runCase(ctx, h, caseDir, cmd, env, unset, window, prog)
 			b.Exit = res.exit
 			if res.code == "" {
 				break
@@ -560,22 +564,32 @@ func (t *Tool) ensureInstalled(ctx context.Context, h *devlab.Hold, rv RunVarian
 	return buildindex.VerifyInstalled(ctx, t.Exec, bdevice(h), stampOf(string(h.Device.Platform), last), rv.ID)
 }
 
-// runnerCommand resolves runner.cmd and runner.env.
-func (t *Tool) runnerCommand(v *Vars) (string, []string, error) {
+// runnerCommand resolves runner.cmd and runner.env, and the names the child
+// must not inherit: runner.unset plus every runner.env entry whose tokens
+// resolve to nothing on this platform (one adapter env map serves both: on
+// Android {wdaBundleId} is empty, on iOS {serial}), so the runner's own
+// default applies instead of an empty value or a stale inherited one.
+func (t *Tool) runnerCommand(v *Vars) (string, []string, []string, error) {
 	c := t.Config
 	cmd, err := v.Expand("runner.cmd", c.Runner.Cmd, true)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var env []string
+	unset := append([]string(nil), c.Runner.Unset...)
 	for _, name := range sortedKeys(c.Runner.Env) {
-		val, err := v.Expand("runner.env."+name, c.Runner.Env[name], false)
+		tmpl := c.Runner.Env[name]
+		val, err := v.Expand("runner.env."+name, tmpl, false)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
+		}
+		if val == "" && tokenRe.MatchString(tmpl) {
+			unset = append(unset, name)
+			continue
 		}
 		env = append(env, name+"="+val)
 	}
-	return cmd, env, nil
+	return cmd, env, unset, nil
 }
 
 // deviceState snapshots thermal status and swap (Android); iOS exposes
