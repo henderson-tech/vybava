@@ -146,20 +146,23 @@ and the socket API: docs/watch.md.`,
 		Short: "Run the daemon in the foreground (the LaunchAgent runs this)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// The one-daemon lock comes first: a second daemon reading
+			// state.json before it would serve a snapshot the first one
+			// is still changing.
+			ln, err := watch.Listen(deps.paths.Socket)
+			if err != nil {
+				return err
+			}
 			e, err := watch.NewEngine(deps.probes(), watch.Options{
 				Store:  watch.Store{Path: deps.paths.State},
 				Budget: watch.NewBudget(ghCapacity, ghPerHour),
 				Log:    rt.stderr,
 			})
 			if err != nil {
-				return err
+				return errors.Join(err, ln.Close())
 			}
 			for _, register := range deps.serveTasks {
 				register(e)
-			}
-			ln, err := watch.Listen(deps.paths.Socket)
-			if err != nil {
-				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
