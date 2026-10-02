@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/framestats"
-	"github.com/henderson-tech/vybava/internal/perflab/hostexec"
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/xctrace"
 )
@@ -107,20 +106,6 @@ type RunAnalysis struct {
 type Result struct {
 	Inputs []Input       `json:"inputs,omitempty"`
 	Runs   []RunAnalysis `json:"runs,omitempty"`
-}
-
-// FromHostexec adapts perflab's process runner to the readers' Runner.
-func FromHostexec(r hostexec.Runner, timeout time.Duration) xctrace.Runner {
-	return func(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
-		res, err := r.Run(ctx, hostexec.Cmd{Argv: append([]string{name}, args...), Timeout: timeout})
-		if err != nil {
-			return res.Stdout, res.Stderr, -1, err
-		}
-		if res.TimedOut {
-			return res.Stdout, res.Stderr, -1, fmt.Errorf("%s timed out after %s", name, timeout)
-		}
-		return res.Stdout, res.Stderr, res.Exit, nil
-	}
 }
 
 // Analyze reads every input: a .trace bundle, a poll sidecar
