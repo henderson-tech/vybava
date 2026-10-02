@@ -449,6 +449,7 @@ func TestApkResourcesParsesTheDump(t *testing.T) {
 // checkout) was built from other native inputs and is never filed under it.
 func TestImportRefusesAnArtifactOfAnotherAppVersion(t *testing.T) {
 	fakeAndroidSDK(t)
+	t.Setenv("JAVA_HOME", "/opt/jdk21") // Linux reads it; macOS asks java_home (scripted below)
 	s := testStore(t)
 	p := androidProject(t)
 	apk := filepath.Join(t.TempDir(), "app-release.apk")
