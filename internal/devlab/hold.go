@@ -71,20 +71,44 @@ func (h *Hold) Heartbeat() error {
 // HeartbeatEvery is how often a long verb bumps the heartbeat.
 const HeartbeatEvery = 60 * time.Second
 
-// StartHeartbeat bumps the heartbeat every interval until stop is called or
-// ctx ends; a failed bump (the lease was broken) is reported on errs.
+// ActiveGrace is how far ahead a running long verb keeps its lease. A run
+// started near the end of the TTL would otherwise lose the lease mid-block:
+// its next install fails LEASE_INVALID, and an expired lease can be broken
+// under a live measurement. Only a verb still beating extends it, so a
+// holder that stopped (or died) is bounded by the TTL plus this grace.
+const ActiveGrace = 5 * time.Minute
+
+// keepAlive bumps the heartbeat and keeps expiresAt at least ActiveGrace
+// ahead.
+func (h *Hold) keepAlive() error {
+	return h.update("heartbeat", func(ls *Lease) {
+		now := h.lab.now()
+		ls.HeartbeatAt = &now
+		if floor := now.Add(ActiveGrace); ls.ExpiresAt == nil || ls.ExpiresAt.Before(floor) {
+			ls.ExpiresAt = &floor
+		}
+	})
+}
+
+// StartHeartbeat keeps the lease alive (keepAlive) now and every interval
+// until stop is called or ctx ends; a failed bump (the lease was broken) is
+// reported on errs.
 func (h *Hold) StartHeartbeat(ctx context.Context, every time.Duration) (stop func(), errs <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	ch := make(chan error, 1)
 	go func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
+		if err := h.keepAlive(); err != nil {
+			ch <- err
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := h.Heartbeat(); err != nil {
+				if err := h.keepAlive(); err != nil {
 					select {
 					case ch <- err:
 					default:

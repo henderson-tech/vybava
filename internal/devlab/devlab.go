@@ -99,6 +99,9 @@ type Lab struct {
 	ProcStart func(pid int) (start time.Time, ok bool, err error)
 	// StopGroup sends SIGTERM to a process group a lease recorded.
 	StopGroup func(pgid int) error
+	// StopProcess sends SIGTERM to one recorded process that does not lead
+	// its group (net forward under a shell's group): never that whole group.
+	StopProcess func(pid int) error
 	// HTTPGet fetches the RemoteXPC tunnel registry.
 	HTTPGet func(ctx context.Context, url string) ([]byte, error)
 	// TempDir is where devicectl writes its JSON (a file is its only
@@ -134,17 +137,18 @@ func Open() (*Lab, error) {
 		return nil, err
 	}
 	return &Lab{
-		StateDir:  dir,
-		Exec:      RealExec,
-		LookPath:  exec.LookPath,
-		Now:       time.Now,
-		Getenv:    os.Getenv,
-		ProcStart: procStart,
-		StopGroup: stopGroup,
-		HTTPGet:   httpGet,
-		TempDir:   os.TempDir,
-		LockWait:  DefaultLockWait,
-		Pid:       os.Getpid(),
+		StateDir:    dir,
+		Exec:        RealExec,
+		LookPath:    exec.LookPath,
+		Now:         time.Now,
+		Getenv:      os.Getenv,
+		ProcStart:   procStart,
+		StopGroup:   stopGroup,
+		StopProcess: stopProcess,
+		HTTPGet:     httpGet,
+		TempDir:     os.TempDir,
+		LockWait:    DefaultLockWait,
+		Pid:         os.Getpid(),
 	}, nil
 }
 

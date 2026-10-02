@@ -56,7 +56,8 @@ type Installed struct {
 	ByGeneration   int       `json:"byGeneration"`
 }
 
-// Child is a process group a lease owns.
+// Child is a process a lease owns: the group it leads (PGID == PID), or the
+// process alone when it sits in another process's group.
 type Child struct {
 	PID       int       `json:"pid"`
 	PGID      int       `json:"pgid"`
@@ -386,9 +387,12 @@ func (l *Lab) end(ls *Lease, reason string) {
 	ls.Children = nil
 }
 
-// stopChildren SIGTERMs each recorded process group whose leader is still
-// the process the lease recorded (same start time); a recycled pid or an
-// unreadable process table is left alone.
+// stopChildren SIGTERMs each recorded child that is still the process the
+// lease recorded (same start time); a recycled pid or an unreadable process
+// table is left alone. A child that leads its group (a runner perflab
+// started) gets the group signal; one inside another process's group (a
+// `net forward` under the invoking shell's group, which may hold that
+// shell's caller too) gets the pid signal alone.
 func (l *Lab) stopChildren(ls *Lease) {
 	for _, c := range ls.Children {
 		start, ok, err := l.ProcStart(c.PID)
@@ -398,7 +402,11 @@ func (l *Lab) stopChildren(ls *Lease) {
 		if d := start.Sub(c.StartedAt); d > startSlack || d < -startSlack {
 			continue
 		}
-		_ = l.StopGroup(c.PGID)
+		if c.PGID == c.PID {
+			_ = l.StopGroup(c.PGID)
+		} else if l.StopProcess != nil {
+			_ = l.StopProcess(c.PID)
+		}
 	}
 }
 

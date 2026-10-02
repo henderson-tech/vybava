@@ -55,6 +55,18 @@ func stopGroup(pgid int) error {
 	return err
 }
 
+// stopProcess sends SIGTERM to one process a lease recorded.
+func stopProcess(pid int) error {
+	if pid <= 1 {
+		return errors.New("refusing to signal pid <= 1")
+	}
+	err := syscall.Kill(pid, syscall.SIGTERM)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
 // ownGroup starts a child in its own process group, so a timeout (or a
 // lease release) stops exactly the tree devlab started.
 func ownGroup(cmd *exec.Cmd) {

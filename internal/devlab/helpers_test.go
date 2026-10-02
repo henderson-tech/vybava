@@ -99,8 +99,10 @@ type testLab struct {
 	env     map[string]string
 	procs   map[int]time.Time // live pids and their start times
 	stopped []int
-	clock   time.Time
-	tunnels string
+	// signalled are the single pids StopProcess reached.
+	signalled []int
+	clock     time.Time
+	tunnels   string
 }
 
 func newTestLab(t *testing.T) *testLab {
@@ -125,7 +127,8 @@ func newTestLab(t *testing.T) *testLab {
 			start, ok := tl.procs[pid]
 			return start, ok, nil
 		},
-		StopGroup: func(pgid int) error { tl.stopped = append(tl.stopped, pgid); return nil },
+		StopGroup:   func(pgid int) error { tl.stopped = append(tl.stopped, pgid); return nil },
+		StopProcess: func(pid int) error { tl.signalled = append(tl.signalled, pid); return nil },
 		HTTPGet: func(context.Context, string) ([]byte, error) {
 			if tl.tunnels == "" {
 				return nil, errors.New("connection refused")

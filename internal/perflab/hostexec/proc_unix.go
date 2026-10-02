@@ -99,5 +99,7 @@ func Terminate(pid int) error {
 }
 
 // ProcessGroup is this process's group: a lease records it for a verb that
-// streams in-process (net forward), so a release's group SIGTERM reaches it.
+// streams in-process (net forward). A release signals the group only when
+// this process leads it (a terminal job); under a shell's group it signals
+// this pid alone (devlab stopChildren).
 func ProcessGroup() int { return syscall.Getpgrp() }

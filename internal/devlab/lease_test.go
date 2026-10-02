@@ -350,6 +350,86 @@ func TestReleaseSessionOnlyThatSession(t *testing.T) {
 	}
 }
 
+// A child inside another process's group (net forward under the invoking
+// shell's group) is stopped by its pid alone: the group may hold the
+// shell's caller too. A child leading its own group (a runner) gets the
+// group signal.
+func TestReleaseStopsAForeignGroupChildByPid(t *testing.T) {
+	tl := newTestLab(t)
+	tl.seed(t, map[string]*Device{"s20": s20Row()})
+	tl.as("session-a", claudePID)
+	token := tl.acquire(t, "s20", time.Hour)
+	h, err := tl.Hold("s20", token, "net forward")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl.procs[52000], tl.procs[53000] = tl.clock, tl.clock
+	for _, c := range []Child{{PID: 52000, PGID: 51900, What: "perflab net forward :23936"}, {PID: 53000, PGID: 53000, What: "perflab run"}} {
+		if err := h.RecordChild(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.Done()
+	if _, err := tl.ReleaseLease("s20", token); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(tl.signalled) != "[52000]" || fmt.Sprint(tl.stopped) != "[53000]" {
+		t.Fatalf("signalled pids %v, stopped groups %v: the forwarder's shell group 51900 must never be signalled", tl.signalled, tl.stopped)
+	}
+}
+
+// A long verb's heartbeat keeps its lease at least ActiveGrace ahead, so a
+// run started near the end of the TTL is never cut by it; a lease with
+// more time left keeps its expiry.
+func TestHeartbeatKeepsAnActiveLeaseAlive(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ttl  time.Duration
+		want time.Duration
+	}{
+		{"near the end of the TTL", 2 * time.Minute, ActiveGrace},
+		{"plenty left", time.Hour, time.Hour},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tl := newTestLab(t)
+			tl.seed(t, map[string]*Device{"s20": s20Row()})
+			tl.as("session-a", claudePID)
+			token := tl.acquire(t, "s20", c.ttl)
+			h, err := tl.Hold("s20", token, "run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Done()
+			acquired := tl.clock
+			tl.clock = tl.clock.Add(time.Second) // the beat is seen by its heartbeatAt
+			stop, errs := h.StartHeartbeat(context.Background(), time.Hour)
+			defer stop()
+			want := acquired.Add(c.want)
+			if c.want == ActiveGrace {
+				want = tl.clock.Add(ActiveGrace)
+			}
+			for deadline := time.Now().Add(5 * time.Second); ; {
+				ls, err := tl.readLease("s20")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ls.ExpiresAt != nil && ls.ExpiresAt.Equal(want) && ls.HeartbeatAt != nil && ls.HeartbeatAt.Equal(tl.clock) {
+					break
+				}
+				select {
+				case err := <-errs:
+					t.Fatalf("heartbeat: %v", err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("expiresAt %v, want %v", ls.ExpiresAt, want)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
 func TestDeviceBusyAndLedgerLocked(t *testing.T) {
 	tl := newTestLab(t)
 	tl.seed(t, map[string]*Device{"s20": s20Row()})

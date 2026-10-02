@@ -18,4 +18,7 @@ func procStart(int) (time.Time, bool, error) {
 // xctrace) is macOS-only and no child group is recorded there.
 func stopGroup(int) error { return nil }
 
+// stopProcess is a no-op on Windows for the same reason.
+func stopProcess(int) error { return nil }
+
 func ownGroup(*exec.Cmd) {}
