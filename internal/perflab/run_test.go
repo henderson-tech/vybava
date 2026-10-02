@@ -234,6 +234,9 @@ func TestRunnerCommandLeavesForeignPlatformEnvUnset(t *testing.T) {
 		if !slices.Contains(unset, "FIXIT_APPIUM_XCODE_ORG_ID") {
 			t.Errorf("%s: runner.unset dropped: %v", tc.platform, unset)
 		}
+		if got := slices.Contains(env, "ANDROID_SERIAL=RF8N21PY1BF"); got != (tc.platform == "android") {
+			t.Errorf("%s: ANDROID_SERIAL exported = %v (bare adb in the runner must hit the leased phone)", tc.platform, got)
+		}
 	}
 }
 

@@ -631,6 +631,14 @@ func (t *Tool) runnerCommand(v *Vars) (string, []string, []string, error) {
 		}
 		env = append(env, name+"="+val)
 	}
+	// Bare `adb` in the runner's tools (Flashlight's `adb shell getprop`)
+	// fails "more than one device/emulator" once another session attaches an
+	// emulator: the leased phone is the default device of the whole tree.
+	if p, _, _ := v.Get("platform"); p == "android" {
+		if serial, ok, _ := v.Get("serial"); ok && serial != "" && c.Runner.Env["ANDROID_SERIAL"] == "" {
+			env = append(env, "ANDROID_SERIAL="+serial)
+		}
+	}
 	return cmd, env, unset, nil
 }
 
