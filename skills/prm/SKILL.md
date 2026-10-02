@@ -105,7 +105,9 @@ Per selected PR (`round.md` owns the round contract):
    (LITERAL absolute path). **Record its task id keyed by PR at arm time** — the
    terminus must `TaskStop` it deterministically. It exits on merged/closed; any
    earlier exit is a crashed watch — re-arm it immediately (its snapshot diff emits
-   everything missed while it was down).
+   everything missed while it was down). Where the wake mod offers
+   `mcp__wake__when`, it never replaces this watcher: it reports state only (no
+   comments, reviews or pushes) and wakes only the main session.
 5. **React** per `round.md`'s Event → action map: work-bearing events run a round
    inline (or, under `--bg`/`all`, spawn `pr-<N>-r<K>` with queue + coalesce); skip
    own-push echoes; surface each round report; run the terminus on
