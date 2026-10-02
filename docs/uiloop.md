@@ -277,7 +277,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 ```
 
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
-- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists. An area is reviewed when none of its batches is left.
+- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts `fix/*.json`, `lanes.json` excluded.
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
 - `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
@@ -296,7 +296,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 - **Previous items:** each previous open item keeps its key and takes its worst verdict across the batches (`not-met` beats `partly`, which beats `met`). An item nobody judged stands as `not-met` and is listed in `unjudged`.
 - **Fresh findings** are keyed by screen + title (slugged, 80 characters). Two with one key fold into one: the worst severity wins, and viewports, themes, shots and files are unioned. A fresh finding whose key is a previous item's is that item's verdict, never a second item. A raw finding's `area` defaults to its batch's.
 - **Problems:** a raw finding missing its screen, title, acceptance, files or a valid severity stays out of the draft and is listed in `problems` (`{batch, index, screen, title, missing}`).
-- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. An entry naming one shot (`<id>@<viewport>`) skips nothing, because the screen was judged at its other shots.
+- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. Entries naming single shots (`<id>@<viewport>.<theme>`, or `<id>@<viewport>` for every theme) skip nothing unless they name every `ok` shot of the screen; otherwise the screen was judged at its other shots. The same rule decides whether a raw's acceptance verdict on a previous finding counts.
 
 It returns counts plus what needs an agent's judgement: `{pass, passDir, file, previous, raw, left, findings, open, byStatus, bySeverity, reviewed, unreviewed, unjudged, problems, invalid}`. `invalid` is what the draft still breaks of the contract. Planned batches without a raw file are listed in `left` and warned `REVIEW_INCOMPLETE`. The synthesis agent judges only those keys, writes `backlog.json` and validates it with `scoreboard`.
 
@@ -361,8 +361,13 @@ The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
 resume retains that revision and refuses application drift. Workflows recapture
 legacy passes without provenance. Captures outside git have no verified revision.
 
-For passes with provenance, raw reviews need the current `basis` and explicit
-`screensRead` covering their batch. Backlogs use `review/basis.json` as a sidecar.
+For passes with provenance, a raw review completes its batch when it carries the
+current `basis` and its own batch id, and its `screensRead` stays inside the batch
+and names every batch screen with an `ok` shot. A screen the pass could not shoot
+need not be read. `unreviewed` entries never hold a batch open: they are capture or
+recipe defects the reviewer could not judge, and `merge-review` still keeps their
+screen out of `reviewed` and lists it as `unreviewed` (a screen-level entry, or
+shot entries naming every `ok` shot of the screen). Backlogs use `review/basis.json` as a sidecar.
 Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
 are reevaluated. Skips/blocks are reusable only with unchanged application source.
