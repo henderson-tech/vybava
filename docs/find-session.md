@@ -36,8 +36,9 @@ code punctuation, spread across the paste), and a transcript matches when it
 holds half of them. A short query (no such phrase) needs every word of 3+
 characters. Matching is literal and case-sensitive.
 
-Each matching transcript is then read line by line. Hits in its own
-assistant replies or its title make it the **author**. Hits anywhere else
+Each matching transcript is then read line by line. Hits in the text of its own
+assistant replies, or in its title, make it the **author**. A tool call carrying the
+text (a find-session query, a file write) only quotes it. Hits anywhere else
 (a human paste, a tool result) only **quote** it. Authors rank first, then the
 most phrases matched, then the text nearest the session's end, then the
 newest.
@@ -49,7 +50,8 @@ transcripts can't be resumed.
 
 Transcripts are scanned newest first in tiers (2 days, 14 days, everything),
 stopping at the first tier where some session authored the text. Each
-phrase is searched by its rarest byte. A file is dropped once it can no
+phrase is searched by its rarest byte. Each scan worker streams files through one
+fixed 8 MB buffer. A file is dropped once it can no
 longer reach half the phrases. On a 13 GB, 3,900-session history a
 recent match takes about 0.2 s warm and 1 s cold; a full scan takes 3–6 s.
 Nothing is stored or indexed. `PARTIAL_SCAN` (info) says a search stopped early,
@@ -79,6 +81,8 @@ and its fix recreates the directory first.
 
 `EMPTY_QUERY`, `NO_NEEDLES`, `NO_MATCH` (exit 2), `ROOT_MISSING` are errors.
 `QUOTED_ONLY` (the best match only quotes the text; the author may be a
-subagent or deleted), `AMBIGUOUS` (the top two tie), `CWD_MISSING` are
-warnings. `PARTIAL_SCAN` is info. Under `--json`, `next` carries the fixes and
+subagent or deleted), `AMBIGUOUS` (the top two tie), `MANY_MATCHES` (more than
+100 sessions hold the query; only the 100 with the most phrases are ranked),
+`CWD_MISSING` and `CWD_UNKNOWN` (no launch directory recorded: the line is the
+resume alone, to run from that directory) are warnings. `PARTIAL_SCAN` is info. Under `--json`, `next` carries the fixes and
 then the top session's reopen line.
