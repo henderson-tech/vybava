@@ -396,25 +396,34 @@ func TestARewriteKeepsTheMinuteOfAPendingMessage(t *testing.T) {
 }
 
 // A deliverables or backups home is a repository too, but no project's own
-// work: a write there keeps the focus where it was.
+// work: a write there keeps the focus where it was. A relative --side-dir
+// names it from where tokentime runs.
 func TestAWriteIntoASideDirMovesNothing(t *testing.T) {
-	f, r := focusFixture(t)
-	exports := filepath.Join(f.base, "Exports")
-	mkdir(t, filepath.Join(exports, ".git"))
-	put(t, filepath.Join(f.claude, "-work-app", "s8.jsonl"), lines(
-		claudeTool("s8", f.repo, "2026-09-26T10:01:00Z", "fo_X", "Edit", map[string]any{"file_path": filepath.Join(r.lib, "x.go")}),
-		claudeTool("s8", f.repo, "2026-09-26T10:02:00Z", "fo_Y", "Bash", map[string]any{"command": "cd " + exports + "/FixIt/audits && git add -A && git commit -m audit"}),
-		claudeLine("s8", f.repo, "2026-09-26T10:03:00Z", "fo_Z", "claude-opus-5-5", 1, 1, 0, 0, 0),
-	))
-	s := f.open(t)
-	opts := f.options()
-	opts.SideDirs = []string{exports}
-	if _, err := s.Index(opts); err != nil {
-		t.Fatal(err)
-	}
-	b := beatsOf(t, s, "2026-09-26", "2026-09-26")
-	if lib, ex := beatsOn(b, r.lib, true), beatsOn(b, exports, true); !reflect.DeepEqual(lib, []BeatRun{{at("2026-09-26T10:01:00Z"), 3}}) || len(ex) != 0 {
-		t.Fatalf("lib AI = %v, Exports AI = %v; want lib 10:01-10:03, Exports none", lib, ex)
+	for _, relative := range []bool{false, true} {
+		t.Run(map[bool]string{false: "absolute", true: "relative"}[relative], func(t *testing.T) {
+			f, r := focusFixture(t)
+			exports := filepath.Join(f.base, "Exports")
+			mkdir(t, filepath.Join(exports, ".git"))
+			put(t, filepath.Join(f.claude, "-work-app", "s8.jsonl"), lines(
+				claudeTool("s8", f.repo, "2026-09-26T10:01:00Z", "fo_X", "Edit", map[string]any{"file_path": filepath.Join(r.lib, "x.go")}),
+				claudeTool("s8", f.repo, "2026-09-26T10:02:00Z", "fo_Y", "Bash", map[string]any{"command": "cd " + exports + "/FixIt/audits && git add -A && git commit -m audit"}),
+				claudeLine("s8", f.repo, "2026-09-26T10:03:00Z", "fo_Z", "claude-opus-5-5", 1, 1, 0, 0, 0),
+			))
+			s := f.open(t)
+			opts := f.options()
+			opts.SideDirs = []string{exports}
+			if relative {
+				t.Chdir(f.base)
+				opts.SideDirs = []string{"./Exports"}
+			}
+			if _, err := s.Index(opts); err != nil {
+				t.Fatal(err)
+			}
+			b := beatsOf(t, s, "2026-09-26", "2026-09-26")
+			if lib, ex := beatsOn(b, r.lib, true), beatsOn(b, exports, true); !reflect.DeepEqual(lib, []BeatRun{{at("2026-09-26T10:01:00Z"), 3}}) || len(ex) != 0 {
+				t.Fatalf("lib AI = %v, Exports AI = %v; want lib 10:01-10:03, Exports none", lib, ex)
+			}
+		})
 	}
 }
 

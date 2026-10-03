@@ -26,7 +26,8 @@ type Options struct {
 	CodexDir string
 	// SideDirs hold work products no project owns — a deliverables or
 	// backups home (~/Exports, ~/Backups): like the agents' own state, a
-	// write there never moves where an AI minute goes (see focus.go).
+	// write there never moves where an AI minute goes (see focus.go). A
+	// relative one is resolved against the process's working directory.
 	SideDirs []string
 	// Budget bounds the bytes read this pass; zero reads everything pending.
 	Budget int64
@@ -362,14 +363,21 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	ix.staging = rule != focusRule
-	ix.sideDirs = []string{filepath.Clean(opts.CodexDir)}
-	for _, d := range opts.SideDirs {
-		if d != "" {
-			ix.sideDirs = append(ix.sideDirs, filepath.Clean(d))
-		}
-	}
+	// Write paths are absolute, so a relative side dir is named from where
+	// this process runs (--side-dir ./Exports).
+	sideDirs := append([]string{opts.CodexDir}, opts.SideDirs...)
 	if filepath.Base(opts.ClaudeRoot) == "projects" { // ~/.claude/projects: plans, memory and handoffs sit beside it
-		ix.sideDirs = append(ix.sideDirs, filepath.Dir(filepath.Clean(opts.ClaudeRoot)))
+		sideDirs = append(sideDirs, filepath.Dir(filepath.Clean(opts.ClaudeRoot)))
+	}
+	for _, d := range sideDirs {
+		if d == "" {
+			continue
+		}
+		abs, err := filepath.Abs(d)
+		if err != nil {
+			return IndexReport{}, fmt.Errorf("side dir %s: %w", d, err)
+		}
+		ix.sideDirs = append(ix.sideDirs, abs)
 	}
 	// Files already under a cursor first — live sessions append there — then
 	// new files newest-first, so a cold backfill under a budget fills today
