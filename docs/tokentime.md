@@ -19,8 +19,9 @@ tokentime prices --json --model "claude-opus-5-5[1m]"   # + how the rollup price
 ```
 
 `--state-dir` (default `~/.local/share/vybava/tokentime`), `--claude-root`
-(default `~/.claude/projects`) and `--codex-dir` (default `~/.codex`) apply to
-every verb. Every verb prints one runx envelope under `--json`.
+(default `~/.claude/projects`), `--codex-dir` (default `~/.codex`) and
+`--side-dir` (repeatable, default `~/Exports` and `~/Backups`; see Beats)
+apply to every verb. Every verb prints one runx envelope under `--json`.
 
 ## What it reads
 
@@ -224,19 +225,26 @@ sibling repositories by absolute path while every record keeps the cwd the
 session started in, so each transcript (main, subagent, workflow agent,
 rollout) keeps a *focus*: the record cwd's repository until a write lands in
 another one. A write is an Edit/Write/MultiEdit/NotebookEdit of a file; a
-Bash segment a `cd <dir>` (in a `( … )` too), `git -C <dir>` or
-`--cwd <dir>` moved off the cwd — where it runs is claude-guards' `RunDirs`,
-relative directories against the record cwd — unless the segment only
-inspects (`ls cat head tail less rg grep find fd wc jq stat file tree du pwd
-which echo printf true awk`, `sed -n`, git `log show status diff blame
-rev-parse ls-files grep fetch`, `branch --list`, `remote -v`, `config --get`;
-an output redirect to a file still writes); an MCP tool's `cwd` (onyx
+Bash segment a `cd <dir>` (in a `( … )` too, and taken as applied:
+`cd <dir>; make` runs there), `git -C <dir>` or `--cwd <dir>` put somewhere
+— the cwd too, so `cd <cwd> && git commit` brings the focus home, while a
+bare command in the cwd says nothing; where it runs is claude-guards'
+`RunDirs`, relative directories against the record cwd — unless the segment
+only inspects (`ls cat head tail less rg grep find fd wc jq stat file tree du
+pwd which echo printf true awk`, `sed -n`, git `log show status diff blame
+rev-parse ls-files grep fetch`, `branch --list`, `remote -v`, `config --get`);
+the file any output redirect names (`git diff > /tmp/x` writes in no
+repository); an MCP tool's `cwd` (onyx
 `run_command`, its argv judged the same way); a Codex `exec_command`/`shell`
 `workdir` (same rule on its command) and the files an `apply_patch` adds,
 updates, deletes or moves to. Reads (Read, Glob, Grep, WebFetch) never move
 it, and only tool inputs are parsed, never message text. A write outside every
-repository (`/tmp`) or into the agents' own state (`~/.claude` — plans,
-memory, handoffs — and `~/.codex`) moves nothing. A person's prompt, or a
+repository (`/tmp`), into the agents' own state (`~/.claude` — plans,
+memory, handoffs — and `~/.codex`) or into a side directory moves nothing.
+Side directories hold work products no project owns — `--side-dir`,
+repeatable, default `~/Exports` and `~/Backups`: a client deliverable written
+there is the session's project's work, and a root of its own would drop it
+out of every client's hours. A person's prompt, or a
 record cwd in another repository, sets the focus back to the cwd's.
 
 A response's minute goes to every repository its own tool calls wrote in, else
@@ -298,10 +306,19 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   re-reads the last file (meta `focus_rule`). A day a deleted transcript
   answered in keeps every AI minute it had, by cwd; beats never shrink with a
   transcript. Until the swap the re-read counts in `beatsPendingBytes`, so
-  beats coverage stays incomplete. A transcript replaced or re-read while it
-  owes extends its debt as the backlog's does; one that shrinks or vanishes
-  leaves its responses unfound and their days as they were. One unbudgeted
-  `tokentime index` pays it in a single pass.
+  beats coverage stays incomplete. While it runs, a response a token read
+  finds already seen — a transcript replaced or re-read, a rollout archived
+  before its re-read — is staged and found like its original (it still adds
+  no minute to beats); a transcript that shrinks or vanishes — even during
+  the pass re-reading it — leaves its responses unfound and their days as
+  they were. A Claude message still waiting for its tool calls when the
+  re-read settles counts as found (its minute lands once it is whole), so a
+  pass from a live session swaps today too. One unbudgeted `tokentime index`
+  pays it in a single pass, reading every transcript on disk once more —
+  minutes over months of history, longer than claude-switcheroo's 180 s
+  `index` timeout: run it once by hand after upgrading, before the next
+  Timesheet run (a pass the timeout kills keeps its progress, and the next
+  one finishes).
 - **Migrations** add one column each, and only when it is missing: a pass
   killed between a migration and the version bump leaves the column behind,
   and the next pass finishes the migration rather than failing on it.

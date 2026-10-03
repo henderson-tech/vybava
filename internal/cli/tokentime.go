@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,6 +62,9 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "state directory (default ~/.local/share/vybava/tokentime)")
 	root.PersistentFlags().StringVar(&claudeRoot, "claude-root", "", "Claude Code projects directory (default ~/.claude/projects)")
 	root.PersistentFlags().StringVar(&codexDir, "codex-dir", "", "Codex directory holding sessions/ (default ~/.codex)")
+	var sideDirs []string
+	root.PersistentFlags().StringArrayVar(&sideDirs, "side-dir", []string{"~/Exports", "~/Backups"},
+		"a deliverables or backups home: a write there never moves an AI minute's repository (repeatable)")
 
 	session := func(cmd *cobra.Command) *runx.Session {
 		return &runx.Session{Tool: "tokentime", JSON: rt.json, Verb: cmd.Name(), Stdout: rt.stdout, Stderr: rt.stderr}
@@ -108,7 +112,12 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		if opts.CodexDir == "" {
 			opts.CodexDir = filepath.Join(home, ".codex")
 		}
-		for _, p := range []*string{&state, &opts.ClaudeRoot, &opts.CodexDir} {
+		opts.SideDirs = slices.Clone(sideDirs)
+		ps := []*string{&state, &opts.ClaudeRoot, &opts.CodexDir}
+		for i := range opts.SideDirs {
+			ps = append(ps, &opts.SideDirs[i])
+		}
+		for _, p := range ps {
 			if *p, err = expandHome(*p); err != nil {
 				return "", opts, err
 			}

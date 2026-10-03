@@ -3,6 +3,7 @@ package tokentime
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,6 +49,9 @@ type claudeMsg struct {
 	At int64  `json:"at"` // unix seconds of its first record
 	// Beat: the message owes a minute — a token read charged it, or a backlog read it.
 	Beat bool `json:"beat,omitempty"`
+	// Copy: a token read found it seen while history is re-read; it is
+	// staged and found like its original (see copyFound).
+	Copy bool `json:"copy,omitempty"`
 }
 
 // rebase points the focus back at a cwd's root: a person's prompt, or a cwd in another repository.
@@ -152,32 +156,47 @@ func codexWrites(it transcripts.ResponseItem, cwd string) []wrote {
 	return out
 }
 
-// commandDirs lists the directories cmd's writing segments run in, starting
-// in base, that are not cwd. Where a segment runs is claudeguards' one answer
-// (a literal cd chain, git -C); a `--cwd <dir>` moves that segment alone. A
-// segment whose directory is unproven runs in base.
+// commandDirs lists where cmd's segments, starting in base, wrote: the file
+// each output redirect names, and the directory a writing segment runs in
+// when that is not cwd or a cd, git -C or --cwd put it there — `cd <cwd> &&
+// git commit` brings the focus home, a bare command in cwd says nothing. A
+// segment that only inspects writes just its redirects: `cd lib && git diff >
+// /tmp/x` writes in no repository. Where a segment runs is claudeguards'
+// RunDirs, every literal cd taken to have applied; a `--cwd <dir>` moves that
+// segment alone. A segment whose directory is unproven runs in base.
 func commandDirs(cmd, base, cwd string) []wrote {
 	if base == "" {
 		return nil
 	}
 	var out []wrote
+	add := func(w wrote) {
+		if !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
 	for _, seg := range claudeguards.RunDirs(cmd, base) {
-		if readOnly(seg.Text) {
-			continue
-		}
-		dir := seg.Dir
+		dir, moved := filepath.Clean(seg.Dir), seg.Moved
 		if d, ok := cwdFlag(seg.Text, dir); ok {
-			dir = d
+			dir, moved = filepath.Clean(d), true
 		}
-		if dir = filepath.Clean(dir); dir != filepath.Clean(cwd) && !slices.Contains(out, wrote{path: dir, dir: true}) {
-			out = append(out, wrote{path: dir, dir: true})
+		writes := !readOnly(seg.Text)
+		for _, target := range redirectTargets(seg.Text) {
+			if p := resolvePath(target, dir); p != "" && !strings.ContainsAny(target, "$`*?[{") {
+				add(wrote{path: p})
+			} else {
+				writes = true // a target not spelled out: somewhere around here
+			}
+		}
+		if writes && (moved || dir != filepath.Clean(cwd)) {
+			add(wrote{path: dir, dir: true})
 		}
 	}
 	return out
 }
 
 // readOnlyWords inspect and print; they never change the tree they run in
-// (an output redirect still makes one a write). cd and pushd/popd only move.
+// (an output redirect writes the file it names: see commandDirs). cd and
+// pushd/popd only move.
 var readOnlyWords = map[string]bool{
 	"cd": true, "ls": true, "cat": true, "head": true, "tail": true, "less": true, "rg": true, "grep": true,
 	"find": true, "fd": true, "wc": true, "jq": true, "stat": true, "file": true, "tree": true, "du": true,
@@ -197,11 +216,9 @@ var branchChanges = map[string]bool{
 	"--delete": true, "--move": true, "--copy": true, "--force": true, "--unset-upstream": true, "--edit-description": true,
 }
 
-// readOnly reports whether one segment only inspects.
+// readOnly reports whether one segment's command only inspects; its output
+// redirects are judged apart.
 func readOnly(seg string) bool {
-	if redirectsOut(seg) {
-		return false
-	}
 	fields := shellseg.Fields(shellseg.TrimAssignments(seg))
 	switch word := shellseg.CommandWord(seg); {
 	case readOnlyWords[word]:
@@ -250,10 +267,13 @@ func gitReadOnly(fields []string) bool {
 	return readOnlyGit[sub]
 }
 
-// redirectsOut reports an unquoted output redirect to a file — `cat > f`,
-// `echo x >> f` — the one way a read-only word writes. A redirect to
-// /dev/null or onto another descriptor (2>&1) writes nothing.
-func redirectsOut(seg string) bool {
+// redirectTargets lists the files a segment's unquoted output redirects
+// write — `cat > f`, `echo x >> f`, `make &>log` — the one way a read-only
+// word writes; a target that is not a plain word comes back as spelled, or
+// "". A redirect to /dev/null or onto another descriptor (2>&1) writes
+// nothing.
+func redirectTargets(seg string) []string {
+	var out []string
 	var quote byte
 	for i := 0; i < len(seg); i++ {
 		c := seg[i]
@@ -285,12 +305,12 @@ func redirectsOut(seg string) bool {
 				end++
 			}
 			if target := strings.Trim(seg[j:end], `"'`); target != "/dev/null" {
-				return true
+				out = append(out, target)
 			}
 			i = end - 1
 		}
 	}
-	return false
+	return out
 }
 
 // cwdFlag is the directory a segment's `--cwd <dir>` / `--cwd=<dir>` names,
@@ -335,8 +355,9 @@ type repoAnswer struct {
 }
 
 // writeRoot is the repository a write landed in. ok is false outside every
-// repository and inside the agents' own state (plans, memory, handoffs under
-// ~/.claude, ~/.codex): neither is a project's work.
+// repository, inside the agents' own state (plans, memory, handoffs under
+// ~/.claude, ~/.codex) and inside Options.SideDirs (deliverables, backups):
+// none is a project's own work.
 func (ix *indexer) writeRoot(w wrote) (string, bool) {
 	key := w.path
 	if !w.dir {
@@ -346,7 +367,7 @@ func (ix *indexer) writeRoot(w wrote) (string, bool) {
 		return a.root, a.ok
 	}
 	var a repoAnswer
-	if !slices.ContainsFunc(ix.agentDirs, func(d string) bool { return key == d || strings.HasPrefix(key, d+string(filepath.Separator)) }) {
+	if !slices.ContainsFunc(ix.sideDirs, func(d string) bool { return key == d || strings.HasPrefix(key, d+string(filepath.Separator)) }) {
 		a.root, a.ok = transcripts.RepoRoot(key)
 	}
 	if a.ok {
@@ -388,10 +409,23 @@ func (ix *indexer) flushMsg(f *focusState, mode readMode) {
 	if m == nil {
 		return
 	}
-	if m.Beat {
+	switch {
+	case m.Beat:
 		ix.aiBeat(time.Unix(m.At, 0), f.roots(), identity("claude", m.ID), mode)
+	case m.Copy && ix.staging:
+		ix.copyFound(time.Unix(m.At, 0), f.roots(), identity("claude", m.ID))
 	}
 	f.Msg, f.Touched = nil, nil
+}
+
+// copyFound stages, while history is re-read, the minute of a response a
+// token read found already seen, and marks it found. A copy adds no minute
+// to beats, but an archived or copied transcript is still evidence for the
+// day its vanished original answered in — the re-read stages copies alike,
+// unable to tell them apart. Without it, a rollout archived before its
+// original's re-read would leave every day it answered on cwd attribution.
+func (ix *indexer) copyFound(ts time.Time, roots []string, key int64) {
+	ix.aiBeat(ts, roots, key, readFocus)
 }
 
 type stageKey struct {
@@ -486,6 +520,14 @@ func (ix *indexer) focusBacklog(targets []target, known map[string]fileRow, budg
 			}
 		}
 		if !lag.done() {
+			if _, err := os.Lstat(t.path); errors.Is(err, os.ErrNotExist) {
+				// Deleted since the pass listed it — a long re-read outlives
+				// some transcripts: it took that history along, as a shrunk
+				// one does, and owes nothing that could hold the swap back.
+				lag.Until = lag.Cursor.Offset
+			}
+		}
+		if !lag.done() {
 			open++
 			ix.report.BeatsPendingBytes += lag.Until - lag.Cursor.Offset
 		}
@@ -503,6 +545,35 @@ func (ix *indexer) focusBacklog(targets []target, known map[string]fileRow, budg
 		}
 	}
 	return open == 0 && ix.ctx.Err() == nil, nil
+}
+
+// pendingFound readies the settling commit for the Claude messages still
+// waiting in a file's state for their tool calls — a live session always has
+// one. A charged one is found: its minute is in no table yet, and is recorded
+// where its calls point once it is whole, by then straight into beats, so
+// swapping its day loses nothing. A copy is staged and found now; nothing
+// records it later.
+func (ix *indexer) pendingFound(targets []target, known map[string]fileRow) {
+	for _, t := range targets {
+		row, ok := ix.read[t.path]
+		if !ok {
+			row = known[t.path]
+		}
+		if t.codex || !strings.Contains(row.state, `"msg"`) {
+			continue
+		}
+		var cs codexState
+		if json.Unmarshal([]byte(row.state), &cs) != nil || cs.Focus.Msg == nil {
+			continue
+		}
+		m := cs.Focus.Msg
+		switch key := identity("claude", m.ID); {
+		case m.Beat:
+			ix.found[foundKey{id: key, day: m.At / 86400}] = struct{}{}
+		case m.Copy:
+			ix.copyFound(time.Unix(m.At, 0), cs.Focus.roots(), key)
+		}
+	}
 }
 
 // commitStaged writes the staged minutes and found responses into commit's

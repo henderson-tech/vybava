@@ -63,6 +63,39 @@ func TestRunDirs(t *testing.T) {
 	}
 }
 
+// RunDirs is the attribution walk: every literal cd taken as applied, so a
+// `;`, `||` or newline keeps its directory unless the cd ran in its own
+// subshell, and Moved tells a segment a cd or -C put in its directory from
+// one that just started there.
+func TestRunDirsForAttributionTakesEveryLiteralCdAsApplied(t *testing.T) {
+	for _, c := range []struct {
+		cmd, seg, dir string
+		moved         bool
+	}{
+		{"make", "make", "/w/app", false},
+		{"cd /w/lib; make", "make", "/w/lib", true},
+		{"cd /w/lib\nmake", "make", "/w/lib", true},
+		{"cd /w/lib || exit 1; make", "make", "/w/lib", true},
+		{"cd /w/app && git commit -am x", "git commit -am x", "/w/app", true},
+		{"git -C /w/app commit -am x", "git -C /w/app commit -am x", "/w/app", true},
+		{"cd /w/lib && bash -c 'make'", "make", "/w/lib", true},
+		{"(cd /w/lib; make); git commit", "git commit", "/w/app", false},
+		{"cd /w/lib | cat; make", "make", "/w/app", false},
+		{"cd /w/lib & make", "make", "/w/app", false},
+		{"cd $W; make", "make", "/w/app", false},
+	} {
+		segs := RunDirs(c.cmd, "/w/app")
+		i := slices.IndexFunc(segs, func(rs RunSeg) bool { return rs.Text == c.seg })
+		if i < 0 {
+			t.Errorf("segment %q not listed for %q", c.seg, c.cmd)
+			continue
+		}
+		if rs := segs[i]; rs.Dir != c.dir || rs.Moved != c.moved {
+			t.Errorf("%q in %q: dir=%q moved=%v, want dir=%q moved=%v", c.seg, c.cmd, rs.Dir, rs.Moved, c.dir, c.moved)
+		}
+	}
+}
+
 // runDirs is the destructive family's iterator, so it must list exactly what
 // shellseg.Segments lists or a ban hides in the difference.
 func TestRunDirsListsSegments(t *testing.T) {

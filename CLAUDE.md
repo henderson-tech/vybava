@@ -137,6 +137,8 @@ the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md
 the directory a literal `cd … &&` chain or `git -C` provably reaches, fail-closed
 (unproven = the hook cwd); a directory carve-out judges that, never the hook cwd
 alone, and `cdTarget`/`cdMove` are the one `cd` parser — never re-derive either.
+The exported `RunDirs` is the same walk for attribution (tokentime), every literal
+cd taken as applied (`cd x; make` runs in x): never a guard's answer.
 
 
 `internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules

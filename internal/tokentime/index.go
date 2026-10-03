@@ -24,6 +24,10 @@ type Options struct {
 	ClaudeRoot string
 	// CodexDir is the Codex directory holding sessions/ (~/.codex).
 	CodexDir string
+	// SideDirs hold work products no project owns — a deliverables or
+	// backups home (~/Exports, ~/Backups): like the agents' own state, a
+	// write there never moves where an AI minute goes (see focus.go).
+	SideDirs []string
 	// Budget bounds the bytes read this pass; zero reads everything pending.
 	Budget int64
 	// Now overrides the clock (tests).
@@ -306,8 +310,9 @@ type indexer struct {
 	settleFocus bool
 	repoMemo    map[string]repoAnswer
 	spelled     map[string]string // a touched root → its on-disk case
-	// agentDirs hold the agents' own state, where a write is no project's work.
-	agentDirs []string
+	// sideDirs hold the agents' own state and Options.SideDirs, where a write
+	// is no project's own work.
+	sideDirs []string
 }
 
 // Index reads everything written since the last pass into the buckets.
@@ -347,9 +352,14 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	ix.staging = rule != focusRule
-	ix.agentDirs = []string{filepath.Clean(opts.CodexDir)}
+	ix.sideDirs = []string{filepath.Clean(opts.CodexDir)}
+	for _, d := range opts.SideDirs {
+		if d != "" {
+			ix.sideDirs = append(ix.sideDirs, filepath.Clean(d))
+		}
+	}
 	if filepath.Base(opts.ClaudeRoot) == "projects" { // ~/.claude/projects: plans, memory and handoffs sit beside it
-		ix.agentDirs = append(ix.agentDirs, filepath.Dir(filepath.Clean(opts.ClaudeRoot)))
+		ix.sideDirs = append(ix.sideDirs, filepath.Dir(filepath.Clean(opts.ClaudeRoot)))
 	}
 	// Files already under a cursor first — live sessions append there — then
 	// new files newest-first, so a cold backfill under a budget fills today
@@ -487,7 +497,9 @@ func (s *Store) Index(opts Options) (IndexReport, error) {
 		return IndexReport{}, err
 	}
 	// Every file on disk re-read: the re-attribution settles with this commit.
-	ix.settleFocus = refocused
+	if ix.settleFocus = refocused; refocused {
+		ix.pendingFound(targets, known)
+	}
 	if err := ix.commit(tx); err != nil {
 		return IndexReport{}, err
 	}
@@ -600,26 +612,16 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 		parse = ix.codexLine(&cs, readTokens)
 	}
 	var read, pending, unsaved int64
-	opened, tail, fresh, reset := false, false, !known, false
+	opened, tail, fresh := false, false, !known
 	save := func() {
 		raw, _ := json.Marshal(cs)
 		state := string(raw)
+		// Never read before: every minute it records follows the focus. One
+		// replaced or re-read while history awaits the re-read keeps its debt:
+		// what this read finds seen it stages as copies (copyFound).
 		focus := row.focus
-		switch {
-		case fresh:
-			// Never read before: every minute it records follows the focus.
+		if fresh {
 			focus = beatsDone
-		case reset && ix.staging:
-			// Replaced or re-read while its history awaits the re-read: this
-			// read finds its responses seen and stages nothing, so the debt
-			// covers what it read, as the beats debt does.
-			if l := focusOf(row.focus, row.cur); !l.done() {
-				l.Until = max(l.Until, cur.Offset)
-				focus = l.encode()
-			}
-		}
-		if focus != row.focus && !fresh {
-			ix.focusDebts[t.path] = focus
 		}
 		lag := lagOf(row.beats, row.cur)
 		switch {
@@ -665,7 +667,6 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 		opened = true
 		if res.Reset {
 			ix.report.Resets++
-			reset = true
 		}
 		cur, known = res.Cursor, true
 		read += res.Read
@@ -718,7 +719,10 @@ func (ix *indexer) claudeLine(cs *codexState, mode readMode) func([]byte, int64)
 	f := &cs.Focus
 	return func(line []byte, offset int64) error {
 		if offset == 0 {
-			*cs = codexState{} // first read, or the file was replaced
+			// First read, or the file was replaced: a message the old content
+			// left pending is whole, and charged — the new one finds it seen.
+			ix.flushMsg(f, mode)
+			*cs = codexState{}
 		}
 		if transcripts.ClaudeHumanLine(line) {
 			if rec, err := transcripts.DecodeClaude(line); err == nil && rec.HumanPrompt() {
@@ -758,7 +762,7 @@ func (ix *indexer) claudeLine(cs *codexState, mode readMode) func([]byte, int64)
 				c := Counts{Input: u.InputTokens, Output: u.OutputTokens, CacheWrite5m: w5, CacheWrite1h: w1, CacheRead: u.CacheReadInputTokens, Responses: 1}
 				ix.add(rec.Timestamp, rec.Cwd, model, LaneOf(model, Anthropic), c, "claude:"+rec.SessionID)
 			}
-			f.Msg = &claudeMsg{ID: id, At: rec.Timestamp.Unix(), Beat: beat}
+			f.Msg = &claudeMsg{ID: id, At: rec.Timestamp.Unix(), Beat: beat, Copy: !beat && ix.staging}
 		}
 		if bytes.Contains(line, []byte(`"tool_use"`)) {
 			for _, use := range rec.Message.ToolUses() {
@@ -847,7 +851,7 @@ func (ix *indexer) codexLine(cs *codexState, mode readMode) func([]byte, int64) 
 				return nil
 			}
 			if tokens && ix.seen(key, srcCodex, ts) {
-				cs.Focus.Touched = nil
+				ix.codexCopy(ts, cs, key)
 				return nil
 			}
 			ix.codexBeat(ts, cs, key, mode) // a backlog read records every one: see catchUp
@@ -895,7 +899,7 @@ func (ix *indexer) codexLine(cs *codexState, mode readMode) func([]byte, int64) 
 			key := identity("codex-count", cs.Owner, strconv.FormatInt(total.Input, 10), strconv.FormatInt(total.Cached, 10),
 				strconv.FormatInt(total.CacheWrite, 10), strconv.FormatInt(total.Output, 10))
 			if tokens && ix.seen(key, srcCodex, ts) {
-				cs.Focus.Touched = nil
+				ix.codexCopy(ts, cs, key)
 				return nil
 			}
 			cs.LastLegacy, cs.Staged = &last, ix.staging
@@ -913,6 +917,16 @@ func (ix *indexer) codexLine(cs *codexState, mode readMode) func([]byte, int64) 
 func (ix *indexer) codexBeat(ts time.Time, cs *codexState, key int64, mode readMode) {
 	ix.syncBase(&cs.Focus, cs.Cwd, mode)
 	ix.aiBeat(ts, cs.Focus.roots(), key, mode)
+	cs.Focus.Touched = nil
+}
+
+// codexCopy closes a response a token read found already seen: it adds no
+// minute, but while history is re-read it is staged and found (copyFound).
+func (ix *indexer) codexCopy(ts time.Time, cs *codexState, key int64) {
+	if ix.staging {
+		ix.syncBase(&cs.Focus, cs.Cwd, readTokens)
+		ix.copyFound(ts, cs.Focus.roots(), key)
+	}
 	cs.Focus.Touched = nil
 }
 

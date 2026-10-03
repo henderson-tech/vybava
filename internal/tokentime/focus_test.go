@@ -1,11 +1,13 @@
 package tokentime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -186,18 +188,14 @@ func TestTheFocusBackfillReattributesHistoryAndKeepsDeletedTranscripts(t *testin
 			}
 			rollup, _ := json.Marshal(rollupOf(t, s, 3, 3))
 
-			// As the schema 5 binary left it: every AI minute under its cwd, app.
-			if _, err := s.db.Exec(`INSERT OR IGNORE INTO beats(minute, project, kind)
-					SELECT minute, (SELECT id FROM projects WHERE root = ?), 1 FROM beats WHERE kind = 1 AND project IN (SELECT id FROM projects WHERE root IN (?, ?));
-				DELETE FROM beats WHERE kind = 1 AND project IN (SELECT id FROM projects WHERE root IN (?, ?));
-				UPDATE files SET state = CASE WHEN path LIKE '%rollout-%' THEN json_remove(state, '$.focus', '$.staged') ELSE '' END;
-				DROP TABLE focus_beats; DROP TABLE focus_found; ALTER TABLE files DROP COLUMN focus;
-				DELETE FROM meta WHERE key = 'focus_rule'; PRAGMA user_version=5`, f.repo, r.lib, r.other, r.lib, r.other); err != nil {
-				t.Fatal(err)
-			}
+			toLegacy(t, s, f, r)
 			legacy := beatsOf(t, s, "2026-09-22", "2026-09-23").Projects
 			if reflect.DeepEqual(legacy, refocused) {
 				t.Fatal("the older binary's beats equal the focus rule's: the test proves nothing")
+			}
+			s6 := BeatRun{at("2026-09-22T09:30:00Z"), 1}
+			if app := beatsOn(beatsOf(t, s, "2026-09-22", "2026-09-22"), f.repo, true); !slices.Contains(app, s6) {
+				t.Fatalf("app AI on 22.09 as the older binary left it = %v, want s6's 09:30 in it", app)
 			}
 			s.Close()
 			if deleted {
@@ -243,11 +241,170 @@ func TestTheFocusBackfillReattributesHistoryAndKeepsDeletedTranscripts(t *testin
 			if got := beatsOf(t, s, "2026-09-22", "2026-09-22").Projects; !reflect.DeepEqual(got, want22) {
 				t.Fatalf("22.09 after the backfill =\n%+v\nwant\n%+v", got, want22)
 			}
+			if app := beatsOn(beatsOf(t, s, "2026-09-22", "2026-09-22"), f.repo, true); deleted && !slices.Contains(app, s6) {
+				t.Fatalf("app AI on 22.09 after the backfill = %v, want the deleted s6's 09:30 kept", app)
+			}
 			var staged int
 			if err := s.db.QueryRow("SELECT (SELECT COUNT(*) FROM focus_beats) + (SELECT COUNT(*) FROM focus_found)").Scan(&staged); err != nil || staged != 0 {
 				t.Fatalf("staging after settling = %d rows, %v; want empty", staged, err)
 			}
 		})
+	}
+}
+
+// toLegacy leaves a focusFixture store as the schema 5 binary did: every AI
+// minute under its cwd, app; no focus state, debt or staging. One statement
+// per Exec: the driver binds every statement of a batch from the first arg.
+func toLegacy(t *testing.T, s *Store, f fixture, r focusRepos) {
+	t.Helper()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT OR IGNORE INTO beats(minute, project, kind) SELECT minute, (SELECT id FROM projects WHERE root = ?), 1
+			FROM beats WHERE kind = 1 AND project IN (SELECT id FROM projects WHERE root IN (?, ?))`, []any{f.repo, r.lib, r.other}},
+		{`DELETE FROM beats WHERE kind = 1 AND project IN (SELECT id FROM projects WHERE root IN (?, ?))`, []any{r.lib, r.other}},
+		{`UPDATE files SET state = CASE WHEN path LIKE '%rollout-%' THEN json_remove(state, '$.focus', '$.staged') ELSE '' END`, nil},
+		{dropFocus + "PRAGMA user_version=5", nil},
+	} {
+		if _, err := s.db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// One unbudgeted index from a live Claude session settles the re-read while
+// that session's last message waits for its tool calls. The message is
+// charged but its minute is in no table yet, so it cannot hold its day back:
+// the day is swapped, and the minute lands once the message is whole.
+func TestTheFocusBackfillSettlesBesideAPendingMessage(t *testing.T) {
+	f, r := focusFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	refocused := beatsOf(t, s, "2026-09-23", "2026-09-23").Projects
+	toLegacy(t, s, f, r)
+	s.Close()
+	appendFile(t, filepath.Join(f.claude, "-work-app", "s4.jsonl"),
+		lines(claudeLine("s4", f.repo, "2026-09-23T13:00:00Z", "fo_P", "claude-opus-5-5", 1, 1, 0, 0, 0)))
+
+	s = f.open(t)
+	opts := f.options()
+	opts.Now = func() time.Time { return time.Date(2026, 9, 23, 13, 0, 20, 0, time.UTC) }
+	if rep, err := s.Index(opts); err != nil || rep.BeatsPendingBytes != 0 {
+		t.Fatalf("the unbudgeted pass: %d bytes still owed, %v", rep.BeatsPendingBytes, err)
+	}
+	if got := beatsOf(t, s, "2026-09-23", "2026-09-23").Projects; !reflect.DeepEqual(got, refocused) {
+		t.Fatalf("23.09 settled beside a pending message =\n%+v\nwant the focus rule's\n%+v", got, refocused)
+	}
+	opts.Now = func() time.Time { return time.Date(2026, 9, 23, 13, 20, 0, 0, time.UTC) }
+	if _, err := s.Index(opts); err != nil {
+		t.Fatal(err)
+	}
+	if app := beatsOn(beatsOf(t, s, "2026-09-23", "2026-09-23"), f.repo, true); !slices.Contains(app, BeatRun{at("2026-09-23T13:00:00Z"), 1}) {
+		t.Fatalf("app AI = %v, want the message's 13:00 once whole", app)
+	}
+}
+
+// A transcript deleted after the pass listed it — the re-read of months of
+// history outlives some — ends its debt like a shrunk one: it never holds
+// the swap back.
+func TestATranscriptDeletedMidPassNeverHoldsTheSwapBack(t *testing.T) {
+	f, r := focusFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	toLegacy(t, s, f, r)
+	if err := s.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	known, err := s.loadFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, _, err := discover(f.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.claude, "-work-app", "s4.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	ix, err := s.newIndexer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.seenStmt.Close()
+	ix.staging, ix.ctx, ix.now = true, context.Background(), time.Now()
+	if refocused, err := ix.focusBacklog(targets, known, 0, commitFiles); err != nil || !refocused || ix.report.BeatsPendingBytes != 0 {
+		t.Fatalf("re-read with s4 deleted mid-pass: refocused=%v, %d bytes owed, %v; want it settled", refocused, ix.report.BeatsPendingBytes, err)
+	}
+}
+
+// A rollout archived before its re-read is a new path whose every response
+// is seen: its read stages them anyway, so the day they answered on is still
+// re-attributed rather than left on the cwd for good.
+func TestAnArchivedRolloutStillVouchesForItsDay(t *testing.T) {
+	f, r := focusFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	refocused := beatsOf(t, s, "2026-09-23", "2026-09-23").Projects
+	toLegacy(t, s, f, r)
+	s.Close()
+	name := "rollout-2026-09-23T11-00-00-thread-F.jsonl"
+	mkdir(t, filepath.Join(f.codex, "archived_sessions"))
+	if err := os.Rename(filepath.Join(f.codex, "sessions", "2026", "09", "23", name), filepath.Join(f.codex, "archived_sessions", name)); err != nil {
+		t.Fatal(err)
+	}
+
+	s = f.open(t)
+	f.index(t, s)
+	if got := beatsOf(t, s, "2026-09-23", "2026-09-23").Projects; !reflect.DeepEqual(got, refocused) {
+		t.Fatalf("23.09 with thread-F archived =\n%+v\nwant the focus rule's\n%+v", got, refocused)
+	}
+}
+
+// A transcript rewritten while its last message waits for its tool calls:
+// that message was charged, so the new content finds it seen — its minute
+// is recorded from the old content, under the focus it had.
+func TestARewriteKeepsTheMinuteOfAPendingMessage(t *testing.T) {
+	f, r := focusFixture(t)
+	live := filepath.Join(f.claude, "-work-app", "s7.jsonl")
+	msg := claudeTool("s7", f.repo, "2026-09-25T09:00:00Z", "fo_S", "Write", map[string]any{"file_path": filepath.Join(r.lib, "new.go")})
+	put(t, live, lines(msg))
+	s := f.open(t)
+	opts := f.options()
+	opts.Now = func() time.Time { return time.Date(2026, 9, 25, 9, 0, 20, 0, time.UTC) }
+	if _, err := s.Index(opts); err != nil {
+		t.Fatal(err)
+	}
+	put(t, live, lines(claudeLine("s7", f.repo, "2026-09-25T08:59:00Z", "fo_0", "<synthetic>", 0, 0, 0, 0, 0), msg))
+	opts.Now = func() time.Time { return time.Date(2026, 9, 25, 9, 20, 0, 0, time.UTC) }
+	if rep, err := s.Index(opts); err != nil || rep.Resets != 1 {
+		t.Fatalf("the rewrite's pass: %d resets, %v; want 1", rep.Resets, err)
+	}
+	if got := beatsOn(beatsOf(t, s, "2026-09-25", "2026-09-25"), r.lib, true); !reflect.DeepEqual(got, []BeatRun{{at("2026-09-25T09:00:00Z"), 1}}) {
+		t.Fatalf("lib AI = %v, want the pending message's 09:00", got)
+	}
+}
+
+// A deliverables or backups home is a repository too, but no project's own
+// work: a write there keeps the focus where it was.
+func TestAWriteIntoASideDirMovesNothing(t *testing.T) {
+	f, r := focusFixture(t)
+	exports := filepath.Join(f.base, "Exports")
+	mkdir(t, filepath.Join(exports, ".git"))
+	put(t, filepath.Join(f.claude, "-work-app", "s8.jsonl"), lines(
+		claudeTool("s8", f.repo, "2026-09-26T10:01:00Z", "fo_X", "Edit", map[string]any{"file_path": filepath.Join(r.lib, "x.go")}),
+		claudeTool("s8", f.repo, "2026-09-26T10:02:00Z", "fo_Y", "Bash", map[string]any{"command": "cd " + exports + "/FixIt/audits && git add -A && git commit -m audit"}),
+		claudeLine("s8", f.repo, "2026-09-26T10:03:00Z", "fo_Z", "claude-opus-5-5", 1, 1, 0, 0, 0),
+	))
+	s := f.open(t)
+	opts := f.options()
+	opts.SideDirs = []string{exports}
+	if _, err := s.Index(opts); err != nil {
+		t.Fatal(err)
+	}
+	b := beatsOf(t, s, "2026-09-26", "2026-09-26")
+	if lib, ex := beatsOn(b, r.lib, true), beatsOn(b, exports, true); !reflect.DeepEqual(lib, []BeatRun{{at("2026-09-26T10:01:00Z"), 3}}) || len(ex) != 0 {
+		t.Fatalf("lib AI = %v, Exports AI = %v; want lib 10:01-10:03, Exports none", lib, ex)
 	}
 }
 
@@ -291,8 +448,9 @@ func TestAMessageSplitAcrossPassesWaitsForItsToolCall(t *testing.T) {
 	}
 }
 
-// Where commands write: a segment a cd, git -C or --cwd moved off the cwd,
-// unless it only inspects (an output redirect still writes).
+// Where commands write: the file an output redirect names, and a segment a
+// cd (taken as applied), git -C or --cwd put somewhere — the cwd too —
+// unless it only inspects. A bare command in the cwd says nothing.
 func TestWritingCommandsNameTheirDirectoryReadsDoNot(t *testing.T) {
 	cwd := "/w/app"
 	for cmd, want := range map[string][]string{
@@ -300,11 +458,17 @@ func TestWritingCommandsNameTheirDirectoryReadsDoNot(t *testing.T) {
 		"(cd /w/lib && git commit -am x)":                                             {"/w/lib"},
 		"git -C ../lib push":                                                          {"/w/lib"},
 		"bun --cwd /w/lib test":                                                       {"/w/lib"},
-		"cd /w/lib && cat > notes.md <<'EOF'\nhi\nEOF":                                {"/w/lib"},
+		"cd /w/lib && cat > notes.md <<'EOF'\nhi\nEOF":                                {"/w/lib/notes.md"},
+		"cd /w/lib && git diff > /tmp/lib.diff":                                       {"/tmp/lib.diff"}, // no repository
+		"cd /w/lib && make > /tmp/log":                                                {"/tmp/log", "/w/lib"},
+		"cd /w/lib && cat > \"$OUT\"":                                                 {"/w/lib"},
 		"cd /w/lib && ls 2>/dev/null && git branch --list && git status 2>&1":         nil,
 		"cd /w/lib && git branch topic":                                               {"/w/lib"},
 		"make test":                                                                   nil,
-		"cd /w/lib; make":                                                             nil, // unproven after `;`: the cwd
+		"cd /w/lib; make":                                                             {"/w/lib"},
+		"cd /w/lib\nmake":                                                             {"/w/lib"},
+		"cd /w/lib | cat; make":                                                       nil,        // a piped cd moves nothing
+		"cd /w/app && git commit -am x":                                               {"/w/app"}, // home again
 	} {
 		var got []string
 		for _, w := range commandDirs(cmd, cwd, cwd) {

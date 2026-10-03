@@ -43,6 +43,7 @@ type runSeg struct {
 	text  string
 	dir   string // where text runs when known; the session cwd otherwise
 	known bool
+	moved bool // a literal cd or git -C put it in dir; it did not just start there
 }
 
 // runDirs lists cmd's commands exactly as shellseg.Segments does (same pieces,
@@ -50,49 +51,58 @@ type runSeg struct {
 func runDirs(cmd, cwd string) []runSeg {
 	home, _ := os.UserHomeDir()
 	w := dirWalk{cwd: cwd, home: home}
-	return w.scan(nil, cmd, cwd, true, 0)
+	return w.scan(nil, cmd, level{dir: cwd, known: true}, 0)
 }
 
 // RunSeg is one command a string runs and where: Dir is the directory a
-// literal cd or git -C provably moved it to when Known, the starting
-// directory otherwise.
+// literal cd or git -C moved it to when Known, the starting directory
+// otherwise. Moved: a cd or -C put it there — `cd <start> && …` too — rather
+// than it just starting there.
 type RunSeg struct {
-	Text, Dir string
-	Known     bool
+	Text, Dir    string
+	Known, Moved bool
 }
 
-// RunDirs is runDirs for callers outside the guards — tokentime files an
-// agent's minutes under the repository its writing commands ran in — so
-// "where does this run" keeps one answer.
+// RunDirs is runDirs for attribution — tokentime files an agent's minutes
+// under the repository its writing commands ran in — so "where does this run"
+// keeps one walk. Attribution wants the likely directory, not the proven one:
+// every literal cd is taken to have applied, so a `;`, `||` or newline after
+// it keeps its directory (`cd /w/lib; make`). A cd in its own subshell — a
+// pipeline element, a background job — still never moves what follows. The
+// guards keep the fail-closed walk.
 func RunDirs(cmd, cwd string) []RunSeg {
-	segs := runDirs(cmd, cwd)
+	home, _ := os.UserHomeDir()
+	w := dirWalk{cwd: cwd, home: home, assume: true}
+	segs := w.scan(nil, cmd, level{dir: cwd, known: true}, 0)
 	out := make([]RunSeg, len(segs))
 	for i, s := range segs {
-		out[i] = RunSeg{Text: s.text, Dir: s.dir, Known: s.known}
+		out[i] = RunSeg{Text: s.text, Dir: s.dir, Known: s.known, Moved: s.moved}
 	}
 	return out
 }
 
 // dirWalk is one runDirs pass. remote marks the payload of a remote runner,
-// where nothing on this machine is known.
+// where nothing on this machine is known; assume takes every literal cd as
+// applied (RunDirs).
 type dirWalk struct {
-	cwd, home string
-	remote    bool
+	cwd, home      string
+	remote, assume bool
 }
 
 // level is one shell level — the top level, a `( … )` subshell or a `$( … )`
 // substitution. A frame is pushed when one opens and popped when it closes,
 // so a cd inside never leaks out.
 type level struct {
-	dir   string
-	known bool
-	moved bool // a cd ran at this level; a later non-&& separator breaks the chain
+	dir    string
+	known  bool
+	moved  bool // a cd ran at this level; a later non-&& separator breaks the chain
+	placed bool // dir is a literal cd's, at this level or one enclosing it
 }
 
 // scan walks one shell level (a command string or a runner's payload) that
-// starts in dir.
-func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []runSeg {
-	cur := level{dir: dir, known: known}
+// starts at start.
+func (w dirWalk) scan(out []runSeg, cmd string, start level, depth int) []runSeg {
+	cur := start
 	var stack []level
 	backtick := false
 	pipe := false // the segments since the last command hang off a `|`: each runs in its own subshell
@@ -136,7 +146,9 @@ func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []ru
 				pop()
 			}
 		default: // ; | & || newline: the next command runs whether or not a cd did
-			if cur.moved {
+			// Taken as applied, a cd still moved nothing when it ran in its
+			// own subshell: a pipeline element, a background job.
+			if cur.moved && !(w.assume && p.Sep != "|" && p.Sep != "&") {
 				cur.known = false
 			}
 		}
@@ -153,14 +165,16 @@ func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []ru
 func (w dirWalk) segment(out []runSeg, s string, cur *level, piped bool, depth int) []runSeg {
 	fields := shellseg.Fields(s)
 	word := shellseg.CommandWord(s)
-	dir, known := cur.dir, cur.known
+	dir, known, moved := cur.dir, cur.known, cur.placed
 	if word == "git" {
-		dir, known = gitCDir(fields, dir, known, w.home)
+		var gitC bool
+		dir, known, gitC = gitCDir(fields, dir, known, w.home)
+		moved = moved || gitC
 	}
 	if w.remote || !known {
-		dir, known = w.cwd, false
+		dir, known, moved = w.cwd, false, false
 	}
-	out = append(out, runSeg{text: s, dir: dir, known: known})
+	out = append(out, runSeg{text: s, dir: dir, known: known, moved: moved})
 	if target, ok := cdTarget(fields); ok {
 		if piped {
 			return out
@@ -171,6 +185,7 @@ func (w dirWalk) segment(out []runSeg, s string, cur *level, piped bool, depth i
 		} else {
 			cur.known = cur.known || rooted(target)
 			cur.dir = resolveDir(target, cur.dir, w.home)
+			cur.placed = true
 		}
 		return out
 	}
@@ -181,7 +196,7 @@ func (w dirWalk) segment(out []runSeg, s string, cur *level, piped bool, depth i
 		inner := w
 		inner.remote = w.remote || shellseg.RemoteRunners[word]
 		for _, payload := range shellseg.RunnerPayloads(s) {
-			out = inner.scan(out, payload, dir, known, depth+1)
+			out = inner.scan(out, payload, level{dir: dir, known: known, placed: moved}, depth+1)
 		}
 	}
 	return out
@@ -191,8 +206,8 @@ func (w dirWalk) segment(out []runSeg, s string, cur *level, piped bool, depth i
 // among git's global options (a relative one against the directory so far, the
 // way git applies them). A -C that is not spelled out — $W, a substitution —
 // makes the directory unknown: a variable's value cannot be proven from the
-// command.
-func gitCDir(fields []string, dir string, known bool, home string) (string, bool) {
+// command. gitC reports a literal -C applied.
+func gitCDir(fields []string, dir string, known bool, home string) (_ string, _ bool, gitC bool) {
 	for i := 1; i < len(fields) && strings.HasPrefix(fields[i], "-"); i++ {
 		name, value, joined := strings.Cut(fields[i], "=")
 		if !joined && gitGlobalWithValue[name] && i+1 < len(fields) {
@@ -203,12 +218,13 @@ func gitCDir(fields []string, dir string, known bool, home string) (string, bool
 			continue
 		}
 		if !literalPath(value) {
-			return dir, false
+			return dir, false, false
 		}
 		known = known || rooted(value)
 		dir = resolveDir(value, dir, home)
+		gitC = true
 	}
-	return dir, known
+	return dir, known, gitC
 }
 
 // cdTarget is the directory a `cd` names: its operand after the builtin's
