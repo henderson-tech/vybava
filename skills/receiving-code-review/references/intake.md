@@ -9,8 +9,9 @@ by · url`. Missing fields stay empty; never invent a location.
 across `inline`, `review-thread`, `review-summary` and `conversation`;
 `skipped.informational` (bot walkthroughs, bodiless approvals) is not a finding.
 Read PR head files from the local mirror (`git show refs/pr/<N>:<path>`), never
-`gh api .../contents`. Standalone (not under prm) the worktree is `vybava gitkit
-worktree ensure <headRef> <pr>` — never the main checkout.
+`gh api .../contents`. Standalone (not under prm): `vybava gitkit worktree ensure <headRef> <pr>` → run
+every git, test and lint command inside its `path`, never the main checkout;
+`diverged: true` → stop and report, never reset.
 
 ## Markdown file
 

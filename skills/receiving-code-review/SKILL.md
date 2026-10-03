@@ -1,11 +1,13 @@
 ---
 name: receiving-code-review
-description: "Use when code-review findings arrive to be WORKED, not written — pasted review text, a findings/audit markdown file, a PR URL or number whose comments must be addressed, 'work these findings', 'address the review', 'is this review right' — and when prm resolves a PR round's findings."
+description: "Use when code-review findings arrive to be WORKED, not written — pasted review text, a findings/audit markdown file, a PR URL or number whose comments must be addressed, 'work these findings', 'address the review' — and when prm resolves a PR round's findings."
 ---
 
 # receiving-code-review
 
 A finding is a claim: never fixed on faith, never dismissed on vibes.
+A question ("is this review right?") is the `push-back` skill's Mode A: verdicts and
+a report, no fix until asked. The loop below runs on an ask to work the findings.
 
 ## Intake
 
