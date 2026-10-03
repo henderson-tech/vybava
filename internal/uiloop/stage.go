@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // DefaultBatchSize is the screens a reviewer judges in one batch.
@@ -96,7 +98,7 @@ func (c Checkpoint) Finishes() bool {
 
 // NextStage is where a pass stands (nextStage); the vitrinka workflow runs it verbatim.
 type NextStage struct {
-	Stage  string `json:"stage"` // capture | review | fix | verify | done | wait
+	Stage  string `json:"stage"` // capture | review | fix | verify | done | wait | paused
 	Resume bool   `json:"resume"`
 	Reason string `json:"reason"`
 	// Only is the screens a verify, or a capture that reshoots the pass,
@@ -118,8 +120,8 @@ type NextStage struct {
 // 4: pass leases — capture, pending, next.stage wait, next.parallel and
 // batches' claimed. 5: split on stall — review.stalls and review.blocked,
 // batches' parts and blocked, and planned/done/left counting parts, never a
-// split batch.
-const StateContract = 5
+// split batch. 6: pause — paused and next.stage paused.
+const StateContract = 6
 
 // reviewParallel is how many identical review runs the unclaimed left
 // batches keep busy: one per reviewersPerRun batches, at most
@@ -283,6 +285,7 @@ type StateData struct {
 	Previous           *PreviousBacklog `json:"previous"`
 	Checkpoints        CheckpointCounts `json:"checkpoints"`
 	Boards             []BoardRow       `json:"boards"`
+	Paused             *Pause           `json:"paused"` // nil while the loop runs
 	Next               NextStage        `json:"next"`
 }
 
@@ -824,8 +827,35 @@ func (t *Tool) boardRows(pass int) ([]BoardRow, error) {
 	return []BoardRow{}, nil
 }
 
-// State reads a pass back: `ui-loop state`.
+// State reads a pass back: `ui-loop state`. A pause (`ui-loop pause`) routes
+// `paused` over whatever the pass would run next.
 func (t *Tool) State(o StateOptions) (Result, error) {
+	paused, err := t.paused()
+	if err != nil {
+		return Result{}, err
+	}
+	res, err := t.state(o)
+	if paused == nil {
+		return res, err
+	}
+	if err != nil {
+		// A pass it cannot read never hides the pause from a stage's
+		// boundary check: the route stays paused, the error a diagnostic.
+		d := errDiag(runx.DiagInfraError, err.Error(), "")
+		var de runx.DiagError
+		if errors.As(err, &de) {
+			d = de.Diag
+		}
+		res = Result{Data: t.stateBase(o), Diagnostics: []runxDiagnostic{d}}
+	}
+	data := res.Data.(StateData)
+	data.Paused, data.Next = paused, NextStage{Stage: "paused", Reason: paused.why()}
+	res.Data, res.Next = data, []string{resumeCommand}
+	return res, nil
+}
+
+// stateBase is state's data before it reads a pass: the config and empty counts.
+func (t *Tool) stateBase(o StateOptions) StateData {
 	c := t.Config
 	primitives := o.Primitives
 	if primitives == nil {
@@ -837,9 +867,15 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		cfg.Apps = append(cfg.Apps, app)
 	}
 	sort.Strings(cfg.Apps)
-	data := StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
+	return StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
 		Review:      StateReview{Done: []string{}, Left: []string{}, Blocked: []BlockedBatch{}, ReviewedAreas: []string{}, Stalls: map[string]int{}},
 		Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
+}
+
+func (t *Tool) state(o StateOptions) (Result, error) {
+	c := t.Config
+	data := t.stateBase(o)
+	primitives := data.Config.Primitives
 	running, capture, err := t.liveCapture()
 	if err != nil {
 		return Result{}, err
@@ -1296,6 +1332,14 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	}
 	if err := o.actionProblem(pass); err != nil {
 		return Result{}, err
+	}
+	// A plain claim fails fast; a split's claim is refused in claimBatches,
+	// after the split, which a stalled batch needs whether or not the loop
+	// is paused.
+	if o.Claim > 0 && o.Split == "" {
+		if err := t.refusePaused("batches --claim"); err != nil {
+			return Result{}, err
+		}
 	}
 	switch {
 	case o.Split != "":

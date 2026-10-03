@@ -75,12 +75,20 @@ func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 	if pass, err = t.doctorLeases(pass); err != nil {
 		return Result{}, err
 	}
+	paused := DoctorCheck{ID: "paused", Status: DoctorOK, Detail: "the polish loop runs", Fix: "vybava ui-loop pause --reason <why> drains it"}
+	if p, err := t.paused(); err != nil {
+		return Result{}, err
+	} else if p != nil {
+		paused = DoctorCheck{ID: "paused", Status: DoctorWarn, Detail: "the polish loop is " + p.why() + ": no stage starts", Fix: resumeCommand}
+		paused.diags = []runxDiagnostic{warn(DiagPaused, paused.Detail, paused.Fix)}
+	}
 	data := DoctorData{OK: true, Vybava: t.Version, Contract: StateContract, Checks: []DoctorCheck{
 		neededBy(check, o.For, "capture", "verify"),
 		{ID: "contract", Status: DoctorOK, Detail: fmt.Sprintf("ui-loop state contract %d (vybava %s)", StateContract, t.Version),
 			Fix: "brew upgrade --cask vybava"},
 		neededBy(t.doctorApps(ctx, o.For), o.For, "capture", "verify"),
 		pass,
+		paused,
 		{ID: "workspace", Status: DoctorSkip, Detail: "not checked: the Devbox workspace and its hold are not in the config yet (they arrive with uiLoop.capture)",
 			Fix: "devbox status --json names the workspace serving the apps; devbox hold <workspace> --for 4h keeps it from parking"},
 		{ID: "signin", Status: DoctorSkip, Detail: "not checked: per-persona sign-in is not probed yet (it arrives with `ui-loop run --probe`)",

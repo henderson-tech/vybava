@@ -134,6 +134,10 @@ const (
 	// could not be written, so the read hashed every file again (warning) —
 	// nothing to do unless it recurs; the next read rewrites it.
 	DiagDigestCache = "DIGEST_CACHE"
+	// DiagPaused: the polish loop is paused (<out>/paused.json), so a verb
+	// that starts work (run, batches --claim, lanes) starts nothing; doctor
+	// reports it as a warning — `ui-loop resume`.
+	DiagPaused = "PAUSED"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

@@ -299,7 +299,8 @@ func (t *Tool) splitBatch(pass int, o BatchesOptions) (Result, error) {
 		}
 		ids, err := t.claimBatches(pass, left, o.Claim, o.Owner, o.TTL)
 		if err != nil {
-			return Result{}, err
+			// A pause refuses only the claim: the split stands and its parts are printed.
+			return Result{Data: data}, err
 		}
 		claimed := []Batch{}
 		for _, b := range file.leavesUnder(o.Split) {

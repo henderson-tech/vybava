@@ -255,6 +255,9 @@ func (t *Tool) CaptureCommand(passDir string) string {
 // Run writes the pass's run.json and runs (or prints) the capture, holding
 // the pass's capture lease throughout and releasing it on the way out.
 func (t *Tool) Run(ctx context.Context, o RunOptions) (_ Result, err error) {
+	if err := t.refusePaused("run"); err != nil {
+		return Result{}, err
+	}
 	if err := t.validateSelection(o.Selection); err != nil {
 		return Result{}, err
 	}
