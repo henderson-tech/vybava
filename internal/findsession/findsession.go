@@ -25,6 +25,7 @@ const (
 	DiagCwdMissing  = "CWD_MISSING"
 	DiagCwdUnknown  = "CWD_UNKNOWN"
 	DiagManyMatches = "MANY_MATCHES"
+	DiagBadFlag     = "BAD_FLAG"
 	DiagRootMissing = "ROOT_MISSING"
 	DiagPartial     = "PARTIAL_SCAN"
 )
@@ -110,7 +111,10 @@ func Find(query string, opts Options) (Result, error) {
 				Detail: "the query has no run of 3+ characters to match",
 				Fix:    "find-session '<a longer phrase from the conversation>'"}}
 		}
-		res.Needles, res.Need = frags, need
+		res.Need = need
+		for _, f := range frags {
+			res.Needles = append(res.Needles, redactSecrets(f)) // a copy: frags stay the search
+		}
 		needles := make([]needle, len(frags))
 		for i, f := range frags {
 			needles[i] = newNeedle(f)
@@ -148,7 +152,11 @@ func Find(query string, opts Options) (Result, error) {
 	}
 	res.Total = len(files)
 	res.Elapsed = time.Since(start).Round(time.Millisecond).String()
-	res.Diagnostics = verdict(res)
+	// The verdict reads the whole ranking; --limit only trims what is shown.
+	res.Diagnostics = verdict(res, query)
+	if len(res.Sessions) > opts.Limit {
+		res.Sessions = res.Sessions[:opts.Limit]
+	}
 	return res, nil
 }
 
@@ -190,9 +198,6 @@ func rankHits(hits []scanned, needles []needle, opts Options, inspected map[stri
 		sessions = append(sessions, s)
 	}
 	sort.SliceStable(sessions, func(i, j int) bool { return rank(sessions[i], sessions[j]) })
-	if len(sessions) > opts.Limit {
-		sessions = sessions[:opts.Limit]
-	}
 	return sessions, nil
 }
 
@@ -219,7 +224,7 @@ func tail(s Session) int {
 	return s.Lines - s.LastHit
 }
 
-func verdict(res Result) []runx.Diagnostic {
+func verdict(res Result, query string) []runx.Diagnostic {
 	if len(res.Sessions) == 0 {
 		fix := "find-session '<a shorter, distinctive phrase>'"
 		if res.Mode == "id" {
@@ -250,7 +255,7 @@ func verdict(res Result) []runx.Diagnostic {
 	if res.Scanned < res.Total {
 		diags = append(diags, runx.Diagnostic{Code: DiagPartial, Severity: "info",
 			Detail: fmt.Sprintf("searched the %d newest of %d sessions, stopping at the first that wrote it", res.Scanned, res.Total),
-			Fix:    "find-session --full"})
+			Fix:    rerunFull(query)})
 	}
 	if top.Cwd == "" {
 		diags = append(diags, runx.Diagnostic{Code: DiagCwdUnknown, Severity: "warning",
@@ -262,4 +267,14 @@ func verdict(res Result) []runx.Diagnostic {
 			Fix:    "mkdir -p " + shellPath(top.Cwd, "") + " && " + top.Reopen})
 	}
 	return diags
+}
+
+// rerunFull is the full-scan rerun of a query: exact for a short one-line
+// query, else a note to feed the same text again.
+func rerunFull(query string) string {
+	query = strings.TrimSpace(query)
+	if strings.Contains(query, "\n") || len(query) > 120 {
+		return "find-session --full  # with the same text on stdin"
+	}
+	return "find-session --full '" + strings.ReplaceAll(query, "'", `'\''`) + "'"
 }

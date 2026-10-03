@@ -54,8 +54,9 @@ phrase is searched by its rarest byte. Each scan worker streams files through on
 fixed 8 MB buffer. A file is dropped once it can no
 longer reach half the phrases. On a 13 GB, 3,900-session history a
 recent match takes about 0.2 s warm and 1 s cold; a full scan takes 3–6 s.
-Nothing is stored or indexed. `PARTIAL_SCAN` (info) says a search stopped early,
-and `--full` overrides it.
+Nothing is stored or indexed. Titles, prompts and echoed phrases pass through
+`internal/secretscan` first, so a credential in a transcript never reaches the output. `PARTIAL_SCAN` (info) says a search stopped early; its fix is the same
+query rerun with `--full`.
 
 ## Reopen line
 
@@ -79,7 +80,7 @@ and its fix recreates the directory first.
 
 ## Diagnostics
 
-`EMPTY_QUERY`, `NO_NEEDLES`, `NO_MATCH` (exit 2), `ROOT_MISSING` are errors.
+`EMPTY_QUERY`, `NO_NEEDLES`, `NO_MATCH` (exit 2), `ROOT_MISSING`, `BAD_FLAG` are errors.
 `QUOTED_ONLY` (the best match only quotes the text; the author may be a
 subagent or deleted), `AMBIGUOUS` (the top two tie), `MANY_MATCHES` (more than
 100 sessions hold the query; only the 100 with the most phrases are ranked),

@@ -32,6 +32,7 @@ func TestFindSessionEnvelope(t *testing.T) {
 	}{
 		{[]string{"the ferry waited for the last passengers"}, true, 0, "cd /repo && cco -- --resume aaaaaaaa-0000-0000-0000-000000000001"},
 		{[]string{"nothing like this was ever said here"}, false, 2, "find-session"},
+		{[]string{"--json", "--days", "nope"}, false, 2, "find-session --help"},
 	} {
 		var out bytes.Buffer
 		command, err := (App{Stdin: strings.NewReader("stdin loses to arguments entirely"), Stdout: &out, Stderr: &out}).Command("find-session")

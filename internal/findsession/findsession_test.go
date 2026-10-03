@@ -165,3 +165,67 @@ func touch(t *testing.T, path string, ahead time.Duration) {
 		t.Fatal(err)
 	}
 }
+
+// --limit is display only: two sessions that tie still report AMBIGUOUS when
+// one is shown, and a partial scan's fix reruns the same short query.
+func TestFindVerdictIgnoresLimit(t *testing.T) {
+	root := t.TempDir()
+	for _, id := range []string{"cafecafe-0000-0000-0000-000000000001", "cafecafe-0000-0000-0000-000000000002"} {
+		writeLines(t, filepath.Join(root, "-repo", id+".jsonl"),
+			`{"type":"assistant","cwd":"/repo","timestamp":"2026-09-01T08:00:00Z","effort":"high","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"lanterns over the harbour"}]}}`,
+		)
+	}
+	res, err := Find("cafecafe", Options{Root: root, Limit: 1})
+	if err != nil || len(res.Sessions) != 1 || !hasDiag(res, DiagAmbiguous) {
+		t.Fatalf("Find = %+v %+v, %v", res.Sessions, res.Diagnostics, err)
+	}
+	writeLines(t, filepath.Join(root, "-old", "01d01d00-0000-0000-0000-000000000000.jsonl"), `{"type":"assistant"}`)
+	touch(t, filepath.Join(root, "-old", "01d01d00-0000-0000-0000-000000000000.jsonl"), -30*24*time.Hour)
+	res, err = Find("lanterns over the harbour", Options{Root: root})
+	if err != nil || !hasDiag(res, DiagPartial) {
+		t.Fatalf("no partial scan: %+v, %v", res.Diagnostics, err)
+	}
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagPartial && d.Fix != "find-session --full 'lanterns over the harbour'" {
+			t.Fatalf("partial fix = %q", d.Fix)
+		}
+	}
+}
+
+// A credential in a session's prompt or title never reaches the output.
+func TestFindRedactsSecrets(t *testing.T) {
+	root := t.TempDir()
+	token := "ghp_" + strings.Repeat("aB3dE5", 6)
+	writeLines(t, filepath.Join(root, "-repo", "5ec5ec5e-0000-0000-0000-000000000000.jsonl"),
+		`{"type":"user","cwd":"/repo","timestamp":"2026-09-01T08:00:00Z","origin":{"kind":"human"},"message":{"content":"use `+token+` for the push"}}`,
+		`{"type":"ai-title","aiTitle":"Push with `+token+`"}`,
+	)
+	res, err := Find("5ec5ec5e", Options{Root: root})
+	if err != nil || len(res.Sessions) != 1 {
+		t.Fatalf("Find = %+v, %v", res, err)
+	}
+	if s := res.Sessions[0]; strings.Contains(s.Prompt+s.Title, token) {
+		t.Fatalf("token leaked: prompt=%q title=%q", s.Prompt, s.Title)
+	}
+}
+
+// A paste with no plain-word phrase still yields at most maxNeedles needles.
+func TestFragmentsCapWords(t *testing.T) {
+	var ids []string
+	for i := range 500 {
+		ids = append(ids, fmt.Sprintf("snake_case_%d", i))
+	}
+	frags, need := Fragments(strings.Join(ids, " "))
+	if len(frags) != maxNeedles || need != maxNeedles {
+		t.Fatalf("needles = %d, need = %d", len(frags), need)
+	}
+}
+
+func hasDiag(res Result, code string) bool {
+	for _, d := range res.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}

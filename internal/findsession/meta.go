@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/secretscan"
 	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
@@ -84,6 +85,8 @@ func inspect(file sessionFile, needles []needle) (Session, error) {
 	if st.customTitle != "" {
 		s.Title = st.customTitle
 	}
+	// Title and prompt reach the output (an agent's context): never a credential.
+	s.Title, s.Prompt = redactSecrets(s.Title), redactSecrets(s.Prompt)
 	return s, nil
 }
 
@@ -243,3 +246,7 @@ func unsafeRune(r rune) bool {
 // Own reports whether the session wrote the text — in a reply or its title —
 // rather than only quoting it.
 func (s Session) Own() bool { return s.Authored > 0 || s.Titled }
+
+func redactSecrets(text string) string {
+	return secretscan.Redact(text, secretscan.Find(text, secretscan.All, nil))
+}

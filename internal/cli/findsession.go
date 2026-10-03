@@ -97,6 +97,13 @@ is left out unless --include-current.`,
 			return nil
 		},
 	}
+	// A flag the parser rejects still answers one envelope (exit 2), never a
+	// bare cobra error.
+	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		s := &runx.Session{Tool: "find-session", JSON: rt.json || hasJSONFlag(os.Args[1:]), Verb: "find", Stdout: rt.stdout, Stderr: rt.stderr}
+		return runx.ExitError{Code: s.Finish(runx.DiagError{Diag: runx.Diagnostic{
+			Code: findsession.DiagBadFlag, Severity: "error", Detail: err.Error(), Fix: "find-session --help"}})}
+	})
 	command.Flags().StringVar(&root, "root", "", "Claude projects directory (default $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
 	command.Flags().IntVar(&days, "days", 0, "only sessions written in the last N days (default all)")
 	command.Flags().IntVar(&limit, "limit", 3, "sessions to show")

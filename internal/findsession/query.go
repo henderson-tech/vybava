@@ -58,6 +58,7 @@ func Fragments(query string) (frags []string, need int) {
 			frags = append(frags, word)
 		}
 	}
+	frags = spread(frags, maxNeedles)
 	return frags, len(frags)
 }
 
