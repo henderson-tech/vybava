@@ -194,7 +194,32 @@ async function sync($: EngineInterface): Promise<void> {
   await refreshStatus($)
   if (listed.length > 0) {
     arm($, 0)
+    return
   }
+  await drainOnce($)
+}
+
+/** With no live watch nothing polls, yet a wake-up queued while the mod was
+ * unloaded is still waiting: a met or expired event ends its subscription
+ * at the daemon the moment it is queued. Takes it once and acknowledges it,
+ * since no later slice will. */
+async function drainOnce($: EngineInterface): Promise<void> {
+  const session = await $.session.id()
+  const path = (seq: number): string => `/v1/events?session=${encodeURIComponent(session)}&after=${seq}&timeout=0s`
+  const reply = await call($, 'GET', path(await read($, after)))
+  if (reply.kind === 'down') {
+    return
+  }
+  const events = reply.status === 200 ? parseEvents(reply.json) : null
+  if (events === null) {
+    $.ui.log(`unreadable events answer (${reply.status}): ${reply.text.slice(0, 200)}`, { to: 'debug' })
+    return
+  }
+  if (events.length === 0) {
+    return
+  }
+  await deliver($, events)
+  await call($, 'GET', path(await read($, after)))
 }
 
 /** Schedules the next long-poll slice unless one is due or running. */
@@ -295,6 +320,14 @@ async function react($: EngineInterface, fresh: readonly WakeEvent[]): Promise<v
     .filter(ev => ENDING.has(ev.kind))
     .map(ev => ({ ...ev, note: known.find(one => one.id === ev.subscription)?.note ?? null }))
   if (ending.length > 0) {
+    for (const ev of ending.filter(one => one.kind === 'error')) {
+      // The daemon keeps an erroring subscription and backs off; the watch
+      // ends here, so it must end there too.
+      const reply = await call($, 'DELETE', `/v1/subscriptions/${encodeURIComponent(ev.subscription)}`)
+      if (reply.kind === 'down' || (reply.status >= 300 && reply.status !== 404)) {
+        $.ui.log(`could not end ${label(ev.target)} at the daemon: ${reply.kind === 'down' ? reply.reason : reply.status}`, { to: 'debug' })
+      }
+    }
     await update($, watches, list => list.filter(one => !ending.some(ev => ev.subscription === one.id)))
     if (await read($, busy)) {
       await update($, held, list => [...list, ...ending])

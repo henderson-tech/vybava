@@ -16,7 +16,7 @@ const BAND: RenderPropsOf['AbovePrompt'] = {
 }
 
 type Sent = { method: string; path: string; body: Record<string, unknown>; socketPath: string | undefined }
-type Wire = { seq: number; subscription: string; target: string; until: string; kind: string; summary?: string; changed?: string[] }
+type Wire = { seq: number; subscription: string; target: string; until: string; kind: string; summary?: string; changed?: string[]; error?: string }
 
 /** The watch daemon beneath the plugin: subscribe answers at once, an empty
  * events poll is held until the test pushes an event or 25 s pass. */
@@ -123,7 +123,7 @@ for (const surface of SURFACES) {
     await $.session.start({ cwd: '/repo', surface, isInteractive: true })
     await $.tool.call({ tool: 'mcp__wake__when', target: 'pr:155', until: 'merged', note: 'tear down' })
     await clock.settle()
-    expect(fake.polls()[0]?.path).toBe('/v1/events?session=S1&after=0&timeout=25s')
+    expect(fake.polls().find(one => one.path.endsWith('timeout=25s'))?.path).toBe('/v1/events?session=S1&after=0&timeout=25s')
 
     fake.push(met)
     await clock.settle()
@@ -183,7 +183,8 @@ for (const surface of SURFACES) {
     const fake = daemon(on, clock)
     engine(on)
     await $.session.start({ cwd: '/repo', surface, isInteractive: true })
-    expect(fake.polls()).toHaveLength(0) // nothing watched: never polls
+    // Nothing watched: one look for a queued wake-up, never a long-poll.
+    expect(fake.polls().map(one => one.path)).toEqual(['/v1/events?session=S1&after=0&timeout=0s'])
 
     await $.tool.call({ tool: 'mcp__wake__when', target: 'pr:155', until: 'merged' })
     await clock.settle()
@@ -194,5 +195,29 @@ for (const surface of SURFACES) {
 
     await clock.advance(10 * 60_000)
     expect(fake.polls()).toHaveLength(polls.length)
+  })
+
+  test(`a wake-up queued while the mod was unloaded is taken at the next start (${surface})`, async ($, on) => {
+    const clock = mock.clock(on)
+    const fake = daemon(on, clock)
+    const seen = engine(on)
+    fake.push(met) // met at the daemon: its subscription is already gone
+    await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+    await clock.settle()
+    expect(seen.submitted).toHaveLength(1)
+    expect(seen.submitted[0]?.text).toContain('until merged · met')
+    expect(fake.polls().at(-1)?.path).toBe('/v1/events?session=S1&after=1&timeout=0s')
+  })
+
+  test(`an error ends the watch at the daemon too (${surface})`, async ($, on) => {
+    const clock = mock.clock(on)
+    const fake = daemon(on, clock)
+    engine(on)
+    await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+    await $.tool.call({ tool: 'mcp__wake__when', target: 'pr:155', until: 'merged' })
+    await clock.settle()
+    fake.push({ ...met, kind: 'error', summary: '', changed: [], error: 'gh: rate limited' })
+    await clock.settle()
+    expect(fake.sent.some(one => one.method === 'DELETE' && one.path === '/v1/subscriptions/w1')).toBe(true)
   })
 }
