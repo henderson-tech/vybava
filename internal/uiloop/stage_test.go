@@ -58,6 +58,10 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 	if s = state(); !s.Published || s.Next.Stage != "review" || !slices.Equal(s.Review.Left, []string{"admin-1"}) || !slices.Equal(s.Review.ReviewedAreas, []string{"tasks"}) {
 		t.Fatalf("half reviewed: %+v", s)
 	}
+	// One review run per 4 left batches, at most 3, and the one that synthesizes.
+	if s.Next.Parallel != 1 || reviewParallel(0) != 1 || reviewParallel(5) != 2 || reviewParallel(40) != 3 {
+		t.Errorf("parallel: %d, %d, %d, %d", s.Next.Parallel, reviewParallel(0), reviewParallel(5), reviewParallel(40))
+	}
 	writeFile(t, filepath.Join(dir, "review", "raw", "admin-1.json"), `{"batch":"admin-1","area":"admin"}`)
 	writeFile(t, filepath.Join(dir, "review", "backlog.json"), `{"v":1,"pass":1,"reviewed":["tasks","users"],"findings":[
 		{"key":"a","screen":"users","area":"admin","severity":"broken","status":"open","title":"t","files":["x.ts"],"acceptance":"x"},
@@ -170,6 +174,42 @@ func TestStateCarriesTheContractAndTheEffectiveLint(t *testing.T) {
 	writeFile(t, filepath.Join(tool.passAbs(1), "run.json"), `{"lint":{"grid":4,"touchTarget":40}}`)
 	if l := lint(); l != (StateLint{Grid: 4, TouchTarget: 40}) {
 		t.Errorf("pass 1 was linted at 40, got %+v", l)
+	}
+}
+
+// While a capture runs every stage waits; a newer pass without shots is
+// the capture starting, or pending once none runs, and state routes the
+// newest pass with shots either way.
+func TestStateWaitsForARunningCaptureAndRoutesTheNewestShotPass(t *testing.T) {
+	tool := newTool(t, testConfig())
+	stagePass(t, tool)
+	writeFile(t, filepath.Join(tool.passAbs(2), "run.json"), `{"v":1,"pass":2}`)
+	tool.Now = func() time.Time { return time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC) }
+	lease, held, err := tool.acquireLease(2, leaseCapture, leaseReq{owner: "ui-loop run", pid: os.Getpid(), ttl: captureLeaseTTL, run: "2026-10-03T09:00:00Z"})
+	if err != nil || held != nil {
+		t.Fatal(held, err)
+	}
+	state := func(pass int) StateData {
+		t.Helper()
+		res, err := tool.State(StateOptions{Pass: pass})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Data.(StateData)
+	}
+	s := state(0)
+	if s.Pass != 1 || s.Pending != nil || s.Capture != (CaptureState{Running: true, Pass: 2, Since: "2026-10-03T09:00:00Z", Owner: "ui-loop run"}) ||
+		!reflect.DeepEqual(s.Next, NextStage{Stage: "wait", Reason: "pass 2 capture running since 2026-10-03T09:00:00Z (ui-loop run)"}) {
+		t.Fatalf("a running capture: pass %d, pending %v, capture %+v, next %+v", s.Pass, s.Pending, s.Capture, s.Next)
+	}
+	if err := tool.releaseLease(2, leaseCapture, lease); err != nil {
+		t.Fatal(err)
+	}
+	if s = state(0); s.Pass != 1 || s.Pending == nil || *s.Pending != 2 || s.Capture.Running || s.Next.Stage != "capture" || !s.Next.Resume {
+		t.Errorf("a pending pass 2: pass %d, pending %v, capture %+v, next %+v", s.Pass, s.Pending, s.Capture, s.Next)
+	}
+	if s = state(2); s.Pass != 2 || s.Pending != nil {
+		t.Errorf("an explicit --pass is read as asked: pass %d, pending %v", s.Pass, s.Pending)
 	}
 }
 

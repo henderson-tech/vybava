@@ -137,6 +137,11 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		follow                        bool
 		from                          string
 		interval, untilIdle           time.Duration
+		// owner names a lease's holder (docs/uiloop.md "Pass leases"); every
+		// verb has its own ttl, since a shared flag variable takes the last default.
+		owner                          string
+		publishTTL, synthTTL, claimTTL time.Duration
+		claim                          int
 	)
 	runCmd := &cobra.Command{
 		Use:   "run",
@@ -164,10 +169,10 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	runCmd.Flags().StringVar(&themes, "themes", "", "only these themes: light,dark")
 	runCmd.Flags().BoolVar(&opts.Selection.Destructive, "destructive", false, "also shoot destructive recipes (last)")
 	runCmd.Flags().BoolVar(&opts.Selection.Resume, "resume", false, "finish a cut-short pass: keep ok/unreachable shots, retake the rest")
-	runCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the next one; with --resume the latest)")
+	runCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the next one; with --resume the latest with shots, the pass state reads)")
 	runCmd.Flags().IntVar(&opts.Workers, "workers", 2, "Playwright workers")
 	runCmd.Flags().IntVar(&opts.BuildWait, "build-wait", 300, "seconds a shot waits for a red dev server to turn green")
-	runCmd.Flags().BoolVar(&opts.Print, "print", false, "write run.json and print the command without running it")
+	runCmd.Flags().BoolVar(&opts.Print, "print", false, "write run.json and print the command without running it (the capture lease ends with this command, so a printed line runs unleased; --wrap holds it)")
 	runCmd.Flags().StringVar(&opts.Wrap, "wrap", "", `run the command through another; {cmd} is the quoted capture command (e.g. "devbox run -- {cmd}")`)
 
 	splitCmd := &cobra.Command{
@@ -203,15 +208,16 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 				}
 				return t.Follow(context.Background(), uiloop.FollowOptions{
 					Pass: pass, Areas: uiloop.SplitList(areas), From: from, Interval: interval, UntilIdle: untilIdle, Retries: retries,
+					Owner: owner, TTL: publishTTL,
 				})
 			}
 			return t.Publish(context.Background(), uiloop.PublishOptions{
 				Pass: pass, Areas: uiloop.SplitList(areas), Sets: uiloop.SplitList(sets),
-				Retries: retries, Force: forcePublish, DryRun: dryRun,
+				Retries: retries, Force: forcePublish, DryRun: dryRun, Owner: owner, TTL: publishTTL,
 			})
 		}),
 	}
-	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
+	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots; with --follow the running capture's, else the latest)")
 	publishCmd.Flags().StringVar(&areas, "areas", "", "only these areas (comma-separated)")
 	publishCmd.Flags().StringVar(&sets, "sets", "", "only these set keys (comma-separated)")
 	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set")
@@ -221,6 +227,8 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	publishCmd.Flags().StringVar(&from, "from", "", "--follow: the pass directory on the box, user@host:path (default: publish.from + /<out>/pass-<n>/)")
 	publishCmd.Flags().DurationVar(&interval, "interval", 30*time.Second, "--follow: time between fetches")
 	publishCmd.Flags().DurationVar(&untilIdle, "until-idle", 10*time.Minute, "--follow: stop this long after the last new shot once the run is done")
+	publishCmd.Flags().StringVar(&owner, "owner", "", "name this publisher in the pass's publish lease, held until it exits (default: ui-loop publish)")
+	publishCmd.Flags().DurationVar(&publishTTL, "ttl", uiloop.DefaultLeaseTTL, "the publish lease's ttl (--follow renews it every tick)")
 
 	scoreboardCmd := &cobra.Command{
 		Use:   "scoreboard",
@@ -271,22 +279,27 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "Plan the pass's review batches (per-screen digests; screens whose pixels did not move carry the previous review) and persist them to review/batches.json",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
-			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas)})
+			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas), Claim: claim, Owner: owner, TTL: claimTTL})
 		}),
 	}
 	batchesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
 	batchesCmd.Flags().IntVar(&batchSize, "size", 0, "screens per batch (default: the size batches.json was made with, else 14)")
 	batchesCmd.Flags().StringVar(&areas, "areas", "", "return only these areas' batches (the file always holds every batch)")
+	batchesCmd.Flags().IntVar(&claim, "claim", 0, "claim up to N left batches for --owner (batch-<id> leases) and return them as claimed")
+	batchesCmd.Flags().StringVar(&owner, "owner", "", "the run the claims are for (required with --claim)")
+	batchesCmd.Flags().DurationVar(&claimTTL, "ttl", uiloop.DefaultClaimTTL, "how long a claim holds unless its owner claims it again")
 
 	mergeCmd := &cobra.Command{
 		Use:   "merge-review",
 		Short: "Merge review/raw/*.json and the previous backlog into review/backlog.draft.json; list what needs judgement",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
-			return t.MergeReview(uiloop.MergeReviewOptions{Pass: pass})
+			return t.MergeReview(uiloop.MergeReviewOptions{Pass: pass, Owner: owner, TTL: synthTTL})
 		}),
 	}
 	mergeCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
+	mergeCmd.Flags().StringVar(&owner, "owner", "", "hold the pass's synth lease for this run past the command, for the synthesis (default: only while it runs)")
+	mergeCmd.Flags().DurationVar(&synthTTL, "ttl", uiloop.DefaultLeaseTTL, "how long an --owner's synth lease holds")
 
 	lanesCmd := &cobra.Command{
 		Use:   "lanes",

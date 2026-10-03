@@ -72,6 +72,9 @@ func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if pass, err = t.doctorLeases(pass); err != nil {
+		return Result{}, err
+	}
 	data := DoctorData{OK: true, Vybava: t.Version, Contract: StateContract, Checks: []DoctorCheck{
 		neededBy(check, o.For, "capture", "verify"),
 		{ID: "contract", Status: DoctorOK, Detail: fmt.Sprintf("ui-loop state contract %d (vybava %s)", StateContract, t.Version),
@@ -242,8 +245,8 @@ func probeApp(ctx context.Context, client *http.Client, url string) (problem str
 
 // doctorPass reads the newest pass. A shot-less one warns whatever the
 // stage: `run` reuses it rather than skipping it (ResolvePass), and `state`
-// reads it as the latest pass; it resumes only from an unchanged source. No
-// pass with shots at all fails the stages
+// reports it as pending (or reads it, when no pass has shots); it resumes
+// only from an unchanged source. No pass with shots at all fails the stages
 // that judge one (review, fix, verify); capture starts one.
 func (t *Tool) doctorPass(stage string) (DoctorCheck, error) {
 	row := DoctorCheck{ID: "pass", Status: DoctorOK}
@@ -272,7 +275,7 @@ func (t *Tool) doctorPass(stage string) (DoctorCheck, error) {
 		return row, nil
 	}
 	row.Status = DoctorWarn
-	row.Detail = fmt.Sprintf("%s holds no shots yet (a --print whose command never ran, or a capture killed before its first shot): the next run reuses it, never skips it, and state reads it as the latest pass", dir)
+	row.Detail = fmt.Sprintf("%s holds no shots yet (a --print whose command never ran, or a capture killed before its first shot): the next run reuses it, never skips it, and state reports it as pending", dir)
 	// The fix is state's next: --resume only while the source still matches
 	// the revision capture.json recorded (captureProvenance refuses it
 	// otherwise); else a plain run, which reuses the pass.
@@ -302,5 +305,44 @@ func (t *Tool) doctorPass(stage string) (DoctorCheck, error) {
 	}
 	sev := map[string]string{DoctorWarn: "warning", DoctorFail: "error"}[row.Status]
 	row.diags = []runxDiagnostic{{Code: DiagPassMissing, Severity: sev, Detail: row.Detail, Fix: row.Fix}}
+	return row, nil
+}
+
+// doctorLeases adds the pass leases to the pass row, as warnings: a capture
+// that runs (run refuses another, and state routes wait), and a lease its
+// holder never released (a process lease after a crash, or a file that
+// names no holder), which the next taker replaces anyway. An owner lease (a
+// batch claim, an owned synth) ends by running out its ttl, so a stale one
+// is no news.
+func (t *Tool) doctorLeases(row DoctorCheck) (DoctorCheck, error) {
+	passes, err := t.Passes()
+	if err != nil {
+		return row, err
+	}
+	var diags []runxDiagnostic
+	for _, p := range passes {
+		leases, err := t.passLeases(p)
+		if err != nil {
+			return row, err
+		}
+		for _, l := range leases {
+			switch {
+			case l.Name == leaseCapture && l.Stale == "":
+				diags = append(diags, warn(DiagCaptureRunning, fmt.Sprintf("pass %d capture running since %s (%s, %s)", p, l.StartedAt, l.Owner, l.where()),
+					"wait for it: vybava ui-loop state --json routes wait until it ends"))
+			case l.Stale != "" && (l.PID > 0 || l.Owner == ""):
+				diags = append(diags, warn(DiagLeaseStale, fmt.Sprintf("%s was never released (%s): %s", l.File, l.where(), l.Stale),
+					"rm "+l.File+" (or leave it: the next taker replaces it)"))
+			}
+		}
+	}
+	for _, d := range diags {
+		if row.Status == DoctorOK {
+			row.Status, row.Fix = DoctorWarn, ""
+		}
+		row.Detail += "; " + d.Code + ": " + d.Detail
+		row.Fix = strings.TrimPrefix(row.Fix+"; "+d.Fix, "; ")
+	}
+	row.diags = append(row.diags, diags...)
 	return row, nil
 }
