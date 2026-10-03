@@ -7,7 +7,7 @@ Teardown section alone (SKILL.md → Merge terminus, case A). The keys it reads
 
 ## Feature closure (merged, before Teardown)
 
-Resolve the epic: the PR.s task ref (`vt-<id>` in branch or title → task → parent epic) or the branch handoff.s `feature:`. None → skip silently. Tick the gate matching the PR (`fields.gates[].done = true`, `evidence` = PR URL); every gate done → `ledger_state: closed`, otherwise `next_action` = first open gate and one `create_comment` listing what remains. Unanswered `decisions` items are the only escalation — name them in the hand-back. Contract: `~/.claude/docs/specs/2026-09-05-portfolio-ledger-decisions.md`.
+Re-attach the PR ref with `meta.state: "merged"` on its task and epic (same `add_task_ref` as `ensure-pr.md` step 4 — re-attaching updates the meta), so every later hand-back prints `🔀 PR (merged): <url>`. Resolve the epic: the PR.s task ref (`vt-<id>` in branch or title → task → parent epic) or the branch handoff.s `feature:`. None → skip silently. Tick the gate matching the PR (`fields.gates[].done = true`, `evidence` = PR URL); every gate done → `ledger_state: closed`, otherwise `next_action` = first open gate and one `create_comment` listing what remains. Unanswered `decisions` items are the only escalation — name them in the hand-back. Contract: `~/.claude/docs/specs/2026-09-05-portfolio-ledger-decisions.md`.
 
 ## QA plan (vitrinka, feature lifecycle D6 — merged, after Feature closure)
 
