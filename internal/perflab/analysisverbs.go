@@ -234,10 +234,11 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 		dirs = []string{dir}
 	}
 	cmp, d, err := analysis.Compare(a, b, analysis.CompareOptions{Scenario: o.Scenario, Threshold: o.Threshold, MinRuns: o.MinRuns, AllowConfound: allowed})
-	if err != nil {
-		return Result{}, err
-	}
 	diags = append(diags, d...)
+	if err != nil {
+		// A confounded compare still carries its rows and confounders.
+		return Result{Data: cmp, Diagnostics: diags}, err
+	}
 	next := []string{"perflab report " + strings.Join(quoteAll(dirs), " ") + " --gate --json"}
 	for _, dg := range diags {
 		if dg.Code == analysis.DiagTooFewRuns || dg.Code == analysis.DiagNoisy {
@@ -400,15 +401,15 @@ func (t *Tool) Report(ctx context.Context, dirs []string, o ReportOptions) (Resu
 	}
 	budgets, exemptions, bd := t.adapterBudgets(ctx, "")
 	diags = append(diags, bd...)
+	// A failing gate (OVER_BUDGET, NOTHING_MEASURED) returns its rows with
+	// the error: the envelope carries them and --md is written, the moment
+	// the report matters most.
 	data, d, err := analysis.Report(runs, analysis.ReportOptions{Budgets: budgets, Exemptions: exemptions, Gate: o.Gate})
-	if err != nil {
-		return Result{}, err
-	}
 	diags = append(diags, d...)
 	if o.MD != "" {
-		if err := os.WriteFile(o.MD, []byte(data.Markdown()), 0o644); err != nil {
-			return Result{}, err
+		if werr := os.WriteFile(o.MD, []byte(data.Markdown()), 0o644); werr != nil {
+			return Result{Data: data, Diagnostics: diags}, werr
 		}
 	}
-	return Result{Data: data, Diagnostics: diags, Lines: strings.Split(strings.TrimRight(data.Markdown(), "\n"), "\n")}, nil
+	return Result{Data: data, Diagnostics: diags, Lines: strings.Split(strings.TrimRight(data.Markdown(), "\n"), "\n")}, err
 }

@@ -529,3 +529,51 @@ func TestCompareLabelsOfOneAlternatingRunDir(t *testing.T) {
 		t.Errorf("a run dir compared with itself: %v", err)
 	}
 }
+
+// report --gate and a confounded compare fail with their data kept: the
+// envelope carries the rows and --md writes the report precisely when the
+// gate fails.
+func TestReportAndCompareKeepTheirDataOnAGateError(t *testing.T) {
+	tool := &Tool{Now: time.Now, Lab: &devlab.Lab{StateDir: t.TempDir()}}
+	dir := t.TempDir()
+	rf := analysis.RunFile{Version: analysis.RunFileVersion, Provenance: analysis.Provenance{Device: "s20", Platform: analysis.PlatformAndroid, RefreshHz: 120, InputSource: analysis.InputADB},
+		Runs: []analysis.RunRecord{{Scenario: "probe-drag-worker-hub", Attempt: 1, Failed: true, RecordedAt: time.Now(), Build: analysis.Build{Variant: "before"}}}}
+	if err := writeRunFile(dir, rf); err != nil {
+		t.Fatal(err)
+	}
+	md := filepath.Join(t.TempDir(), "report.md")
+	res, err := tool.Report(context.Background(), []string{dir}, ReportOptions{Gate: true, MD: md})
+	if CodeOf(err) != analysis.DiagNothingMeasured {
+		t.Fatalf("gate: %v", err)
+	}
+	if data, ok := res.Data.(analysis.ReportData); !ok || len(data.Rows) != 1 {
+		t.Errorf("the failing gate keeps its rows: %+v", res.Data)
+	}
+	if raw, err := os.ReadFile(md); err != nil || !strings.Contains(string(raw), "probe-drag-worker-hub") {
+		t.Errorf("--md is written when the gate fails: %q %v", raw, err)
+	}
+
+	scenario := "calendar-view-switch-smooth"
+	row := ScenarioRow{Name: scenario, WindowMs: 105000}
+	tool.Config = &Config{App: AppConfig{Root: "apps/client", Android: &AndroidAppConfig{Package: "app.fixit.client"}}}
+	side := func(label, prefix, stamp, nativeKey string) string {
+		dir := t.TempDir()
+		caseDir := filepath.Join(dir, caseDirName(RunBlock{Seq: 1, Variant: label, Attempt: 1}))
+		copyTo(t, filepath.Join(framestatsData, prefix+"."+scenario+"-android-"+stamp+".json.gz"), filepath.Join(caseDir, "frames", scenario+"-android-"+stamp+".json.gz"))
+		rec, _ := tool.discoverRecord(dir, caseDir, "android", row, RunVariant{Label: label, NativeKey: nativeKey}, 1, time.Now(), nil, nil)
+		run := analysis.RunFile{Version: analysis.RunFileVersion, Provenance: rf.Provenance, Runs: []analysis.RunRecord{rec}}
+		if err := writeRunFile(dir, run); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a := side("before", "lab120-before", "2026-10-02T10-33-10-748Z", "pf1-0b95220e9a40cd6e79d2")
+	b := side("layer", "lab120-layer", "2026-10-02T10-48-32-456Z", "pf1-ffffffffffffffffffff")
+	res, err = tool.Compare(context.Background(), []string{a, b}, CompareOptions{MinRuns: 1})
+	if CodeOf(err) != analysis.DiagConfounded {
+		t.Fatalf("two native builds: %v", err)
+	}
+	if cmp, ok := res.Data.(analysis.Comparison); !ok || len(cmp.Confounders) == 0 {
+		t.Errorf("the confounded compare keeps its confounders: %+v", res.Data)
+	}
+}
