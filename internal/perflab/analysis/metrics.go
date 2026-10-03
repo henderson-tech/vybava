@@ -69,13 +69,16 @@ func (m Metrics) Scalars() map[Metric]float64 {
 		out[MetricFpsP10] = m.Display.FpsP10
 	}
 	if p := m.Present; p != nil {
-		out[MetricRestFrames] = float64(p.RestFrames)
-		out[MetricRestRunMs] = p.RestRunMs
+		// Present readings without FrameTimeline are unread, never zero samples.
+		if p.FrameTimeline {
+			out[MetricRestFrames] = float64(p.RestFrames)
+			out[MetricRestRunMs] = p.RestRunMs
+			out[MetricTwoVsyncGaps] = float64(p.PresentGaps.TwoVsync)
+			out[MetricDrops] = float64(p.Drops.Total)
+		}
 		if p.RTDrawMs.Avg != nil {
 			out[MetricRTDrawAvgMs] = *p.RTDrawMs.Avg
 		}
-		out[MetricTwoVsyncGaps] = float64(p.PresentGaps.TwoVsync)
-		out[MetricDrops] = float64(p.Drops.Total)
 	}
 	if m.Slope != nil {
 		out[MetricSlope] = *m.Slope

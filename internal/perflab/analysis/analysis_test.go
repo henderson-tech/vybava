@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/framestats"
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/xctrace"
 )
@@ -352,5 +353,24 @@ func TestBudgetUsesThe120HzRatioOnAProMotionDevice(t *testing.T) {
 	}
 	if v := verdictOf(checkBudget(b, m, 60)); v != RowPass {
 		t.Errorf("3 ms/s on a 60 Hz device against 5 = %s", v)
+	}
+}
+
+// A pftrace without FrameTimeline leaves the present readings unread: the
+// rest and fling budgets get no check (so the row is unbudgeted, never a
+// pass on zeros) and compare gets no zero samples.
+func TestPresentBudgetsNeedFrameTimeline(t *testing.T) {
+	b := Budget{AndroidRestFramesMax: ptrF(0), AndroidRestRunMsMax: ptrF(6000), AndroidFlingTwoVsyncGapsMax: ptrF(3)}
+	for _, c := range []struct {
+		timeline bool
+		want     RowVerdict
+	}{{false, RowUnbudgeted}, {true, RowPass}} {
+		m := Metrics{Kind: KindPerfetto, Present: &framestats.PresentMetrics{FrameTimeline: c.timeline}}
+		if v := verdictOf(checkBudget(b, m, 120)); v != c.want {
+			t.Errorf("frameTimeline=%v: verdict %s, want %s", c.timeline, v, c.want)
+		}
+		if _, ok := m.Scalars()[MetricRestFrames]; ok != c.timeline {
+			t.Errorf("frameTimeline=%v: restFrames sample present=%v", c.timeline, ok)
+		}
 	}
 }

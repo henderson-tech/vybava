@@ -231,12 +231,16 @@ func checkBudget(b Budget, m Metrics, refreshHz float64) []Check {
 		}
 	}
 	if p := m.Present; p != nil {
-		atMost("androidRestFramesMax", b.AndroidRestFramesMax, float64(p.RestFrames), true)
-		atMost("androidRestRunMsMax", b.AndroidRestRunMsMax, p.RestRunMs, true)
+		// Without FrameTimeline the present readings are unread, not zero: no
+		// check, so a trace missing the evidence never passes these budgets.
+		if p.FrameTimeline {
+			atMost("androidRestFramesMax", b.AndroidRestFramesMax, float64(p.RestFrames), true)
+			atMost("androidRestRunMsMax", b.AndroidRestRunMsMax, p.RestRunMs, true)
+			atMost("androidFlingTwoVsyncGapsMax", b.AndroidFlingTwoVsyncGapsMax, float64(p.PresentGaps.TwoVsync), true)
+		}
 		if p.RTDrawMs.Avg != nil {
 			atMost("androidDragRtDrawMsMax", b.AndroidDragRtDrawMsMax, *p.RTDrawMs.Avg, true)
 		}
-		atMost("androidFlingTwoVsyncGapsMax", b.AndroidFlingTwoVsyncGapsMax, float64(p.PresentGaps.TwoVsync), true)
 	}
 	if m.Slope != nil {
 		atMost("slopeMax", b.SlopeMax, *m.Slope, true)
@@ -264,8 +268,10 @@ func verdictOf(checks []Check) RowVerdict {
 func boardRow(r ReportRow) BoardRow {
 	br := BoardRow{Screen: r.Scenario + " on " + r.Device, Verdict: string(r.Verdict)}
 	if m := r.metrics; m != nil && m.Present != nil {
-		rest, gaps := m.Present.RestFrames, m.Present.PresentGaps.TwoVsync
-		br.RestFrames, br.FlingGaps = &rest, &gaps
+		if m.Present.FrameTimeline {
+			rest, gaps := m.Present.RestFrames, m.Present.PresentGaps.TwoVsync
+			br.RestFrames, br.FlingGaps = &rest, &gaps
+		}
 		if m.Present.RTDrawMs.Avg != nil {
 			v := *m.Present.RTDrawMs.Avg
 			br.DragDrawMs = &v
