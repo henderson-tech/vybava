@@ -1,0 +1,10 @@
+ ▝▝   ▝▝   1 awaiting input · 0 working · 3 completed
+Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c twice quits
+Needs input
+ ✻ Scratch directory listing             I created the empty file notes.txt.
+Completed
+ ✻ Use the Bash…                         Created the empty file y.txt.
+────────────────────────────────────────────────────────────
+❯ describe a task for a new session
+────────────────────────────────────────────────────────────
+  enter to open · space to reply · hold space to speak · ctrl+x to delete · ? for shortcuts

@@ -18,7 +18,7 @@ and never caches a surface across calls.
 | `agent.resolve_delivery_target` | `pid` | `surface_id`, `workspace_id`, `pid_resolution`; `not_found` when no surface hosts the pid |
 | `surface.read_text` | `surface_id`, optional `lines` + `scrollback` | `text`, `window_id`, `workspace_id` |
 | `terminal.paste` | `surface_id`, `text`, `submit_key` (`return`/`none`) | `submitted`, `submit_error`, `delivery` |
-| `surface.send_key` | `surface_id`, `key` (`1`, `enter`, `escape`) | target ids |
+| `surface.send_text` | `surface_id`, `text` — typed as keystrokes; a dialog option is its digit (`surface.send_key` takes named keys only and refuses `4`) | target ids |
 | `window.focus` / `workspace.select` / `surface.focus` | the matching id | — |
 | `events.stream` | `after_seq`, `categories[]`, `include_heartbeats` | an `ack` frame, then `event`/`heartbeat` frames on the same connection |
 

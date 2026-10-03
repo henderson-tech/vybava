@@ -33,6 +33,11 @@ type Env struct {
 	Codex CodexReader
 	// GOOS is the pidDomain this machine can judge; "" means runtime.GOOS.
 	GOOS string
+	// Cmux acts on and joins sessions to their terminal surfaces; nil lists
+	// no surfaces and refuses every action.
+	Cmux Cmux
+	// Activate brings the cmux app to the front after a focus; nil skips it.
+	Activate func(ctx context.Context) error
 }
 
 func (env Env) registryDir() string {

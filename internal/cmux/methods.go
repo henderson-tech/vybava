@@ -100,9 +100,10 @@ func (c Client) Paste(ctx context.Context, surfaceID, text string, submit bool) 
 	return result, err
 }
 
-// SendKey presses one key (`1`, `enter`, `escape`, `ctrl+c`) in a surface.
-func (c Client) SendKey(ctx context.Context, surfaceID, key string) error {
-	return c.Call(ctx, "surface.send_key", map[string]string{"surface_id": surfaceID, "key": key}, nil)
+// SendText types text into a surface as keystrokes — how a dialog option
+// is picked: its digit. (surface.send_key knows named keys only, no digits.)
+func (c Client) SendText(ctx context.Context, surfaceID, text string) error {
+	return c.Call(ctx, "surface.send_text", map[string]string{"surface_id": surfaceID, "text": text}, nil)
 }
 
 // Focus brings a surface to the front: its window, its workspace, then the

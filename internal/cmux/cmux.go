@@ -27,7 +27,7 @@ const MinVersion = "0.64.25"
 var RequiredMethods = []string{
 	"agent.resolve_delivery_target",
 	"surface.read_text",
-	"surface.send_key",
+	"surface.send_text",
 	"surface.focus",
 	"terminal.paste",
 	"workspace.select",

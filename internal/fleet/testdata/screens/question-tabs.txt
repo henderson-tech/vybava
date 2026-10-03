@@ -1,0 +1,17 @@
+⏺ Two calls before I continue.
+
+────────────────────────────────────────────────────────────
+←  ☐ Run window  ☐ Execution  ✔ Submit  →
+
+│ When should the acceptance run happen? It loads the staging box for ~15 min,
+│ and the rig is still up.
+
+❯ 1. Today, daytime (Recommended)
+     Resume immediately once the PR is merged and the lane is open.
+  2. Tonight 20:00-23:45 UTC
+     Run the acceptance in the off-peak window.
+  3. Type something.
+────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

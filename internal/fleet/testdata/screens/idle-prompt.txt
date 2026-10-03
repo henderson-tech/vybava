@@ -1,0 +1,12 @@
+  1. Yes
+  2. No
+ Esc to cancel · Tab to amend
+⏺ Done. The file exists, and the earlier prompt was answered.
+
+✻ Crunched for 8s · done 4:37 PM
+
+──────────────────── Scratch directory listing ──────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  scratch │ 4% │ acct │ Opus 5.5 (1M context)
+  ⏸ manual mode on · ← for agents

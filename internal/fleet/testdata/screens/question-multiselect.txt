@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────
+│ Which lanes should run tonight?
+
+❯ 1. [ ] api
+  2. [ ] web
+  3. [ ] Type something
+  4. Submit
+────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Space to toggle · Esc to cancel
