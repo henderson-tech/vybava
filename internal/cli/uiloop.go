@@ -329,12 +329,30 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	}
 	checkpointsCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
 
+	var pauseReason, pauseBy string
+	pauseCmd := &cobra.Command{
+		Use:   "pause",
+		Short: "Drain the polish loop: state routes paused, run, batches --claim and lanes start nothing, running stages end at their next phase; idempotent",
+		Args:  cobra.NoArgs,
+		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.Pause(uiloop.PauseOptions{Reason: pauseReason, By: pauseBy})
+		}),
+	}
+	pauseCmd.Flags().StringVar(&pauseReason, "reason", "", "why the loop is paused (state and the refusals quote it)")
+	pauseCmd.Flags().StringVar(&pauseBy, "by", "", "who paused it (default: $USER@host)")
+	resumeCmd := &cobra.Command{
+		Use:   "resume",
+		Short: "Lift a pause and free the owner leases (batch claims, synth) the drained runs left, so state routes where the loop stopped; without a pause it does nothing",
+		Args:  cobra.NoArgs,
+		RunE:  run(func(t *uiloop.Tool) (uiloop.Result, error) { return t.Resume() }),
+	}
+
 	// --pass is shared by the pass verbs; record whether it was given so an
 	// explicit 0 is refused instead of read as "not given".
 	for _, c := range []*cobra.Command{runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd} {
 		c.PreRun = func(cmd *cobra.Command, _ []string) { passGiven = cmd.Flags().Changed("pass") }
 	}
 
-	command.AddCommand(initCmd, syncCmd, checkCmd, doctorCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd)
+	command.AddCommand(initCmd, syncCmd, checkCmd, doctorCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd, pauseCmd, resumeCmd)
 	return command
 }

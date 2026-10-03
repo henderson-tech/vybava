@@ -96,7 +96,7 @@ func (c Checkpoint) Finishes() bool {
 
 // NextStage is where a pass stands (nextStage); the vitrinka workflow runs it verbatim.
 type NextStage struct {
-	Stage  string `json:"stage"` // capture | review | fix | verify | done | wait
+	Stage  string `json:"stage"` // capture | review | fix | verify | done | wait | paused
 	Resume bool   `json:"resume"`
 	Reason string `json:"reason"`
 	// Only is the screens a verify, or a capture that reshoots the pass,
@@ -118,8 +118,8 @@ type NextStage struct {
 // 4: pass leases — capture, pending, next.stage wait, next.parallel and
 // batches' claimed. 5: split on stall — review.stalls and review.blocked,
 // batches' parts and blocked, and planned/done/left counting parts, never a
-// split batch.
-const StateContract = 5
+// split batch. 6: pause — paused and next.stage paused.
+const StateContract = 6
 
 // reviewParallel is how many identical review runs the unclaimed left
 // batches keep busy: one per reviewersPerRun batches, at most
@@ -283,6 +283,7 @@ type StateData struct {
 	Previous           *PreviousBacklog `json:"previous"`
 	Checkpoints        CheckpointCounts `json:"checkpoints"`
 	Boards             []BoardRow       `json:"boards"`
+	Paused             *Pause           `json:"paused"` // nil while the loop runs
 	Next               NextStage        `json:"next"`
 }
 
@@ -824,8 +825,24 @@ func (t *Tool) boardRows(pass int) ([]BoardRow, error) {
 	return []BoardRow{}, nil
 }
 
-// State reads a pass back: `ui-loop state`.
+// State reads a pass back: `ui-loop state`. A pause (`ui-loop pause`) routes
+// `paused` over whatever the pass would run next.
 func (t *Tool) State(o StateOptions) (Result, error) {
+	res, err := t.state(o)
+	if err != nil {
+		return res, err
+	}
+	data := res.Data.(StateData)
+	if data.Paused, err = t.paused(); err != nil || data.Paused == nil {
+		res.Data = data
+		return res, err
+	}
+	data.Next = NextStage{Stage: "paused", Reason: data.Paused.why()}
+	res.Data, res.Next = data, []string{resumeCommand}
+	return res, nil
+}
+
+func (t *Tool) state(o StateOptions) (Result, error) {
 	c := t.Config
 	primitives := o.Primitives
 	if primitives == nil {
@@ -1296,6 +1313,11 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	}
 	if err := o.actionProblem(pass); err != nil {
 		return Result{}, err
+	}
+	if o.Claim > 0 {
+		if err := t.refusePaused("batches --claim"); err != nil {
+			return Result{}, err
+		}
 	}
 	switch {
 	case o.Split != "":

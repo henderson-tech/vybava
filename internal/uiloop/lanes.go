@@ -243,6 +243,9 @@ func orderLaneItems(items []Finding) {
 // Lanes plans the pass's fix lanes from review/backlog.json and writes
 // fix/lanes.json: `ui-loop lanes`.
 func (t *Tool) Lanes(o LanesOptions) (Result, error) {
+	if err := t.refusePaused("lanes"); err != nil {
+		return Result{}, err
+	}
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
 		return Result{}, err
