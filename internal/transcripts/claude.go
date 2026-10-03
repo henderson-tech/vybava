@@ -23,6 +23,19 @@ type ClaudeRecord struct {
 	AgentID     string        `json:"agentId"`
 	RequestID   string        `json:"requestId"`
 	Message     ClaudeMessage `json:"message"`
+	// GitBranch is the branch a record was written on; Effort the reasoning
+	// effort an assistant record ran at.
+	GitBranch string `json:"gitBranch"`
+	Effort    string `json:"effort"`
+	// AITitle and CustomTitle are set on "ai-title" and "custom-title"
+	// records: the generated session title and the one a person gave it.
+	AITitle     string `json:"aiTitle"`
+	CustomTitle string `json:"customTitle"`
+	// Attachment.Type names an "attachment" record's kind (for one,
+	// "ultra_effort_enter" when ultracode switched on).
+	Attachment *struct {
+		Type string `json:"type"`
+	} `json:"attachment"`
 	// Origin says who wrote a user record: "human" for a prompt typed into
 	// the session, "task-notification" and others for text the harness
 	// injected. Tool results carry none.

@@ -23,6 +23,8 @@ const (
 	DiagAmbiguous   = "AMBIGUOUS"
 	DiagQuotedOnly  = "QUOTED_ONLY"
 	DiagCwdMissing  = "CWD_MISSING"
+	DiagCwdUnknown  = "CWD_UNKNOWN"
+	DiagManyMatches = "MANY_MATCHES"
 	DiagRootMissing = "ROOT_MISSING"
 	DiagPartial     = "PARTIAL_SCAN"
 )
@@ -51,6 +53,7 @@ type Result struct {
 	Needles     []string          `json:"needles,omitempty"`
 	Need        int               `json:"need,omitempty"`
 	Scanned     int               `json:"scanned"`
+	Matched     int               `json:"matched"`
 	Total       int               `json:"total"`
 	Elapsed     string            `json:"elapsed"`
 	Sessions    []Session         `json:"sessions"`
@@ -134,6 +137,7 @@ func Find(query string, opts Options) (Result, error) {
 				return Result{}, err
 			}
 			hits, res.Scanned = append(hits, more...), end
+			res.Matched = len(hits)
 			if res.Sessions, err = rankHits(hits, needles, opts, inspected); err != nil {
 				return Result{}, err
 			}
@@ -148,9 +152,13 @@ func Find(query string, opts Options) (Result, error) {
 	return res, nil
 }
 
-// rankHits inspects the best scan hits and orders them. It inspects a few
-// more than the limit: authorship reorders the scan's ranking, and sessions
-// that only quote the text must not crowd out the one that wrote it.
+// maxInspect caps the transcripts read for authorship; a query held by more
+// sessions than this is too common to rank (MANY_MATCHES).
+const maxInspect = 100
+
+// rankHits inspects every scan hit (up to maxInspect, most phrases first)
+// before ordering: authorship decides the ranking, so cutting to the limit
+// first would let newer sessions that quote the text crowd out its author.
 func rankHits(hits []scanned, needles []needle, opts Options, inspected map[string]Session) ([]Session, error) {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].Found != hits[j].Found {
@@ -159,7 +167,7 @@ func rankHits(hits []scanned, needles []needle, opts Options, inspected map[stri
 		return hits[i].File.ModTime.After(hits[j].File.ModTime)
 	})
 	var sessions []Session
-	for _, hit := range hits[:min(len(hits), opts.Limit*3)] {
+	for _, hit := range hits[:min(len(hits), maxInspect)] {
 		s, ok := inspected[hit.File.Path]
 		if !ok {
 			var err error
@@ -226,6 +234,11 @@ func verdict(res Result) []runx.Diagnostic {
 		diags = append(diags, runx.Diagnostic{Code: DiagQuotedOnly, Severity: "warning",
 			Detail: "the best match only quotes the text (a paste or tool output) — the session that wrote it may be a subagent or deleted"})
 	}
+	if res.Matched > maxInspect {
+		diags = append(diags, runx.Diagnostic{Code: DiagManyMatches, Severity: "warning",
+			Detail: fmt.Sprintf("%d sessions hold the query; only the %d with the most phrases were ranked", res.Matched, maxInspect),
+			Fix:    "find-session '<a longer, more distinctive passage>'"})
+	}
 	if len(res.Sessions) > 1 {
 		second := res.Sessions[1]
 		if second.Own() == top.Own() && second.Found == top.Found && tail(second) == tail(top) {
@@ -238,6 +251,10 @@ func verdict(res Result) []runx.Diagnostic {
 		diags = append(diags, runx.Diagnostic{Code: DiagPartial, Severity: "info",
 			Detail: fmt.Sprintf("searched the %d newest of %d sessions, stopping at the first that wrote it", res.Scanned, res.Total),
 			Fix:    "find-session --full"})
+	}
+	if top.Cwd == "" {
+		diags = append(diags, runx.Diagnostic{Code: DiagCwdUnknown, Severity: "warning",
+			Detail: "the transcript records no launch directory; run the line from the directory the session started in"})
 	}
 	if top.CwdMissing {
 		diags = append(diags, runx.Diagnostic{Code: DiagCwdMissing, Severity: "warning",

@@ -5,11 +5,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
 // sessionFile is one main-session transcript: <root>/<project>/<id>.jsonl.
@@ -20,10 +23,17 @@ type sessionFile struct {
 	ModTime time.Time
 }
 
+// uuid is the only file name listed: the id reaches the reopen line, so a
+// name a shell would split or expand is never a session.
+var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 // listSessions lists every main-session transcript under root, newest first.
 // since > 0 keeps only those written within it.
 func listSessions(root string, since time.Duration) ([]sessionFile, error) {
-	projects, err := os.ReadDir(root)
+	if _, err := os.Stat(root); err != nil {
+		return nil, err
+	}
+	walked, _, err := transcripts.WalkClaude(root)
 	if err != nil {
 		return nil, err
 	}
@@ -32,30 +42,12 @@ func listSessions(root string, since time.Duration) ([]sessionFile, error) {
 		cutoff = time.Now().Add(-since)
 	}
 	var files []sessionFile
-	for _, project := range projects {
-		if !project.IsDir() {
+	for _, f := range walked {
+		id := strings.TrimSuffix(filepath.Base(f.Path), ".jsonl")
+		if f.Kind != transcripts.ClaudeSession || !uuid.MatchString(id) || f.Info.ModTime().Before(cutoff) {
 			continue
 		}
-		dir := filepath.Join(root, project.Name())
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue // a project dir removed or unreadable mid-listing holds nothing to find
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil || info.ModTime().Before(cutoff) {
-				continue
-			}
-			files = append(files, sessionFile{
-				Path:    filepath.Join(dir, name),
-				ID:      strings.TrimSuffix(name, ".jsonl"),
-				ModTime: info.ModTime(),
-			})
-		}
+		files = append(files, sessionFile{Path: f.Path, ID: id, ModTime: f.Info.ModTime()})
 	}
 	sortNewest(files)
 	return files, nil
@@ -75,6 +67,10 @@ type scanned struct {
 // needles, in parallel. Files that vanish mid-scan are skipped; any other
 // read failure is returned.
 func scan(files []sessionFile, needles []needle, need int) ([]scanned, error) {
+	overlap := 0
+	for _, n := range needles {
+		overlap = max(overlap, len(n.text)-1)
+	}
 	jobs := make(chan sessionFile)
 	var (
 		mu      sync.Mutex
@@ -86,14 +82,9 @@ func scan(files []sessionFile, needles []needle, need int) ([]scanned, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var buf []byte
+			buf := make([]byte, chunkSize+overlap)
 			for file := range jobs {
-				var found int
-				var err error
-				buf, err = readInto(buf, file.Path)
-				if err == nil {
-					found = countNeedles(buf, needles, need)
-				}
+				found, err := scanFile(file.Path, needles, need, buf)
 				mu.Lock()
 				switch {
 				case err != nil && !errors.Is(err, os.ErrNotExist):
@@ -113,39 +104,49 @@ func scan(files []sessionFile, needles []needle, need int) ([]scanned, error) {
 	return hits, failure
 }
 
-// readInto reads a whole file into buf, growing it only when a file is
-// larger than any before: one buffer per worker, no per-file allocation.
-func readInto(buf []byte, path string) ([]byte, error) {
+// chunkSize bounds a scan worker's memory: a file streams through one
+// fixed buffer, so scan memory never grows with the largest transcript.
+var chunkSize = 8 << 20
+
+// scanFile counts the needles a file holds, streaming it through buf in
+// chunks that overlap by the longest needle less one byte, so a needle
+// across a chunk boundary still matches. In the last chunk it gives up once
+// need is out of reach — a typical transcript is one chunk, rejected after
+// len-need+1 passes.
+func scanFile(path string, needles []needle, need int, buf []byte) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return buf[:0], err
+		return 0, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return buf[:0], err
-	}
-	if size := int(info.Size()); cap(buf) < size {
-		buf = make([]byte, size)
-	}
-	n, err := io.ReadFull(f, buf[:info.Size()])
-	if err == io.ErrUnexpectedEOF {
-		err = nil // truncated mid-read: search what is there
-	}
-	return buf[:n], err
-}
-
-// countNeedles counts the needles data holds, giving up once need is out of
-// reach — most files are rejected after len-need+1 passes.
-func countNeedles(data []byte, needles []needle, need int) int {
-	found := 0
-	for i, needle := range needles {
-		if found+len(needles)-i < need {
-			break
+	overlap := len(buf) - chunkSize
+	seen := make([]bool, len(needles))
+	found, carry := 0, 0
+	for {
+		n, err := io.ReadFull(f, buf[carry:])
+		last := err == io.EOF || err == io.ErrUnexpectedEOF
+		if err != nil && !last {
+			return found, err
 		}
-		if needle.in(data) {
-			found++
+		window := buf[:carry+n]
+		unseen := len(needles) - found
+		for i, needle := range needles {
+			if seen[i] {
+				continue
+			}
+			if last && found+unseen < need {
+				return found, nil
+			}
+			unseen--
+			if needle.in(window) {
+				seen[i] = true
+				found++
+			}
 		}
+		if last || found == len(needles) {
+			return found, nil
+		}
+		carry = min(overlap, len(window))
+		copy(buf, window[len(window)-carry:])
 	}
-	return found
 }

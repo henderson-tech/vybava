@@ -3,7 +3,6 @@ package findsession
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -43,22 +42,8 @@ type Session struct {
 	CwdMissing bool `json:"cwdMissing,omitempty"`
 }
 
-// line is the slice of a transcript record inspect decodes; content is
-// never decoded except for the one prompt it shows.
-type line struct {
-	Type        string    `json:"type"`
-	Timestamp   time.Time `json:"timestamp"`
-	Cwd         string    `json:"cwd"`
-	GitBranch   string    `json:"gitBranch"`
-	IsSidechain bool      `json:"isSidechain"`
-	Effort      string    `json:"effort"`
-	AITitle     string    `json:"aiTitle"`
-	CustomTitle string    `json:"customTitle"`
-	Message     struct {
-		Model string `json:"model"`
-	} `json:"message"`
-}
-
+// Byte prefilters pick the lines inspect decodes (through the transcripts
+// package); everything else is only counted.
 var (
 	keyTimestamp = []byte(`"timestamp":"`)
 	keyCwd       = []byte(`"cwd":"`)
@@ -68,9 +53,8 @@ var (
 	keyUltra     = []byte(`"ultra_effort_enter"`)
 )
 
-// inspect reads one transcript line by line. Byte prefilters decide which
-// lines are decoded, so a large transcript costs one pass and a handful of
-// small decodes.
+// inspect reads one transcript line by line, so a large transcript costs
+// one pass and a handful of decodes.
 func inspect(file sessionFile, needles []needle) (Session, error) {
 	s := Session{ID: file.ID, Path: file.Path, Fragments: len(needles)}
 	f, err := os.Open(file.Path)
@@ -79,24 +63,36 @@ func inspect(file sessionFile, needles []needle) (Session, error) {
 	}
 	defer f.Close()
 	reader := bufio.NewReaderSize(f, 1<<20)
-	customTitle, seenAssistant := "", false
+	st := inspectState{}
+	var lastStamped []byte
 	for {
 		raw, err := reader.ReadBytes('\n')
 		if len(raw) > 0 {
 			s.Lines++
-			s.inspectLine(raw, needles, &customTitle, &seenAssistant)
+			s.inspectLine(raw, needles, &st)
+			if bytes.Contains(raw, keyTimestamp) {
+				lastStamped = raw
+			}
 		}
 		if err != nil {
 			break
 		}
 	}
-	if customTitle != "" {
-		s.Title = customTitle
+	if rec, err := transcripts.DecodeClaude(lastStamped); err == nil && !rec.Timestamp.IsZero() {
+		s.Ended = rec.Timestamp
+	}
+	if st.customTitle != "" {
+		s.Title = st.customTitle
 	}
 	return s, nil
 }
 
-func (s *Session) inspectLine(raw []byte, needles []needle, customTitle *string, seenAssistant *bool) {
+type inspectState struct {
+	customTitle   string
+	seenAssistant bool
+}
+
+func (s *Session) inspectLine(raw []byte, needles []needle, st *inspectState) {
 	hit := false
 	for _, needle := range needles {
 		if needle.in(raw) {
@@ -104,26 +100,21 @@ func (s *Session) inspectLine(raw []byte, needles []needle, customTitle *string,
 			break
 		}
 	}
-	assistant := bytes.Contains(raw, keyAssistant)
-	wantMeta := s.Cwd == "" && bytes.Contains(raw, keyCwd) ||
-		assistant && !*seenAssistant ||
-		bytes.Contains(raw, keyAITitle) || bytes.Contains(raw, keyCustom)
-	if !*seenAssistant && bytes.Contains(raw, keyUltra) {
-		s.Ultracode = true
-	}
-	if !hit && !wantMeta && !(s.Prompt == "" && transcripts.ClaudeHumanLine(raw)) {
-		s.stamp(raw)
+	want := hit ||
+		s.Started.IsZero() && bytes.Contains(raw, keyTimestamp) ||
+		s.Cwd == "" && bytes.Contains(raw, keyCwd) ||
+		!st.seenAssistant && (bytes.Contains(raw, keyAssistant) || bytes.Contains(raw, keyUltra)) ||
+		bytes.Contains(raw, keyAITitle) || bytes.Contains(raw, keyCustom) ||
+		s.Prompt == "" && transcripts.ClaudeHumanLine(raw)
+	if !want {
 		return
 	}
-	var rec line
-	if json.Unmarshal(raw, &rec) != nil {
+	rec, err := transcripts.DecodeClaude(raw)
+	if err != nil {
 		return
 	}
-	if !rec.Timestamp.IsZero() {
-		if s.Started.IsZero() {
-			s.Started = rec.Timestamp
-		}
-		s.Ended = rec.Timestamp
+	if s.Started.IsZero() && !rec.Timestamp.IsZero() {
+		s.Started = rec.Timestamp
 	}
 	if s.Cwd == "" && rec.Cwd != "" {
 		s.Cwd, s.Branch = rec.Cwd, rec.GitBranch
@@ -131,52 +122,47 @@ func (s *Session) inspectLine(raw []byte, needles []needle, customTitle *string,
 	switch rec.Type {
 	case "ai-title":
 		s.Title = rec.AITitle
+		s.Titled = s.Titled || hit && holdsAny(rec.AITitle, needles)
+		return
 	case "custom-title":
-		*customTitle = rec.CustomTitle
+		st.customTitle = rec.CustomTitle
+		s.Titled = s.Titled || hit && holdsAny(rec.CustomTitle, needles)
+		return
+	case "attachment":
+		if !st.seenAssistant && rec.Attachment != nil && rec.Attachment.Type == "ultra_effort_enter" {
+			s.Ultracode = true
+		}
 	case "assistant":
-		if !*seenAssistant && rec.Message.Model != transcripts.SyntheticModel {
-			*seenAssistant = true
+		if !st.seenAssistant && rec.Message.Model != transcripts.SyntheticModel {
+			st.seenAssistant = true
 			s.Model, s.Effort = rec.Message.Model, rec.Effort
 		}
 	}
-	if hit {
-		if rec.Type == "assistant" && !rec.IsSidechain {
-			s.Authored++
-			s.LastHit = s.Lines
-		} else if rec.Type == "ai-title" || rec.Type == "custom-title" {
-			s.Titled = true
-		} else {
-			s.Quoted++
+	if s.Prompt == "" && rec.HumanPrompt() {
+		if texts := rec.Message.Texts(); len(texts) > 0 {
+			s.Prompt = clip(texts[0], 160)
 		}
 	}
-	if s.Prompt == "" {
-		if full, err := transcripts.DecodeClaude(raw); err == nil && full.HumanPrompt() {
-			if texts := full.Message.Texts(); len(texts) > 0 {
-				s.Prompt = clip(texts[0], 160)
-			}
-		}
+	if !hit {
+		return
+	}
+	// Authorship is the reply text alone: a tool call carrying the text (a
+	// find-session query, a file write) is a quote.
+	if rec.Type == "assistant" && !rec.IsSidechain && holdsAny(strings.Join(rec.Message.Texts(), "\n"), needles) {
+		s.Authored++
+		s.LastHit = s.Lines
+	} else {
+		s.Quoted++
 	}
 }
 
-// stamp tracks the session's first and last timestamp without decoding.
-func (s *Session) stamp(raw []byte) {
-	i := bytes.Index(raw, keyTimestamp)
-	if i < 0 {
-		return
+func holdsAny(text string, needles []needle) bool {
+	for _, needle := range needles {
+		if needle.in([]byte(text)) {
+			return true
+		}
 	}
-	value := raw[i+len(keyTimestamp):]
-	end := bytes.IndexByte(value, '"')
-	if end < 0 {
-		return
-	}
-	ts, err := time.Parse(time.RFC3339Nano, string(value[:end]))
-	if err != nil {
-		return
-	}
-	if s.Started.IsZero() {
-		s.Started = ts
-	}
-	s.Ended = ts
+	return false
 }
 
 func clip(text string, limit int) string {
@@ -187,6 +173,10 @@ func clip(text string, limit int) string {
 	}
 	return string(runes[:limit-1]) + "…"
 }
+
+// knownEfforts are the levels switcheroo --effort takes; a transcript value
+// outside them never reaches the reopen line.
+var knownEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true, "ultracode": true}
 
 // Preset is the switcheroo launcher that starts a session the way this one
 // started: the model and effort of its first reply, ultracode when it was on
@@ -214,15 +204,19 @@ func Preset(model, effort string, ultracode bool) string {
 	if preset, ok := presets[family+"/"+effort]; ok {
 		return preset
 	}
-	if effort == "" {
-		return "cc --model " + family
+	if !knownEfforts[effort] {
+		return "cc --model " + family // none recorded, or one switcheroo would not take
 	}
 	return "cc --model " + family + " --effort " + effort
 }
 
 // reopenCommand is the one shell line that resumes the session from its
-// launch directory under its preset.
+// launch directory under its preset; with no directory recorded it is the
+// resume alone (CWD_UNKNOWN says where to run it).
 func reopenCommand(s Session, home string) string {
+	if s.Cwd == "" {
+		return Preset(s.Model, s.Effort, s.Ultracode) + " -- --resume " + s.ID
+	}
 	return "cd " + shellPath(s.Cwd, home) + " && " + Preset(s.Model, s.Effort, s.Ultracode) + " -- --resume " + s.ID
 }
 

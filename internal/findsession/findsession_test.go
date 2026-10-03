@@ -1,10 +1,12 @@
 package findsession
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeLines(t *testing.T, path string, lines ...string) {
@@ -77,9 +79,18 @@ func TestFindByIDForgivesPunctuation(t *testing.T) {
 	if !res.Sessions[0].CwdMissing || res.Diagnostics[len(res.Diagnostics)-1].Code != DiagCwdMissing {
 		t.Fatalf("missing launch directory not reported: %+v", res.Diagnostics)
 	}
+	// a file name that is no session id is never listed: it would reach the
+	// reopen line unquoted
+	writeLines(t, filepath.Join(root, "-repo", "e3f88062;touch pwned.jsonl"), `{"type":"assistant"}`)
 	res, err = Find("e3f88062", Options{Root: root, Exclude: "e3f88062-ca30-4f57-a535-fd8d3a73c723"})
 	if err != nil || len(res.Sessions) != 0 {
 		t.Fatalf("excluded session found: %+v, %v", res.Sessions, err)
+	}
+	// no cwd recorded: no `cd` into an empty path, a warning instead
+	writeLines(t, filepath.Join(root, "-repo", "0d0d0d0d-0000-0000-0000-000000000000.jsonl"), `{"type":"assistant","message":{"model":"claude-opus-5-5"},"effort":"high"}`)
+	res, err = Find("0d0d0d0d", Options{Root: root})
+	if err != nil || len(res.Sessions) != 1 || strings.HasPrefix(res.Sessions[0].Reopen, "cd ") || res.Diagnostics[0].Code != DiagCwdUnknown {
+		t.Fatalf("unknown cwd: %+v %+v, %v", res.Sessions, res.Diagnostics, err)
 	}
 }
 
@@ -97,9 +108,60 @@ func TestPreset(t *testing.T) {
 		{"claude-fable-5-1", "low", false, "ccl"},
 		{"claude-fable-5-1", "medium", false, "cc --model fable --effort medium"},
 		{"claude-sonnet-5-5", "high", false, "cc"},
+		{"claude-opus-5-5", "high; rm -rf ~", false, "cc --model opus"},
 	} {
 		if got := Preset(tc.model, tc.effort, tc.ultracode); got != tc.want {
 			t.Errorf("Preset(%s, %s, %v) = %q, want %q", tc.model, tc.effort, tc.ultracode, got, tc.want)
 		}
+	}
+}
+
+// The session that wrote the text is found however many newer sessions
+// quote it, and a session that only passed the text to a tool (find-session
+// itself, a file write) is no author.
+func TestFindAuthorBehindQuotersAndToolCalls(t *testing.T) {
+	root := t.TempDir()
+	text := "the quiet harbour lamps were lit early tonight while the ferry waited for the last passengers"
+	writeLines(t, filepath.Join(root, "-repo", "aaaaaaaa-0000-0000-0000-000000000000.jsonl"),
+		`{"type":"assistant","cwd":"/repo","timestamp":"2026-09-01T08:00:00Z","effort":"high","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"`+text+`"}]}}`,
+	)
+	for i := range 10 {
+		writeLines(t, filepath.Join(root, "-repo", fmt.Sprintf("bbbbbbbb-0000-0000-0000-%012d.jsonl", i)),
+			`{"type":"user","cwd":"/repo","timestamp":"2026-09-02T08:00:00Z","origin":{"kind":"human"},"message":{"content":"`+text+`"}}`,
+			`{"type":"assistant","timestamp":"2026-09-02T08:00:01Z","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"find-session <<'Q'\n`+text+`\nQ"}}]}}`,
+		)
+		touch(t, filepath.Join(root, "-repo", fmt.Sprintf("bbbbbbbb-0000-0000-0000-%012d.jsonl", i)), time.Duration(i+1)*time.Minute)
+	}
+	res, err := Find(text, Options{Root: root, Full: true})
+	if err != nil || len(res.Sessions) == 0 {
+		t.Fatalf("Find = %+v, %v", res, err)
+	}
+	if top := res.Sessions[0]; top.ID != "aaaaaaaa-0000-0000-0000-000000000000" || !top.Own() {
+		t.Fatalf("top = %s own=%v, want the author", top.ID, top.Own())
+	}
+	for _, s := range res.Sessions[1:] {
+		if s.Own() {
+			t.Fatalf("%s counted as author from a tool call", s.ID)
+		}
+	}
+}
+
+// A needle straddling a read-chunk boundary still matches.
+func TestScanAcrossChunks(t *testing.T) {
+	defer func(size int) { chunkSize = size }(chunkSize)
+	chunkSize = 64
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	writeLines(t, path, strings.Repeat("x", 50)+"lantern harbour ferry"+strings.Repeat("y", 200))
+	found, err := scanFile(path, []needle{newNeedle("lantern harbour ferry"), newNeedle("absent words here")}, 1, make([]byte, chunkSize+64))
+	if err != nil || found != 1 {
+		t.Fatalf("found = %d, %v", found, err)
+	}
+}
+
+func touch(t *testing.T, path string, ahead time.Duration) {
+	t.Helper()
+	at := time.Now().Add(ahead)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
 	}
 }
