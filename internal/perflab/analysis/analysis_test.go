@@ -585,3 +585,53 @@ func TestPerfettoTraceInARunDirNamesItsApp(t *testing.T) {
 		}
 	}
 }
+
+// An injected drag skips Samsung's touch boost, so the governor's clock mix
+// moves the raw RenderThread average more than a fix does. compare's
+// rtDrawMatchedClockMs weighs only the (CPU, clock) points every run drew
+// at (20+ frames each), so the S20 My Offers row layers read as a clear win
+// where a run's stray clocks would blur it; a point one run lacks stays out.
+func TestCompareMatchesRenderThreadDrawOnSharedClocks(t *testing.T) {
+	run := func(label string, at int, cpus ...framestats.RTCpu) RunAnalysis {
+		p := framestats.PresentMetrics{FrameTimeline: true, RTCpu: cpus}
+		return RunAnalysis{RunDir: label, Provenance: Provenance{Device: "s20", Platform: PlatformAndroid, RefreshHz: 120},
+			Records: []RecordResult{{Scenario: "probe-drag-worker-offers", Variant: label, RecordedAt: time.Date(2026, 10, 3, 9, at, 0, 0, time.UTC),
+				Metrics: &Metrics{Kind: KindPerfetto, Present: &p}}}}
+	}
+	mid := func(mhz int64, frames int, ms float64) framestats.RTCpu {
+		return framestats.RTCpu{CPU: 4, MHz: mhz, Frames: frames, AvgDrawMs: ms}
+	}
+	base := Side{Label: "base", Runs: []RunAnalysis{
+		run("base", 1, mid(1690, 418, 3.27), mid(507, 300, 6.0)),
+		run("base", 3, mid(1690, 245, 3.47), mid(507, 50, 6.1)),
+	}}
+	layers := Side{Label: "layers", Runs: []RunAnalysis{
+		run("layers", 2, mid(1690, 574, 2.3), mid(507, 400, 4.2)),
+		// A fast big-core stretch only this run reached never enters the match.
+		run("layers", 4, mid(1690, 458, 2.42), mid(507, 30, 4.3), framestats.RTCpu{CPU: 6, MHz: 2418, Frames: 300, AvgDrawMs: 1.5}),
+	}}
+	c, _, err := Compare(base, layers, CompareOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matched *CompareRow
+	for i := range c.Rows {
+		if c.Rows[i].Metric == MetricRTDrawMatchedMs {
+			matched = &c.Rows[i]
+		}
+	}
+	if matched == nil || matched.Verdict != VerdictImproved || matched.A.N != 2 || matched.B.N != 2 {
+		t.Fatalf("matched draw row = %+v, want improved over 2 + 2 runs", matched)
+	}
+	if got := strings.Join(matched.Reasons, ";"); got != "clocks: cpu4@507MHz, cpu4@1690MHz" {
+		t.Errorf("reasons %q, want only the clocks every run drew at", got)
+	}
+	// Two runs that share no clock give no matched row, never a zero.
+	lone := Side{Label: "lone", Runs: []RunAnalysis{run("lone", 5, mid(2504, 900, 2.0)), run("lone", 6, mid(2504, 800, 2.1))}}
+	c, _, _ = Compare(base, lone, CompareOptions{})
+	for _, r := range c.Rows {
+		if r.Metric == MetricRTDrawMatchedMs {
+			t.Errorf("no shared clock, yet a matched row: %+v", r)
+		}
+	}
+}

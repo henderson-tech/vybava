@@ -217,6 +217,11 @@ func Compare(a, b Side, opts CompareOptions) (Comparison, []runx.Diagnostic, err
 			}
 			c.Rows = append(c.Rows, row)
 		}
+		if va, vb, clocks := matchedClockDraw(ga, gb); len(clocks) > 0 {
+			row := judge(k.scenario, k.device, MetricRTDrawMatchedMs, va, vb, opts)
+			row.Reasons = append(row.Reasons, "clocks: "+strings.Join(clocks, ", "))
+			c.Rows = append(c.Rows, row)
+		}
 		c.Steps = append(c.Steps, compareSteps(k.scenario, ga, gb)...)
 	}
 	if tooFew > 0 {
@@ -282,6 +287,82 @@ func prefixed(side string, reasons []string) []string {
 		out[i] = side + ": " + r
 	}
 	return out
+}
+
+// matchedClockMinFrames is the frames a CPU clock must hold in every run to
+// enter the clock-matched draw (fewer is one stray frame's noise).
+const matchedClockMinFrames = 20
+
+// matchedClockDraw is each run's RenderThread draw per frame over only the
+// (CPU, clock) points every run of both sides drew at, each point weighted
+// by its frames pooled over all runs: an injected drag skips the touch
+// boost, so the governor moved the raw average 4.12 -> 3.90 ms between two
+// runs of one build while the mid cores at 1690 MHz read 3.23-3.49 ms. Nil
+// when the sides share no such point.
+func matchedClockDraw(ga, gb []sample) (va, vb []float64, clocks []string) {
+	type point struct {
+		cpu int
+		mhz int64
+	}
+	all := append(append([]sample{}, ga...), gb...)
+	perRun := make([]map[point]framestats.RTCpu, len(all))
+	pooled := map[point]int{}
+	for i, s := range all {
+		perRun[i] = map[point]framestats.RTCpu{}
+		if s.metrics.Present == nil {
+			return nil, nil, nil
+		}
+		for _, c := range s.metrics.Present.RTCpu {
+			if c.MHz <= 0 {
+				continue
+			}
+			p := point{c.CPU, c.MHz}
+			perRun[i][p] = c
+			pooled[p] += c.Frames
+		}
+	}
+	var shared []point
+	for p := range pooled {
+		inAll := true
+		for _, run := range perRun {
+			if run[p].Frames < matchedClockMinFrames {
+				inAll = false
+				break
+			}
+		}
+		if inAll {
+			shared = append(shared, p)
+		}
+	}
+	if len(shared) == 0 {
+		return nil, nil, nil
+	}
+	sort.Slice(shared, func(i, j int) bool {
+		if shared[i].cpu != shared[j].cpu {
+			return shared[i].cpu < shared[j].cpu
+		}
+		return shared[i].mhz < shared[j].mhz
+	})
+	weigh := func(run map[point]framestats.RTCpu) float64 {
+		sum, weight := 0.0, 0.0
+		for _, p := range shared {
+			w := float64(pooled[p])
+			sum += w * run[p].AvgDrawMs
+			weight += w
+		}
+		return math.Round(sum/weight*100) / 100
+	}
+	for i := range all {
+		if i < len(ga) {
+			va = append(va, weigh(perRun[i]))
+		} else {
+			vb = append(vb, weigh(perRun[i]))
+		}
+	}
+	for _, p := range shared {
+		clocks = append(clocks, fmt.Sprintf("cpu%d@%dMHz", p.cpu, p.mhz))
+	}
+	return va, vb, clocks
 }
 
 func metricValues(ss []sample, m Metric) []float64 {

@@ -10,6 +10,8 @@ Evidence cites FixIt, as in `rn-render-cost-rules.md`.
 - Degradation is a slope: per-cycle totals over N identical cycles, cycleN / cycle1. Then park 60 s on another tab and push and pop 20 screens; the app should feel like a cold start.
   Evidence: a calendar went 1.30 -> 1.008 after its fix set.
 - A win is `improved` in `compare` over at least 2 alternated runs per variant; `within-noise` is not a win. Expect wide spread on a warm phone: one build's worst-decile fps ranged 90.6-102 over three runs, a zoom baseline's median 104-117 over eight.
+- Judge an Android draw-cost fix on `rtDrawMatchedClockMs` (the clocks every run drew at), not only `rtDrawAvgMs`: without touch boost the governor's clock mix moves the average more than the fix.
+  Evidence: My Offers row layers on the S20, average 4.12/3.90 -> 3.17/2.92 ms, matched 3.89/4.08 -> 2.76/2.94 ms; worst-decile fps stayed within noise.
 - Release Hermes JS frames are not symbolicated: attribute by native frames and counters. JS cost per component comes only from the dev client's React Profiler, as relative numbers.
 - Proof counters: temporary JS counters in the perf build, never committed, prove a mechanism: commits per transition, formatter constructions per render, mapper starts per mount, GETs per screen open.
 - A whole-app slowdown: score each candidate cause against each symptom (tap latency, animation jank, progressive degradation), design a discriminator test that splits the top candidates, and keep a refutations list.

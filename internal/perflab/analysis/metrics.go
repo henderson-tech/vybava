@@ -18,6 +18,10 @@ const (
 	MetricDrops              Metric = "drops"
 	MetricSlope              Metric = "slope"
 	MetricIOSRestMainMsPerS  Metric = "iosRestMainMsPerS"
+	// MetricRTDrawMatchedMs is compare's RenderThread draw per frame over
+	// the CPU clocks every compared run drew at (matchedClockDraw): never a
+	// per-run scalar, it exists only between runs.
+	MetricRTDrawMatchedMs Metric = "rtDrawMatchedClockMs"
 )
 
 // Direction says which way a metric gets better.
@@ -33,7 +37,7 @@ const (
 var AllMetrics = []Metric{
 	MetricHitchRatio, MetricWorstAppHitch, MetricHitchCount,
 	MetricAnimatingFpsP10, MetricAnimatingFpsMedian, MetricJankyPct, MetricFpsP10,
-	MetricRestFrames, MetricRestRunMs, MetricRTDrawAvgMs, MetricTwoVsyncGaps, MetricDrops,
+	MetricRestFrames, MetricRestRunMs, MetricRTDrawAvgMs, MetricRTDrawMatchedMs, MetricTwoVsyncGaps, MetricDrops,
 	MetricSlope, MetricIOSRestMainMsPerS,
 }
 
@@ -53,6 +57,7 @@ var MetricDirections = map[Metric]Direction{
 	MetricDrops:              LowerIsBetter,
 	MetricSlope:              LowerIsBetter,
 	MetricIOSRestMainMsPerS:  LowerIsBetter,
+	MetricRTDrawMatchedMs:    LowerIsBetter,
 }
 
 // Scalars flattens the metrics into the comparable vocabulary. A metric

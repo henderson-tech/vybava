@@ -473,6 +473,12 @@ that only synced queues no buffer), so zero presents read as zero frames.
   them in run order; two dirs (or variant labels from `runs.jsonl`; a side
   of comma-joined dirs pools them, as a probe A/B needs: one record per dir)
   compare dir against dir.
+- `rtDrawMatchedClockMs` (Android, compare only): each run's RenderThread
+  draw per frame over the (CPU, clock) points every compared run drew at
+  with 20+ frames, weighted by the frames pooled over all runs; the row's
+  reasons list the clocks. An injected drag skips the touch boost, so the
+  governor's clock mix moves `rtDrawAvgMs` more than a fix: two runs of one
+  build read 4.12 and 3.90 ms. No shared clock, no row.
 
 ## Hazards
 
