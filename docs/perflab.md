@@ -393,7 +393,8 @@ in `data.gestures`; the input source is `adb`
 xctrace window (Hitches + Time Profiler) attached to the launched app.
 Each probe writes a run dir and is analyzed like a run; `data.verdict` uses
 the default budgets below. Metric definitions: `restFrames` counts frames
-after the first gap over 60 ms (every frame when the trace never rests);
+after the first gap over 60 ms (every frame when one run lasts to the
+trace's end);
 `restRunMs` is the longest run of presents with no gap over 60 ms;
 `rtDrawMs` is RenderThread `Drawing` per frame;
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4

@@ -425,3 +425,19 @@ func resolvePID(t rawTrace, pkg string) (int, string) {
 	}
 	return 0, ""
 }
+
+// endNs is the trace's last timestamp: the scheduler and atrace write until
+// the recording stops, while an app at rest presents nothing.
+func (t rawTrace) endNs() int64 {
+	var end int64
+	for _, s := range t.switches {
+		end = max(end, s.ts)
+	}
+	for _, p := range t.prints {
+		end = max(end, p.ts)
+	}
+	for _, e := range t.timeline {
+		end = max(end, e.ts)
+	}
+	return end
+}

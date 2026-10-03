@@ -222,7 +222,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	m.RefreshHz = round1(1000 / period)
 	m.PresentGaps = bucketGaps(gaps, period)
 	times := presentTimes(presents, func(p present) int64 { return p.at })
-	m.RestFrames, m.RestRunMs = restReading(times)
+	m.RestFrames, m.RestRunMs = restReading(times, nsToMs(t.endNs()))
 	if m.FrameTimeline && len(times) > 1 {
 		d := SummarizePresents(times, period)
 		m.display = &d
@@ -393,10 +393,11 @@ func presentTimes[T any](items []T, at func(T) int64) []float64 {
 // restReading: the frames presented after the first gap longer than
 // RestGapMs (the opening run settled), and the longest run of presents
 // without such a gap, first to last present. A trace that never rests (one
-// run of two or more presents, no gap) counts every frame: the probe's
-// lead-in already let the opening settle, and reading 0 there made a
-// screen drawing for all 20 s look better than one resting after 3 s.
-func restReading(times []float64) (int, float64) {
+// run of two or more presents still going at endMs, the trace's end)
+// counts every frame: the probe's lead-in already let the opening settle,
+// and reading 0 there made a screen drawing for all 20 s look better than
+// one resting after 3 s. A run that stopped before the end rested.
+func restReading(times []float64, endMs float64) (int, float64) {
 	if len(times) == 0 {
 		return 0, 0
 	}
@@ -414,7 +415,7 @@ func restReading(times []float64) (int, float64) {
 		}
 	}
 	longest = math.Max(longest, times[len(times)-1]-runStart)
-	if !settled && len(times) > 1 {
+	if !settled && len(times) > 1 && endMs-times[len(times)-1] <= RestGapMs {
 		restFrames = len(times)
 	}
 	return restFrames, round1(longest)
