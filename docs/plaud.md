@@ -32,14 +32,17 @@ not configurable.
 - `plaud login --json` — consent flow; prints the raw token JSON to stdout
   and nothing else there (progress on stderr), so `mcp__onyx__run_command`
   `capture {json_path: "refresh_token"}` stores it without the value ever
-  entering an agent context. Nothing is persisted by the CLI.
+  entering an agent context. Nothing is persisted by the CLI. A capture
+  always mints a new vault item: delete the old one by ref only after the
+  new one landed, until the ref resolves to the captured id.
 - `plaud refresh --json` — exchanges `$PLAUD_REFRESH_TOKEN`, caches the
   access token, prints the token response (including a rotated
   `refresh_token` when Plaud issues one — same capture flow updates the
   vault).
 - A data command that observes a rotation prints a loud stderr notice; the
   old refresh token keeps working until the vault is updated only if Plaud
-  did not revoke it, so act on the notice.
+  did not revoke it, so act on the notice. Under `onyx run_command` that
+  stderr is redacted, so there the symptom is a later 401.
 - 401 on refresh → `plaud login` again. 401 on a data call → the cache is
   cleared and the call retried once.
 
@@ -55,6 +58,11 @@ not configurable.
 
 `--json` prints the API payload verbatim (`files`, `file`, `note`) or a stable
 `{file_id, block, available_blocks, total, segments|text}` for `transcript`.
+`--out <file>` sends that result to a file instead — or `{"error": …}` when
+the command fails (plus `output`, whatever it had written first). The file is
+owner-only (0600) and its directory is created on demand. It is required under
+`onyx run_command`, which redacts the whole output of a call it injects the
+token into (the helper is shared with posta: `internal/cli/outflag.go`).
 The MCP's transcript pagination (`next_cursor`) was local slicing of one
 document; the CLI returns the whole block in one call.
 

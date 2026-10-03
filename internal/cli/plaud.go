@@ -30,7 +30,12 @@ func (rt *runtime) plaudCommand(use string) *cobra.Command {
 		Long: `Talks to the Plaud developer API directly (no MCP server process). The
 refresh token is never stored: it arrives as $` + plaud.RefreshTokenEnv + `, injected from
 the onyx vault, and only the short-lived access token is cached at
-~/.plaud/access-token.json (0600).`,
+~/.plaud/access-token.json (0600).
+
+The vault suppresses the whole of a child's output whenever it injects the
+token, so data commands pass --out and the caller reads the file: the result,
+or {"error": ...} on failure. Never pass --out to login or refresh under an
+onyx capture — the capture reads stdout.`,
 	}
 	command.AddCommand(
 		rt.plaudLoginCommand(),
@@ -41,6 +46,7 @@ the onyx vault, and only the short-lived access token is cached at
 		rt.plaudNoteCommand(),
 		rt.plaudTranscriptCommand(),
 	)
+	rt.bindOutFlag(command)
 	return command
 }
 
