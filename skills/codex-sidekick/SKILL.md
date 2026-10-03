@@ -6,17 +6,14 @@ description: "Claude Code only. Use when manual or verification work should run 
 # codex-sidekick: hand the manual work to a Codex thread
 
 This session orchestrates and writes app code. Driving, looking, mapping and test
-writing go to a Codex thread on gpt-6.1-sol through `switcheroo codex run`. The
-CLI prepends the sidekick contract to every run. That contract says the
-sidekick may touch test files only, never runs git, reports to
-`findings.md` and returns one structured result. Claude reads that result.
-Flags, exit codes and report paths: `switcheroo codex run --help`. Account failover
-and run state: claude-switcheroo's `docs/specs/2026-10-01-codex-sidekick-run-decisions.md`.
+writing go to Codex on gpt-6.1-sol: the native `codex` subagent whenever the Agent
+tool lists it, else a thread through `switcheroo codex run`. Both carry the sidekick
+contract: test files only, no git, one result Claude reads.
 
 **If you are Codex, this skill is not for you.** You are the sidekick: do the brief
 yourself and never call `switcheroo codex run` from inside a run.
 
-## Inside a `cc` session: the `codex` subagent first
+## The door: the `codex` subagent
 
 A `cc` session with a Codex account registered carries two native subagents:
 `codex` (medium) and `codex-high` (for "codex high"). Only their model turns bill a
@@ -27,8 +24,17 @@ the Agent tool lists them. Rules: claude-switcheroo's
 
 | Lane | Door |
 |---|---|
-| `verify`, `computer-use`, `explore`, `rework` | the `codex` subagent |
-| `usertest`, `e2e-write`, `e2e-run` (they lead a skill), "codex xhigh", or no `codex` agent listed | `switcheroo codex run`, below |
+| every lane | the `codex` subagent |
+| "codex xhigh", or no `codex` agent listed | `switcheroo codex run`, below |
+
+- No `codex` agent listed means the session was not launched through `cc` with a
+  Codex account, or predates the agents. Tell the user once that this session has no
+  native sidekick, then use the CLI.
+- `usertest`: the agent runs the vitrinka `usertest` skill itself. `e2e-write` and an
+  `e2e-run` that drives journeys: don't hand the agent the lead. Run the `e2e` skill
+  here: it leads natively and dispatches its discovery agents and lane writers as
+  `codex` agents. A plain suite run (`e2e-run` on specs, a grep or the suite) is one
+  `codex` agent with that brief's second half.
 
 - Spawn it with the Agent tool: `subagent_type: "codex"` (`"codex-high"` for "codex
   high"), the brief from the templates below, in the background. Keep one agent per
@@ -57,10 +63,15 @@ the Agent tool lists them. Rules: claude-switcheroo's
 | run e2e or other suites | sidekick, `e2e-run` |
 | app source edits, fixes for findings, design, a one-grep code lookup mid-task | Claude, here (never routed) |
 
-Effort is `medium`. Use `--effort high` only when the user says "codex high", and
-`--effort xhigh` only for "codex xhigh".
+Effort is `medium`. Use `codex-high` (CLI: `--effort high`) only when the user says
+"codex high", and the CLI's `--effort xhigh` only for "codex xhigh".
 
-## Run, then resume. One thread per lane
+## CLI: run, then resume. One thread per lane
+
+Only when no `codex` agent is listed, or for "codex xhigh". The CLI prepends the
+sidekick contract and reports to `findings.md` as well. Flags, exit codes and report
+paths: `switcheroo codex run --help`. Account failover and run state:
+claude-switcheroo's `docs/specs/2026-10-01-codex-sidekick-run-decisions.md`.
 
 ```bash
 switcheroo codex run --cwd <ABS worktree> --slug <lane> --json - <<'EOF'
@@ -70,7 +81,8 @@ EOF
 
 - Use the Bash tool with `run_in_background: true`. The completion notification
   carries the envelope `{run, thread, exports, status, result, error, resume, …}`. Keep
-  orchestrating in the meantime and don't poll or sleep.
+  orchestrating in the meantime. Never redirect its output to a file of your own and
+  never wait with `tail -f`, `sleep` or `timeout` loops: the notification is the wait.
 - Pass `--cwd` as the literal absolute path of the worktree the work belongs to.
   The persistent shell's cwd drifts, so never rely on it.
 - Start with `result`: `status` (`done`|`blocked`|`failed`), `summary`,
@@ -147,15 +159,15 @@ roles) · **Done when** · the mode lines below.
   testID gaps, and conflicts (code vs copy, DTO or DB). Fan out `sol_explorer` per
   feature cluster. [e2e discovery: write `<app>/journeys.md` per the `e2e` skill's
   Phase 1.]"
-- **e2e-write** (no run): "Run the `e2e` skill as its Codex lead with `--no-run` on
+- **e2e-write** (no run; CLI only, natively the `e2e` skill leads here): "Run the `e2e` skill as its Codex lead with `--no-run` on
   <scope>: `sol_explorer` discovery, then write or update the specs and `journeys.md`
   statically from source. No app, no browser or device, and never execute the
   runner. Lint and typecheck only."
 - **rework** (no run): "<specs> broke because <app change, sha>. Update them to the
   new behavior (selectors, flows, fixtures). Never weaken an assertion to make it
   pass; behavior you believe is a bug is a finding. Lint and typecheck only."
-- **e2e-run**: "Run the `e2e` skill as its Codex lead on <scope> (drive live,
-  dual-verify, run each spec alone), or run <specs | --grep @e2e-<slug> | the suite>
+- **e2e-run**: "[CLI only: Run the `e2e` skill as its Codex lead on <scope> (drive live,
+  dual-verify, run each spec alone), or] run <specs | --grep @e2e-<slug> | the suite>
   with the repo's runner, where the repo runs tests (Devbox when it has `devbox.yaml`), workers capped.
   Classify each failure. A spec bug: fix the spec and rerun it once. An app bug:
   record a finding with evidence and don't fix it. Report the counts in `tests`."
