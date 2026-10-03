@@ -1,9 +1,9 @@
 ---
 name: codex-sidekick
-description: "Claude Code only. Use when manual or verification work should run on a Codex sidekick thread instead of in this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex high', 'codex xhigh' or 'sidekick', or asks to hand work to the Codex sidekick. Claude stays the orchestrator and the only author of app source; the sidekick is the native `codex` subagent inside `cc` sessions, else `switcheroo codex run`."
+description: "Claude Code only. Use when manual or verification work should go to the Codex sidekick, the native `codex` / `codex-high` subagent, instead of this session: user test / usertest, verify it in the UI, browser or simulator, computer use, explore the app, map routes or journeys, write, rework or run e2e or other tests. Also use when the user says 'codex high', 'codex xhigh' or 'sidekick', or asks to hand work to Codex."
 ---
 
-# codex-sidekick: hand the manual work to a Codex thread
+# codex-sidekick: hand the manual work to the `codex` subagent
 
 This session orchestrates and writes app code. Driving, looking, mapping and test
 writing go to Codex on gpt-6.1-sol: the native `codex` subagent whenever the Agent
