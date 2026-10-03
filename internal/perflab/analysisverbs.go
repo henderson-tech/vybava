@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,18 +100,19 @@ func (t *Tool) Analyze(ctx context.Context, paths []string, o AnalyzeOptions) (R
 func (t *Tool) ledgerPath() string { return filepath.Join(t.Lab.StateDir, "runs.jsonl") }
 
 // resolveRunDir takes a run dir, or a variant label the run index knows
-// (its newest run dir).
-func (t *Tool) resolveRunDir(arg string) (string, error) {
+// (its newest run dir, and the label itself: an alternating run's dir holds
+// every variant, so a label side reads only its own records).
+func (t *Tool) resolveRunDir(arg string) (dir, label string, err error) {
 	if analysis.IsRunDir(arg) {
-		return arg, nil
+		return arg, "", nil
 	}
 	entries, _, err := analysis.ReadLedger(t.ledgerPath())
 	if err == nil {
 		if dirs := analysis.LatestRunDirs(entries, "", arg); len(dirs) > 0 {
-			return dirs[0], nil
+			return dirs[0], arg, nil
 		}
 	}
-	return "", diag(DiagUsage, fmt.Sprintf("%q is neither a run dir (no %s) nor a variant label in %s", arg, analysis.RunFileName, t.ledgerPath()),
+	return "", "", diag(DiagUsage, fmt.Sprintf("%q is neither a run dir (no %s) nor a variant label in %s", arg, analysis.RunFileName, t.ledgerPath()),
 		"perflab compare <runDirA> <runDirB> --json")
 }
 
@@ -152,17 +154,25 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 	}
 	var a, b analysis.Side
 	var diags []runx.Diagnostic
+	var dirs []string
 	if len(args) == 2 {
+		var evidence [2]string
 		for i, arg := range args {
 			// A side is one run dir or several joined by commas: a probe
 			// writes one record per dir, so its A/B reaches the noise rule
-			// only with two or more dirs per side.
+			// only with two or more dirs per side. A variant label is also
+			// the side's variant: its run dir's other variants stay out.
 			var side analysis.Side
-			for _, part := range strings.Split(arg, ",") {
+			var sideDirs []string
+			for j, part := range strings.Split(arg, ",") {
 				// The shell expands only the first ~ of a comma-joined side.
-				dir, err := t.resolveRunDir(expandHome(strings.TrimSpace(part)))
+				dir, label, err := t.resolveRunDir(expandHome(strings.TrimSpace(part)))
 				if err != nil {
 					return Result{}, err
+				}
+				if j > 0 && label != side.Variant {
+					return Result{}, diag(DiagUsage, fmt.Sprintf("side %q mixes variant labels, or a label and run dirs: a side is run dirs or one variant label", arg),
+						"perflab compare <labelA> <labelB> --json, or perflab compare <dirA>[,<dirA2>] <dirB>[,<dirB2>] --json")
 				}
 				ra, d, err := t.analyzeRunDir(ctx, dir, opts)
 				if err != nil {
@@ -171,20 +181,34 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 				diags = append(diags, d...)
 				if side.Label == "" {
 					side.Label = filepath.Base(dir)
+					if label != "" {
+						side.Label = label
+					}
 				}
+				side.Variant = label
 				side.Runs = append(side.Runs, ra)
+				sideDirs = append(sideDirs, dir)
+				if !slices.Contains(dirs, dir) {
+					dirs = append(dirs, dir)
+				}
 			}
 			if n := len(side.Runs); n > 1 {
 				side.Label += fmt.Sprintf(" +%d", n-1)
 			}
+			slices.Sort(sideDirs)
+			evidence[i] = side.Variant + "\x00" + strings.Join(sideDirs, "\x00")
 			if i == 0 {
 				a = side
 			} else {
 				b = side
 			}
 		}
+		if evidence[0] == evidence[1] {
+			return Result{}, diag(DiagUsage, fmt.Sprintf("both sides read the same evidence (%s vs %s): compare needs two variants or two sets of run dirs", args[0], args[1]),
+				"perflab compare <runDirA> <runDirB> --json")
+		}
 	} else {
-		dir, err := t.resolveRunDir(args[0])
+		dir, _, err := t.resolveRunDir(args[0])
 		if err != nil {
 			return Result{}, err
 		}
@@ -207,16 +231,13 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 		}
 		a = analysis.Side{Label: variants[0], Runs: []analysis.RunAnalysis{ra}, Variant: variants[0]}
 		b = analysis.Side{Label: variants[1], Runs: []analysis.RunAnalysis{ra}, Variant: variants[1]}
+		dirs = []string{dir}
 	}
 	cmp, d, err := analysis.Compare(a, b, analysis.CompareOptions{Scenario: o.Scenario, Threshold: o.Threshold, MinRuns: o.MinRuns, AllowConfound: allowed})
 	if err != nil {
 		return Result{}, err
 	}
 	diags = append(diags, d...)
-	var dirs []string
-	for _, arg := range args {
-		dirs = append(dirs, strings.Split(arg, ",")...)
-	}
 	next := []string{"perflab report " + strings.Join(quoteAll(dirs), " ") + " --gate --json"}
 	for _, dg := range diags {
 		if dg.Code == analysis.DiagTooFewRuns || dg.Code == analysis.DiagNoisy {

@@ -477,3 +477,55 @@ func TestProbeRunDirIgnoresTheEvidence(t *testing.T) {
 		t.Fatalf(".gitignore = %q (%v)", raw, err)
 	}
 }
+
+// An alternating run indexes one run dir under both labels: compare
+// before layer reads each side's own variant there (both sides pooled
+// every record and read identical), and a side compared with itself is
+// USAGE.
+func TestCompareLabelsOfOneAlternatingRunDir(t *testing.T) {
+	scenario := "calendar-view-switch-smooth"
+	row := ScenarioRow{Name: scenario, WindowMs: 105000}
+	tool := &Tool{Config: &Config{App: AppConfig{Root: "apps/client", Android: &AndroidAppConfig{Package: "app.fixit.client"}}}, Now: time.Now,
+		Lab: &devlab.Lab{StateDir: t.TempDir()}}
+	runDir := t.TempDir()
+	rf := analysis.RunFile{Version: analysis.RunFileVersion, Provenance: analysis.Provenance{Device: "s20", Platform: analysis.PlatformAndroid, RefreshHz: 120, InputSource: analysis.InputADB}}
+	for i, side := range []struct{ label, prefix, stamp string }{
+		{"before", "lab120-before", "2026-10-02T10-33-10-748Z"},
+		{"layer", "lab120-layer", "2026-10-02T10-48-32-456Z"},
+	} {
+		caseDir := filepath.Join(runDir, caseDirName(RunBlock{Seq: i + 1, Variant: side.label, Attempt: 1}))
+		copyTo(t, filepath.Join(framestatsData, side.prefix+"."+scenario+"-android-"+side.stamp+".json.gz"), filepath.Join(caseDir, "frames", scenario+"-android-"+side.stamp+".json.gz"))
+		rec, missing := tool.discoverRecord(runDir, caseDir, "android", row, RunVariant{Label: side.label, NativeKey: "pf1-0b95220e9a40cd6e79d2"}, 1, time.Now(), nil, nil)
+		if missing {
+			t.Fatal("the sidecar must be found")
+		}
+		rf.Runs = append(rf.Runs, rec)
+	}
+	if err := writeRunFile(runDir, rf); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.appendLedger(runDir, "s20", []RunVariant{{Label: "before"}, {Label: "layer"}}, []string{scenario}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Compare(context.Background(), []string{"before", "layer"}, CompareOptions{MinRuns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmp := res.Data.(analysis.Comparison)
+	if cmp.A.Variant != "before" || cmp.B.Variant != "layer" || len(cmp.Rows) == 0 {
+		t.Errorf("sides %q/%q, %d rows", cmp.A.Variant, cmp.B.Variant, len(cmp.Rows))
+	}
+	moved := false
+	for _, r := range cmp.Rows {
+		moved = moved || r.A.Median != r.B.Median
+	}
+	if !moved {
+		t.Errorf("each label must read only its own records: every row reads A == B %+v", cmp.Rows)
+	}
+	if _, err := tool.Compare(context.Background(), []string{"before", "before"}, CompareOptions{MinRuns: 1}); CodeOf(err) != DiagUsage {
+		t.Errorf("a side compared with itself: %v", err)
+	}
+	if _, err := tool.Compare(context.Background(), []string{runDir, runDir}, CompareOptions{MinRuns: 1}); CodeOf(err) != DiagUsage {
+		t.Errorf("a run dir compared with itself: %v", err)
+	}
+}
