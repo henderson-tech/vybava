@@ -472,6 +472,8 @@ func TestWritingCommandsNameTheirDirectoryReadsDoNot(t *testing.T) {
 		"cd /w/lib && git diff > /tmp/lib.diff":                                       {"/tmp/lib.diff"}, // no repository
 		"cd /w/lib && make > /tmp/log":                                                {"/tmp/log", "/w/lib"},
 		"cd /w/lib && cat > \"$OUT\"":                                                 {"/w/lib"},
+		"cat > \"/w/client exports/report.txt\"":                                      {"/w/client exports/report.txt"}, // one quoted word
+		"cd /w/lib && echo hi >'notes; (draft).md'":                                   {"/w/lib/notes; (draft).md"},
 		"cd /w/lib && ls 2>/dev/null && git branch --list && git status 2>&1":         nil,
 		"cd /w/lib && git branch topic":                                               {"/w/lib"},
 		"make test":                                                                   nil,

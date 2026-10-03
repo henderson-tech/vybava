@@ -269,9 +269,9 @@ func gitReadOnly(fields []string) bool {
 
 // redirectTargets lists the files a segment's unquoted output redirects
 // write — `cat > f`, `echo x >> f`, `make &>log` — the one way a read-only
-// word writes; a target that is not a plain word comes back as spelled, or
-// "". A redirect to /dev/null or onto another descriptor (2>&1) writes
-// nothing.
+// word writes; each target is one whole shell word with its quotes taken off
+// (`> "a b/c"` is a b/c), a variable or glob in it kept as spelled, or "". A
+// redirect to /dev/null or onto another descriptor (2>&1) writes nothing.
 func redirectTargets(seg string) []string {
 	var out []string
 	var quote byte
@@ -300,17 +300,46 @@ func redirectTargets(seg string) []string {
 			for j < len(seg) && (seg[j] == ' ' || seg[j] == '\t') {
 				j++
 			}
-			end := j
-			for end < len(seg) && !strings.ContainsRune(" \t;&|<>()", rune(seg[end])) {
-				end++
-			}
-			if target := strings.Trim(seg[j:end], `"'`); target != "/dev/null" {
+			target, end := redirectWord(seg, j)
+			if target != "/dev/null" {
 				out = append(out, target)
 			}
 			i = end - 1
 		}
 	}
 	return out
+}
+
+// redirectWord decodes the shell word a redirect names, starting at seg[from]:
+// quotes and backslashes taken off, a quoted space or `;` kept in it. end is
+// the index just past it.
+func redirectWord(seg string, from int) (word string, end int) {
+	var b strings.Builder
+	var quote byte
+	for end = from; end < len(seg); end++ {
+		c := seg[end]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+				continue
+			}
+			if c == '\\' && quote == '"' && end+1 < len(seg) && strings.IndexByte(`"\$`+"`", seg[end+1]) >= 0 {
+				end++
+				c = seg[end]
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '\\' && end+1 < len(seg):
+			end++
+			c = seg[end]
+		case strings.IndexByte(" \t;&|<>()", c) >= 0:
+			return b.String(), end
+		}
+		b.WriteByte(c)
+	}
+	return b.String(), end
 }
 
 // cwdFlag is the directory a segment's `--cwd <dir>` / `--cwd=<dir>` names,
