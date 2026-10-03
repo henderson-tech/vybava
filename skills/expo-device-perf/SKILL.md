@@ -39,7 +39,7 @@ Run `build native`, `bundle export`, `run` and `probe` as background tasks of th
 6. Confirm on the other refresh class (60 vs 120 Hz), the other platform, and once on `build native --kind bundled`.
 7. Land it per rule 27, with the runs on a vitrinka board.
 
-App-wide render sweep: `perflab hazards <appRoot>` lists loop, layer and list sites; review each loop for an ambient gate AND real visibility. Cover every route in the project's route inventory (each persona, every tab, top detail screens, each journey state). Per screen on the 120 Hz Android phone: `probe rest`, plus `probe drag` and `probe fling` when it scrolls. Done when every route has a verdict row (`perflab report`) and each failing screen is fixed or has its own task.
+App-wide render sweep: `perflab hazards <appRoot>` lists loop, layer and list sites; review each loop for an ambient gate AND real visibility. Cover every route in the project's route inventory (each persona, every tab, top detail screens, each journey state). Per screen on the 120 Hz Android phone: `probe rest` (its touch at 540,210 must hit nothing: `--tap x,y` an inert spot when a control sits there, or the probe measures the state it opened), plus `probe drag` and `probe fling` when it scrolls. Done when every route has a verdict row (`perflab report`) and each failing screen is fixed or has its own task.
 
 ## Which instrument
 

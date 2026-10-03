@@ -93,7 +93,7 @@ every number.
 | `net forward\|status\|stop --device --lease [--device-port]` | Android: `adb reverse` plus an in-process forwarder to the API. `forward` streams until SIGINT; run it as a background task. |
 | `app launch\|link\|reset --device --lease [--account --route --world]` | Start the app; deliver the adapter's sign-in link; run the adapter's world reset. |
 | `run <scenario>... --device --lease --variant [label=]<id>... [--alternate] [--repeat N] [--resume <runDir>] [--no-analyze] [--max 90m]` | The measured runner (below). |
-| `probe rest\|drag\|fling\|custom --device --lease [--package] [--seconds 20] [--label] [--gesture-file]` | Quick device-only measurement (below). |
+| `probe rest\|drag\|fling\|custom --device --lease [--package] [--seconds 20] [--label] [--tap x,y\|none] [--gesture-file]` | Quick device-only measurement (below). |
 | `analyze <path>... [--marks] [--wdio-log --step-cycle] [--tap-lag] [--window a-b --classify\|--stacks] [--sql <preset>] [--reread]` | Every number from evidence. |
 | `compare <runDir> [<runDir>] [--threshold 0.15] [--min-runs 2] [--allow-confound <field>]` | B against A under the noise rule. |
 | `report [<runDir>...] [--gate] [--md f]` | The newest result per scenario x device against the budgets. |
@@ -381,7 +381,7 @@ period comes from `dumpsys SurfaceFlinger --latency`, gestures scale from
 
 | Kind | Before the trace | Inside it (after a 2 s lead-in) |
 |---|---|---|
-| `rest` | tap 540 210, 1 s | nothing for `--seconds` |
+| `rest` | tap 540 210 (`--tap x,y` an inert spot when a control sits there, `none`), 1 s | nothing for `--seconds` |
 | `drag` | to top x2, mid | 6 x (1700 -> 1100 and back, 1200 ms, 0.3 s apart) |
 | `fling` | to top x2, mid | 6 x (1900 -> 500 and 600 -> 2000, 90 ms, 1.3 s coast) |
 | `custom` | none | `--gesture-file`: `[{swipe:[x1,y1,x2,y2,ms]} \| {tap:[x,y]} \| {sleepMs:n}]` |

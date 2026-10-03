@@ -2,6 +2,7 @@ package perflab
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -195,6 +196,31 @@ func TestProbeHelpers(t *testing.T) {
 	}
 	if got := strings.Join(scaleArgs(Gesture{Swipe: []int{540, 1700, 540, 1100, 1200}}, 720, 1600), " "); got != "input swipe 360 1133 360 733 1200" {
 		t.Fatalf("scaled = %s", got)
+	}
+	for _, c := range []struct {
+		tap  string
+		taps [][]int
+		ok   bool
+	}{
+		{"", [][]int{{540, 210}}, true},
+		{"760,160", [][]int{{760, 160}}, true},
+		{"none", nil, true},
+		{"1200,10", nil, false},
+		{"top", nil, false},
+	} {
+		setup, err := restSetup(c.tap)
+		var taps [][]int
+		for _, g := range setup {
+			if g.Tap != nil {
+				taps = append(taps, g.Tap)
+			}
+		}
+		if (err == nil) != c.ok || fmt.Sprint(taps) != fmt.Sprint(c.taps) {
+			t.Errorf("--tap %q: taps %v err %v; a header control under the default spot needs another (FixIt Marketplace Pro's search pill)", c.tap, taps, err)
+		}
+	}
+	if _, err := (&Tool{}).Probe(context.Background(), ProbeOptions{Kind: "drag", Tap: "760,160"}); CodeOf(err) != DiagUsage {
+		t.Errorf("--tap on a drag probe is USAGE before any device call: %v", err)
 	}
 	_, drag := recipes("drag")
 	if len(drag) != 24 || scriptDuration(drag) != 6*(2*1200+2*300)*time.Millisecond {

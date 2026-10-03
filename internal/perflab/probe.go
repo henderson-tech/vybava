@@ -43,6 +43,9 @@ type ProbeOptions struct {
 	Label       string
 	GestureFile string
 	Out         string
+	// Tap is rest's touch before the trace: "x,y" in 1080x2400
+	// coordinates, "none", or empty for the default (restTap).
+	Tap string
 }
 
 // Gesture is one step of a gesture script, in the S20's 1080x2400
@@ -58,13 +61,37 @@ const (
 	baseH = 2400
 )
 
+// defaultRestTap is rest's touch before the trace (it opens the app's
+// ambient gate, the worst case): just under the status bar, mid-width.
+var defaultRestTap = []int{540, 210}
+
+// restSetup is rest's pre-trace touch for --tap: empty for the default,
+// "none" for no touch, else "x,y" in 1080x2400 coordinates. A control at
+// the default spot (a centred header search pill on FixIt's Marketplace
+// Pro) opens another screen state, so a screen gets an inert spot.
+func restSetup(tap string) ([]Gesture, error) {
+	switch strings.TrimSpace(tap) {
+	case "":
+		return []Gesture{{Tap: defaultRestTap}, {SleepMs: 1000}}, nil
+	case "none":
+		return []Gesture{{SleepMs: 1000}}, nil
+	}
+	xs, ys, ok := strings.Cut(tap, ",")
+	x, errX := strconv.Atoi(strings.TrimSpace(xs))
+	y, errY := strconv.Atoi(strings.TrimSpace(ys))
+	if !ok || errX != nil || errY != nil || x < 0 || x > baseW || y < 0 || y > baseH {
+		return nil, fmt.Errorf("--tap %q is not x,y inside 1080x2400 or none", tap)
+	}
+	return []Gesture{{Tap: []int{x, y}}, {SleepMs: 1000}}, nil
+}
+
 // Recipes are the gesture scripts per kind: setup runs before the trace,
 // script inside it (after a 2 s lead-in).
 func recipes(kind string) (setup, script []Gesture) {
 	toTop := []Gesture{{Swipe: []int{540, 700, 540, 2100, 80}}, {SleepMs: 400}, {Swipe: []int{540, 700, 540, 2100, 80}}, {SleepMs: 600}}
 	switch kind {
 	case "rest":
-		return []Gesture{{Tap: []int{540, 210}}, {SleepMs: 1000}}, nil
+		return []Gesture{{Tap: defaultRestTap}, {SleepMs: 1000}}, nil
 	case "drag":
 		setup = append(toTop, Gesture{Swipe: []int{540, 1800, 540, 900, 1200}}, Gesture{SleepMs: 800})
 		for i := 0; i < 6; i++ {
@@ -138,6 +165,15 @@ func (t *Tool) Probe(ctx context.Context, o ProbeOptions) (Result, error) {
 	}
 	if o.Kind == "custom" && o.GestureFile == "" {
 		return Result{}, diag(DiagUsage, "probe custom needs --gesture-file <json>", "perflab probe custom --gesture-file <json> --device "+orElse(o.Device, "<id>")+" --lease "+orElse(o.Lease, "<token>")+" --json")
+	}
+	if o.Tap != "" {
+		fix := "perflab probe rest --tap <x,y|none> --device " + orElse(o.Device, "<id>") + " --lease " + orElse(o.Lease, "<token>") + " --json"
+		if o.Kind != "rest" {
+			return Result{}, diag(DiagUsage, "--tap is rest's pre-trace touch; "+o.Kind+" scrolls to its own start", fix)
+		}
+		if _, err := restSetup(o.Tap); err != nil {
+			return Result{}, diag(DiagUsage, err.Error(), fix)
+		}
 	}
 	if o.Seconds <= 0 {
 		o.Seconds = 20
@@ -325,6 +361,11 @@ func (t *Tool) probeAndroid(ctx context.Context, h *devlab.Hold, o ProbeOptions,
 		w, hgt = baseW, baseH
 	}
 	setup, script := recipes(o.Kind)
+	if o.Kind == "rest" {
+		if setup, err = restSetup(o.Tap); err != nil {
+			return nil, ev, diags, diag(DiagUsage, err.Error(), "perflab probe rest --tap <x,y|none>")
+		}
+	}
 	if o.Kind == "custom" {
 		raw, err := os.ReadFile(o.GestureFile)
 		if err != nil {

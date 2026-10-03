@@ -628,6 +628,7 @@ func (rt *runtime) perflabRunVerbs(run verbRunner) []*cobra.Command {
 	probe.Flags().StringVar(&po.Label, "label", "", "a name for the screen probed")
 	probe.Flags().StringVar(&po.GestureFile, "gesture-file", "", "custom: JSON list of {swipe:[x1,y1,x2,y2,ms]} | {tap:[x,y]} | {sleepMs:n} in 1080x2400 coordinates")
 	probe.Flags().StringVar(&po.Out, "out", "", "run dir (default: the adapter's out template)")
+	probe.Flags().StringVar(&po.Tap, "tap", "", "rest: the touch before the trace, x,y in 1080x2400 coordinates or none (default 540,210); pick an inert spot, a control there changes the screen probed")
 
 	var an perflab.AnalyzeOptions
 	var stepCycle string
