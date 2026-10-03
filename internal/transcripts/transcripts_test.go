@@ -90,6 +90,7 @@ func TestScanBoundsASweepAndSkipsOversizeRecordsOnRequest(t *testing.T) {
 	}
 }
 
+// Each agent names the main transcript it belongs to (>).
 func TestWalkClaudeFindsSessionsSubagentsAndWorkflowAgentsOnly(t *testing.T) {
 	root := t.TempDir()
 	for _, p := range []string{
@@ -109,10 +110,15 @@ func TestWalkClaudeFindsSessionsSubagentsAndWorkflowAgentsOnly(t *testing.T) {
 	var got []string
 	for _, f := range files {
 		rel, _ := filepath.Rel(root, f.Path)
-		got = append(got, string(f.Kind)+":"+filepath.ToSlash(rel))
+		entry := string(f.Kind) + ":" + filepath.ToSlash(rel)
+		if s := f.SessionPath(); s != "" {
+			sr, _ := filepath.Rel(root, s)
+			entry += ">" + filepath.ToSlash(sr)
+		}
+		got = append(got, entry)
 	}
 	sort.Strings(got)
-	want := "session:-repo/s1.jsonl subagent:-repo/s1/subagents/agent-a.jsonl workflow-agent:-repo/s1/subagents/workflows/wf_1/agent-b.jsonl"
+	want := "session:-repo/s1.jsonl subagent:-repo/s1/subagents/agent-a.jsonl>-repo/s1.jsonl workflow-agent:-repo/s1/subagents/workflows/wf_1/agent-b.jsonl>-repo/s1.jsonl"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("WalkClaude = %v\nwant %s", got, want)
 	}

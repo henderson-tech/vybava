@@ -49,8 +49,8 @@ type claudeMsg struct {
 	At int64  `json:"at"` // unix seconds of its first record
 	// Beat: the message owes a minute — a token read charged it, or a backlog read it.
 	Beat bool `json:"beat,omitempty"`
-	// Copy: a token read found it seen while history is re-read; it is
-	// staged and found like its original (see copyFound).
+	// Copy: a token read found it seen; its minute goes to its file's own
+	// timeline only (see copyBeat).
 	Copy bool `json:"copy,omitempty"`
 }
 
@@ -412,10 +412,29 @@ func (ix *indexer) flushMsg(f *focusState, mode readMode) {
 	switch {
 	case m.Beat:
 		ix.aiBeat(time.Unix(m.At, 0), f.roots(), identity("claude", m.ID), mode)
-	case m.Copy && ix.staging:
-		ix.copyFound(time.Unix(m.At, 0), f.roots(), identity("claude", m.ID))
+	case m.Copy:
+		ix.copyBeat(time.Unix(m.At, 0), f.roots(), identity("claude", m.ID))
 	}
 	f.Msg, f.Touched = nil, nil
+}
+
+// copyBeat records the minute of a response a token read found already seen
+// — a resumed or forked transcript repeating its original's answers, an
+// archived rollout, a rewritten file. Beats get none (the original's minute
+// is there), the file's own timeline (file_beats) does, as the focus re-read
+// records it: `beats --bridge` then bridges a resumed session's silence after
+// its original's last answer on a live day as on a re-read one. While history
+// is re-read it is staged and found too (copyFound).
+func (ix *indexer) copyBeat(ts time.Time, roots []string, key int64) {
+	if ts.IsZero() {
+		return
+	}
+	for _, root := range roots {
+		ix.fileBeats[fileMinute{minute: ts.Unix() / 60, file: ix.source, root: root}] = struct{}{}
+	}
+	if ix.staging {
+		ix.copyFound(ts, roots, key)
+	}
 }
 
 // copyFound stages, while history is re-read, the minute of a response a
@@ -439,6 +458,23 @@ type fileMinute struct {
 // fileKey names a transcript or rollout in file_beats: its path's identity,
 // kept after the file is deleted, like its minutes.
 func fileKey(path string) int64 { return identity("file", path) }
+
+// fileSession is a file's place in its session family (a file_sessions
+// row): session is the key an agent it spawned names as its parent, parent
+// the key of the session that spawned it, 0 for none. A Claude main
+// transcript has no row: its session is its own fileKey, which its
+// subagents and workflow agents name. A rollout's is its thread's.
+type fileSession struct{ session, parent int64 }
+
+// readFrom names the file the next minutes are read from (ix.source) and
+// records a Claude agent's place under its main transcript; a rollout's is
+// recorded from its owner header.
+func (ix *indexer) readFrom(t target) {
+	ix.source = fileKey(t.path)
+	if t.session != "" {
+		ix.fileSessions[ix.source] = fileSession{session: ix.source, parent: fileKey(t.session)}
+	}
+}
 
 type foundKey struct{ id, day int64 }
 
@@ -482,7 +518,7 @@ func (ix *indexer) settle(t target, row fileRow) {
 	if json.Unmarshal([]byte(row.state), &cs) != nil || !ix.whole(cs.Focus.Msg) {
 		return
 	}
-	ix.source = fileKey(t.path)
+	ix.readFrom(t)
 	ix.flushMsg(&cs.Focus, readTokens)
 	raw, _ := json.Marshal(cs)
 	row.state = string(raw)
@@ -562,8 +598,8 @@ func (ix *indexer) focusBacklog(targets []target, known map[string]fileRow, budg
 // waiting in a file's state for their tool calls — a live session always has
 // one. A charged one is found: its minute is in no table yet, and is recorded
 // where its calls point once it is whole, by then straight into beats, so
-// swapping its day loses nothing. A copy is staged and found now; nothing
-// records it later.
+// swapping its day loses nothing. A copy is staged and found now; once whole
+// it adds its file's minute only (copyBeat), as on any live read.
 func (ix *indexer) pendingFound(targets []target, known map[string]fileRow) {
 	for _, t := range targets {
 		row, ok := ix.read[t.path]
@@ -578,7 +614,7 @@ func (ix *indexer) pendingFound(targets []target, known map[string]fileRow) {
 			continue
 		}
 		m := cs.Focus.Msg
-		ix.source = fileKey(t.path)
+		ix.readFrom(t)
 		switch key := identity("claude", m.ID); {
 		case m.Beat:
 			ix.found[foundKey{id: key, day: m.At / 86400}] = struct{}{}

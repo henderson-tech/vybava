@@ -188,6 +188,9 @@ type target struct {
 	path  string
 	codex bool
 	info  os.FileInfo
+	// session is the main transcript a Claude subagent or workflow agent
+	// belongs to; "" for every other file.
+	session string
 }
 
 type bucketKey struct {
@@ -315,9 +318,11 @@ type indexer struct {
 	sideDirs []string
 
 	// fileBeats are the AI minutes of beats again, by the file that answered
-	// in them (file_beats); source is the file being read.
-	fileBeats map[fileMinute]struct{}
-	source    int64
+	// in them (file_beats); source is the file being read. fileSessions are
+	// the files' places in their session families (file_sessions).
+	fileBeats    map[fileMinute]struct{}
+	source       int64
+	fileSessions map[int64]fileSession
 }
 
 // Index reads everything written since the last pass into the buckets.
@@ -525,7 +530,7 @@ func discover(opts Options) ([]target, bool, error) {
 		walked = false // an unseen file is not a vanished one
 	}
 	for _, f := range claude {
-		targets = append(targets, target{path: f.Path, info: f.Info})
+		targets = append(targets, target{path: f.Path, info: f.Info, session: f.SessionPath()})
 	}
 	rollouts, err := transcripts.RolloutPathsIn(opts.CodexDir, time.Time{})
 	if err != nil {
@@ -594,6 +599,7 @@ func (ix *indexer) reset() {
 	ix.spans = map[spanKey]*span{}
 	ix.beats = map[beatKey]struct{}{}
 	ix.fileBeats = map[fileMinute]struct{}{}
+	ix.fileSessions = map[int64]fileSession{}
 	ix.points = map[int64]limitPoint{}
 	ix.newSeen = map[int64]seenRow{}
 	ix.files = map[string]fileRow{}
@@ -608,7 +614,7 @@ func (ix *indexer) reset() {
 // file reads one transcript or rollout until it is caught up, the pass budget
 // runs out or the pass is stopped. A long file commits between sweeps.
 func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
-	ix.source = fileKey(t.path)
+	ix.readFrom(t)
 	cur := row.cur
 	var cs codexState
 	if row.state != "" {
@@ -769,7 +775,7 @@ func (ix *indexer) claudeLine(cs *codexState, mode readMode) func([]byte, int64)
 				c := Counts{Input: u.InputTokens, Output: u.OutputTokens, CacheWrite5m: w5, CacheWrite1h: w1, CacheRead: u.CacheReadInputTokens, Responses: 1}
 				ix.add(rec.Timestamp, rec.Cwd, model, LaneOf(model, Anthropic), c, "claude:"+rec.SessionID)
 			}
-			f.Msg = &claudeMsg{ID: id, At: rec.Timestamp.Unix(), Beat: beat, Copy: !beat && ix.staging}
+			f.Msg = &claudeMsg{ID: id, At: rec.Timestamp.Unix(), Beat: beat, Copy: !beat}
 		}
 		if bytes.Contains(line, []byte(`"tool_use"`)) {
 			for _, use := range rec.Message.ToolUses() {
@@ -805,6 +811,11 @@ func (ix *indexer) codexLine(cs *codexState, mode readMode) func([]byte, int64) 
 				return nil
 			}
 			cs.Owner, cs.Cwd = meta.ID, meta.CWD
+			fs := fileSession{session: identity("codex-thread", meta.ID)}
+			if parent := meta.ParentThread(); parent != "" {
+				fs.parent = identity("codex-thread", parent)
+			}
+			ix.fileSessions[ix.source] = fs
 			human := meta.Interactive()
 			cs.Human = &human
 			created := ts
@@ -928,12 +939,10 @@ func (ix *indexer) codexBeat(ts time.Time, cs *codexState, key int64, mode readM
 }
 
 // codexCopy closes a response a token read found already seen: it adds no
-// minute, but while history is re-read it is staged and found (copyFound).
+// minute to beats, only to the rollout's own timeline (copyBeat).
 func (ix *indexer) codexCopy(ts time.Time, cs *codexState, key int64) {
-	if ix.staging {
-		ix.syncBase(&cs.Focus, cs.Cwd, readTokens)
-		ix.copyFound(ts, cs.Focus.roots(), key)
-	}
+	ix.syncBase(&cs.Focus, cs.Cwd, readTokens)
+	ix.copyBeat(ts, cs.Focus.roots(), key)
 	cs.Focus.Touched = nil
 }
 
@@ -1173,7 +1182,7 @@ func (ix *indexer) pointsBacklog(targets []target, known map[string]fileRow, bud
 //
 // lost reports a backlog that ended short of Until because its file did.
 func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64, mode readMode) (_ beatsLag, lost bool, _ error) {
-	ix.source = fileKey(t.path)
+	ix.readFrom(t)
 	var cs codexState
 	if lag.State != nil {
 		cs = *lag.State
@@ -1323,6 +1332,11 @@ func (ix *indexer) commit(tx *sql.Tx) error {
 			}
 		}
 		stmt.Close()
+	}
+	for file, fs := range ix.fileSessions {
+		if _, err := tx.Exec("INSERT OR IGNORE INTO file_sessions(file, session, parent) VALUES(?, ?, ?)", file, fs.session, fs.parent); err != nil {
+			return fail(err)
+		}
 	}
 	for key, row := range ix.newSeen {
 		if _, err := tx.Exec("INSERT OR IGNORE INTO seen(id, src, day) VALUES(?, ?, ?)", key, row.src, row.day); err != nil {

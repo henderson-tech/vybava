@@ -272,17 +272,32 @@ own attention: walking a file's AI minutes in time order, a gap to its next
 one at most N minutes later is filled and credited to the root of the
 earlier minute, and a session holds one root a minute — a minute it answered
 in under several goes to the one its next minute shares (where it went on),
-else to the one the minute before went to, else to the first by root. One
+else to the one the minute before went to, else to the first by root; a
+minute more than N away is neither, so no answer depends on the range. One
 session alternating app → lib → app gives lib its stretch and app only its
 own, where bridging each project apart would fill app across lib's stretch
-too. The runs are then unioned per project: parallel sessions add up, two in
-one project count once. The `ai` runs are these and `aiBridge` is N; `human`
-is never bridged, and without the flag there is no `aiBridge` and `ai` is the
-minutes as recorded. Minutes up to N beyond the
+too. A session waiting on agents it spawned — a Claude session's subagents
+and workflow agents (its `<session>/subagents/` files), a Codex thread's
+spawned threads (`source.subagent.thread_spawn.parent_thread_id`) — is where
+they are: a minute of its filled silence gives way wherever one of them
+covers it under another root, answering or in a silence of its own, from an
+answer no older than the session's last. A main session that last wrote in
+lib and waits on its read-only subagent in app fills lib only up to the
+subagent's first answer. Its own answers never give way and agents never give
+way to it, so parallel agents add up; a thread a spawned thread spawned is
+its parent's agent alone. The runs are then unioned per project: parallel
+sessions add up, two in one project count once. The `ai` runs are these and
+`aiBridge` is N; `human` is never bridged, and without the flag there is no
+`aiBridge` and `ai` is the minutes as recorded. Minutes up to N beyond the
 range on either side are read, so a gap across its edge is filled up to it.
 Each file's AI minutes are kept for this (`file_beats`: minute × file ×
 project, the file keyed by its path), forever like beats, so a deleted
-transcript keeps its timeline. An AI minute no file claims — on a day the
+transcript keeps its timeline; a response a token read finds already seen
+(a resumed or forked transcript repeating its original's answers, an
+archived rollout) adds its minute there but not to beats, as the focus
+re-read records it. Who spawned each file is recorded as it is read
+(`file_sessions`), since a path's hash cannot be traced back once the
+transcript is deleted. An AI minute no file claims — on a day the
 focus re-read below could not swap, still by cwd, or in a store older than
 schema 6 — is bridged per project instead: its project's minutes, gaps of up
 to N merged.

@@ -110,6 +110,20 @@ type ClaudeFile struct {
 	Info os.FileInfo
 }
 
+// SessionPath is the main transcript (<slug>/<session>.jsonl) a subagent or
+// workflow agent belongs to, whether or not it is still on disk; "" for a
+// main one.
+func (f ClaudeFile) SessionPath() string {
+	dir := filepath.Dir(f.Path) // <session>/subagents, or <session>/subagents/workflows/<run>
+	switch f.Kind {
+	case ClaudeSubagent:
+		return filepath.Dir(dir) + ".jsonl"
+	case ClaudeWorkflowAgent:
+		return filepath.Dir(filepath.Dir(filepath.Dir(dir))) + ".jsonl"
+	}
+	return ""
+}
+
 // WalkClaude lists every transcript under root (~/.claude/projects): main
 // sessions, subagents and workflow agents. Workflow journals, memory usage
 // logs and *.meta.json sidecars are not transcripts and are excluded. A

@@ -179,10 +179,11 @@ type rootMinute struct{ minute, canon int64 }
 // bridgeAI bridges each session on one timeline, like your own attention:
 // a file's AI minutes in time order, a gap of up to n minutes to its next one
 // is filled and credited to the root of the earlier minute, and a session
-// holds one root a minute (see bridgeSession). Files' runs are then unioned
-// per project: parallel sessions add up, two in one project count once. An
-// AI minute of beats no file claims (a day before file_beats, or one the
-// focus re-read could not swap: filed by cwd) is bridged per project
+// holds one root a minute (see bridgeSession). A session waiting on agents it
+// spawned is where they are (see bridgeFamilies). Files' runs are then
+// unioned per project: parallel sessions add up, two in one project count
+// once. An AI minute of beats no file claims (a day before file_beats, or one
+// the focus re-read could not swap: filed by cwd) is bridged per project
 // instead, gaps of up to n merged. minutes holds the AI minutes from since-n
 // to until+n; the runs are clipped to [since, until).
 func bridgeAI(q querier, perFile bool, ps projectSet, minutes map[int64]*[2][]int64, since, until, n int64) (map[int64][]BeatRun, error) {
@@ -194,15 +195,18 @@ func bridgeAI(q querier, perFile bool, ps projectSet, minutes map[int64]*[2][]in
 	}
 	spans := map[int64][]minuteSpan{} // canonical project → spans, unsorted
 	if perFile {
-		rows, err := q.Query("SELECT file, minute, project FROM file_beats WHERE minute >= ? AND minute < ?", since-n, until+n)
+		rows, err := q.Query(`SELECT b.file, b.minute, b.project, s.session, s.parent FROM file_beats b
+			LEFT JOIN file_sessions s ON s.file = b.file WHERE b.minute >= ? AND b.minute < ?`, since-n, until+n)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
 		files := map[int64][]rootMinute{}
+		fams := map[int64]fileSession{}
 		for rows.Next() {
 			var file, minute, project int64
-			if err := rows.Scan(&file, &minute, &project); err != nil {
+			var session, parent sql.NullInt64
+			if err := rows.Scan(&file, &minute, &project, &session, &parent); err != nil {
 				return nil, err
 			}
 			k := rootMinute{minute, ps.of(project)}
@@ -210,13 +214,16 @@ func bridgeAI(q querier, perFile bool, ps projectSet, minutes map[int64]*[2][]in
 				claimed[k] = true
 				files[file] = append(files[file], k)
 			}
+			if session.Valid {
+				fams[file] = fileSession{session: session.Int64, parent: parent.Int64}
+			} else {
+				fams[file] = fileSession{session: file} // a Claude main transcript
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		for _, f := range files {
-			bridgeSession(f, n, ps, spans)
-		}
+		bridgeFamilies(files, fams, n, ps, spans)
 	}
 	legacy := map[int64][]int64{}
 	for k, ok := range claimed {
@@ -241,16 +248,69 @@ func bridgeAI(q querier, perFile bool, ps projectSet, minutes map[int64]*[2][]in
 	return out, nil
 }
 
-// bridgeSession adds one file's spans: each AI minute, with the gap to its
+// sessionSpan is one AI minute of a session, start, and the silence after it
+// filled up to end, under one canonical project.
+type sessionSpan struct{ canon, start, end int64 }
+
+// agentCover is an agent's span over one minute of the session that spawned it.
+type agentCover struct{ canon, from int64 }
+
+// famMinute is one minute of a session, by its session key.
+type famMinute struct{ session, minute int64 }
+
+// bridgeFamilies adds every file's spans (bridgeSession). A session waiting
+// on agents it spawned is where they are: a minute of its filled silence
+// gives way wherever one of them (file_sessions: a Claude session's
+// subagents and workflow agents, a Codex thread's spawned threads) covers
+// that minute under another root, answering or silent, from an answer no
+// older than the session's last — that agent's root already counts it. Its
+// own answers never give way, and agents never give way to the session that
+// spawned them, so parallel agents still add up. A thread spawned by a
+// spawned thread is its parent's agent alone, one level at a time.
+func bridgeFamilies(files map[int64][]rootMinute, fams map[int64]fileSession, n int64, ps projectSet, spans map[int64][]minuteSpan) {
+	bridged := make(map[int64][]sessionSpan, len(files))
+	below := map[famMinute][]agentCover{} // a session's minute → its agents' spans over it
+	for file, f := range files {
+		bridged[file] = bridgeSession(f, n, ps)
+		if parent := fams[file].parent; parent != 0 {
+			for _, sp := range bridged[file] {
+				for m := sp.start; m < sp.end; m++ {
+					below[famMinute{parent, m}] = append(below[famMinute{parent, m}], agentCover{sp.canon, sp.start})
+				}
+			}
+		}
+	}
+	for file, ss := range bridged {
+		key := fams[file].session
+		for _, sp := range ss {
+			lo := sp.start
+			for m := sp.start + 1; m < sp.end; m++ {
+				if slices.ContainsFunc(below[famMinute{key, m}], func(c agentCover) bool { return c.canon != sp.canon && c.from >= sp.start }) {
+					if lo < m {
+						spans[sp.canon] = append(spans[sp.canon], minuteSpan{lo, m})
+					}
+					lo = m + 1
+				}
+			}
+			if lo < sp.end {
+				spans[sp.canon] = append(spans[sp.canon], minuteSpan{lo, sp.end})
+			}
+		}
+	}
+}
+
+// bridgeSession is one file's spans: each AI minute, with the gap to its
 // next minute when that is at most n minutes later, under one root. A minute
 // the session answered in under several goes to the one its next minute
 // shares (where it went on), else the one the minute before went to, else
-// the first by root.
-func bridgeSession(f []rootMinute, n int64, ps projectSet, spans map[int64][]minuteSpan) {
+// the first by root — a minute more than n away counts as neither, so the
+// answer never depends on how far the range reaches.
+func bridgeSession(f []rootMinute, n int64, ps projectSet) []sessionSpan {
 	sort.Slice(f, func(i, j int) bool {
 		return f[i].minute < f[j].minute || f[i].minute == f[j].minute && ps.roots[f[i].canon] < ps.roots[f[j].canon]
 	})
-	var last int64 // the root the minute before went to; ids start at 1
+	var out []sessionSpan
+	var last, lastAt int64 // the root the minute before went to (ids start at 1), and that minute
 	for i := 0; i < len(f); {
 		a, j := f[i].minute, i
 		for j < len(f) && f[j].minute == a {
@@ -261,21 +321,25 @@ func bridgeSession(f []rootMinute, n int64, ps projectSet, spans map[int64][]min
 			k++
 		}
 		here, next := f[i:j], f[j:k]
+		if len(next) > 0 && next[0].minute-a > n {
+			next = nil
+		}
 		to := f[i].canon
 		if s := slices.IndexFunc(here, func(h rootMinute) bool {
 			return slices.ContainsFunc(next, func(x rootMinute) bool { return x.canon == h.canon })
 		}); s >= 0 {
 			to = here[s].canon
-		} else if slices.Contains(here, rootMinute{a, last}) {
+		} else if a-lastAt <= n && slices.Contains(here, rootMinute{a, last}) {
 			to = last
 		}
 		end := a + 1
-		if len(next) > 0 && next[0].minute-a <= n {
+		if len(next) > 0 {
 			end = next[0].minute
 		}
-		spans[to] = append(spans[to], minuteSpan{a, end})
-		last, i = to, j
+		out = append(out, sessionSpan{to, a, end})
+		last, lastAt, i = to, a, j
 	}
+	return out
 }
 
 // spanRuns unions spans, clipped to [since, until), into runs, oldest first.

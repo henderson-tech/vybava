@@ -110,6 +110,11 @@ CREATE INDEX IF NOT EXISTS limit_points_by_ts ON limit_points(ts);
 -- Each file's own AI minutes (file: fileKey of its path), kept forever like
 -- beats: beats --bridge bridges every session on its own timeline.
 CREATE TABLE IF NOT EXISTS file_beats(minute INTEGER NOT NULL, file INTEGER NOT NULL, project INTEGER NOT NULL, PRIMARY KEY(minute, file, project)) WITHOUT ROWID;
+-- Each file's session family, recorded when it is read (a path hash cannot be
+-- traced back once the file is deleted): session is the key an agent it
+-- spawned names, parent the session that spawned it (0: none). A Claude main
+-- transcript has no row (its session is its file); see fileSession.
+CREATE TABLE IF NOT EXISTS file_sessions(file INTEGER PRIMARY KEY, session INTEGER NOT NULL, parent INTEGER NOT NULL) WITHOUT ROWID;
 -- The focus re-attribution's staging (see settleFocus): empty once settled.
 CREATE TABLE IF NOT EXISTS focus_beats(minute INTEGER NOT NULL, project INTEGER NOT NULL, file INTEGER NOT NULL, PRIMARY KEY(minute, project, file)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS focus_found(id INTEGER NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(id, day)) WITHOUT ROWID;

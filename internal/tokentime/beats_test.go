@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -497,5 +498,75 @@ func TestABridgeFillsEachSessionsSilencesOnItsOwnTimeline(t *testing.T) {
 	if app, l := beatsOn(legacy, f.repo, true), beatsOn(legacy, lib, true); !reflect.DeepEqual(app, []BeatRun{{at("2026-09-25T10:00:00Z"), 60}}) ||
 		!reflect.DeepEqual(l, []BeatRun{{at("2026-09-25T10:20:00Z"), 20}}) {
 		t.Fatalf("a day no file claims, bridged per project: app %v, lib %v; want 10:00-11:00 and 10:20-10:40", app, l)
+	}
+
+	// A resumed transcript repeats its original's answers (same ids): they add
+	// no minute, but join its own timeline, as the focus re-read records them.
+	tools := filepath.Join(f.claude, "-work-tools")
+	answer := func(s, ts, id string) string { return claudeLine(s, f.tools, ts, id, "claude-opus-5-5", 1, 1, 0, 0, 0) }
+	put(t, filepath.Join(tools, "r1.jsonl"), lines(answer("r1", "2026-09-27T10:00:00Z", "q1"), answer("r1", "2026-09-27T10:10:00Z", "q2")))
+	f.index(t, s)
+	put(t, filepath.Join(tools, "r2.jsonl"), lines(answer("r2", "2026-09-27T10:00:00Z", "q1"), answer("r2", "2026-09-27T10:10:00Z", "q2"),
+		answer("r2", "2026-09-27T10:20:00Z", "q3")))
+	f.index(t, s)
+	if got := beatsOn(bridgedOf(t, s, "2026-09-27", "2026-09-27", 30), f.tools, true); !reflect.DeepEqual(got, []BeatRun{{at("2026-09-27T10:00:00Z"), 21}}) {
+		t.Fatalf("tools bridged after a resume = %v, want 10:00-10:21: the resumed transcript's silence before its first new answer", got)
+	}
+}
+
+// A session waiting on agents it spawned is where they are. A main session
+// that last wrote in lib waits on its read-only subagent (cwd app): its
+// silence gives way to the subagent's stretch instead of filling lib across
+// it too — lib 7 + app 19, 26 minutes of wall time, as when every minute was
+// the cwd's. A Codex thread waiting on a thread it spawned alike, except that
+// a silence after its own newer answer (10:10) stays its own until the agent
+// answers again. Families are recorded as files are read: they outlive them.
+func TestASessionWaitingOnItsAgentsIsBridgedWhereTheyWork(t *testing.T) {
+	f := newFixture(t)
+	lib := filepath.Join(f.base, "work", "lib")
+	mkdir(t, filepath.Join(lib, ".git"))
+	text := func(s, ts, id string) string { return claudeLine(s, f.repo, ts, id, "claude-opus-5-5", 1, 1, 0, 0, 0) }
+	dir := filepath.Join(f.claude, "-work-app")
+	put(t, filepath.Join(dir, "m1.jsonl"), lines(
+		claudeTool("m1", f.repo, "2026-09-25T10:00:00Z", "m1a", "Edit", map[string]any{"file_path": filepath.Join(lib, "x.go")}),
+		text("m1", "2026-09-25T10:05:00Z", "m1b"), text("m1", "2026-09-25T10:25:00Z", "m1c")))
+	put(t, filepath.Join(dir, "m1", "subagents", "agent-a1.jsonl"), lines(
+		text("m1", "2026-09-25T10:06:00Z", "a1a"), text("m1", "2026-09-25T10:15:00Z", "a1b"), text("m1", "2026-09-25T10:24:00Z", "a1c")))
+	day := filepath.Join(f.codex, "sessions", "2026", "09", "26")
+	meta := func(id, ts, cwd string, source any) string {
+		return rollout(ts, "session_meta", map[string]any{"id": id, "timestamp": ts, "cwd": cwd, "source": source})
+	}
+	answered := func(thread string, at ...string) []string {
+		var out []string
+		for i, ts := range at {
+			out = append(out, receipt(ts, thread, thread+strconv.Itoa(i), usage(10, 0, 1)))
+		}
+		return out
+	}
+	put(t, filepath.Join(day, "rollout-2026-09-26T10-00-00-thread-W.jsonl"), lines(append([]string{meta("thread-W", "2026-09-26T10:00:00Z", lib, "cli")},
+		answered("thread-W", "2026-09-26T10:00:00Z", "2026-09-26T10:05:00Z", "2026-09-26T10:10:00Z", "2026-09-26T10:25:00Z")...)...))
+	spawned := map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": "thread-W", "depth": 1}}}
+	put(t, filepath.Join(day, "rollout-2026-09-26T10-05-30-thread-V.jsonl"), lines(append([]string{meta("thread-V", "2026-09-26T10:05:30Z", f.repo, spawned)},
+		answered("thread-V", "2026-09-26T10:06:00Z", "2026-09-26T10:15:00Z", "2026-09-26T10:24:00Z")...)...))
+	s := f.open(t)
+	f.index(t, s)
+
+	want := []BeatProject{
+		{Name: "app", Root: f.repo, Human: []BeatRun{}, AI: []BeatRun{{at("2026-09-25T10:06:00Z"), 19}, {at("2026-09-26T10:06:00Z"), 19}}},
+		{Name: "lib", Root: lib, Human: []BeatRun{}, AI: []BeatRun{{at("2026-09-25T10:00:00Z"), 6}, {at("2026-09-25T10:25:00Z"), 1},
+			{at("2026-09-26T10:00:00Z"), 6}, {at("2026-09-26T10:10:00Z"), 5}, {at("2026-09-26T10:25:00Z"), 1}}},
+	}
+	if got := bridgedOf(t, s, "2026-09-25", "2026-09-26", 30); !reflect.DeepEqual(got.Projects, want) {
+		t.Fatalf("bridged by 30 =\n%+v\nwant\n%+v", got.Projects, want)
+	}
+	if err := os.RemoveAll(f.claude); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(day); err != nil {
+		t.Fatal(err)
+	}
+	f.index(t, s)
+	if got := bridgedOf(t, s, "2026-09-25", "2026-09-26", 30); !reflect.DeepEqual(got.Projects, want) {
+		t.Fatalf("bridged after every transcript was deleted =\n%+v\nwant\n%+v", got.Projects, want)
 	}
 }
