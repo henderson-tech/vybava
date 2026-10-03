@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/cmux"
 	"github.com/henderson-tech/vybava/internal/fleet"
 	"github.com/henderson-tech/vybava/internal/plugingc"
 	"github.com/henderson-tech/vybava/internal/runx"
@@ -134,5 +135,41 @@ func TestFleetSchemaPrintsTheGeneratedDeclarations(t *testing.T) {
 	}
 	if out != fleet.TypeScript() {
 		t.Fatal("schema --ts differs from fleet.TypeScript()")
+	}
+}
+
+// promptCmux hosts pid 7 at an empty prompt and records what is pasted.
+type promptCmux struct{ pasted []string }
+
+func (c *promptCmux) Check(context.Context) cmux.Status { return cmux.Status{State: cmux.StateOK} }
+func (c *promptCmux) Resolve(_ context.Context, pid int) (cmux.Target, error) {
+	return cmux.Target{SurfaceID: "S7", WorkspaceID: "W7"}, nil
+}
+func (c *promptCmux) ReadText(context.Context, string, int) (cmux.Screen, error) {
+	return cmux.Screen{Text: "────────────\n❯ \n────────────\n  status\n"}, nil
+}
+func (c *promptCmux) Paste(_ context.Context, _, text string, submit bool) (cmux.PasteResult, error) {
+	c.pasted = append(c.pasted, text)
+	return cmux.PasteResult{Submitted: submit}, nil
+}
+func (c *promptCmux) SendText(context.Context, string, string) error      { return nil }
+func (c *promptCmux) Focus(context.Context, string, string, string) error { return nil }
+
+func TestFleetReplyReadsTheTextFromStdin(t *testing.T) {
+	base := fleetFixture(t, map[string]string{
+		"7.json": `{"pid":7,"pidDomain":"darwin","procStart":"Fri Oct  2 17:00:00 2026","sessionId":"live","status":"waiting","waitingFor":"input needed","cwd":"/tmp","statusUpdatedAt":1790960000000}`,
+	})
+	cx := &promptCmux{}
+	machine := func(codex bool) (fleet.Env, error) {
+		env, err := base(codex)
+		env.Cmux = cx
+		return env, err
+	}
+	out, err := runFleet(t, machine, "merge it\n", "reply", "--session", "live", "--json")
+	if err != nil {
+		t.Fatalf("reply: %v\n%s", err, out)
+	}
+	if len(cx.pasted) != 1 || cx.pasted[0] != "merge it" || !strings.Contains(out, `"submitted": true`) {
+		t.Fatalf("pasted %q, out %s", cx.pasted, out)
 	}
 }

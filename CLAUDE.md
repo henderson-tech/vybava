@@ -249,4 +249,7 @@ pane is open): one producer writes, ~45 sessions read (`watch serve`
 publishes the fleet summary). `fleet schema --ts`
 is a Go→TS contract copied into `mods/*/types/fleet.gen.d.ts`, held by a drift
 test; `.claude-plugin/types/` is engine-written and gitignored. Applets:
-`docs/fleet.md`, `docs/watch.md`.
+`docs/fleet.md`, `docs/watch.md`. `fleet schema --swift`/`--example` are
+the same contract for Fleet.app (claude-switcheroo `apps/fleet`), held by its
+`test.sh`. `internal/cmux` is the one cmux socket client (`docs/cmux.md`):
+fleet acts only through it, resolving a surface by live pid per action.

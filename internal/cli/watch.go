@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/cmux"
 	"github.com/henderson-tech/vybava/internal/fleet"
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/watch"
@@ -40,8 +42,9 @@ type watchDeps struct {
 	pathEnv    string
 	cwd        func() (string, error)
 	// serveTasks register periodic work beside the probes when `serve`
-	// starts (engine.Every); empty by default.
-	serveTasks []func(*watch.Engine)
+	// starts (engine.Every), or start a follower bound to the daemon's
+	// context; empty by default.
+	serveTasks []func(context.Context, *watch.Engine)
 }
 
 func (rt *runtime) watchApplet() *cobra.Command {
@@ -66,9 +69,18 @@ func (rt *runtime) watchCommand(use string) *cobra.Command {
 		runPlan:    watch.RunPlan,
 		pathEnv:    os.Getenv("PATH"),
 		cwd:        os.Getwd,
-		serveTasks: []func(*watch.Engine){func(e *watch.Engine) {
+		serveTasks: []func(context.Context, *watch.Engine){func(ctx context.Context, e *watch.Engine) {
 			e.Every("fleet-summary", 15*time.Second, func(ctx context.Context) error {
 				return publishFleetSummary(ctx, home)
+			})
+			publisher, cx := fleetPublisher(home)
+			e.Every("fleet-snapshot", 15*time.Second, publisher.Publish)
+			e.Every("fleet-codex", time.Minute, func(ctx context.Context) error {
+				publisher.RefreshCodex(ctx)
+				return publisher.Publish(ctx)
+			})
+			go publisher.Follow(ctx, cx.Follow, time.Second, func(err error) {
+				fmt.Fprintf(os.Stderr, "watch: fleet snapshot: %v\n", err)
 			})
 		}},
 	})
@@ -82,6 +94,22 @@ func publishFleetSummary(ctx context.Context, home string) error {
 		return err
 	}
 	return fleet.WriteSummary(fleet.SummaryPath(home), fleet.Summarize(snap))
+}
+
+// fleetPublisher writes snapshot.json for Fleet.app: Claude rows every 15 s
+// and on every cmux waiting event, Codex rows (a ~10 s lsof read) once a
+// minute — one reader machine-wide instead of one per app window.
+func fleetPublisher(home string) (*fleet.Publisher, cmux.Client) {
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, name, args...).Output()
+	}
+	cx := cmux.Client{Socket: cmux.SocketPath(os.Getenv, home)}
+	return &fleet.Publisher{
+		Env:       fleet.Env{Home: home, Cmux: cx},
+		Path:      fleet.PublishedPath(home),
+		Clock:     time.Now,
+		ReadCodex: fleet.CodexUsage(home, run),
+	}, cx
 }
 
 // stableExecutable is the real binary behind the applet link — what the
@@ -161,11 +189,11 @@ and the socket API: docs/watch.md.`,
 			if err != nil {
 				return errors.Join(err, ln.Close())
 			}
-			for _, register := range deps.serveTasks {
-				register(e)
-			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			for _, register := range deps.serveTasks {
+				register(ctx, e)
+			}
 			return watch.Serve(ctx, e, ln, tick, rt.stderr)
 		},
 	}

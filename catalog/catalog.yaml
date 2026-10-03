@@ -488,6 +488,14 @@ items:
       install: {pultik: "switcheroo-cli-darwin-{arch}"}
       setup: [[switcheroo, shell, install], [switcheroo, setup]]
 
+  - id: fleet-app
+    kind: tool
+    status: experimental
+    description: Fleet — Dock app listing every cmux-hosted Claude and Codex session waiting-first; answer a dialog, reply or focus in place (⌃⌥Space). Reads the snapshot `vybava watch serve` publishes.
+    tool:
+      probe: {app: Fleet.app}
+      install: {pultik: fleet}
+
   - id: pultik
     kind: tool
     status: experimental
@@ -654,6 +662,7 @@ groups:
       - vitrinka-app
       - switcheroo-bar
       - switcheroo-cli
+      - fleet-app
       - pultik
       - devbox
       - worktime

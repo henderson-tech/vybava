@@ -110,8 +110,11 @@ socket file nobody answers on is then replaced; a live one refuses a second
 daemon. SIGTERM stops accepting, lets in-flight probes finish and exits.
 
 `Engine.Every(name, every, fn)` registers periodic work beside the probes (the
-fleet summary publisher is the first); a failed task is logged, never
-swallowed. A panic inside a probe or a
+fleet summary, Fleet.app's `snapshot.json` every 15 s and its Codex rows every
+minute); a failed task is logged, never swallowed. A serve task also gets the
+daemon's context to run a follower: the fleet snapshot follows cmux's event
+stream and republishes within a second of a session starting to wait
+(`docs/fleet.md`). A panic inside a probe or a
 task is recovered into that reading's error and goes through the backoff; it
 never takes the daemon down.
 

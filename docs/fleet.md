@@ -115,6 +115,63 @@ status line instead of running `fleet --json` on a timer — one producer, ~45
 readers, no process spawned per session. Without the daemon the file goes
 stale; a reader shows its `generatedAt` age rather than trusting old counts.
 
+## Fleet.app's view: snapshot.json
+
+`watch serve` also publishes `~/.local/state/vybava/fleet/snapshot.json`
+(`Published`, `version` 1) for Fleet.app (claude-switcheroo `apps/fleet`):
+Claude rows every 15 s and within a second of every cmux agent event that
+can change who waits (`Notification`, `Stop`, `UserPromptSubmit`,
+`SessionStart`, `SessionEnd`, `PermissionRequest`; a lost-events gap
+republishes too), Codex rows from a once-a-minute ps/lsof read. One reader
+machine-wide; the app only watches the file. `fleet publish [--codex]`
+writes it once without the daemon.
+
+- Only sessions a cmux surface hosts are listed (joined by live pid through
+  `agent.resolve_delivery_target`); the rest are counted in `hidden`. Claude
+  Code background sessions (registry `kind: bg`) run in a process no surface
+  hosts — they are hidden, reachable through the interactive session showing
+  them.
+- Each row carries `actions`, decided here and rendered as-is by the app:
+  `focus` + `screen` for every Claude row, `reply` too while it is `waiting`
+  or `idle`; Codex rows `focus` only (no waiting signal).
+- `cmux` is the `internal/cmux` status (`ok`, `unreachable`, `denied`,
+  `restricted`, `outdated`, with `fix`). When cmux cannot be reached nothing
+  is listed and the app shows that status — never an empty fleet.
+- `surface` is for display; every action resolves the surface again.
+
+## Acting on a session (Fleet.app's verbs)
+
+All take `--session <id>` (a Claude session), resolve its surface by live
+pid at call time — never from snapshot.json — and print a runx envelope.
+
+| Verb | Does |
+|---|---|
+| `fleet screen [--lines n]` | the visible screen (or n lines of scrollback) with every secretscan shape redacted, plus the `dialog` open on it |
+| `fleet dialog` | the open permission or AskUserQuestion dialog: `kind`, `title`, `question`, `detail`, `tabs`, `options` (`key`, `label`, `kind` answer/other/chat), `answerable`, `fingerprint` |
+| `fleet reply` | text on stdin: pasted once and submitted. `--option <key> --expect <fingerprint>`: that one digit typed |
+| `fleet focus` | cmux brought to the surface's window, workspace and surface, then the app activated; `--pid` addresses a Codex row |
+
+`reply` refuses (`REPLY_*`, `DIALOG_*`, `NO_DIALOG`, `OPTION_INVALID`) rather
+than guess:
+
+- **Text while any dialog is open** — `DIALOG_OPEN`. Typed text can never
+  approve a tool call; a dialog takes an option.
+- **Text off the conversation's prompt** — `REPLY_REFUSED` unless the screen's
+  bottom is the input box (a `❯` line between two rules). The agents view
+  draws the same box, but text there starts a NEW background session.
+- **An option for a dialog no longer shown** — `DIALOG_CHANGED` unless the
+  fresh screen's fingerprint equals `--expect`. `Type something.` is never an
+  answer; a multi-select list or an option past 9 is `answerable: false`.
+- **A Codex target** — `REPLY_REFUSED`.
+- A paste cmux accepted is never re-sent: `submitted: false` is
+  `NOT_SUBMITTED`, the text is already at the prompt.
+
+Dialogs are parsed from the screen (`dialog.go`): the footer `Esc to cancel`
+must be among the last two non-blank lines, so an answered dialog in
+scrollback never matches. Fixtures: `internal/fleet/testdata/screens/`.
+Claude Code prints a conversation's title inside the input box's top rule;
+a rule is "mostly dashes, starts and ends with one".
+
 ## JSON contract and the TypeScript copies
 
 `fleet schema --ts` renders the contracts from the Go types by reflection:
@@ -137,10 +194,26 @@ the mods; it skips while no mod carries a copy. Bump `LedgerVersion` on a
 breaking change of the ledger file — a ledger of another version is refused,
 never silently re-read.
 
+## The Swift contract
+
+`fleet schema --swift` renders `Published`, the action results and their
+enums as `Codable, Sendable` Swift (`FleetSnapshot`, `FleetSession`,
+`FleetCodexSession`, `FleetScreen`, `FleetDialog`, `FleetReply`,
+`FleetFocus`, `FleetEnvelope<T>`, `CmuxStatus`, …) with `FleetJSON.decoder()`
+for Go's RFC 3339 times. Fleet.app keeps it verbatim at
+`apps/fleet/Sources/FleetSnapshot.swift`, and `fleet schema --example` — a
+deterministic sample of every contract — at its test fixtures; the app's
+`test.sh` fails when either differs from the installed `vybava`. Bump
+`PublishedVersion` on a breaking change: the app refuses another version.
+
 ## Diagnostics
 
 `REGISTRY_MISSING` · `REGISTRY_FILE_SKIPPED` · `LIVENESS_UNAVAILABLE` ·
 `CODEX_UNAVAILABLE` · `CODEX_PARTIAL` · `LEDGER_UNREADABLE` (warnings on
 reads) · `LEDGER_UNPROVEN` (info) · `REGISTRY_SHAPE_UNKNOWN` ·
 `LEDGER_EVENT_INVALID` · `LEDGER_BUSY` · `SESSION_INVALID` ·
-`SCHEMA_FORMAT` (errors, exit 2). Defined in `internal/fleet/diag.go`.
+`SCHEMA_FORMAT` (errors, exit 2). Actions: `CMUX_UNAVAILABLE` ·
+`SESSION_NOT_FOUND` · `SESSION_GONE` · `NOT_IN_CMUX` · `REPLY_INVALID` ·
+`REPLY_REFUSED` · `DIALOG_OPEN` · `NO_DIALOG` · `DIALOG_CHANGED` ·
+`OPTION_INVALID` · `NOT_SUBMITTED` · `SNAPSHOT_UNWRITABLE`. Defined in
+`internal/fleet/diag.go`.
