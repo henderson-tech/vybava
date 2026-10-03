@@ -40,6 +40,14 @@ func TestPerflabEnvelopeSurface(t *testing.T) {
 		{[]string{"device", "screencap", "s20", "--lease", "plt_x"}, false, "USAGE"},
 		{[]string{"device", "screencap", "s20", "--lease", "plt_x", "--out", "x.png"}, false, "DEVICE_UNKNOWN"},
 		{[]string{"device", "pull", "s20", "/sdcard/x", "x", "--lease", "plt_x"}, false, "DEVICE_UNKNOWN"},
+		// --device names the device as on every other verb (the FixIt sweep's
+		// `device screencap --device s20` was an unknown flag).
+		{[]string{"device", "screencap", "--device", "s20", "--lease", "plt_x", "--out", "x.png"}, false, "DEVICE_UNKNOWN"},
+		{[]string{"device", "shell", "--device", "s20", "--lease", "plt_x", "--", "shell", "ls"}, false, "DEVICE_UNKNOWN"},
+		{[]string{"device", "pull", "--device", "s20", "/sdcard/x", "x", "--lease", "plt_x"}, false, "DEVICE_UNKNOWN"},
+		{[]string{"device", "show", "--device", "s20"}, false, "DEVICE_UNKNOWN"},
+		{[]string{"device", "screencap", "s20", "--device", "iphone11", "--lease", "plt_x", "--out", "x.png"}, false, "USAGE"},
+		{[]string{"device", "screencap", "--lease", "plt_x", "--out", "x.png"}, false, "USAGE"},
 		{[]string{"lease", "status"}, true, ""},
 		{[]string{"lease", "acquire", "s20", "--purpose", "surface test"}, false, "DEVICE_UNKNOWN"},
 		{[]string{"lease", "renew", "s20", "--lease", "plt_x"}, false, "DEVICE_UNKNOWN"},

@@ -83,6 +83,15 @@ var adbHostOnly = map[string]bool{
 	"keygen": true, "host-features": true, "nodaemon": true, "server": true,
 }
 
+// deviceShellCommands are on-device programs, never adb subcommands: given
+// first they belong under `shell` (`-- input swipe ...` failed with "adb:
+// unknown command input" in the FixIt sweep).
+var deviceShellCommands = map[string]bool{
+	"input": true, "am": true, "pm": true, "cmd": true, "dumpsys": true, "getprop": true,
+	"setprop": true, "settings": true, "wm": true, "svc": true, "monkey": true, "screenrecord": true,
+	"uiautomator": true, "pidof": true, "ps": true, "ls": true, "cat": true,
+}
+
 // devicectlGroups are `devicectl device <group> <verb>` groups; the
 // injected --device follows the verb.
 var devicectlGroups = map[string]bool{
@@ -102,6 +111,9 @@ func shellArgv(id string, dev *Device, token string, args []string) ([]string, e
 		}
 		if strings.HasPrefix(args[0], "-") {
 			return nil, usage(fmt.Sprintf("adb global option %s is not allowed: the passthrough fixes the device and the server", args[0]), example+"shell <command>")
+		}
+		if deviceShellCommands[args[0]] {
+			return nil, usage(fmt.Sprintf("adb has no `%s` command: the arguments are adb's, so a device command runs under shell", args[0]), example+"shell "+joinWords(args))
 		}
 		if adbHostOnly[args[0]] {
 			return nil, usage(fmt.Sprintf("`adb %s` is not device-scoped and touches every holder's phone", args[0]), "run host-wide adb commands only when no device is leased: perflab lease status --json")

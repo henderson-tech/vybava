@@ -275,8 +275,16 @@ func (rt *runtime) perflabDevice(lab labRunner) *cobra.Command {
 		})}
 	list.Flags().BoolVar(&noLive, "no-live", false, "skip the live scan")
 
-	show := &cobra.Command{Use: "show <device>", Short: "One row, its lease, last probe and last install", Args: cobra.ExactArgs(1),
-		RunE: lab(func(_ context.Context, l *devlab.Lab, args []string) (devlab.Result, error) { return l.Show(args[0]) })}
+	var showDevice string
+	show := &cobra.Command{Use: "show <device>", Short: "One row, its lease, last probe and last install", Args: cobra.RangeArgs(0, 1),
+		RunE: lab(func(_ context.Context, l *devlab.Lab, args []string) (devlab.Result, error) {
+			id, err := deviceOf(args, showDevice, "perflab device show <device> --json")
+			if err != nil {
+				return devlab.Result{}, err
+			}
+			return l.Show(id)
+		})}
+	show.Flags().StringVar(&showDevice, "device", "", "ledger id or alias (or the first argument)")
 
 	var rm devlab.RemoveOptions
 	remove := &cobra.Command{Use: "remove <device>", Short: "Remove a row (refused while leased)", Args: cobra.ExactArgs(1),
@@ -286,43 +294,68 @@ func (rt *runtime) perflabDevice(lab labRunner) *cobra.Command {
 	remove.Flags().BoolVar(&rm.Yes, "yes", false, "confirm")
 
 	var probeLease string
-	probe := &cobra.Command{Use: "probe <device>", Short: "Read the device's state; in-device readings need the lease or a free device", Args: cobra.ExactArgs(1),
+	var probeDevice string
+	probe := &cobra.Command{Use: "probe <device>", Short: "Read the device's state; in-device readings need the lease or a free device", Args: cobra.RangeArgs(0, 1),
 		RunE: lab(func(ctx context.Context, l *devlab.Lab, args []string) (devlab.Result, error) {
-			return l.Probe(ctx, args[0], devlab.ProbeOptions{Lease: probeLease})
+			id, err := deviceOf(args, probeDevice, "perflab device probe <device> --json")
+			if err != nil {
+				return devlab.Result{}, err
+			}
+			return l.Probe(ctx, id, devlab.ProbeOptions{Lease: probeLease})
 		})}
+	probe.Flags().StringVar(&probeDevice, "device", "", "ledger id or alias (or the first argument)")
 	probe.Flags().StringVar(&probeLease, "lease", "", "lease token (adds the in-device checks)")
 
 	var shellLease string
 	var shellOpts devlab.ShellOptions
+	var shellDevice string
 	shell := &cobra.Command{Use: "shell <device> -- <args>", Short: "Run adb (Android) or devicectl (iOS) arguments against the leased device", Args: cobra.MinimumNArgs(1)}
 	shell.RunE = lab(func(ctx context.Context, l *devlab.Lab, args []string) (devlab.Result, error) {
+		fix := "perflab device shell <device> --lease <token> --json -- shell dumpsys window"
 		at := shell.ArgsLenAtDash()
-		if at != 1 {
+		if at < 0 || at > 1 {
 			return devlab.Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: perflab.DiagUsage, Severity: "error",
-				Detail: "device shell takes the device, then -- and the wrapped arguments", Fix: "perflab device shell <device> --lease <token> --json -- shell dumpsys window"}}
+				Detail: "device shell takes the device, then -- and the wrapped arguments", Fix: fix}}
 		}
-		return l.Shell(ctx, args[0], shellLease, args[1:], shellOpts)
+		id, err := deviceOf(args[:at], shellDevice, fix)
+		if err != nil {
+			return devlab.Result{}, err
+		}
+		return l.Shell(ctx, id, shellLease, args[at:], shellOpts)
 	})
 	shell.Flags().StringVar(&shellLease, "lease", "", "lease token")
+	shell.Flags().StringVar(&shellDevice, "device", "", "ledger id or alias (or the first argument)")
 	shell.Flags().StringVar(&shellOpts.Out, "out", "", "write the command's stdout to this file instead of the envelope")
 	shell.Flags().DurationVar(&shellOpts.Timeout, "cmd-timeout", 0, "limit for the wrapped command (default 5m)")
 
 	var capLease string
 	var capOpts devlab.ScreencapOptions
-	screencap := &cobra.Command{Use: "screencap <device>", Short: "Screenshot the leased device into a PNG", Args: cobra.ExactArgs(1),
+	var capDevice string
+	screencap := &cobra.Command{Use: "screencap <device>", Short: "Screenshot the leased device into a PNG", Args: cobra.RangeArgs(0, 1),
 		RunE: lab(func(ctx context.Context, l *devlab.Lab, args []string) (devlab.Result, error) {
-			return l.Screencap(ctx, args[0], capLease, capOpts)
+			id, err := deviceOf(args, capDevice, "perflab device screencap <device> --lease <token> --out <png> --json")
+			if err != nil {
+				return devlab.Result{}, err
+			}
+			return l.Screencap(ctx, id, capLease, capOpts)
 		})}
+	screencap.Flags().StringVar(&capDevice, "device", "", "ledger id or alias (or the first argument)")
 	screencap.Flags().StringVar(&capLease, "lease", "", "lease token")
 	screencap.Flags().StringVar(&capOpts.Out, "out", "", "PNG path (required)")
 
 	var pullLease string
 	var pullOpts devlab.PullOptions
-	pull := &cobra.Command{Use: "pull <device> <remote> <local>", Short: "Copy one file off the leased device", Args: cobra.ExactArgs(3),
+	var pullDevice string
+	pull := &cobra.Command{Use: "pull <device> <remote> <local>", Short: "Copy one file off the leased device", Args: cobra.RangeArgs(2, 3),
 		RunE: lab(func(ctx context.Context, l *devlab.Lab, args []string) (devlab.Result, error) {
-			pullOpts.Remote, pullOpts.Local = args[1], args[2]
-			return l.Pull(ctx, args[0], pullLease, pullOpts)
+			id, err := deviceOf(args[:len(args)-2], pullDevice, "perflab device pull <device> --lease <token> <remote> <local> --json")
+			if err != nil {
+				return devlab.Result{}, err
+			}
+			pullOpts.Remote, pullOpts.Local = args[len(args)-2], args[len(args)-1]
+			return l.Pull(ctx, id, pullLease, pullOpts)
 		})}
+	pull.Flags().StringVar(&pullDevice, "device", "", "ledger id or alias (or the first argument)")
 	pull.Flags().StringVar(&pullLease, "lease", "", "lease token")
 	pull.Flags().StringVar(&pullOpts.DomainType, "domain-type", "", "iOS: appDataContainer | systemCrashLogs | …")
 	pull.Flags().StringVar(&pullOpts.DomainID, "domain-id", "", "iOS: the bundle id for appDataContainer")
@@ -716,4 +749,22 @@ func perflabSince(s string, now time.Time) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("--since %q is neither RFC3339 nor a duration", s)
 	}
 	return now.Add(-d), nil
+}
+
+// deviceOf is a device subcommand's device: its first argument or --device,
+// the spelling every other perflab verb takes (`device screencap --device
+// s20` was refused as an unknown flag). Both naming different devices, or
+// neither, is USAGE with the invocation in fix.
+func deviceOf(positional []string, flag, fix string) (string, error) {
+	switch {
+	case len(positional) > 0 && flag != "" && positional[0] != flag:
+		return "", runx.DiagError{Diag: runx.Diagnostic{Code: perflab.DiagUsage, Severity: "error",
+			Detail: fmt.Sprintf("the device is named twice: %s and --device %s", positional[0], flag), Fix: fix}}
+	case len(positional) > 0:
+		return positional[0], nil
+	case flag != "":
+		return flag, nil
+	}
+	return "", runx.DiagError{Diag: runx.Diagnostic{Code: perflab.DiagUsage, Severity: "error",
+		Detail: "name the device: the first argument or --device", Fix: fix}}
 }

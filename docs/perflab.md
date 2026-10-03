@@ -79,7 +79,7 @@ every number.
 | `device add <id> [--udid --core-device-id --serial --label --expect-hz --protect-package… --personal --notes]` | Register a phone; re-running updates the row. |
 | `device list [--no-live]` / `show <d>` / `remove <d> --yes` | The ledger merged with live state and the lease holder; remove is refused while leased. |
 | `device probe <d> [--lease]` | State: online, lock, Developer Mode, tunnel, refresh, thermal, battery, memory, focus, plus `HUMAN_CHECK` rows. |
-| `device shell <d> --lease <t> -- <args>` | adb (Android) or devicectl (iOS) arguments against the leased device. |
+| `device shell <d> --lease <t> -- <args>` | adb (Android) or devicectl (iOS) arguments against the leased device. adb's arguments: a device command runs under `shell` (`-- shell input tap 540 210`). Every device subcommand takes `<d>` or `--device <d>`. |
 | `device screencap <d> --lease <t> [--out f]` / `device pull <d> --lease <t> <remote> <local>` | A PNG; one file off the device. |
 | `lease acquire <d> [--for 2h] [--purpose] [--wait]` | Mint the token (printed once). |
 | `lease status [<d>]` / `renew <d> --lease <t>` / `release <d> --lease <t>` / `reap [--dry-run]` / `break <d> --reason` | Lease upkeep; no force-steal exists. |

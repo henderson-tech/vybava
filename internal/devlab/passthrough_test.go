@@ -2,11 +2,14 @@ package devlab
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 func TestShellArgv(t *testing.T) {
@@ -24,6 +27,7 @@ func TestShellArgv(t *testing.T) {
 		{name: "leading adb", dev: s20, args: []string{"adb", "shell", "ls"}, wantErr: DiagUsage},
 		{name: "another serial", dev: s20, args: []string{"-s", "R58M000000", "shell", "ls"}, wantErr: DiagUsage},
 		{name: "kill-server drops every phone", dev: s20, args: []string{"kill-server"}, wantErr: DiagUsage},
+		{name: "a device command without shell (adb: unknown command input)", dev: s20, args: []string{"input", "swipe", "540", "1900", "540", "700", "400"}, wantErr: DiagUsage},
 		{name: "pm clear protected", dev: s20, args: []string{"shell", "pm", "clear", "app.fixit.client"}, wantErr: DiagPackageProtected},
 		{name: "quoted pm uninstall protected", dev: s20, args: []string{"shell", "pm uninstall app.fixit.client"}, wantErr: DiagPackageProtected},
 		{name: "adb uninstall protected", dev: s20, args: []string{"uninstall", "app.fixit.client"}, wantErr: DiagPackageProtected},
@@ -49,6 +53,11 @@ func TestShellArgv(t *testing.T) {
 				t.Fatalf("argv\n got %s\nwant %s", strings.Join(argv, " "), tc.want)
 			}
 		})
+	}
+	_, err := shellArgv("s20", s20, "plt_x", []string{"input", "tap", "540", "210"})
+	var de runx.DiagError
+	if !errors.As(err, &de) || de.Diag.Fix != "perflab device shell s20 --lease plt_x -- shell input tap 540 210" {
+		t.Errorf("the fix is the corrected invocation: %v", err)
 	}
 }
 
