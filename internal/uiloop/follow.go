@@ -177,9 +177,9 @@ func (t *Tool) Follow(ctx context.Context, o FollowOptions) (_ Result, err error
 		return Result{}, leaseHeld(pass, held)
 	}
 	defer func() { t.dropLease(pass, leasePublish, lease, &err) }()
-	// The leases are this Mac's: the box only holds a synced copy, which a
-	// fetch would bring back over the live ones.
-	fetch := []string{"rsync", "-a", "--exclude=/.auth/", "--exclude=/playwright/", "--exclude=/publish/", "--exclude=/run.json", "--exclude=/locks/", "--exclude=*.tmp-*", from, passDir + "/"}
+	// The leases and the digest cache are this Mac's: the box only holds a
+	// synced copy, which a fetch would bring back over the live ones.
+	fetch := []string{"rsync", "-a", "--exclude=/.auth/", "--exclude=/playwright/", "--exclude=/publish/", "--exclude=/run.json", "--exclude=/locks/", "--exclude=/.cache/", "--exclude=*.tmp-*", from, passDir + "/"}
 
 	data := FollowData{Pass: pass, From: from}
 	var last Result

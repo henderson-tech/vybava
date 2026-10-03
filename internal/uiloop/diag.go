@@ -129,6 +129,11 @@ const (
 	// lease file that does not decode; the next taker replaces it anyway
 	// (warning) — remove it.
 	DiagLeaseStale = "LEASE_STALE"
+	// DiagDigestCache: a pass's .cache/digests.json (the shots' SHA256 by
+	// file stamp, never evidence) does not decode, is another version, or
+	// could not be written, so the read hashed every file again (warning) —
+	// nothing to do unless it recurs; the next read rewrites it.
+	DiagDigestCache = "DIGEST_CACHE"
 )
 
 func diag(code, detail, fix string) runx.DiagError {
