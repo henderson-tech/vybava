@@ -467,6 +467,38 @@ func TestAMessageSplitAcrossPassesWaitsForItsToolCall(t *testing.T) {
 	}
 }
 
+// A budget can stop a pass between an old message's text and its tool call:
+// the message is long whole by the clock, but its calls are still unread, so
+// it waits for them rather than settling on the cwd.
+func TestABudgetStopsShortOfAnOldMessagesToolCall(t *testing.T) {
+	f, r := focusFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	put(t, filepath.Join(f.claude, "-work-app", "s9.jsonl"), lines(
+		claudeLine("s9", f.repo, "2026-09-27T10:00:00Z", "fo_B", "claude-opus-5-5", 1, 1, 0, 0, 0),
+		claudeTool("s9", f.repo, "2026-09-27T10:00:30Z", "fo_B", "Edit", map[string]any{"file_path": filepath.Join(r.lib, "x.go")}),
+	))
+	opts := f.options()
+	opts.Budget = 1 // one record per pass
+	opts.Now = func() time.Time { return time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC) }
+	for passes := 0; ; passes++ {
+		rep, err := s.Index(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.PendingBytes == 0 {
+			break
+		}
+		if passes == 10 {
+			t.Fatal("s9 never read to its end")
+		}
+	}
+	b := beatsOf(t, s, "2026-09-27", "2026-09-27")
+	if lib, app := beatsOn(b, r.lib, true), beatsOn(b, f.repo, true); !reflect.DeepEqual(lib, []BeatRun{{at("2026-09-27T10:00:00Z"), 1}}) || len(app) != 0 {
+		t.Fatalf("lib AI = %v, app AI = %v; want lib 10:00, app none", lib, app)
+	}
+}
+
 // Where commands write: the file an output redirect names, and a segment a
 // cd (taken as applied), git -C or --cwd put somewhere — the cwd too —
 // unless it only inspects. A bare command in the cwd says nothing.

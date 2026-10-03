@@ -715,7 +715,9 @@ func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
 	} else {
 		ix.report.PendingBytes += pending
 	}
-	if !t.codex && ix.whole(cs.Focus.Msg) {
+	// Old is not whole while complete records a budget or a stop left unread
+	// may still carry its tool calls: only a read to the end settles it.
+	if !t.codex && (pending == 0 || tail) && ix.whole(cs.Focus.Msg) {
 		ix.flushMsg(&cs.Focus, readTokens)
 	}
 	save()
