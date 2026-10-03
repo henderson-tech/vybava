@@ -263,8 +263,9 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 
 ```json
 {
+  "vybava": "0.32.0", "contract": 1,
   "pass": 1, "passDir": ".ui-loop/pass-1",
-  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix" },
+  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 } },
   "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
   "published": true, "unpublished": [], "sets": [{ "area", "key", "status", "url" }],
   "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [] },
@@ -277,6 +278,8 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 }
 ```
 
+- `vybava` is this binary's version as `vybava --version` prints it (`dev` for a source build). `contract` is `StateContract` (`stage.go`): it is bumped whenever a field a workflow reads is added or changes format, digests included, and the review-loop refuses a lower one (`UILOOP_STATE_CONTRACT`). A `state` without it predates the contract: `brew upgrade --cask vybava`.
+- `config.lint` is the lint the capture applies, `grid` and `touchTarget` with the defaults (4, 44) filled, so a reviewer brief quotes the values the shots were linted with.
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).

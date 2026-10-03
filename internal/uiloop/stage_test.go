@@ -76,6 +76,19 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 	}
 }
 
+// The workflow gates on contract and quotes the lint the shots were taken
+// with, so both travel even before the first pass, defaults filled.
+func TestStateCarriesTheContractAndTheEffectiveLint(t *testing.T) {
+	res, err := newTool(t, testConfig()).State(StateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := res.Data.(StateData)
+	if s.Contract != StateContract || s.Vybava != "1.2.3" || s.Config.Lint != (StateLint{Grid: 4, TouchTarget: 44}) {
+		t.Errorf("contract %d, vybava %q, lint %+v", s.Contract, s.Vybava, s.Config.Lint)
+	}
+}
+
 // checkpointStatus is loadCheckpoints of pass 1 as key → status, plus its warnings.
 func checkpointStatus(t *testing.T, tool *Tool) (map[string]string, []runxDiagnostic) {
 	t.Helper()
