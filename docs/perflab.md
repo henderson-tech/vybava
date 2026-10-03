@@ -95,7 +95,7 @@ every number.
 | `run <scenario>... --device --lease --variant [label=]<id>... [--alternate] [--repeat N] [--resume <runDir>] [--no-analyze] [--max 90m]` | The measured runner (below). |
 | `probe rest\|drag\|fling\|custom --device --lease [--package] [--seconds 20] [--label] [--tap x,y\|none] [--gesture-file]` | Quick device-only measurement (below). |
 | `analyze <path>... [--marks] [--wdio-log --step-cycle] [--tap-lag] [--window a-b --classify\|--stacks] [--sql <preset>] [--reread]` | Every number from evidence. |
-| `compare <runDir> [<runDir>] [--threshold 0.15] [--min-runs 2] [--allow-confound <field>]` | B against A under the noise rule. |
+| `compare <runDir> [<runDir>] [--threshold 0.15] [--min-runs 2] [--allow-confound <field>]` | B against A under the noise rule; a side may be several run dirs joined by commas (a probe A/B: `a1,a2 b1,b2`). |
 | `report [<runDir>...] [--gate] [--md f]` | The newest result per scenario x device against the budgets. |
 | `hazards [<dir>] [--gate --baseline f] [--write-baseline f]` | Static render-cost sweep (no device). |
 | `crashes --device --lease [--since <RFC3339\|30m>]` | Crash reports and error-boundary lines since a time. |
@@ -441,7 +441,8 @@ that only synced queues no buffer), so zero presents read as zero frames.
   within-noise | noisy | too-few-runs`. A different native key, public env
   hash, device, input source or production equivalence is `CONFOUNDED`
   unless `--allow-confound <field>`. One run dir with two variants compares
-  them in run order; two dirs (or variant labels from `runs.jsonl`)
+  them in run order; two dirs (or variant labels from `runs.jsonl`; a side
+  of comma-joined dirs pools them, as a probe A/B needs: one record per dir)
   compare dir against dir.
 
 ## Hazards

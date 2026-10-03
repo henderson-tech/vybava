@@ -385,3 +385,46 @@ func TestResumeCommandKeepsThePlan(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+// A probe writes one record per run dir, so a probe A/B gives compare a
+// side of several dirs joined by commas: two dirs a side reach the noise
+// rule's two samples (one dir a side never could: TOO_FEW_RUNS). The same
+// lab sidecars stand in for two rest probes of each variant.
+func TestCompareJoinsRunDirsPerSide(t *testing.T) {
+	scenario := "calendar-view-switch-smooth"
+	row := ScenarioRow{Name: scenario, WindowMs: 105000}
+	tool := &Tool{Config: &Config{App: AppConfig{Root: "apps/client", Android: &AndroidAppConfig{Package: "app.fixit.client"}}}, Now: time.Now}
+	probeDir := func(label, prefix, stamp string) string {
+		dir := t.TempDir()
+		caseDir := filepath.Join(dir, caseDirName(RunBlock{Seq: 1, Variant: label, Attempt: 1}))
+		copyTo(t, filepath.Join(framestatsData, prefix+"."+scenario+"-android-"+stamp+".json.gz"), filepath.Join(caseDir, "frames", scenario+"-android-"+stamp+".json.gz"))
+		rec, missing := tool.discoverRecord(dir, caseDir, "android", row, RunVariant{Label: label, NativeKey: "pf1-0b95220e9a40cd6e79d2"}, 1, time.Now(), nil, nil)
+		if missing {
+			t.Fatal("the sidecar must be found")
+		}
+		rf := analysis.RunFile{Version: analysis.RunFileVersion, Provenance: analysis.Provenance{Device: "s20", Platform: analysis.PlatformAndroid, RefreshHz: 120, InputSource: analysis.InputADB}, Runs: []analysis.RunRecord{rec}}
+		if err := writeRunFile(dir, rf); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a1, a2 := probeDir("before", "lab120-before", "2026-10-02T10-33-10-748Z"), probeDir("before", "lab120-before", "2026-10-02T10-33-10-748Z")
+	b1, b2 := probeDir("layer", "lab120-layer", "2026-10-02T10-48-32-456Z"), probeDir("layer", "lab120-layer", "2026-10-02T10-48-32-456Z")
+	tool.Lab = &devlab.Lab{StateDir: t.TempDir()}
+	res, err := tool.Compare(context.Background(), []string{a1 + "," + a2, b1 + "," + b2}, CompareOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range res.Diagnostics {
+		if d.Code == analysis.DiagTooFewRuns {
+			t.Fatalf("two dirs a side are two samples: %+v", res.Diagnostics)
+		}
+	}
+	cmp := res.Data.(analysis.Comparison)
+	if len(cmp.A.Runs) != 2 || len(cmp.B.Runs) != 2 || len(cmp.Rows) == 0 {
+		t.Fatalf("sides %d/%d runs, %d rows", len(cmp.A.Runs), len(cmp.B.Runs), len(cmp.Rows))
+	}
+	if !strings.Contains(res.Next[0], a2) || strings.Contains(res.Next[0], ",") {
+		t.Errorf("the report line lists every dir as its own word: %s", res.Next[0])
+	}
+}

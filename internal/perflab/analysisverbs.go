@@ -154,16 +154,28 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 	var diags []runx.Diagnostic
 	if len(args) == 2 {
 		for i, arg := range args {
-			dir, err := t.resolveRunDir(arg)
-			if err != nil {
-				return Result{}, err
+			// A side is one run dir or several joined by commas: a probe
+			// writes one record per dir, so its A/B reaches the noise rule
+			// only with two or more dirs per side.
+			var side analysis.Side
+			for _, part := range strings.Split(arg, ",") {
+				dir, err := t.resolveRunDir(strings.TrimSpace(part))
+				if err != nil {
+					return Result{}, err
+				}
+				ra, d, err := t.analyzeRunDir(ctx, dir, opts)
+				if err != nil {
+					return Result{}, err
+				}
+				diags = append(diags, d...)
+				if side.Label == "" {
+					side.Label = filepath.Base(dir)
+				}
+				side.Runs = append(side.Runs, ra)
 			}
-			ra, d, err := t.analyzeRunDir(ctx, dir, opts)
-			if err != nil {
-				return Result{}, err
+			if n := len(side.Runs); n > 1 {
+				side.Label += fmt.Sprintf(" +%d", n-1)
 			}
-			diags = append(diags, d...)
-			side := analysis.Side{Label: filepath.Base(dir), Runs: []analysis.RunAnalysis{ra}}
 			if i == 0 {
 				a = side
 			} else {
@@ -200,7 +212,11 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 		return Result{}, err
 	}
 	diags = append(diags, d...)
-	next := []string{"perflab report " + strings.Join(quoteAll(args), " ") + " --gate --json"}
+	var dirs []string
+	for _, arg := range args {
+		dirs = append(dirs, strings.Split(arg, ",")...)
+	}
+	next := []string{"perflab report " + strings.Join(quoteAll(dirs), " ") + " --gate --json"}
 	for _, dg := range diags {
 		if dg.Code == analysis.DiagTooFewRuns || dg.Code == analysis.DiagNoisy {
 			next = append([]string{"perflab run <scenario> --device <id> --lease <token> --variant <a> --variant <b> --alternate --repeat 2 --json"}, next...)
