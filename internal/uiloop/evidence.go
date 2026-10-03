@@ -356,14 +356,41 @@ type screenEntry struct {
 	Destructive bool     `json:"destructive"`
 }
 
-// screenDigests is each screen's review evidence: the SHA256 of the compact
-// JSON {shots, screen, spec}, where shots are the sorted [file, SHA256] pairs
-// of its ok shots' PNGs (file relative to the pass directory), screen is its
-// manifest entry as its first record recorded it (a resume refuses a changed
-// rig, so every record of a pass agrees) and spec is the spec's SHA256 as the
-// basis read it ("" without one). A --resume retake that changes a PNG moves
-// its screen's digest and no other; a rig or spec edit after capture moves none.
+// screenEvidence is what a screen's review judged: shots are the sorted
+// [file, SHA256] pairs of its ok shots' PNGs (file relative to the pass
+// directory), screen is its manifest entry as its first record recorded it (a
+// resume refuses a changed rig, so every record of a pass agrees) and spec is
+// the spec's SHA256 as the basis read it ("" without one).
+type screenEvidence struct {
+	Shots  [][2]string `json:"shots"`
+	Screen screenEntry `json:"screen"`
+	Spec   string      `json:"spec"`
+}
+
+// screenDigests is each screen's review evidence digest: the SHA256 of the
+// compact JSON of its screenEvidence. A --resume retake that changes a PNG
+// moves its screen's digest and no other; a rig or spec edit after capture
+// moves none.
 func (t *Tool) screenDigests(pass int, records []Record, hashes map[string]string) (map[string]string, error) {
+	byID, err := t.screenEvidence(pass, records, hashes)
+	if err != nil {
+		return nil, err
+	}
+	digests := make(map[string]string, len(byID))
+	for id, e := range byID {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(e); err != nil {
+			return nil, err
+		}
+		digests[id] = digest(strings.TrimSuffix(b.String(), "\n"), 64)
+	}
+	return digests, nil
+}
+
+// screenEvidence is each screen's screenEvidence in pass, shots sorted.
+func (t *Tool) screenEvidence(pass int, records []Record, hashes map[string]string) (map[string]*screenEvidence, error) {
 	prefix, err := filepath.Rel(t.Root, t.passAbs(pass))
 	if err != nil {
 		return nil, err
@@ -376,16 +403,11 @@ func (t *Tool) screenDigests(pass int, records []Record, hashes map[string]strin
 		}
 		spec = hashes[filepath.ToSlash(rel)]
 	}
-	type evidence struct {
-		Shots  [][2]string `json:"shots"`
-		Screen screenEntry `json:"screen"`
-		Spec   string      `json:"spec"`
-	}
-	byID := map[string]*evidence{}
+	byID := map[string]*screenEvidence{}
 	for _, r := range records {
 		e := byID[r.ID]
 		if e == nil {
-			e = &evidence{Shots: [][2]string{}, Spec: spec, Screen: screenEntry{
+			e = &screenEvidence{Shots: [][2]string{}, Spec: spec, Screen: screenEntry{
 				ID: r.ID, App: r.App, Area: r.Area, Kind: r.Kind, State: r.State, Title: r.Title, Route: r.Route,
 				ParentID: r.ParentID, VariantOf: r.VariantOf, As: r.As, SourceFiles: r.SourceFiles, KnownIssues: r.KnownIssues, Destructive: r.Destructive,
 			}}
@@ -401,18 +423,10 @@ func (t *Tool) screenDigests(pass int, records []Record, hashes map[string]strin
 			}
 		}
 	}
-	digests := make(map[string]string, len(byID))
-	for id, e := range byID {
+	for _, e := range byID {
 		sort.Slice(e.Shots, func(i, j int) bool { return e.Shots[i][0] < e.Shots[j][0] })
-		var b bytes.Buffer
-		enc := json.NewEncoder(&b)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(e); err != nil {
-			return nil, err
-		}
-		digests[id] = digest(strings.TrimSuffix(b.String(), "\n"), 64)
 	}
-	return digests, nil
+	return byID, nil
 }
 
 // reviewEvidence is the basis, the per-file hashes it covers (keyed relative to

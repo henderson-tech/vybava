@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 )
@@ -32,8 +33,9 @@ func (t *Tool) planBatches(pass int, records []Record, size int, snap passSnapsh
 		return BatchesFile{}, err
 	}
 	skip := map[string]bool{}
-	for _, c := range carried {
+	for i, c := range carried {
 		skip[c.Screen] = true
+		carried[i].Digest = digests[c.Screen]
 	}
 	screens := slices.DeleteFunc(passScreens(records), func(s screen) bool { return skip[s.id] })
 	f := BatchesFile{V: 2, Pass: pass, Size: size, Batches: ComputeBatches(screens, t.Config.Areas, size), Carried: carried}
@@ -46,19 +48,21 @@ func (t *Tool) planBatches(pass int, records []Record, size int, snap passSnapsh
 	return f, nil
 }
 
-// planCarry is the screens of pass that carry the review of the pass
-// merge-review folds (the newest earlier one with a backlog), sorted. Nothing
-// carries unless that backlog is current (its basis.json matches), lists
-// reviewed, and every batch of that pass is complete. A screen then carries
-// when that backlog lists it in reviewed and names it in no open item (any
-// status but met), it has an ok shot here, and its ok shots here and there
-// are the same viewport × theme set whose PNGs (the viewport capture and the
-// full companion) are byte-equal or differ in at most
-// uiLoop.review.carryTolerance of their pixels; a size change is a move.
+// planCarry is the screens of pass that carry the review of pass-1, sorted.
+// Nothing carries unless pass-1 has a backlog (so merge-review folds it) that
+// is current (its basis.json matches) and lists reviewed, and every batch of
+// pass-1 is complete. A screen then carries when that backlog lists it in
+// reviewed and names it in no open item (any status but met), it has an ok
+// shot here, its manifest entry and the spec are as pass-1 recorded them
+// (screenEvidence: a verdict judged against other known issues or other rules
+// is not evidence here), and its ok shots here and there are the same
+// viewport × theme set whose PNGs (the viewport capture and the full
+// companion) are byte-equal or differ in at most uiLoop.review.carryTolerance
+// of their pixels; a size change is a move.
 func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carried, error) {
 	carried := []Carried{}
 	previous, ref, err := t.previousBacklog(pass)
-	if err != nil || previous == nil || previous.Reviewed == nil || previous.Pass != ref.Pass {
+	if err != nil || previous == nil || ref.Pass != pass-1 || previous.Reviewed == nil || previous.Pass != ref.Pass {
 		return carried, err
 	}
 	from := ref.Pass
@@ -99,9 +103,18 @@ func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carri
 	if err != nil {
 		return nil, err
 	}
+	judgedNow, err := t.screenEvidence(pass, records, snap.hashes)
+	if err != nil {
+		return nil, err
+	}
+	judgedThen, err := t.screenEvidence(from, thenRecords, then.hashes)
+	if err != nil {
+		return nil, err
+	}
 	tolerance := t.Config.CarryToleranceOrDefault()
 	for _, s := range passScreens(records) {
-		if open[s.id] || !slices.Contains(previous.Reviewed, s.id) || len(here[s.id]) == 0 {
+		if open[s.id] || !slices.Contains(previous.Reviewed, s.id) || len(here[s.id]) == 0 || judgedThen[s.id] == nil ||
+			judgedNow[s.id].Spec != judgedThen[s.id].Spec || !reflect.DeepEqual(judgedNow[s.id].Screen, judgedThen[s.id].Screen) {
 			continue
 		}
 		same, err := sameShots(here[s.id], there[s.id], tolerance)
@@ -114,6 +127,21 @@ func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carri
 	}
 	sort.Slice(carried, func(i, j int) bool { return carried[i].Screen < carried[j].Screen })
 	return carried, nil
+}
+
+// carriesNow splits the carries batches.json planned by the screens' current
+// digests (nil without provenance, when every carry stands): a carried
+// screen whose digest moved since (a --resume retake) is reopened, so it is
+// neither carried nor reviewed until batches plans the pass again.
+func carriesNow(carried []Carried, digests map[string]string) (current []Carried, reopened []string) {
+	for _, c := range carried {
+		if digests == nil || (c.Digest != "" && c.Digest == digests[c.Screen]) {
+			current = append(current, c)
+		} else {
+			reopened = append(reopened, c.Screen)
+		}
+	}
+	return current, reopened
 }
 
 // shotPNG is one PNG of a shot: its path ("" when the shot has none) and its

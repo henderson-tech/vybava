@@ -358,9 +358,9 @@ export async function runSteps(page: Page, steps: readonly Step[], ctx: RecipeCo
   }
 }
 
-/** Every `{PARAM}` the screen's route and steps need, so a missing one is `unreachable` before the browser starts. */
+/** Every `{PARAM}` the screen's route, steps and volatile selectors need, so a missing one is `unreachable` before the browser starts. */
 export function missingParams(screen: Screen, params: Readonly<Record<string, string>>): string[] {
-  const strings: string[] = [screen.route];
+  const strings: string[] = [screen.route, ...(screen.volatile ?? [])];
   if (Array.isArray(screen.open)) {
     for (const step of screen.open as readonly Step[]) {
       if ('evaluate' in step || 'press' in step || 'wait' in step) continue;
@@ -483,7 +483,7 @@ export async function freezeMotion(page: Page): Promise<void> {
 
 /** The screen's `volatile` selectors as the locators a shot masks. */
 export function volatileMask(page: Page, screen: Screen, params: Readonly<Record<string, string>>): Locator[] {
-  return (screen.volatile ?? []).map((selector) => page.locator(fill(selector, params).value));
+  return (screen.volatile ?? []).map((selector) => page.locator(filled(selector, params)));
 }
 
 export async function shootViewport(page: Page, file: string, mask: Locator[] = []): Promise<void> {

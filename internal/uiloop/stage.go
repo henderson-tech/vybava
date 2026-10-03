@@ -39,10 +39,14 @@ type Batch struct {
 	Digests map[string]string `json:"digests,omitempty"`
 }
 
-// Carried is a screen no batch holds: its review comes from pass From (planCarry).
+// Carried is a screen no batch holds: its review comes from pass From
+// (planCarry). Digest is its screenDigests digest when batches planned the
+// carry, kept in batches.json only: a retake since moves it, and the screen
+// is reopened (carriesNow).
 type Carried struct {
 	Screen string `json:"screen"`
 	From   int    `json:"from"`
+	Digest string `json:"digest,omitempty"`
 }
 
 // BatchesFile is <pass>/review/batches.json: the one definition of the
@@ -97,8 +101,8 @@ type NextStage struct {
 // one). Bump it whenever a field a workflow reads is added or changes format,
 // digests included. 2: drift, sourceUnchanged as "drift.app is empty",
 // next.only and config.source/primitives. 3: review.carried and
-// review.carriedFrom, batches v2 (per-screen digests, carried) and raws
-// judged screen by screen.
+// review.carriedFrom, backlog.carried (byStatus without carried items),
+// batches v2 (per-screen digests, carried) and raws judged screen by screen.
 const StateContract = 3
 
 // StateConfig is the part of the section the workflow's briefs need.
@@ -151,7 +155,9 @@ type StateReview struct {
 	Left          []string `json:"left"`
 	ReviewedAreas []string `json:"reviewedAreas"`
 	// Carried counts the screens batches.json carries into this pass and
-	// CarriedFrom names the pass they came from (null when none carry).
+	// CarriedFrom names the pass they came from (null when none carry). A
+	// carried screen retaken since is reopened (carriesNow): not counted, and
+	// its area is not reviewed until batches plans the pass again.
 	Carried     int  `json:"carried"`
 	CarriedFrom *int `json:"carriedFrom"`
 }
@@ -165,6 +171,10 @@ type BacklogCounts struct {
 	BySeverity map[string]int `json:"bySeverity"` // open findings only
 	// Reviewed is len(reviewed); -1 when the backlog has no reviewed list.
 	Reviewed int `json:"reviewed"`
+	// Carried counts the items copied from an earlier pass (carriedFrom).
+	// ByStatus leaves them out, as the scoreboard does: they are that pass's
+	// verdicts, not this one's, so ByStatus plus Carried sums to Findings.
+	Carried int `json:"carried"`
 }
 
 // PreviousBacklog is the newest earlier pass that has a backlog.
@@ -668,7 +678,11 @@ func countBacklog(file string, b *Backlog) *BacklogCounts {
 	c := &BacklogCounts{File: file, ByStatus: map[string]int{}, BySeverity: map[string]int{}, Reviewed: -1}
 	c.Findings = len(b.Findings)
 	for _, f := range b.Findings {
-		c.ByStatus[f.Status]++
+		if f.CarriedFrom > 0 {
+			c.Carried++
+		} else {
+			c.ByStatus[f.Status]++
+		}
 		if f.Open() {
 			c.Open++
 			c.BySeverity[f.Severity]++
@@ -858,17 +872,21 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := t.rawBatchIDs(pass, passSnapshot{basis: data.ReviewBasis, hashes: hashes})
+	evidence, err := t.rawBatchEvidence(pass, passSnapshot{basis: data.ReviewBasis, hashes: hashes})
 	if err != nil {
 		return Result{}, err
 	}
 	data.Review.BatchesFile, data.Review.Size, data.Review.Planned = persisted, batches.Size, len(batches.Batches)
-	if data.Review.Carried = len(batches.Carried); data.Review.Carried > 0 {
-		data.Review.CarriedFrom = &batches.Carried[0].From
+	carried, reopened := carriesNow(batches.Carried, evidence.digests)
+	if data.Review.Carried = len(carried); data.Review.Carried > 0 {
+		data.Review.CarriedFrom = &carried[0].From
 	}
 	areaLeft := map[string]bool{}
+	for _, s := range screens {
+		areaLeft[s.area] = areaLeft[s.area] || slices.Contains(reopened, s.id)
+	}
 	for _, b := range batches.Batches {
-		if raw[b.ID] {
+		if evidence.complete[b.ID] {
 			data.Review.Done = append(data.Review.Done, b.ID)
 		} else {
 			data.Review.Left = append(data.Review.Left, b.ID)
@@ -1118,13 +1136,16 @@ type BatchesData struct {
 	Done    []string `json:"done"`
 	Left    []string `json:"left"`
 	// Carried are the screens no batch holds because they carry an earlier
-	// pass's review (planCarry), sorted by screen; only --areas when given.
+	// pass's review (planCarry), sorted by screen, {screen, from} only (the
+	// digest stays in batches.json); only --areas when given.
 	Carried []Carried `json:"carried"`
 }
 
 // Batches plans the review batches and persists them to review/batches.json.
-// A review started on v1 batches (a raw file exists) keeps them; any other
-// is planned v2 (planBatches).
+// A review that started without v2 batches (a raw file exists and
+// batches.json is v1 or missing) keeps v1 batches, because a carry would
+// re-chunk the batches its v1 raws were judged against; any other is planned
+// v2 (planBatches), every run, so a retake since the last plan is seen.
 func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -1173,7 +1194,7 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 		return Result{}, err
 	}
 	all := BatchesFile{V: 1, Pass: pass, Size: size, Batches: ComputeBatches(passScreens(records), t.Config.Areas, size)}
-	if !found || prior.V >= 2 || len(started) == 0 {
+	if len(started) == 0 || (found && prior.V >= 2) {
 		if all, err = t.planBatches(pass, records, size, snap); err != nil {
 			return Result{}, err
 		}
@@ -1192,7 +1213,7 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	}
 	for _, c := range all.Carried {
 		if len(o.Areas) == 0 || slices.Contains(o.Areas, areaOf[c.Screen]) {
-			data.Carried = append(data.Carried, c)
+			data.Carried = append(data.Carried, Carried{Screen: c.Screen, From: c.From})
 		}
 	}
 	for _, b := range all.Batches {
@@ -1259,8 +1280,9 @@ type MergeReviewData struct {
 	Left       []string         `json:"left"` // planned batches without a raw file
 	Findings   int              `json:"findings"`
 	Open       int              `json:"open"`
-	ByStatus   map[string]int   `json:"byStatus"`
+	ByStatus   map[string]int   `json:"byStatus"` // carried items aside (BacklogCounts)
 	BySeverity map[string]int   `json:"bySeverity"`
+	Carried    int              `json:"carried"` // items copied from an earlier pass
 	Reviewed   int              `json:"reviewed"`
 	Unreviewed []string         `json:"unreviewed"`
 	// Unjudged are previous open items no reviewer gave a verdict; they
@@ -1339,7 +1361,8 @@ func union(a, b []string) []string {
 // raw speaks only for the screens it read at their current digest, so its
 // findings and verdicts on any other screen are left out. The screens
 // batches carries from the previous pass take that pass's items on them
-// as they stood, with carriedFrom, and count as reviewed.
+// as they stood, with carriedFrom, and count as reviewed; a carried screen
+// retaken since (carriesNow) takes nothing and is unreviewed.
 func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesFile, okShots map[string][]string, digests map[string]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
@@ -1362,9 +1385,15 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 		}
 		return slices.Contains(raws[i].ScreensRead, screen)
 	}
+	// carried is true for a screen that takes the previous pass's items and
+	// false for one that cannot (retaken since, or carried from another pass).
 	carried := map[string]bool{}
-	for _, c := range batches.Carried {
+	current, reopened := carriesNow(batches.Carried, digests)
+	for _, c := range current {
 		carried[c.Screen] = previous != nil && c.From == previous.Pass
+	}
+	for _, id := range reopened {
+		carried[id] = false
 	}
 	verdicts := map[string]string{}
 	for i, r := range raws {
@@ -1614,7 +1643,7 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	}
 	counts := countBacklog(file, &backlog)
 	data := MergeReviewData{Pass: pass, PassDir: t.PassDir(pass), File: file, Previous: prevRef, Raw: len(raws), Left: []string{},
-		Findings: counts.Findings, Open: counts.Open, ByStatus: counts.ByStatus, BySeverity: counts.BySeverity, Reviewed: len(backlog.Reviewed),
+		Findings: counts.Findings, Open: counts.Open, ByStatus: counts.ByStatus, BySeverity: counts.BySeverity, Carried: counts.Carried, Reviewed: len(backlog.Reviewed),
 		Unreviewed: unreviewed, Unjudged: unjudged, Problems: problems, Invalid: backlog.Validate()}
 	if data.Invalid == nil {
 		data.Invalid = []string{}
