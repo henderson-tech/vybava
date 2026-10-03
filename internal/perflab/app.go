@@ -147,7 +147,10 @@ func (t *Tool) AppLink(ctx context.Context, o AppOptions) (Result, error) {
 }
 
 // AppReset runs the adapter's world reset; the lease proves the caller owns
-// the device whose app reads that world.
+// the device whose app reads that world. It holds the device lock like every
+// device verb: a reset under a running measurement (a second copy sharing
+// the token) would change the world the run is measuring, so it answers
+// DEVICE_BUSY instead.
 func (t *Tool) AppReset(ctx context.Context, o AppOptions) (Result, error) {
 	c, err := t.Cfg()
 	if err != nil {
@@ -156,11 +159,13 @@ func (t *Tool) AppReset(ctx context.Context, o AppOptions) (Result, error) {
 	if c.Hooks == nil || c.Hooks.ResetWorld == "" {
 		return Result{}, diag(DiagConfigInvalid, "the perflab section has no hooks.resetWorld", adapterFix)
 	}
-	id, dev, _, err := t.Lab.Verify(o.Device, o.Lease)
+	h, err := t.Lab.Hold(o.Device, o.Lease, "app reset")
 	if err != nil {
 		return Result{}, err
 	}
-	v := t.baseVars(ctx, string(dev.Platform))
+	defer h.Done()
+	id := h.ID
+	v := t.baseVars(ctx, string(h.Device.Platform))
 	v.Set("world", o.World)
 	v.Set("scenario", o.World)
 	cmd, err := v.Expand("hooks.resetWorld", c.Hooks.ResetWorld, true)

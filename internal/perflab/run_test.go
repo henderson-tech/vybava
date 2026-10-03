@@ -138,6 +138,37 @@ func TestDiscoverRecordReadsCaseRelativeResultPaths(t *testing.T) {
 	}
 }
 
+// app reset waits for the device lock like every device verb: a reset from
+// a second copy sharing the token must not change the world a run is
+// measuring under that lock.
+func TestAppResetHoldsTheDeviceLock(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "devices.json"), []byte(`{"schemaVersion":1,"devices":{"s20":{"platform":"android","serial":"RF8N21PY1BF"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lab := &devlab.Lab{StateDir: state, Now: time.Now, TempDir: os.TempDir, LockWait: time.Second, Pid: os.Getpid(),
+		Exec:      func(context.Context, devlab.Cmd) (devlab.CmdOut, error) { return devlab.CmdOut{Code: 1}, nil },
+		Getenv:    func(string) string { return "" },
+		ProcStart: func(int) (time.Time, bool, error) { return time.Time{}, false, nil },
+		StopGroup: func(int) error { return nil }}
+	acq, err := lab.Acquire(ctx, "s20", devlab.AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := acq.Data.(devlab.AcquireData).Token
+	run, err := lab.Hold("s20", token, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.Done()
+	marker := filepath.Join(t.TempDir(), "reset-ran")
+	tool := &Tool{Config: &Config{Hooks: &HooksConfig{ResetWorld: "touch " + marker}}, Lab: lab, Now: time.Now}
+	if _, err := tool.AppReset(ctx, AppOptions{Device: "s20", Lease: token, World: "default"}); CodeOf(err) != devlab.DiagDeviceBusy || fileExists(marker) {
+		t.Fatalf("reset under a held device lock: %v (hook ran: %v)", err, fileExists(marker))
+	}
+}
+
 func TestDescendantsAndClassify(t *testing.T) {
 	ps := `  100     1 /bin/sh -c bun scripts/perf/run.ts ios calendar
   101   100 bun scripts/perf/run.ts ios calendar
