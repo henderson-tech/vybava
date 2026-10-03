@@ -261,3 +261,29 @@ func TestAStalePresentTimeFallsBackToTheFramesCompletion(t *testing.T) {
 		t.Errorf("a sane present must be kept: %+v", first)
 	}
 }
+
+// A probe's Perfetto presents get the sidecar's display-rate bins: two
+// steady 120 Hz bins, a bin with five two-vsync gaps (120 x (1 - 5 x 8.33 /
+// 500) = 110), 2 s of rest, then one more steady bin. Rest bins never count
+// as animating; fewer than two presents read nothing.
+func TestSummarizePresentsBinsAProbesFrames(t *testing.T) {
+	period := 1000.0 / 120
+	presents := []float64{0}
+	add := func(n int, gap float64) {
+		for i := 0; i < n; i++ {
+			presents = append(presents, presents[len(presents)-1]+gap)
+		}
+	}
+	add(120, period)
+	add(5, 2*period)
+	add(50, period)
+	add(1, 2000)
+	add(61, period)
+	d := SummarizePresents(presents, period)
+	if d.AnimatingBins != 4 || d.AnimatingFpsP10 != 113 || d.AnimatingFpsMedian != 120 || d.RefreshHz != 120 || d.JankyPct == 0 {
+		t.Errorf("display = %+v; want 4 animating bins, p10 113 (110 x 0.7 + 120 x 0.3), median 120", d)
+	}
+	if z := SummarizePresents(presents[:1], period); z != (DisplayMetrics{}) {
+		t.Errorf("one present reads nothing: %+v", z)
+	}
+}

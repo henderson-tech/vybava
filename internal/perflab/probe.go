@@ -123,18 +123,9 @@ func screenSize(out string) (int, int, bool) {
 	return w, h, w > 0 && h > 0
 }
 
-// probeBudget is the default verdict per kind (docs/perflab.md "Budgets").
+// probeBudget is the default verdict per kind (analysis.ProbeBudget).
 func probeBudget(kind, platform string) json.RawMessage {
-	if platform == "ios" {
-		return json.RawMessage(`{"iosHitchRatioMsPerSMax":5}`)
-	}
-	switch kind {
-	case "rest":
-		return json.RawMessage(`{"androidRestFramesMax":0,"androidRestRunMsMax":6000}`)
-	case "drag":
-		return json.RawMessage(`{"androidDragRtDrawMsMax":4}`)
-	}
-	return nil
+	return analysis.ProbeBudget(kind, analysis.Platform(platform))
 }
 
 // Probe takes a quick device-only measurement: a Perfetto trace around a

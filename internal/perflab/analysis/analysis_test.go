@@ -374,3 +374,65 @@ func TestPresentBudgetsNeedFrameTimeline(t *testing.T) {
 		}
 	}
 }
+
+// A sweep's probes: report applies the default probe budget per kind (no
+// adapter row names them) and merges one screen's rest, drag and fling
+// probes into ONE board row, each column read from its own kind (a rest
+// trace's draw cost is never a drag column). A scenario row fills only the
+// columns its budget names.
+func TestReportJudgesProbesAndMergesAScreensBoardRow(t *testing.T) {
+	at := time.Date(2026, 10, 3, 0, 45, 0, 0, time.UTC)
+	rec := func(scenario string, p framestats.PresentMetrics, animatingP10 float64) RecordResult {
+		m := &Metrics{Kind: KindPerfetto, Present: &p}
+		if animatingP10 > 0 {
+			m.Display = &framestats.DisplayMetrics{RefreshHz: 120, Frames: 2000, AnimatingBins: 30, AnimatingFpsP10: animatingP10}
+		}
+		at = at.Add(time.Minute)
+		return RecordResult{Scenario: scenario, Variant: "before", RecordedAt: at, Metrics: m}
+	}
+	rest := framestats.PresentMetrics{FrameTimeline: true, RestFrames: 0, RestRunMs: 4937, RTDrawMs: framestats.DurationStats{Avg: ptrF(3.6)}}
+	ambient := framestats.PresentMetrics{FrameTimeline: true, RestFrames: 2300, RestRunMs: 19000, RTDrawMs: framestats.DurationStats{Avg: ptrF(2)}}
+	drag := framestats.PresentMetrics{FrameTimeline: true, RestFrames: 0, RTDrawMs: framestats.DurationStats{Avg: ptrF(5.1)}}
+	fling := framestats.PresentMetrics{FrameTimeline: true, RestFrames: 1878, PresentGaps: framestats.PresentGaps{TwoVsync: 18}, RTDrawMs: framestats.DurationStats{Avg: ptrF(2.6)}}
+	ra := RunAnalysis{RunDir: "sweep", Provenance: Provenance{Device: "s20", Platform: PlatformAndroid, RefreshHz: 120}, Records: []RecordResult{
+		rec("probe-rest-worker-hub", rest, 0),
+		rec("probe-drag-worker-hub", drag, 100),
+		rec("probe-fling-worker-hub", fling, 96),
+		rec("probe-rest-chat", ambient, 0),
+		rec("worker-hub-drag", drag, 0),
+	}}
+	scenarioBudget, _ := ParseBudget("worker-hub-drag", json.RawMessage(`{"androidDragRtDrawMsMax":6}`))
+	data, _, err := Report([]RunAnalysis{ra}, ReportOptions{Budgets: map[string]Budget{"worker-hub-drag": scenarioBudget}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdicts := map[string]RowVerdict{}
+	for _, r := range data.Rows {
+		verdicts[r.Scenario] = r.Verdict
+	}
+	want := map[string]RowVerdict{"probe-rest-worker-hub": RowPass, "probe-drag-worker-hub": RowFail, "probe-fling-worker-hub": RowPass,
+		"probe-rest-chat": RowFail, "worker-hub-drag": RowPass}
+	for s, v := range want {
+		if verdicts[s] != v {
+			t.Errorf("%s: verdict %s, want %s (drag 5.1 ms > 4; fling 96 of 120 Hz >= 0.75; 2300 rest frames > 0)", s, verdicts[s], v)
+		}
+	}
+	if len(data.BoardRows) != 3 {
+		t.Fatalf("board rows = %+v, want one per screen (worker-hub, chat, worker-hub-drag)", data.BoardRows)
+	}
+	byScreen := map[string]BoardRow{}
+	for _, b := range data.BoardRows {
+		byScreen[b.Screen] = b
+	}
+	hub := byScreen["worker-hub on s20"]
+	if hub.Verdict != "fail" || hub.RestFrames == nil || *hub.RestFrames != 0 || hub.DragDrawMs == nil || *hub.DragDrawMs != 5.1 ||
+		hub.DragFpsP10 == nil || *hub.DragFpsP10 != 100 || hub.FlingGaps == nil || *hub.FlingGaps != 18 || hub.FlingFpsP10 == nil || *hub.FlingFpsP10 != 96 {
+		t.Errorf("hub row = %+v", hub)
+	}
+	if chat := byScreen["chat on s20"]; chat.DragDrawMs != nil || chat.FlingGaps != nil || chat.RestFrames == nil || *chat.RestFrames != 2300 {
+		t.Errorf("a rest probe fills only the rest column: %+v", chat)
+	}
+	if s := byScreen["worker-hub-drag on s20"]; s.RestFrames != nil || s.FlingGaps != nil || s.DragDrawMs == nil || *s.DragDrawMs != 5.1 {
+		t.Errorf("a scenario fills the columns its budget names: %+v", s)
+	}
+}

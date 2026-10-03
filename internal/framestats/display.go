@@ -222,7 +222,22 @@ func SummarizeDisplay(dumps []Dump, vsyncPeriodNs int64) DisplayMetrics {
 	}
 	start, end := dumps[0].UptimeMs, dumps[len(dumps)-1].UptimeMs
 	presents, frames := uniquePresents(dumps, start, end)
-	period := periodMs(vsyncPeriodNs, frames)
+	return binPresents(presents, start, end, periodMs(vsyncPeriodNs, frames))
+}
+
+// SummarizePresents judges sorted present times (ms) the same way over the
+// window first to last present: a Perfetto trace's FrameTimeline presents
+// (`perflab probe drag|fling`) get the display-rate bins a framestats
+// sidecar gets, so the animating fps budget reads them too.
+func SummarizePresents(presents []float64, periodMs float64) DisplayMetrics {
+	if len(presents) < 2 || periodMs <= 0 {
+		return DisplayMetrics{}
+	}
+	return binPresents(presents, presents[0], presents[len(presents)-1], periodMs)
+}
+
+// binPresents is the display-rate reading of presents inside [start, end).
+func binPresents(presents []float64, start, end, period float64) DisplayMetrics {
 	refresh := 1000 / period
 	bins := make([]bin, max(0, int(math.Floor((end-start)/BinMs))))
 	for i := 1; i < len(presents); i++ {

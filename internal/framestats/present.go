@@ -121,7 +121,13 @@ type PresentMetrics struct {
 	// process's) Frames, RestFrames, RestRunMs, PresentGaps and Drops are
 	// unread, not zero: a budget never passes on them (NO_FRAME_TIMELINE).
 	FrameTimeline bool `json:"frameTimeline"`
+	// display is the display-rate reading of the same presents (DisplayRate).
+	display *DisplayMetrics
 }
+
+// DisplayRate is the presents' display-rate bins (SummarizePresents), nil
+// without the app's FrameTimeline surface frames: unread, never zero.
+func (m PresentMetrics) DisplayRate() *DisplayMetrics { return m.display }
 
 // ReadPresent measures the app's presents, its per-frame thread work and
 // the RenderThread's CPU placement. Warnings come back beside a usable
@@ -217,7 +223,12 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	m.VsyncPeriodMs = math.Round(period*1000) / 1000
 	m.RefreshHz = round1(1000 / period)
 	m.PresentGaps = bucketGaps(gaps, period)
-	m.RestFrames, m.RestRunMs = restReading(presentTimes(presents, func(p present) int64 { return p.at }))
+	times := presentTimes(presents, func(p present) int64 { return p.at })
+	m.RestFrames, m.RestRunMs = restReading(times)
+	if m.FrameTimeline && len(times) > 1 {
+		d := SummarizePresents(times, period)
+		m.display = &d
+	}
 
 	// Per-frame thread work.
 	slices := buildSlices(t.prints, m.PID)

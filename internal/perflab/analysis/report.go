@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -93,13 +94,19 @@ type ReportRow struct {
 }
 
 // BoardRow is the vitrinka board table row (4740's shape) for
-// compose_board.
+// compose_board: one row per screen and device. A probed screen's columns
+// come each from its own probe kind (rest frames from the rest probe, the
+// drag columns from the drag probe, the fling ones from the fling probe);
+// another scenario fills the columns its budget names. The verdict is the
+// worst of the screen's rows.
 type BoardRow struct {
-	Screen     string   `json:"screen"`
-	RestFrames *int     `json:"restFrames"`
-	DragDrawMs *float64 `json:"dragDrawMs"`
-	FlingGaps  *int     `json:"flingGaps"`
-	Verdict    string   `json:"verdict"`
+	Screen      string   `json:"screen"`
+	RestFrames  *int     `json:"restFrames"`
+	DragDrawMs  *float64 `json:"dragDrawMs"`
+	DragFpsP10  *float64 `json:"dragFpsP10"`
+	FlingGaps   *int     `json:"flingGaps"`
+	FlingFpsP10 *float64 `json:"flingFpsP10"`
+	Verdict     string   `json:"verdict"`
 }
 
 // ReportData is `perflab report`'s data.
@@ -117,8 +124,61 @@ type ReportOptions struct {
 	Gate bool
 }
 
+// ProbeBudget is a probe's default verdict per kind (docs/perflab.md
+// "Budgets"), nil for a kind with none: a screen at rest stops drawing, a
+// drag stays inside the RenderThread budget, and a drag or fling keeps its
+// animating bins at 0.75 x refresh. A fling's two-vsync count has no default
+// (the baseline's count per script).
+func ProbeBudget(kind string, platform Platform) json.RawMessage {
+	if platform == PlatformIOS {
+		return json.RawMessage(`{"iosHitchRatioMsPerSMax":5}`)
+	}
+	switch kind {
+	case "rest":
+		return json.RawMessage(`{"androidRestFramesMax":0,"androidRestRunMsMax":6000}`)
+	case "drag":
+		return json.RawMessage(`{"androidDragRtDrawMsMax":4,"androidAnimatingFpsP10MinShare":0.75}`)
+	case "fling":
+		return json.RawMessage(`{"androidAnimatingFpsP10MinShare":0.75}`)
+	}
+	return nil
+}
+
+// probeScenarioRe names a probe's records: probe-<kind>[-<screen label>].
+var probeScenarioRe = regexp.MustCompile(`^probe-(rest|drag|fling|custom)(?:-(.+))?$`)
+
+// probeScreen splits a probe scenario into its kind and screen; ok is false
+// for any other scenario.
+func probeScreen(scenario string) (kind, screen string, ok bool) {
+	m := probeScenarioRe.FindStringSubmatch(scenario)
+	if m == nil {
+		return "", "", false
+	}
+	screen = m[2]
+	if screen == "" {
+		screen = "probe"
+	}
+	return m[1], screen, true
+}
+
+// budgetFor is the adapter's scenario budget, else a probe's default.
+func budgetFor(scenario string, platform Platform, budgets map[string]Budget) Budget {
+	if b, ok := budgets[scenario]; ok {
+		return b
+	}
+	if kind, _, ok := probeScreen(scenario); ok {
+		if raw := ProbeBudget(kind, platform); raw != nil {
+			if b, err := ParseBudget(scenario, raw); err == nil {
+				return b
+			}
+		}
+	}
+	return Budget{}
+}
+
 // Report takes the newest record per scenario x device across the run
-// analyses and checks it against its scenario budget.
+// analyses and checks it against its scenario budget (a probe without an
+// adapter row: ProbeBudget).
 func Report(runs []RunAnalysis, opts ReportOptions) (ReportData, []runx.Diagnostic, error) {
 	type key struct{ scenario, device string }
 	newest := map[key]ReportRow{}
@@ -147,7 +207,7 @@ func Report(runs []RunAnalysis, opts ReportOptions) (ReportData, []runx.Diagnost
 					refresh = rec.Metrics.Present.RefreshHz
 				}
 				row.RefreshHz = refresh
-				row.Checks = checkBudget(opts.Budgets[rec.Scenario], *rec.Metrics, refresh)
+				row.Checks = checkBudget(budgetFor(rec.Scenario, ra.Provenance.Platform, opts.Budgets), *rec.Metrics, refresh)
 				row.Verdict = verdictOf(row.Checks)
 			}
 			newest[k] = row
@@ -163,10 +223,10 @@ func Report(runs []RunAnalysis, opts ReportOptions) (ReportData, []runx.Diagnost
 		}
 		return data.Rows[i].Device < data.Rows[j].Device
 	})
+	data.BoardRows = boardRows(data.Rows)
 	measured := 0
 	var failing []string
 	for _, r := range data.Rows {
-		data.BoardRows = append(data.BoardRows, boardRow(r))
 		if r.Verdict != RowFailed {
 			measured++
 		}
@@ -265,19 +325,78 @@ func verdictOf(checks []Check) RowVerdict {
 	return RowPass
 }
 
-func boardRow(r ReportRow) BoardRow {
-	br := BoardRow{Screen: r.Scenario + " on " + r.Device, Verdict: string(r.Verdict)}
-	if m := r.metrics; m != nil && m.Present != nil {
-		if m.Present.FrameTimeline {
-			rest, gaps := m.Present.RestFrames, m.Present.PresentGaps.TwoVsync
-			br.RestFrames, br.FlingGaps = &rest, &gaps
+// verdictRank orders verdicts worst first for a screen's merged row.
+var verdictRank = map[RowVerdict]int{RowFail: 0, RowPass: 1, RowUnbudgeted: 2, RowFailed: 3}
+
+// boardRows merges the report rows into one board row per screen x device
+// (BoardRow), in the rows' order.
+func boardRows(rows []ReportRow) []BoardRow {
+	type key struct{ screen, device string }
+	out := []BoardRow{}
+	index := map[key]int{}
+	for _, r := range rows {
+		kind, screen, probe := probeScreen(r.Scenario)
+		if !probe {
+			screen = r.Scenario
 		}
-		if m.Present.RTDrawMs.Avg != nil {
-			v := *m.Present.RTDrawMs.Avg
-			br.DragDrawMs = &v
+		k := key{screen, r.Device}
+		i, seen := index[k]
+		if !seen {
+			i = len(out)
+			index[k] = i
+			out = append(out, BoardRow{Screen: screen + " on " + r.Device, Verdict: string(r.Verdict)})
+		} else if verdictRank[r.Verdict] < verdictRank[RowVerdict(out[i].Verdict)] {
+			out[i].Verdict = string(r.Verdict)
+		}
+		fillBoardRow(&out[i], r, kind)
+	}
+	return out
+}
+
+// fillBoardRow writes the columns a row speaks to: a probe's by its kind,
+// any other scenario's by the budget keys it was checked against.
+func fillBoardRow(br *BoardRow, r ReportRow, kind string) {
+	m := r.metrics
+	if m == nil {
+		return
+	}
+	if kind == "" {
+		for _, c := range r.Checks {
+			switch c.Key {
+			case "androidRestFramesMax":
+				kind = "rest"
+			case "androidDragRtDrawMsMax":
+				kind = "drag"
+			case "androidFlingTwoVsyncGapsMax":
+				kind = "fling"
+			}
 		}
 	}
-	return br
+	p, d := m.Present, m.Display
+	var fps *float64
+	if d != nil && d.AnimatingBins > 0 {
+		v := d.AnimatingFpsP10
+		fps = &v
+	}
+	switch kind {
+	case "rest":
+		if p != nil && p.FrameTimeline {
+			v := p.RestFrames
+			br.RestFrames = &v
+		}
+	case "drag":
+		if p != nil && p.RTDrawMs.Avg != nil {
+			v := *p.RTDrawMs.Avg
+			br.DragDrawMs = &v
+		}
+		br.DragFpsP10 = fps
+	case "fling":
+		if p != nil && p.FrameTimeline {
+			v := p.PresentGaps.TwoVsync
+			br.FlingGaps = &v
+		}
+		br.FlingFpsP10 = fps
+	}
 }
 
 // Markdown renders the report as one table plus the failing checks.

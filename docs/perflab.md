@@ -395,7 +395,9 @@ after the first gap over 60 ms; `restRunMs` is the longest run of presents
 with no gap over 60 ms; `rtDrawMs` is RenderThread `Drawing` per frame;
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4
 periods, blamed on main or RenderThread when either exceeded one period on
-that frame or the one before. Every present reading but `rtDrawMs` needs
+that frame or the one before; `display` is the framestats display-rate
+reading (500 ms bins, animating fps p10 and median, janky %) of the same
+presents, first to last. Every present reading but `rtDrawMs` needs
 the app's own FrameTimeline surface frames (`present.frameTimeline`);
 without them (no FrameTimeline, or only another process's) they are unread,
 so the rest and fling budgets get no check and compare gets no sample.
@@ -419,7 +421,15 @@ so the rest and fling budgets get no check and compare gets no sample.
   `androidJankyPctMax`, `androidRestFramesMax`, `androidRestRunMsMax`,
   `androidDragRtDrawMsMax`, `androidFlingTwoVsyncGapsMax`, `slopeMax`,
   `androidFpsP10Min` (60-capped: reported, never gates a 120 Hz phone).
-  Probe defaults: rest 0 frames / 6000 ms, drag 4 ms, iOS 5 ms/s.
+  Probe defaults (`analysis.ProbeBudget`, applied by `probe` and by `report`
+  to a `probe-<kind>-<label>` row no adapter row names): rest 0 frames /
+  6000 ms, drag 4 ms and animating p10 0.75 x refresh, fling animating p10
+  0.75 x refresh, iOS 5 ms/s.
+- Board rows (`data.boardRows`, 4740's table): one per screen x device. A
+  probed screen merges its probes, each column from its own kind (rest
+  frames from `rest`, draw ms and fps p10 from `drag`, two-vsync gaps and
+  fps p10 from `fling`); another scenario fills the columns its budget names.
+  The verdict is the worst of the screen's rows.
 - Compare: minimum samples 2, relative MAD <= 0.25, p90/p50 <= 1.5, half
   drift <= 0.25, threshold 0.15; verdicts `improved | regressed |
   within-noise | noisy | too-few-runs`. A different native key, public env

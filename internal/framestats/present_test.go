@@ -87,6 +87,9 @@ func TestReadPresentMeasuresWhatReachedTheGlass(t *testing.T) {
 	if !pm.FrameTimeline {
 		t.Fatal("a trace with FrameTimeline packets must say so")
 	}
+	if pm.DisplayRate() == nil {
+		t.Error("FrameTimeline presents carry their display-rate bins")
+	}
 	if !strings.Contains(pm.Layer, "MainActivity") || pm.Frames != 5 || pm.RefreshHz != 120 || pm.PeriodSource != "expected-display" {
 		t.Fatalf("layer %q frames %d refresh %v (%s); the popup and the dropped frame stay out", pm.Layer, pm.Frames, pm.RefreshHz, pm.PeriodSource)
 	}

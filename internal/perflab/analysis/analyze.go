@@ -290,7 +290,7 @@ func analyzePerfetto(ctx context.Context, p string, opts Options) (Input, []runx
 	if err != nil {
 		return Input{}, diags, err
 	}
-	in := Input{Path: p, Kind: KindPerfetto, Metrics: Metrics{Kind: KindPerfetto, Present: &pm}}
+	in := Input{Path: p, Kind: KindPerfetto, Metrics: Metrics{Kind: KindPerfetto, Present: &pm, Display: pm.DisplayRate()}}
 	if opts.SQL != "" {
 		tool, err := framestats.TraceProcessor()
 		if err != nil {
