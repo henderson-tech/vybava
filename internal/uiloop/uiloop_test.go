@@ -62,10 +62,12 @@ func TestConfigRejectsUnknownKeysAndReportsEveryProblem(t *testing.T) {
 	bad.Apps = map[string]App{"portal": {BaseURL: "ftp://x", Env: "lower", Viewports: []string{"watch"}, Themes: []string{"sepia"}}}
 	bad.Lint.Off = []string{"no-such-rule"}
 	bad.Lint.Allow = map[string][]string{"grid": {"ui-button", " "}, "truncated": {".x"}, "nope": {".y"}, "contrast": {}}
+	bad.Source, bad.Primitives = []string{"apps", ""}, []string{"/abs/ui-lib"}
 	problems := strings.Join(bad.Validate(), "\n")
 	for _, want := range []string{"dir \"../elsewhere\"", "not kebab-case", "listed twice", "not an http(s) URL", "not an env var",
 		"unknown viewport \"watch\"", "\"sepia\" is not light or dark", "unknown rule \"no-such-rule\"",
-		"lint.allow.grid holds an empty selector", "\"truncated\" is informational already", "lint.allow: unknown rule \"nope\"", "lint.allow.contrast must list at least one selector"} {
+		"lint.allow.grid holds an empty selector", "\"truncated\" is informational already", "lint.allow: unknown rule \"nope\"", "lint.allow.contrast must list at least one selector",
+		"source holds an empty pathspec", "primitives \"/abs/ui-lib\" must be repo-relative"} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("Validate misses %q in:\n%s", want, problems)
 		}

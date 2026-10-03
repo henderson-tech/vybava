@@ -41,7 +41,7 @@ type LanesData struct {
 // LanesOptions are `lanes`' flags.
 type LanesOptions struct {
 	Pass       int
-	Primitives []string // directory prefixes that hold shared primitives
+	Primitives []string // directory prefixes that hold shared primitives (nil: the config's)
 	Max        int      // lanes per phase (default 4)
 }
 
@@ -263,6 +263,9 @@ func (t *Tool) Lanes(o LanesOptions) (Result, error) {
 		if c.Finishes() {
 			finished[c.Key] = true
 		}
+	}
+	if o.Primitives == nil {
+		o.Primitives = t.Config.Primitives
 	}
 	data := PlanLanes(t.Root, backlog.Findings, finished, o.Primitives, o.Max)
 	data.Pass, data.PassDir, data.File = pass, t.PassDir(pass), t.PassDir(pass)+"/fix/"+lanesFile

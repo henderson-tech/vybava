@@ -34,6 +34,12 @@ type Config struct {
 	Lint      Lint                `json:"lint,omitempty"`
 	Vitrinka  Vitrinka            `json:"vitrinka"`
 	Publish   Publish             `json:"publish,omitempty"`
+	// Source is the application source as git pathspecs: a change there
+	// stales a pass (state's drift.app). Empty is DefaultSource.
+	Source []string `json:"source,omitempty"`
+	// Primitives are directory prefixes holding shared primitives: the fix
+	// lanes' default, and a change under one makes a verify a full reshoot.
+	Primitives []string `json:"primitives,omitempty"`
 }
 
 // App is one app of the repo the loop shoots.
@@ -149,6 +155,22 @@ func (c Config) TSRunnerOrDefault() string {
 		return "bun"
 	}
 	return "npx --yes tsx"
+}
+
+// SourceOrDefault is Source, else the whole repo minus what never changes
+// a shot: the run root, .vitrinka, the rig, the spec, the app map, every
+// Markdown file and .claude/.
+func (c Config) SourceOrDefault() []string {
+	if len(c.Source) > 0 {
+		return c.Source
+	}
+	out := []string{"."}
+	for _, p := range []string{c.Out, ".vitrinka", c.Dir, c.Spec, c.AppMap} {
+		if p != "" {
+			out = append(out, ":(exclude,literal)"+strings.TrimRight(p, "/"))
+		}
+	}
+	return append(out, ":(exclude,glob)**/*.md", ":(exclude,glob).claude/**")
 }
 
 // ResolvedViewports is the built-in table with the config's additions and overrides.
@@ -320,6 +342,17 @@ func (c Config) Validate() []string {
 			add("lint.ramp holds font sizes in px, all positive")
 			break
 		}
+	}
+	for _, s := range c.Source {
+		if strings.TrimSpace(s) == "" {
+			add("source holds an empty pathspec")
+		}
+	}
+	for _, p := range c.Primitives {
+		if strings.TrimSpace(p) == "" {
+			add("primitives holds an empty prefix")
+		}
+		add(relPath("primitives", p, false))
 	}
 	if c.Vitrinka.Project == "" {
 		add("vitrinka.project is required")

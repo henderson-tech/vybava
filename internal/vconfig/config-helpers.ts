@@ -222,6 +222,13 @@ export interface UiLoopConfig {
     /** rsync source of the repo on the capture box, e.g. 'devops:ws/<workspace>/<app-dir>'; `publish --follow` appends /<out>/pass-<n>/. */
     from?: string;
   };
+  /**
+   * The application source as git pathspecs: only a change here stales a pass (`state`'s drift.app).
+   * Default: the repo minus out, .vitrinka, dir, spec, appMap, every *.md and .claude/.
+   */
+  source?: string[];
+  /** Directory prefixes holding shared primitives: `lanes --primitives`' default; a change under one makes a verify a full reshoot. */
+  primitives?: string[];
 }
 
 /** One axis of the polish verb: what the pass polishes. */
