@@ -72,7 +72,7 @@ Sweep the diff before writing `Blockers & risks` (same irreversibles lens as
 | **Config & infra** | compose, nginx, Dockerfile, CI, cron | whichever applies; name the file |
 | **Deployed clients** | API/shape change a mobile app or other service consumes | before — the consumer ships first |
 | **Package publish** | Version bump needing `npm publish` / a tag | after |
-| **Merge order** | A PR that must land first, a stacked branch | before, linked — plus the repo's machine-checked marker when it runs one (a `Depends on <owner>/<repo>#<N>` line its dependency-check workflow reads), so CI holds the merge |
+| **Merge order** | A PR that must land first, a stacked branch | before, linked — plus the repo's machine-checked marker when it runs one (a `Depends on <owner>/<repo>#<N>` line its dependency-check workflow reads), so CI holds the merge — only for a repo that check's token can read: an unreadable one (another org) fails it for good, so there the `before:` line alone gates (`merge.md`) |
 | **Manual verification** | Something only a human on prod can confirm | after |
 
 **Deploy-on-merge repos** (merge to default = ship — vitrinka via Deployik, for one):
