@@ -138,6 +138,21 @@ func Analyze(ctx context.Context, paths []string, opts Options) (Result, []runx.
 			ra, d := AnalyzeRunFile(ctx, rf, opts)
 			res.Runs = append(res.Runs, ra)
 			diags = append(diags, d...)
+			if opts.SQL != "" {
+				// --sql over a run dir runs the preset on each record's
+				// Perfetto trace (it once dropped the flag without a word).
+				for _, rec := range rf.Runs {
+					if rec.Failed || rec.Evidence.Pftrace == "" {
+						continue
+					}
+					in, d, err := analyzePerfetto(ctx, rf.path(rec.Evidence.Pftrace), opts)
+					if err != nil {
+						return res, diags, err
+					}
+					res.Inputs = append(res.Inputs, in)
+					diags = append(diags, d...)
+				}
+			}
 			continue
 		}
 		if kind == KindFramestats {
@@ -282,7 +297,35 @@ func analyzeDumps(paths []string, opts Options) (Input, []runx.Diagnostic, error
 	return Input{Path: strings.Join(paths, ","), Kind: KindFramestats, Metrics: m}, dedupeDiags(diags), nil
 }
 
+// recordOfTrace is the run-dir record whose evidence is the Perfetto trace
+// at p, when p sits in a run dir: it names the app and the display period.
+func recordOfTrace(p string) (Evidence, bool) {
+	dir := filepath.Dir(p)
+	if !IsRunDir(dir) {
+		return Evidence{}, false
+	}
+	rf, err := LoadRunDir(dir)
+	if err != nil {
+		return Evidence{}, false
+	}
+	for _, rec := range rf.Runs {
+		if rec.Evidence.Pftrace != "" && filepath.Base(rec.Evidence.Pftrace) == filepath.Base(p) {
+			return rec.Evidence, true
+		}
+	}
+	return Evidence{}, false
+}
+
 func analyzePerfetto(ctx context.Context, p string, opts Options) (Input, []runx.Diagnostic, error) {
+	if opts.Package == "" {
+		// A probe's or a run's trace: its run dir says which app it read.
+		if ev, ok := recordOfTrace(p); ok && ev.Package != "" {
+			opts.Package = ev.Package
+			if opts.VsyncPeriodNs == 0 {
+				opts.VsyncPeriodNs = ev.VsyncPeriodNs
+			}
+		}
+	}
 	if opts.Package == "" {
 		return Input{}, nil, diag(DiagUsage, "a Perfetto trace is read for one app", "perflab analyze "+p+" --package <app id> --json")
 	}

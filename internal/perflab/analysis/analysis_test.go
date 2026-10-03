@@ -548,3 +548,40 @@ func TestIOSRestProbeIsJudgedOnMainThreadWork(t *testing.T) {
 		t.Error("a trace without Time Profiler reads nothing, never 0")
 	}
 }
+
+// A probe's .pftrace sits in a run dir whose perflab.run.json names the
+// app: analyze reads it from there (a 4740 sweep asked for --package with
+// a placeholder fix), and --sql over a run dir runs on each record's trace
+// instead of being dropped. A bare trace elsewhere still needs --package.
+func TestPerfettoTraceInARunDirNamesItsApp(t *testing.T) {
+	dir := t.TempDir()
+	rf := RunFile{Version: RunFileVersion, Provenance: Provenance{Device: "s20", Platform: PlatformAndroid, RefreshHz: 120}}
+	rf.Runs = []RunRecord{{Scenario: "probe-drag-customer-home", Attempt: 1, RecordedAt: time.Date(2026, 10, 3, 1, 38, 0, 0, time.UTC),
+		Evidence: Evidence{Pftrace: "perflab-customer-home-1.pftrace", Package: "app.fixit.client.dev", VsyncPeriodNs: 8333333}}}
+	raw, _ := json.Marshal(rf)
+	if err := os.WriteFile(filepath.Join(dir, RunFileName), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(dir, "perflab-customer-home-1.pftrace")
+	stray := filepath.Join(t.TempDir(), "stray.pftrace")
+	for _, p := range []string{trace, stray} {
+		if err := os.WriteFile(p, []byte("not a trace"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name  string
+		paths []string
+		sql   string
+		want  string
+	}{
+		{"a trace in its run dir reads past the package", []string{trace}, "", framestats.DiagNotATrace},
+		{"--sql over the run dir reaches the trace", []string{dir}, "skia", framestats.DiagNotATrace},
+		{"a stray trace still needs --package", []string{stray}, "", DiagUsage},
+	} {
+		_, _, err := Analyze(context.Background(), c.paths, Options{SQL: c.sql})
+		if code(err) != c.want {
+			t.Errorf("%s: %v, want %s", c.name, err, c.want)
+		}
+	}
+}
