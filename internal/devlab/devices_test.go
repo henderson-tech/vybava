@@ -56,6 +56,30 @@ func TestScanRecordedLab(t *testing.T) {
 	}
 }
 
+// A tokenless scan never runs an in-device read on a leased phone: it may
+// be mid-measurement, and perflab is exempt from the device-leased guard.
+func TestScanLeavesALeasedPhoneAlone(t *testing.T) {
+	tl := newTestLab(t)
+	tl.recordAndroid(t)
+	tl.seed(t, map[string]*Device{"s20": s20Row()})
+	tl.as("session-holder", claudePID)
+	tl.acquire(t, "s20", time.Hour)
+	tl.exec.calls = nil
+	res, err := tl.Scan(context.Background(), ScanOptions{Platform: PlatformAndroid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range tl.exec.calls {
+		if strings.Contains(c, " shell ") {
+			t.Fatalf("scan ran %q on the leased S20", c)
+		}
+	}
+	rows := res.Data.(ScanData).Devices
+	if len(rows) != 1 || !rows[0].Online || rows[0].InLedger != "s20" {
+		t.Fatalf("the leased S20 still lists from adb's own metadata: %+v", rows)
+	}
+}
+
 func TestAmbiguousNamesOnlyOnline(t *testing.T) {
 	rows := []ScanRow{
 		{Name: "Lab - iPhone", UDID: "A", Online: true},

@@ -142,10 +142,21 @@ func (l *Lab) scanAndroid(ctx context.Context) ([]ScanRow, []runx.Diagnostic) {
 	if err != nil {
 		return nil, []runx.Diagnostic{warnRow(DiagDeviceOffline, "Android devices were not scanned: "+err.Error(), "adb devices -l")}
 	}
+	// A leased phone may be mid-measurement: perflab is exempt from the
+	// device-leased guard because it honours leases, so a tokenless scan
+	// reads only adb's host-side listing for it, never an in-device getprop.
+	leased := map[string]bool{}
+	if held, err := l.HeldLeases(); err == nil {
+		for _, h := range held {
+			for _, a := range h.Aliases {
+				leased[strings.ToLower(a)] = true
+			}
+		}
+	}
 	var rows []ScanRow
 	for _, d := range devices {
 		r := ScanRow{Platform: PlatformAndroid, Serial: d.Serial, State: d.State, Model: strings.ReplaceAll(d.Model, "_", "-"), Transport: d.Transport, Paired: d.State != "unauthorized", Online: d.State == "device"}
-		if r.Online {
+		if r.Online && !leased[strings.ToLower(d.Serial)] {
 			if id, err := l.androidIdentity(ctx, d.Serial); err == nil {
 				r.Model, r.OS, r.SDK = orElse(id.Model, r.Model), id.OS, id.SDK
 			}
