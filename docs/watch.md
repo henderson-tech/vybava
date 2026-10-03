@@ -109,9 +109,9 @@ reads `state.json` or judges the socket, so two daemons starting together can ne
 socket file nobody answers on is then replaced; a live one refuses a second
 daemon. SIGTERM stops accepting, lets in-flight probes finish and exits.
 
-`Engine.Every(name, every, fn)` registers periodic work beside the probes (the
-fleet summary, Fleet.app's `snapshot.json` every 15 s and its Codex rows every
-minute); a failed task is logged, never swallowed. A serve task also gets the
+`Engine.Every(name, every, fn)` registers periodic work beside the probes
+(Fleet.app's `snapshot.json` and the fleet summary, one read for both, every
+15 s; its Codex rows every minute); a failed task is logged, never swallowed. A serve task also gets the
 daemon's context to run a follower: the fleet snapshot follows cmux's event
 stream and republishes within a second of a session starting to wait
 (`docs/fleet.md`). A panic inside a probe or a

@@ -28,6 +28,12 @@ Reading them together is what makes the report possible. Thread titles come
 from `~/.codex/session_index.jsonl`; live PIDs and terminals from `ps` and
 `lsof`.
 
+A long-lived caller passes an `Env.Cache`: each rollout's parse is kept
+behind its `internal/transcripts` cursor, so a repeat `Run` reads only the
+bytes appended since (a replaced or truncated file is re-read whole, a read
+that fails part-way is forgotten). Samples are kept from the first window's
+start and filtered per `Run`; a window that starts earlier re-reads the file.
+
 Nothing is written, no network call is made, and no credential is read.
 
 ## The finding that drives the tool

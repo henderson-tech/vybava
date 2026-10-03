@@ -70,9 +70,6 @@ func (rt *runtime) watchCommand(use string) *cobra.Command {
 		pathEnv:    os.Getenv("PATH"),
 		cwd:        os.Getwd,
 		serveTasks: []func(context.Context, *watch.Engine){func(ctx context.Context, e *watch.Engine) {
-			e.Every("fleet-summary", 15*time.Second, func(ctx context.Context) error {
-				return publishFleetSummary(ctx, home)
-			})
 			publisher, cx := fleetPublisher(home)
 			e.Every("fleet-snapshot", 15*time.Second, publisher.Publish)
 			e.Every("fleet-codex", time.Minute, func(ctx context.Context) error {
@@ -86,29 +83,22 @@ func (rt *runtime) watchCommand(use string) *cobra.Command {
 	})
 }
 
-// publishFleetSummary writes the file every session's fleet mod reads, so
-// ~45 sessions never each run `fleet --json` on a timer.
-func publishFleetSummary(ctx context.Context, home string) error {
-	snap, _, err := fleet.Read(ctx, fleet.Env{Home: home, Now: time.Now()})
-	if err != nil {
-		return err
-	}
-	return fleet.WriteSummary(fleet.SummaryPath(home), fleet.Summarize(snap))
-}
-
-// fleetPublisher writes snapshot.json for Fleet.app: Claude rows every 15 s
-// and on every cmux waiting event, Codex rows (a ~10 s lsof read) once a
-// minute — one reader machine-wide instead of one per app window.
+// fleetPublisher writes snapshot.json for Fleet.app and, from the same read,
+// summary.json for every session's fleet mod (so ~45 sessions never each run
+// `fleet --json` on a timer): Claude rows every 15 s and on every cmux
+// waiting event, Codex rows (a ~10 s lsof read) once a minute — one reader
+// machine-wide instead of one per app window.
 func fleetPublisher(home string) (*fleet.Publisher, cmux.Client) {
 	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, name, args...).Output()
 	}
 	cx := cmux.Client{Socket: cmux.SocketPath(os.Getenv, home)}
 	return &fleet.Publisher{
-		Env:       fleet.Env{Home: home, Cmux: cx},
-		Path:      fleet.PublishedPath(home),
-		Clock:     time.Now,
-		ReadCodex: fleet.CodexUsage(home, run),
+		Env:         fleet.Env{Home: home, Cmux: cx},
+		Path:        fleet.PublishedPath(home),
+		SummaryPath: fleet.SummaryPath(home),
+		Clock:       time.Now,
+		ReadCodex:   fleet.CodexUsage(home, run),
 	}, cx
 }
 

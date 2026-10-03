@@ -76,6 +76,33 @@ func TestPublishedShowsWhyNothingIsListedWhenCmuxRefuses(t *testing.T) {
 	}
 }
 
+// The summary rides the snapshot's read; it lists every waiting session,
+// hosted by cmux or not.
+func TestPublishWritesTheSummaryFromTheSameRead(t *testing.T) {
+	f := newFixture(t)
+	f.register(t, 10, "s", "waiting", f.vybava, time.Minute, nil)
+	cx := newFakeCmux()
+	cx.status = cmux.Status{State: cmux.StateDenied, Detail: "cmux closed the socket"}
+	env := f.env(table(claude(10)))
+	env.Cmux = cx
+	dir := t.TempDir()
+	p := &Publisher{Env: env, Path: filepath.Join(dir, "snapshot.json"), SummaryPath: filepath.Join(dir, "summary.json"), Clock: func() time.Time { return now }}
+	if err := p.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p.SummaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary Summary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Waiting) != 1 || summary.Waiting[0].SessionID != "s" || readPublished(t, p.Path).Hidden != 1 {
+		t.Fatalf("summary %+v", summary)
+	}
+}
+
 func TestAWaitingSessionIsPublishedOnTheCmuxEvent(t *testing.T) {
 	f := newFixture(t)
 	f.register(t, 10, "s", "busy", f.vybava, time.Minute, nil)

@@ -109,8 +109,9 @@ open jobs `stopped` so revive stops offering them.
 ## The published summary
 
 `vybava watch serve` publishes `~/.local/state/vybava/fleet/summary.json`
-every 15 s (`FleetSummary`: counts plus the sessions waiting on you, oldest
-first), atomically. Every session's fleet mod reads that one file for its
+from the same read as `snapshot.json` below, so on the same beat
+(`FleetSummary`: counts plus the sessions waiting on you, oldest first),
+atomically. Every session's fleet mod reads that one file for its
 status line instead of running `fleet --json` on a timer — one producer, ~45
 readers, no process spawned per session. Without the daemon the file goes
 stale; a reader shows its `generatedAt` age rather than trusting old counts.
@@ -122,7 +123,9 @@ stale; a reader shows its `generatedAt` age rather than trusting old counts.
 Claude rows every 15 s and within a second of every cmux agent event that
 can change who waits (`Notification`, `Stop`, `UserPromptSubmit`,
 `SessionStart`, `SessionEnd`, `PermissionRequest`; a lost-events gap
-republishes too), Codex rows from a once-a-minute ps/lsof read. One reader
+republishes too), Codex rows from a once-a-minute ps/lsof read whose
+rollout parses persist between reads (`codexusage.Cache`: only appended
+bytes are read, not the whole day of rollouts each minute). One reader
 machine-wide; the app only watches the file. `fleet publish [--codex]`
 writes it once without the daemon.
 
