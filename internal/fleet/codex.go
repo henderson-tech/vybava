@@ -34,10 +34,12 @@ const codexWindow = 24 * time.Hour
 
 // CodexUsage reads live Codex processes through codexusage, the existing
 // reader of ~/.codex rollouts and its ps/lsof enrichment — never a second
-// parser of Codex logs.
+// parser of Codex logs. The reader keeps its rollout parses between calls,
+// so a long-lived caller reads only what Codex appended since.
 func CodexUsage(home string, exec func(ctx context.Context, name string, args ...string) ([]byte, error)) CodexReader {
+	cache := &codexusage.Cache{}
 	return func(ctx context.Context, now time.Time) ([]CodexRow, []string, error) {
-		report, err := codexusage.Run(ctx, codexusage.Env{Home: home, Now: now, Exec: exec},
+		report, err := codexusage.Run(ctx, codexusage.Env{Home: home, Now: now, Exec: exec, Cache: cache},
 			codexusage.Options{Since: now.Add(-codexWindow), IncludeIdle: true})
 		if err != nil {
 			return nil, nil, err

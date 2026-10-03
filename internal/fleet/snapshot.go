@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,9 +71,12 @@ const joinWorkers = 4
 type Publisher struct {
 	// Env is the machine; its Now and Codex fields are ignored (Clock and
 	// RefreshCodex own them).
-	Env   Env
-	Path  string
-	Clock func() time.Time
+	Env  Env
+	Path string
+	// SummaryPath, when set, gets the fleet summary from the same read on
+	// every Publish — one registry read and one ps per tick, not two.
+	SummaryPath string
+	Clock       func() time.Time
 	// ReadCodex reads live Codex rows; nil lists none.
 	ReadCodex CodexReader
 
@@ -108,11 +112,17 @@ func (p *Publisher) RefreshCodex(ctx context.Context) {
 // Build reads the registry, joins every live session to its cmux surface
 // and returns the view; it never writes.
 func (p *Publisher) Build(ctx context.Context) (Published, error) {
+	view, _, err := p.build(ctx)
+	return view, err
+}
+
+// build is Build plus the snapshot it was built from.
+func (p *Publisher) build(ctx context.Context) (Published, Snapshot, error) {
 	env := p.Env
 	env.Now, env.Codex = p.Clock(), nil
 	snap, diags, err := Read(ctx, env)
 	if err != nil {
-		return Published{}, err
+		return Published{}, snap, err
 	}
 	p.mu.Lock()
 	codex := append([]CodexRow(nil), p.codex...)
@@ -142,7 +152,7 @@ func (p *Publisher) Build(ctx context.Context) (Published, error) {
 	if out.Cmux.State != cmux.StateOK && out.Cmux.State != cmux.StateRestricted {
 		out.Hidden = len(live) + len(codex)
 		out.Diagnostics = append(diags, warning(DiagCmuxUnavailable, out.Cmux.Detail))
-		return out, nil
+		return out, snap, nil
 	}
 
 	pids := make([]int, 0, len(live)+len(codex))
@@ -192,7 +202,7 @@ func (p *Publisher) Build(ctx context.Context) (Published, error) {
 		return out.Projects[i].Project < out.Projects[j].Project
 	})
 	out.Diagnostics = append(out.Diagnostics, diags...)
-	return out, nil
+	return out, snap, nil
 }
 
 // join resolves pids to surfaces, a few at a time. A pid no surface hosts
@@ -230,11 +240,15 @@ func (p *Publisher) join(ctx context.Context, cx Cmux, pids []int) map[int]Surfa
 func (p *Publisher) Publish(ctx context.Context) error {
 	p.publish.Lock()
 	defer p.publish.Unlock()
-	view, err := p.Build(ctx)
+	view, snap, err := p.build(ctx)
 	if err != nil {
 		return err
 	}
-	return WritePublished(p.Path, view)
+	var summaryErr error
+	if p.SummaryPath != "" {
+		summaryErr = WriteSummary(p.SummaryPath, Summarize(snap))
+	}
+	return errors.Join(summaryErr, WritePublished(p.Path, view))
 }
 
 // Wakes reports whether a cmux event can change who waits: a turn starting

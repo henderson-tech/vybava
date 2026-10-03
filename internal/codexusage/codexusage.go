@@ -227,6 +227,9 @@ type Env struct {
 	// fails, degrades the report to file evidence only — never an error, since
 	// historical usage is answerable without any live process.
 	Exec func(ctx context.Context, name string, args ...string) ([]byte, error)
+	// Cache, when set, keeps each rollout's parse between Runs so a repeat
+	// Run reads only appended bytes. Nil reads every rollout whole.
+	Cache *Cache
 }
 
 // Options bounds the report.

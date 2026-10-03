@@ -195,6 +195,80 @@ func TestOversizedTranscriptLinesDoNotHideLaterCalls(t *testing.T) {
 	}
 }
 
+// A cached Run reads only appended bytes yet must answer what a fresh Run
+// would: the dedupe total carries across reads, a later window drops cached
+// calls, and a replaced file is read anew.
+func TestCachedRunsMatchFreshRuns(t *testing.T) {
+	home := t.TempDir()
+	path := rollout(t, home, "hhhh", "/work/one", "2026-09-09T09:00:00Z",
+		call("2026-09-09T10:00:00Z", 100, 100, 0, "pro", 10, 1789437323))
+	e := env(t, home, nil)
+	e.Cache = &Cache{}
+	run := func(from string) Report {
+		t.Helper()
+		report, err := Run(context.Background(), e, Options{Since: since(t, from)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	if r := run("2026-09-09T09:00:00Z"); r.Calls != 1 {
+		t.Fatalf("first read: calls=%d, want 1", r.Calls)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString(call("2026-09-09T10:05:00Z", 400, 300, 0, "pro", 12, 1789437323) + "\n" +
+		call("2026-09-09T10:06:00Z", 400, 300, 0, "pro", 13, 1789437323) + "\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := run("2026-09-09T09:00:00Z"); r.Calls != 2 || r.Usage.Input != 400 {
+		t.Fatalf("after append: calls=%d input=%d, want 2 calls of 400 (the repeat must not bill)", r.Calls, r.Usage.Input)
+	}
+	if r := run("2026-09-09T10:02:00Z"); r.Calls != 1 || r.Usage.Input != 300 {
+		t.Fatalf("later window: calls=%d input=%d, want 1 call of 300", r.Calls, r.Usage.Input)
+	}
+	rollout(t, home, "hhhh", "/work/two", "2026-09-09T09:00:00Z",
+		call("2026-09-09T11:00:00Z", 50, 50, 0, "pro", 14, 1789437323))
+	if r := run("2026-09-09T09:00:00Z"); r.Calls != 1 || r.Usage.Input != 50 || r.Sessions[0].CWD != "/work/two" {
+		t.Fatalf("replaced file: calls=%d input=%d sessions=%+v, want the new file's one call", r.Calls, r.Usage.Input, r.Sessions)
+	}
+	// Replaced again by a file whose first record is still being written:
+	// Scan hands over no line at all, yet the old calls must not survive.
+	if err := os.WriteFile(path, []byte(`{"timestamp":"2026-09-09T12:00:00Z","type":"sess`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("2026-09-09T09:00:00Z"); r.Calls != 0 {
+		t.Fatalf("unfinished replacement: calls=%d, want 0", r.Calls)
+	}
+}
+
+// session_meta carries the base instructions and can outgrow any record
+// limit; the thread must still be identified.
+func TestOversizedSessionMetaStillIdentifiesTheThread(t *testing.T) {
+	home := t.TempDir()
+	path := rollout(t, home, "iiii", "/work/one", "2026-09-09T09:00:00Z",
+		call("2026-09-09T10:00:00Z", 100, 100, 0, "pro", 10, 1789437323))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := strings.Replace(string(raw), "padding ", strings.Repeat("padding ", 2_200_000), 1)
+	if err := os.WriteFile(path, []byte(padded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Run(context.Background(), env(t, home, nil), Options{Since: since(t, "2026-09-09T00:00:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Sessions) != 1 || report.Sessions[0].ID != "iiii" || report.Sessions[0].CWD != "/work/one" || report.Calls != 1 {
+		t.Fatalf("sessions=%+v calls=%d, want thread iiii in /work/one with its call", report.Sessions, report.Calls)
+	}
+}
+
 // Process inspection is an enrichment. When it fails the spend numbers still
 // have to land, because a burning limit is answerable from files alone.
 func TestBrokenProcessInspectionStillReportsSpend(t *testing.T) {
