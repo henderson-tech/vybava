@@ -69,18 +69,92 @@ var (
 		HazardClock:           regexp.MustCompile(`\buseClock\(`),
 		HazardClippedSubviews: regexp.MustCompile(`\bremoveClippedSubviews\b`),
 	}
-	textureRe   = regexp.MustCompile(`\brenderToHardwareTextureAndroid\b`)
-	useQueries  = regexp.MustCompile(`\buseQueries\(`)
-	intlRe      = regexp.MustCompile(`^(\s+).*\bnew Intl\.[A-Z]`)
-	scrollRe    = regexp.MustCompile(`<ScrollView\b`)
-	listRe      = regexp.MustCompile(`\b(FlashList|FlatList|SectionList|LegendList)\b`)
-	routeDirRe  = regexp.MustCompile(`(^|/)app/`)
-	skipDirs    = map[string]bool{"node_modules": true, "ios": true, "android": true, "__tests__": true, "__mocks__": true, "dist": true, "build": true}
-	testFileRes = regexp.MustCompile(`\.(test|spec)\.[jt]sx?$`)
+	// clippedOffRe is the compliant setting: culling written off is no site.
+	clippedOffRe = regexp.MustCompile(`^\s*(=\s*\{\s*false\s*\}|:\s*false\b)`)
+	textureRe    = regexp.MustCompile(`\brenderToHardwareTextureAndroid\b`)
+	useQueries   = regexp.MustCompile(`\buseQueries\(`)
+	intlRe       = regexp.MustCompile(`^(\s+).*\bnew Intl\.[A-Z]`)
+	scrollRe     = regexp.MustCompile(`<ScrollView\b`)
+	listRe       = regexp.MustCompile(`\b(FlashList|FlatList|SectionList|LegendList)\b`)
+	routeDirRe   = regexp.MustCompile(`(^|/)app/`)
+	skipDirs     = map[string]bool{"node_modules": true, "ios": true, "android": true, "__tests__": true, "__mocks__": true, "dist": true, "build": true}
+	testFileRes  = regexp.MustCompile(`\.(test|spec)\.[jt]sx?$`)
 )
 
-// scanHazards scans one file's text.
+// blankComments returns text with every // and /* */ comment replaced by
+// spaces (newlines kept), so offsets and line numbers hold: a doc comment
+// that names withRepeat(…, -1) or an ambient gate is neither a site nor a
+// gate. String and template literals are skipped ('https://…' is no
+// comment); a quote state ends at a newline, so JSX text such as Don't
+// costs at most the rest of its line.
+func blankComments(text string) string {
+	const (
+		code = iota
+		lineComment
+		blockComment
+		single
+		double
+		template
+	)
+	b := []byte(text)
+	state := code
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		next := byte(0)
+		if i+1 < len(b) {
+			next = b[i+1]
+		}
+		switch state {
+		case code:
+			switch {
+			case c == '/' && next == '/':
+				state = lineComment
+				b[i] = ' '
+			case c == '/' && next == '*':
+				state = blockComment
+				b[i], b[i+1] = ' ', ' '
+				i++
+			case c == '\'':
+				state = single
+			case c == '"':
+				state = double
+			case c == '`':
+				state = template
+			}
+		case lineComment:
+			if c == '\n' {
+				state = code
+			} else {
+				b[i] = ' '
+			}
+		case blockComment:
+			if c == '*' && next == '/' {
+				b[i], b[i+1] = ' ', ' '
+				i++
+				state = code
+			} else if c != '\n' {
+				b[i] = ' '
+			}
+		case single, double:
+			if c == '\\' && next != '\n' {
+				i++
+			} else if (state == single && c == '\'') || (state == double && c == '"') || c == '\n' {
+				state = code
+			}
+		case template:
+			if c == '\\' {
+				i++
+			} else if c == '`' {
+				state = code
+			}
+		}
+	}
+	return string(b)
+}
+
+// scanHazards scans one file's text; comments never count (blankComments).
 func scanHazards(rel, text string, gates, hints []string) []HazardRow {
+	text = blankComments(text)
 	var rows []HazardRow
 	lineOf := func(off int) int { return strings.Count(text[:off], "\n") + 1 }
 	gated := false
@@ -117,6 +191,9 @@ func scanHazards(rel, text string, gates, hints []string) []HazardRow {
 	}
 	for _, rule := range []string{HazardFrameCallback, HazardPathValue, HazardClock, HazardClippedSubviews} {
 		for _, m := range simpleRes[rule].FindAllStringIndex(text, -1) {
+			if rule == HazardClippedSubviews && clippedOffRe.MatchString(text[m[1]:]) {
+				continue
+			}
 			add(rule, m[0])
 		}
 	}

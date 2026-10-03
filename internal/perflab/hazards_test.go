@@ -46,6 +46,17 @@ export function Price({ cents }) {
   const g = useMemo(() => new Intl.NumberFormat('cs-CZ'), []);
   return <Text>{f.format(cents / 100)}</Text>;
 }`,
+	// FixIt's use-reduce-motion.ts and ambient-motion-core.ts doc comments
+	// read as loops; a '//' inside a string is no comment.
+	"components/Doc.ts": `/**
+ * Every withRepeat(…, -1) loop gates on useAmbientMotion; never useFrameCallback(
+ * or removeClippedSubviews on scroll content.
+ */
+// const p = usePathValue(() => {});
+export const site = 'https://fixit.app'; export const kept = withRepeat(t, -1);`,
+	// The sticky-tabs scrollers write culling off, as rule 5 asks.
+	"components/Sticky.tsx": `export const S = () => <ScrollView removeClippedSubviews={false} />;
+const props = { removeClippedSubviews: false };`,
 	"components/__tests__/Pulse.test.tsx": `withRepeat(x, -1)`,
 	"node_modules/lib/index.ts":           `withRepeat(x, -1)`,
 }
@@ -92,6 +103,7 @@ func TestHazards(t *testing.T) {
 		{"app/(worker)/hub.tsx", HazardScrollViewRoute, nil},
 		{"hooks/useMany.ts", HazardQueriesNoComb, nil},
 		{"components/Price.tsx", HazardIntlInRender, nil},
+		{"components/Doc.ts", HazardInfiniteRepeat, ptrBool(false)},
 	}
 	for _, w := range want {
 		r, ok := got[key{w.file, w.rule}]
@@ -104,7 +116,10 @@ func TestHazards(t *testing.T) {
 		}
 	}
 	if len(rows) != len(want) {
-		t.Errorf("%d rows, want %d (one Kept layer, the FlashList route, the combined query, the memoised and module Intl and the test/node_modules files are not sites): %+v", len(rows), len(want), rows)
+		t.Errorf("%d rows, want %d (one Kept layer, the FlashList route, the combined query, the memoised and module Intl, comments, culling written off and the test/node_modules files are not sites): %+v", len(rows), len(want), rows)
+	}
+	if d := got[key{"components/Doc.ts", HazardInfiniteRepeat}]; d.Line != 6 {
+		t.Errorf("the loop after a string holding '//' keeps its line: %d, want 6", d.Line)
 	}
 	if g := got[key{"components/GatedPulse.tsx", HazardInfiniteRepeat}]; len(g.Hints) != 1 || g.Hints[0] != "shown" {
 		t.Errorf("a gated loop lists the visibility hints found: %+v", g.Hints)

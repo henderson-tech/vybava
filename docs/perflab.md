@@ -431,13 +431,15 @@ so the rest and fling budgets get no check and compare gets no sample.
 ## Hazards
 
 A regex sweep of `*.ts`/`*.tsx` (tests, `node_modules`, `ios/`, `android/`
-and `hazards.exclude` left out). Rows `{file, line, rule, gated, hints}`:
+and `hazards.exclude` left out; a comment is never a site or a gate).
+Rows `{file, line, rule, gated, hints}`:
 `infinite-repeat` (`withRepeat(…, -1`), `frame-callback`, `path-value`,
 `clock` (gated when the file names an `ambientGates` hook; `hints` lists
 the `visibilityHint` words found, for a human to check real visibility),
 `hw-texture-collapsable` (`renderToHardwareTextureAndroid` on an element
-without `collapsable`), `remove-clipped-subviews`, `scrollview-route` (a
-route under `app/` scrolling without a list), `queries-without-combine`,
+without `collapsable`), `remove-clipped-subviews` (culling on;
+`={false}` is no site), `scrollview-route` (a route under `app/` scrolling
+without a list), `queries-without-combine`,
 `intl-in-render`. `--write-baseline f` records the per-file counts; `--gate
 --baseline f` fails on a site beyond them (`HAZARD_NEW`).
 
