@@ -178,3 +178,30 @@ func TestCodexTargetsTakeFocusButNoReply(t *testing.T) {
 		t.Fatalf("codex focus = %+v, %v", out, err)
 	}
 }
+
+func TestReplyMeasuresTheCapBeforeTrimmingTheNewline(t *testing.T) {
+	env, cx := actionFixture(t, "waiting", promptScreen)
+	// What the CLI reads from an oversized stdin: one byte past the cap.
+	text := strings.Repeat("a", MaxReplyBytes) + "\n"
+	_, err := SendReply(context.Background(), env, Target{SessionID: "s-wait"}, Reply{Text: text})
+	if diagCode(err) != DiagReplyInvalid || len(cx.pastes) != 0 {
+		t.Fatalf("err %v, pastes %d: a text cut at the cap must be refused, never sent", err, len(cx.pastes))
+	}
+}
+
+func TestActionsRefuseASessionTheyCannotProveAlive(t *testing.T) {
+	env, cx := actionFixture(t, "waiting", promptScreen)
+	env.Processes = func(context.Context) (plugingc.ProcessTable, error) { return nil, errors.New("ps failed") }
+	_, err := Focus(context.Background(), env, Target{SessionID: "s-wait"})
+	if diagCode(err) != DiagLivenessUnavailable || len(cx.focused) != 0 {
+		t.Fatalf("err %v: an unreadable process table is not a dead session", err)
+	}
+}
+
+func TestDialogTabsAreRedactedToo(t *testing.T) {
+	token := "ghp_" + strings.Repeat("A1b2C3d4E5", 4)[:36]
+	d := (&Dialog{Tabs: []DialogTab{{Label: "use " + token}}}).redacted()
+	if strings.Contains(d.Tabs[0].Label, token) {
+		t.Fatalf("tab label %q leaks the token", d.Tabs[0].Label)
+	}
+}

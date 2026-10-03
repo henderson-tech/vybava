@@ -112,6 +112,9 @@ func (env Env) locate(ctx context.Context, t Target) (located, error) {
 		}
 		view, _ := env.processView(ctx)
 		liveness := view.classify(rec.PID, rec.ProcStart, rec.PIDDomain, env.goos(), env.Now.Location())
+		if liveness == LivenessUnknown {
+			return found, actionError(DiagLivenessUnavailable, fmt.Sprintf("cannot prove session %s alive (pid %d): the process table is unreadable or the record is from another OS", t.SessionID, rec.PID), "")
+		}
 		if liveness != LivenessAlive {
 			return found, actionError(DiagSessionGone, fmt.Sprintf("session %s is %s (pid %d)", t.SessionID, liveness, rec.PID), "fleet revive")
 		}
@@ -210,8 +213,10 @@ func SendReply(ctx context.Context, env Env, t Target, reply Reply) (ReplyResult
 		return ReplyResult{}, actionError(DiagReplyInvalid, "nothing to send: give --option <key> --expect <fingerprint>, or text on stdin", "")
 	case reply.Option != "" && text != "":
 		return ReplyResult{}, actionError(DiagReplyInvalid, "an option and text together: a dialog takes a key, a plain wait takes text", "")
-	case len(text) > MaxReplyBytes:
-		return ReplyResult{}, actionError(DiagReplyInvalid, fmt.Sprintf("text is %d bytes, over %d", len(text), MaxReplyBytes), "")
+	case len(reply.Text) > MaxReplyBytes:
+		// Measured before the newline is trimmed: the CLI reads one byte past
+		// the cap, and that byte must never be what makes a longer text fit.
+		return ReplyResult{}, actionError(DiagReplyInvalid, fmt.Sprintf("text is over %d bytes", MaxReplyBytes), "")
 	case reply.Option != "" && reply.Expect == "":
 		return ReplyResult{}, actionError(DiagReplyInvalid, "--option needs --expect <fingerprint> of the dialog it answers", "fleet dialog --session "+sessionID)
 	}
@@ -305,6 +310,11 @@ func (d *Dialog) redacted() *Dialog {
 	out.Title, _ = redact(d.Title)
 	out.Question, _ = redact(d.Question)
 	out.Detail, _ = redact(d.Detail)
+	out.Tabs = make([]DialogTab, len(d.Tabs))
+	for i, tab := range d.Tabs {
+		tab.Label, _ = redact(tab.Label)
+		out.Tabs[i] = tab
+	}
 	out.Options = make([]DialogOption, len(d.Options))
 	for i, o := range d.Options {
 		o.Label, _ = redact(o.Label)

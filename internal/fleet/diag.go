@@ -8,7 +8,7 @@ const (
 	DiagRegistryFileSkipped = "REGISTRY_FILE_SKIPPED"
 	// DiagRegistryShapeUnknown: no registry file has the expected shape (error, exit 2).
 	DiagRegistryShapeUnknown = "REGISTRY_SHAPE_UNKNOWN"
-	// DiagLivenessUnavailable: the process table could not be read, nothing is judged dead (warning).
+	// DiagLivenessUnavailable: the process table could not be read, nothing is judged dead (warning on reads; an action refuses — error).
 	DiagLivenessUnavailable = "LIVENESS_UNAVAILABLE"
 	// DiagCodexUnavailable: no Codex rows could be read (warning).
 	DiagCodexUnavailable = "CODEX_UNAVAILABLE"

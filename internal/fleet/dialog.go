@@ -146,7 +146,16 @@ func ParseDialog(screen string) *Dialog {
 	}
 
 	// Above the options: the question and what frames it.
-	above := nonBlankAbove(lines, top, frameLines)
+	// The frame starts at the dialog's top rule (the ╌ rules are inside it);
+	// without one on screen, at most frameLines above the options.
+	frameTop := max(0, top-frameLines)
+	for j := top - 1; j >= 0; j-- {
+		if t := strings.TrimSpace(lines[j]); isRule(t) && !strings.HasPrefix(t, "╌") {
+			frameTop = j
+			break
+		}
+	}
+	above := nonBlankAbove(lines[frameTop:], top-frameTop, top-frameTop)
 	switch {
 	case len(above) > 0 && strings.HasPrefix(above[0], "│"):
 		dialog.Kind = DialogQuestion
@@ -185,7 +194,7 @@ func ParseDialog(screen string) *Dialog {
 	default:
 		return nil
 	}
-	dialog.Fingerprint = dialog.fingerprint()
+	dialog.Fingerprint = fingerprint(dialog.Kind, lines[frameTop:footer+1])
 	return dialog
 }
 
@@ -214,14 +223,14 @@ func AtPrompt(screen string) bool {
 	return false
 }
 
-func (d *Dialog) fingerprint() string {
+// fingerprint hashes every line of the dialog's frame as the screen shows
+// it, so no line the human could read escapes it — a long command included.
+func fingerprint(kind DialogKind, frame []string) string {
 	h := sha256.New()
-	for _, part := range []string{string(d.Kind), d.Title, d.Question, d.Detail} {
-		h.Write([]byte(part))
+	h.Write([]byte(kind))
+	for _, line := range frame {
 		h.Write([]byte{0})
-	}
-	for _, o := range d.Options {
-		h.Write([]byte(o.Key + "\x00" + o.Label + "\x00" + o.Description + "\x00"))
+		h.Write([]byte(line))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
@@ -256,8 +265,8 @@ func parseTabs(line string) []DialogTab {
 	return tabs
 }
 
-// frameLines bounds how far above its options a dialog's question, title and
-// detail are looked for; past it is the transcript.
+// frameLines bounds how far above its options a dialog without a top rule on
+// screen is read; past it is the transcript. A dialog with one is read whole.
 const frameLines = 16
 
 // nonBlankAbove returns up to max trimmed non-blank lines above index i,

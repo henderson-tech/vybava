@@ -304,3 +304,14 @@ func TestCheckTellsABusyCmuxFromARefusingOne(t *testing.T) {
 		t.Fatalf("a slow reply = %+v, want unreachable (busy), never denied", s)
 	}
 }
+
+func TestFollowBacksOffAStreamThatEndsUnheard(t *testing.T) {
+	// Acks, then closes at once — forever.
+	f := newFake(t, func(fakeCall, int) []string { return []string{`{"type":"ack","boot_id":"A","resume":{"gap":false}}`} })
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = f.client().Follow(ctx, nil, func(Event) {}, func(string) {})
+	if n := f.count("events.stream"); n > 2 {
+		t.Fatalf("%d subscriptions in 1.5 s: a stream that delivers nothing must back off", n)
+	}
+}

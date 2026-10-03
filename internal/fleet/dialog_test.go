@@ -96,3 +96,16 @@ func TestAtPromptAcceptsOnlyTheConversationsOwnInputBox(t *testing.T) {
 		t.Fatal("a dialog is not a prompt")
 	}
 }
+
+func TestDialogFingerprintCoversALongCommandWhole(t *testing.T) {
+	long := strings.Repeat(" echo step\n", 30)
+	screen := strings.Replace(screenFixture(t, "permission-bash.txt"), "\n touch /tmp/fleet-5092/scratch/x.txt && echo done\n╌", "\n rm -rf /tmp/a\n"+long+"╌", 1)
+	edited := strings.Replace(screen, " rm -rf /tmp/a\n", " rm -rf /tmp/b\n", 1)
+	a, b := ParseDialog(screen), ParseDialog(edited)
+	if a == nil || b == nil || a.Fingerprint == b.Fingerprint {
+		t.Fatalf("an edit 30 lines above the question must change the fingerprint (%v %v)", a, b)
+	}
+	if !strings.Contains(a.Detail, "rm -rf /tmp/a") {
+		t.Fatalf("detail cut the command's first line: %q", a.Detail[:60])
+	}
+}

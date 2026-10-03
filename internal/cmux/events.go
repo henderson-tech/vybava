@@ -140,7 +140,6 @@ func (c Client) Follow(ctx context.Context, categories []string, handle func(Eve
 			backoff = min(backoff*2, 30*time.Second)
 			continue
 		}
-		backoff = time.Second
 		switch {
 		case boot != "" && stream.Ack.BootID != boot:
 			last = 0
@@ -150,11 +149,13 @@ func (c Client) Follow(ctx context.Context, categories []string, handle func(Eve
 		}
 		boot = stream.Ack.BootID
 		stop := context.AfterFunc(ctx, func() { stream.Close() })
+		delivered := false
 		for {
 			event, err := stream.Next()
 			if err != nil {
 				break
 			}
+			delivered = true
 			if event.Seq > last {
 				last = event.Seq
 			}
@@ -162,6 +163,17 @@ func (c Client) Follow(ctx context.Context, categories []string, handle func(Eve
 		}
 		stop()
 		stream.Close()
+		// A stream that ends before delivering anything (acked, then closed or
+		// sent a frame this client cannot read) backs off like a failed
+		// connect, or it would reconnect in a tight loop.
+		if delivered {
+			backoff = time.Second
+			continue
+		}
+		if !c.wait(ctx, backoff) {
+			break
+		}
+		backoff = min(backoff*2, 30*time.Second)
 	}
 	return ctx.Err()
 }
