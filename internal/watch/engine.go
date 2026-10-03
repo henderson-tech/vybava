@@ -458,6 +458,12 @@ func (e *Engine) apply(t *target, p Probe, obs Observation, err error) {
 	if e.targets[t.key] != t {
 		return // every subscriber left while the probe ran
 	}
+	if errors.Is(err, ErrUnsettled) {
+		// The source is mid-computation: the last reading stands and is
+		// asked again next interval — no change, no backoff, no event.
+		t.nextAt = now.Add(p.Interval())
+		return
+	}
 	if err != nil {
 		t.failures++
 		factor := min(1<<min(t.failures, 3), maxBackoff)

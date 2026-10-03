@@ -40,6 +40,17 @@ func precheck(checks string, ciOK, botOK bool, failed, pending, state string) Ve
 	}
 }
 
+func TestPRProbeCallsGitHubsMergeabilityRecomputeUnsettled(t *testing.T) {
+	p := PRProbe{Precheck: precheck("SUCCESS", true, true, `"mergeable-unknown"`, ``, "OPEN")}
+	if _, err := p.Observe(context.Background(), "henderson-tech/vybava#155", "/w/vybava"); !errors.Is(err, ErrUnsettled) {
+		t.Fatalf("an open PR whose mergeability GitHub is computing answered %v", err)
+	}
+	p = PRProbe{Precheck: precheck("SUCCESS", true, true, `"mergeable-unknown"`, ``, "MERGED")}
+	if obs, err := p.Observe(context.Background(), "henderson-tech/vybava#155", "/w/vybava"); err != nil || obs.Fields["state"] != "MERGED" {
+		t.Fatalf("a merged PR was held back by its mergeability: %v %+v", err, obs.Fields)
+	}
+}
+
 func TestPRProbeReadsGitkitMergePrecheck(t *testing.T) {
 	ctx := context.Background()
 	p := PRProbe{Precheck: precheck("PENDING", false, false, `"clean","ci","botReview"`, `"eve-bot-lovinka[bot]"`, "OPEN")}

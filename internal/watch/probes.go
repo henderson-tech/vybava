@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -203,6 +204,13 @@ func (p PRProbe) Observe(ctx context.Context, ref, dir string) (Observation, err
 	}
 	if got := pc.Owner + "/" + pc.Repo; got != m[1] {
 		return Observation{}, fmt.Errorf("%s is a checkout of %s, not %s", dir, got, m[1])
+	}
+	var state string
+	_ = json.Unmarshal(pc.Raw.State, &state)
+	if state == "OPEN" && slices.Contains(pc.Gates.Failed, "mergeable-unknown") {
+		// Every push to the base makes GitHub recompute this for a moment;
+		// it is not a change of the PR.
+		return Observation{}, fmt.Errorf("%w: GitHub is still computing whether %s merges", ErrUnsettled, ref)
 	}
 	return prObservation(pc), nil
 }

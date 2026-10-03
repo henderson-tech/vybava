@@ -84,6 +84,11 @@ dropped.
 - **Backoff** — a failed probe waits 2, 4, then 8 intervals (capped at 8); a
   rate-limit-looking error (`rate limit`, 403, 429) jumps straight to 8. One
   good reading resets it. Every failure is logged to the daemon's log.
+- **Unsettled readings** — a probe answers `ErrUnsettled` while its source is
+  mid-computation: an open PR whose mergeability GitHub is recomputing after a
+  push to the base. The last reading stands and is asked again next interval —
+  no change event, no backoff, no failure count — so every merge to `main`
+  does not toast each session watching a PR.
 - **GitHub budget** — a token bucket shared by every `pr` target: 300 units
   at once, refilled at 600 per hour (`serve --gh-burst`, `--gh-per-hour`). A
   PR probe costs 5 (merge-precheck spends a repo view, a pr view and one

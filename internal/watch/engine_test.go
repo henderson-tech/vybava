@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -324,6 +325,34 @@ func TestAddMeetsAtOnceFromAFreshReading(t *testing.T) {
 	}
 	if subs := e.List("b").Subscriptions; len(subs) != 0 {
 		t.Fatalf("met subscription kept: %+v", subs)
+	}
+}
+
+func TestAnUnsettledReadingIsNeitherAChangeNorAFailure(t *testing.T) {
+	c := newClock()
+	readings := []error{nil, fmt.Errorf("%w: computing", ErrUnsettled), nil}
+	f := newFake(func(_ string, call int) (Observation, error) {
+		if err := readings[min(call-1, len(readings)-1)]; err != nil {
+			return Observation{}, err
+		}
+		return status("open"), nil
+	})
+	e, _ := NewEngine([]Probe{f}, Options{Now: c.now})
+	if _, err := e.Add(context.Background(), AddRequest{Session: "s", Target: "fake:x", Until: "changed"}); err != nil {
+		t.Fatal(err)
+	}
+	for range readings {
+		tick(e)
+		c.advance(time.Minute)
+	}
+	if f.count("x") != len(readings) {
+		t.Fatalf("an unsettled reading changed the cadence: %d probes", f.count("x"))
+	}
+	if evs := drain(t, e, "s"); len(evs) != 0 {
+		t.Fatalf("open → unsettled → open queued %v", kinds(evs))
+	}
+	if l := e.List("s"); l.Targets[0].Failures != 0 {
+		t.Fatalf("an unsettled reading counted as a failure: %+v", l.Targets[0])
 	}
 }
 

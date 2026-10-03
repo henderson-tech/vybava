@@ -35,6 +35,11 @@ import (
 // ErrDaemonDown is a client's answer when no daemon listens on the socket.
 var ErrDaemonDown = errors.New("vybava watch is not running")
 
+// ErrUnsettled is a probe's answer while its source is mid-computation
+// (GitHub's mergeability right after a push to the base): the engine keeps
+// the last reading and asks again next interval.
+var ErrUnsettled = errors.New("reading not settled yet")
+
 // Listen opens the socket: the state dir 0700, the socket 0600. The daemon
 // lock is taken first and held until the listener closes, so only one daemon
 // ever judges the socket; a socket file nobody answers on is then a stale one
