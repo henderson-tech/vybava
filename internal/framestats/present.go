@@ -392,7 +392,10 @@ func presentTimes[T any](items []T, at func(T) int64) []float64 {
 
 // restReading: the frames presented after the first gap longer than
 // RestGapMs (the opening run settled), and the longest run of presents
-// without such a gap, first to last present.
+// without such a gap, first to last present. A trace that never rests (one
+// run of two or more presents, no gap) counts every frame: the probe's
+// lead-in already let the opening settle, and reading 0 there made a
+// screen drawing for all 20 s look better than one resting after 3 s.
 func restReading(times []float64) (int, float64) {
 	if len(times) == 0 {
 		return 0, 0
@@ -411,6 +414,9 @@ func restReading(times []float64) (int, float64) {
 		}
 	}
 	longest = math.Max(longest, times[len(times)-1]-runStart)
+	if !settled && len(times) > 1 {
+		restFrames = len(times)
+	}
 	return restFrames, round1(longest)
 }
 

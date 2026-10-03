@@ -218,3 +218,32 @@ func TestReadPresentOfAScreenAtRest(t *testing.T) {
 		}
 	}
 }
+
+// FixIt's customer home with a live search (2026-10-03): the comet drew
+// for all 20 s, one run with no rest gap, and the fix rests after one 2.9 s
+// run then ticks the countdown once a second. A trace that never rests
+// counts every frame, so the fix reads fewer rest frames, not more.
+func TestRestReadingOfATraceThatNeverRests(t *testing.T) {
+	steady := func(n int, gap, from float64) []float64 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = from + float64(i)*gap
+		}
+		return out
+	}
+	ticks := append(steady(348, 8.333, 0), steady(15, 1000, 3900)...)
+	for _, c := range []struct {
+		name   string
+		times  []float64
+		frames int
+	}{
+		{"loops all trace", steady(2396, 8.333, 0), 2396},
+		{"one run then a 1 Hz countdown", ticks, 15},
+		{"a lone present", []float64{40}, 0},
+		{"nothing", nil, 0},
+	} {
+		if got, _ := restReading(c.times); got != c.frames {
+			t.Errorf("%s: %d rest frames, want %d", c.name, got, c.frames)
+		}
+	}
+}
