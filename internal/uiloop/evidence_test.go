@@ -704,4 +704,16 @@ func TestCheckpointFactsHoldOnAwkwardHistories(t *testing.T) {
 			t.Fatalf("one broken commit hid the others: %+v", facts)
 		}
 	})
+	t.Run("an unreadable commit in HEAD's history", func(t *testing.T) {
+		tool := newTool(t, testConfig())
+		first := evidenceRepo(t, tool)
+		second := commitFile(t, tool, 0, "app.ts", "changed\n")
+		third := commitFile(t, tool, 0, "tests/ui-loop/screens/tasks.ts", "recipe v1\n")
+		if err := os.Remove(filepath.Join(tool.Root, ".git", "objects", first[:2], first[2:])); err != nil {
+			t.Fatal(err)
+		}
+		if facts := factsPerCommit(t, tool, "a hole below the checkpoints", []string{second, third}); facts.ancestor[second] {
+			t.Fatalf("admitted a commit merge-base cannot read past: %+v", facts)
+		}
+	})
 }

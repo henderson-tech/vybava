@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -134,13 +133,14 @@ func (t *Tool) checkpointFacts(basis string, cps []Checkpoint) (commitFacts, err
 }
 
 // ancestorsOfHead is `git merge-base --is-ancestor <c> HEAD` for each of
-// commits: HEAD's object name and each ancestor's commit object by its given
-// name. cat-file drops the names this clone lacks (never ancestors), so one
-// gc'd commit cannot fail rev-list for the rest, which then lists what they
-// reach that HEAD does not. That list holds every non-ancestor but can hold
-// an ancestor too (rev-list stops walking early past skewed commit dates), so
-// merge-base confirms each commit it lists, and answers each commit alone
-// when cat-file or rev-list fails. Usually it lists none: two git calls.
+// commits in two git calls: HEAD's object name and each ancestor's commit
+// object by its given name. cat-file peels the names (one this clone lacks is
+// no ancestor), and `rev-list <HEAD>` walks HEAD's whole history, whose
+// members are exactly the ancestors. The whole walk is the point: `rev-list
+// ^HEAD` stops early past skewed commit dates and skips an unreadable commit
+// in HEAD's history, where merge-base fails. This walk fails on one instead,
+// and so does cat-file on a broken store: merge-base then answers each commit
+// alone. It costs O(history): 70 ms for 16k commits.
 func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[string]string, err error) {
 	objects = map[string]string{}
 	mergeBase := func(c, object string) error {
@@ -172,27 +172,24 @@ func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[strin
 		return "", objects, nil
 	}
 	head = object(lines[0])
-	revs := []string{"^" + head}
-	for i, c := range commits {
-		if o := object(lines[i+1]); o != "" {
-			objects[c] = o
-			revs = append(revs, o)
-		}
-	}
-	walk, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: []string{"git", "rev-list", "--stdin"}, Stdin: strings.NewReader(strings.Join(revs, "\n") + "\n")})
+	walk, err := t.git("rev-list", head)
 	if err != nil {
 		return "", nil, err
 	}
-	outside := map[string]bool{}
+	history := map[string]bool{}
 	for _, line := range strings.Fields(walk.Stdout) {
-		outside[line] = true
+		history[line] = true
 	}
-	for _, c := range slices.Sorted(maps.Keys(objects)) {
-		if o := objects[c]; walk.Code != 0 || outside[o] {
-			delete(objects, c)
+	for i, c := range commits {
+		o := object(lines[i+1])
+		switch {
+		case o == "":
+		case walk.Code != 0:
 			if err := mergeBase(c, o); err != nil {
 				return "", nil, err
 			}
+		case history[o]:
+			objects[c] = o
 		}
 	}
 	return head, objects, nil
