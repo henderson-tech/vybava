@@ -33,6 +33,7 @@ func TestCdIntoTheCacheAndExplicitDirFlagsAreBlocked(t *testing.T) {
 		{name: "cd then install", cmd: "cd " + cacheDir + " && bun install", cwd: "/Users/x/Work/repo"},
 		{name: "subshell cd", cmd: "(cd " + cacheDir + " && npm ci)", cwd: "/Users/x/Work/repo"},
 		{name: "tilde cd", cmd: "cd ~/.claude/plugins/cache/kit/vitrinka/5.3.0 && pnpm install", cwd: "/Users/x/Work/repo"},
+		{name: "glob cd", cmd: "cd ~/.claude/plugins/cache/*/vitrinka/5.3.0 && bun install", cwd: "/Users/x/Work/repo"},
 		{name: "npm --prefix", cmd: "npm install --prefix " + cacheDir, cwd: "/Users/x/Work/repo"},
 		{name: "bun --cwd=", cmd: "bun install --cwd=" + cacheDir, cwd: "/Users/x/Work/repo"},
 		{name: "pnpm --dir", cmd: "pnpm --dir " + cacheDir + " add left-pad", cwd: "/Users/x/Work/repo"},

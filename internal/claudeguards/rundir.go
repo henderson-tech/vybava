@@ -202,14 +202,16 @@ func cdTarget(fields []string) (target string, ok bool) {
 
 // cdMove is dir after a `cd` segment, for the plain running-directory walks
 // (machinecap, plugincache, prodmerge) whose fail-closed direction is "it
-// moved": every cd is taken to have applied. ok is false when fields are not a
-// cd; `cd -` and a target that is not spelled out leave dir as it is.
+// moved": every cd is taken to have applied, and a glob or variable target is
+// resolved as spelled — `cd ~/.claude/plugins/cache/*/x && bun install` must
+// still land under the guarded tree. ok is false when fields are not a cd;
+// `cd -` leaves dir as it is.
 func cdMove(fields []string, dir, home string) (string, bool) {
 	target, ok := cdTarget(fields)
 	if !ok {
 		return dir, false
 	}
-	if target == "-" || !literalPath(target) {
+	if target == "-" {
 		return dir, true
 	}
 	return resolveDir(target, dir, home), true
