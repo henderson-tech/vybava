@@ -300,6 +300,10 @@ func TestPRTargetNamesHeredocPatch(t *testing.T) {
 	if !target.names(touch{cwd: "/tmp", text: text}) {
 		t.Error("a heredoc-fed apply_patch did not name the worktree")
 	}
+	// PR #167 review: only apply_patch's input is a patch.
+	if target.names(touch{cwd: "/tmp", text: "cat <<'EOF' > /tmp/example.txt\n*** Update File: /w/app/.worktrees/fix/a.go\nEOF"}) {
+		t.Error("patch-shaped text written by cat named the worktree")
+	}
 }
 
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
