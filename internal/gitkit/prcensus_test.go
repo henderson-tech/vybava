@@ -266,6 +266,14 @@ func TestPRTargetNamesSkipsFlagValues(t *testing.T) {
 	}
 }
 
+// PR #167 review: ./ is the conventional spelling of a relative path.
+func TestPRTargetNamesDotSlashPath(t *testing.T) {
+	target := prTarget{number: 42, slug: "acme/app", worktree: "/w/app/.worktrees/fix"}
+	if !target.names(touch{cwd: "/w/app", text: "git -C ./.worktrees/fix status"}) {
+		t.Error("git -C ./.worktrees/fix did not name the worktree")
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).

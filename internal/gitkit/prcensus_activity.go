@@ -80,29 +80,6 @@ func within(path, dir string) bool {
 	return dir != "" && (path == dir || strings.HasPrefix(path, dir+"/"))
 }
 
-const nameBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-
-// mentionsDir reports text naming dir as a whole path: the byte after it
-// must not continue a file name (.worktrees/fix never matches fix-2), and
-// the byte before it must not extend the path (../fix never matches
-// ../../fix).
-func mentionsDir(text, dir string) bool {
-	for i := 0; dir != ""; {
-		j := strings.Index(text[i:], dir)
-		if j < 0 {
-			return false
-		}
-		start, end := i+j, i+j+len(dir)
-		before := start == 0 || !strings.ContainsRune(nameBytes+"/", rune(text[start-1]))
-		after := end == len(text) || !strings.ContainsRune(nameBytes, rune(text[end]))
-		if before && after {
-			return true
-		}
-		i = start + 1
-	}
-	return false
-}
-
 // mentionsNumber reports text holding ref (a link ending in a PR number)
 // not followed by another digit, so pull/42 never matches pull/420.
 func mentionsNumber(text, ref string) bool {
@@ -119,18 +96,31 @@ func mentionsNumber(text, ref string) bool {
 	}
 }
 
-// namesWorktree reports a tool call naming the worktree: absolute, relative
-// to the call's directory (a sibling worktree's ../fix included), or
-// ~-relative.
+// pathBreak splits a tool call's text into candidate path tokens: whitespace,
+// quotes, shell operators and the `=` of --flag=value.
+func pathBreak(r rune) bool {
+	return strings.ContainsRune(" \t\r\n\"'`=;&|()<>,", r)
+}
+
+// namesWorktree reports a tool call naming a path inside the worktree. Each
+// token is resolved as the shell would — absolute, ~/, or relative to the
+// call's directory (./x, ../x, .worktrees/x) — and compared as a path, so
+// ../fix-2 and ../../fix never name ../fix. A bare word without a slash is
+// not read as a path.
 func namesWorktree(tc touch, worktree, home string) bool {
-	if mentionsDir(tc.text, worktree) {
-		return true
-	}
-	if home != "" && within(worktree, home) && mentionsDir(tc.text, "~"+strings.TrimPrefix(worktree, home)) {
-		return true
-	}
-	if rel, err := filepath.Rel(tc.cwd, worktree); err == nil && tc.cwd != "" && rel != "." {
-		return mentionsDir(tc.text, rel)
+	for _, tok := range strings.FieldsFunc(tc.text, pathBreak) {
+		switch {
+		case strings.HasPrefix(tok, "~/") && home != "":
+			tok = filepath.Join(home, tok[2:])
+		case filepath.IsAbs(tok):
+		case tc.cwd != "" && (strings.Contains(tok, "/") || tok == ".."):
+			tok = filepath.Join(tc.cwd, tok)
+		default:
+			continue
+		}
+		if within(filepath.Clean(tok), worktree) {
+			return true
+		}
 	}
 	return false
 }
