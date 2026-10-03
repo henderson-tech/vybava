@@ -159,7 +159,8 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 			// only with two or more dirs per side.
 			var side analysis.Side
 			for _, part := range strings.Split(arg, ",") {
-				dir, err := t.resolveRunDir(strings.TrimSpace(part))
+				// The shell expands only the first ~ of a comma-joined side.
+				dir, err := t.resolveRunDir(expandHome(strings.TrimSpace(part)))
 				if err != nil {
 					return Result{}, err
 				}
@@ -303,7 +304,7 @@ func parseScenarioRows(out, fix string) ([]ScenarioRow, error) {
 // warning.
 func (t *Tool) adapterBudgets(ctx context.Context, platform string) (map[string]analysis.Budget, map[string][]analysis.Exemption, []runx.Diagnostic) {
 	budgets, exemptions := map[string]analysis.Budget{}, map[string][]analysis.Exemption{}
-	if t.Config == nil {
+	if t.Config == nil || t.Config.Scenarios == "" {
 		return budgets, exemptions, nil
 	}
 	var diags []runx.Diagnostic
@@ -358,7 +359,20 @@ func (t *Tool) Report(ctx context.Context, dirs []string, o ReportOptions) (Resu
 	for _, dir := range dirs {
 		ra, d, err := t.analyzeRunDir(ctx, dir, opts)
 		if err != nil {
-			return Result{}, err
+			// One unreadable dir (a probe the phone left mid-write) costs its
+			// own rows, never the whole sweep's report.
+			if len(dirs) == 1 {
+				return Result{}, err
+			}
+			de, ok := err.(runx.DiagError)
+			if !ok {
+				return Result{}, err
+			}
+			w := de.Diag
+			w.Severity = "warning"
+			w.Detail = "skipped " + dir + ": " + w.Detail
+			diags = append(diags, w)
+			continue
 		}
 		runs = append(runs, ra)
 		diags = append(diags, d...)

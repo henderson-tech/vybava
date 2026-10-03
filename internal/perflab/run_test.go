@@ -435,6 +435,33 @@ func TestCompareJoinsRunDirsPerSide(t *testing.T) {
 	if !strings.Contains(res.Next[0], a2) || strings.Contains(res.Next[0], ",") {
 		t.Errorf("the report line lists every dir as its own word: %s", res.Next[0])
 	}
+
+	// The shell expands only a side's first ~ (the A16 sweep's
+	// "~/probes-ios/a,~/probes-ios/b" read the second literally).
+	home := filepath.Dir(a2)
+	t.Setenv("HOME", home)
+	tilde := "~/" + filepath.Base(a2)
+	if _, err := tool.Compare(context.Background(), []string{a1 + "," + tilde, b1 + "," + b2}, CompareOptions{}); err != nil {
+		t.Errorf("a ~ after the comma: %v", err)
+	}
+
+	// One dir a phone left without its perflab.run.json costs its own rows
+	// in a sweep's report, never the whole report.
+	broken := t.TempDir()
+	rep, err := tool.Report(context.Background(), []string{a1, broken, b1}, ReportOptions{})
+	if err != nil {
+		t.Fatalf("report with one unreadable dir: %v", err)
+	}
+	skipped := false
+	for _, d := range rep.Diagnostics {
+		skipped = skipped || (d.Severity == "warning" && strings.Contains(d.Detail, "skipped "+broken))
+	}
+	if data := rep.Data.(analysis.ReportData); !skipped || len(data.Rows) == 0 {
+		t.Errorf("report rows %d, diagnostics %+v", len(data.Rows), rep.Diagnostics)
+	}
+	if _, err := tool.Report(context.Background(), []string{broken}, ReportOptions{}); err == nil {
+		t.Error("a lone unreadable dir is still an error")
+	}
 }
 
 // A probe's --out dir keeps its evidence out of git like a run's: the FixIt
