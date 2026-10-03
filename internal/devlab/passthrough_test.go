@@ -27,6 +27,8 @@ func TestShellArgv(t *testing.T) {
 		{name: "pm clear protected", dev: s20, args: []string{"shell", "pm", "clear", "app.fixit.client"}, wantErr: DiagPackageProtected},
 		{name: "quoted pm uninstall protected", dev: s20, args: []string{"shell", "pm uninstall app.fixit.client"}, wantErr: DiagPackageProtected},
 		{name: "adb uninstall protected", dev: s20, args: []string{"uninstall", "app.fixit.client"}, wantErr: DiagPackageProtected},
+		{name: "nested quotes around the protected package", dev: s20, args: []string{"shell", "pm clear 'app.fixit.client'"}, wantErr: DiagPackageProtected},
+		{name: "protected package glued to an operator", dev: s20, args: []string{"shell", "pm clear app.fixit.client;echo done"}, wantErr: DiagPackageProtected},
 		{name: "clear the dev package", dev: s20, args: []string{"shell", "pm", "clear", "app.fixit.client.dev"}, want: "adb -s RF8N21PY1BF shell pm clear app.fixit.client.dev"},
 		{name: "devicectl launch: --device after the verb", dev: ip, args: []string{"device", "process", "launch", "--terminate-existing", "app.fixit.client.dev"}, want: "xcrun devicectl device process launch --device " + iphone11Core + " --terminate-existing app.fixit.client.dev"},
 		{name: "devicectl leaf verb", dev: ip, args: []string{"device", "reboot"}, want: "xcrun devicectl device reboot --device " + iphone11Core},
@@ -74,6 +76,20 @@ func TestShellUnderLease(t *testing.T) {
 	}
 	if d := res.Data.(CommandData); d.Exit != 1 || !hasCode(res.Diagnostics, "error", DiagDeviceCommandFailed) {
 		t.Fatalf("a failing command is data.exit + DEVICE_COMMAND_FAILED: %+v %v", d, codes(res.Diagnostics))
+	}
+	// The fix re-runs the passthrough: the raw `adb -s <serial>` it wraps is
+	// refused by claude-guards on a leased phone.
+	if fix := res.Diagnostics[0].Fix; fix != "perflab device shell s20 --lease "+token+" --json -- shell false" {
+		t.Fatalf("fix %q", fix)
+	}
+	// A streaming command is capped while it streams, not after.
+	tl.exec.outs["adb -s "+s20Serial+" logcat"] = fakeOut{stdout: strings.Repeat("x", maxCapturedStdout+10)}
+	res, err = tl.Shell(ctx, "s20", token, []string{"logcat"}, ShellOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := res.Data.(CommandData); len(d.Stdout) != maxCapturedStdout || !d.StdoutTruncated {
+		t.Fatalf("captured %d bytes, truncated %v", len(d.Stdout), d.StdoutTruncated)
 	}
 }
 
@@ -123,5 +139,16 @@ func TestScreencapAndPull(t *testing.T) {
 	tl.exec.outs["adb -s "+s20Serial+" pull /sdcard/trace.pftrace "+local] = fakeOut{}
 	if _, err := tl.Pull(ctx, "s20", s20Token, PullOptions{Remote: "/sdcard/trace.pftrace", Local: local}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// RealExec's stderr keeps only the tail every diagnostic reads.
+func TestTailBufferKeepsTheTail(t *testing.T) {
+	tb := &tailBuffer{max: 8}
+	for _, chunk := range []string{"abcdef", "ghijkl", "mnopqrstuvwxyz", "0123"} {
+		_, _ = tb.Write([]byte(chunk))
+	}
+	if got := tb.String(); got != "wxyz0123" || len(tb.b) >= 2*tb.max {
+		t.Fatalf("tail %q, kept %d bytes", got, len(tb.b))
 	}
 }

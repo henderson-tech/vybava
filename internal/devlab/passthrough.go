@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/henderson-tech/vybava/internal/runx"
 	"github.com/henderson-tech/vybava/internal/shellword"
@@ -62,7 +63,8 @@ func (l *Lab) Shell(ctx context.Context, handle, token string, args []string, op
 	if err != nil {
 		return Result{}, err
 	}
-	return l.runPassthrough(ctx, h.ID, argv, opts.Out, orDuration(opts.Timeout, DefaultShellTimeout))
+	rerun := fmt.Sprintf("perflab device shell %s --lease %s --json -- %s", h.ID, token, joinWords(args))
+	return l.runPassthrough(ctx, h.ID, argv, opts.Out, rerun, orDuration(opts.Timeout, DefaultShellTimeout))
 }
 
 func orDuration(d, def time.Duration) time.Duration {
@@ -182,9 +184,17 @@ func protectedHit(id string, dev *Device, args []string) error {
 	if len(dev.ProtectedPackages) == 0 {
 		return nil
 	}
+	// adb shell hands its arguments to the device shell, so a package word
+	// may arrive quoted (`"pm clear 'app.fixit.client'"`) or glued to an
+	// operator (`pm clear app.fixit.client;`): split on the operators, then
+	// strip the quotes, before comparing.
 	var words []string
 	for _, a := range args {
-		words = append(words, strings.Fields(a)...)
+		for _, w := range strings.FieldsFunc(a, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune(";&|()<>`", r) }) {
+			if w = strings.Trim(w, `'"\\`); w != "" {
+				words = append(words, w)
+			}
+		}
 	}
 	destructive := false
 	for _, w := range words {
@@ -205,10 +215,18 @@ func protectedHit(id string, dev *Device, args []string) error {
 
 // runPassthrough runs a resolved command, capturing stdout into the
 // envelope or streaming it into out.
-func (l *Lab) runPassthrough(ctx context.Context, id string, argv []string, out string, timeout time.Duration) (Result, error) {
+// rerun is the perflab command a failure names as its fix: the raw adb or
+// devicectl line is refused by claude-guards on a leased device.
+func (l *Lab) runPassthrough(ctx context.Context, id string, argv []string, out, rerun string, timeout time.Duration) (Result, error) {
 	data := CommandData{Device: id, Command: joinWords(argv)}
 	cmd := Cmd{Args: argv, Timeout: timeout}
 	var f *os.File
+	// Captured stdout is capped while it streams (a `logcat` without -d runs
+	// to the timeout): the first MiB is kept, the rest drained and counted.
+	capped := &capBuffer{max: maxCapturedStdout}
+	if out == "" {
+		cmd.Stdout = capped
+	}
 	if out != "" {
 		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 			return Result{}, err
@@ -232,10 +250,7 @@ func (l *Lab) runPassthrough(ctx context.Context, id string, argv []string, out 
 			data.Bytes = fi.Size()
 		}
 	} else {
-		data.Stdout = res.Stdout
-		if len(data.Stdout) > maxCapturedStdout {
-			data.Stdout, data.StdoutTruncated = data.Stdout[:maxCapturedStdout], true
-		}
+		data.Stdout, data.StdoutTruncated = capped.String(), capped.dropped > 0
 	}
 	r := Result{Data: data, Next: []string{}}
 	if data.Out == "" {
@@ -247,10 +262,27 @@ func (l *Lab) runPassthrough(ctx context.Context, id string, argv []string, out 
 		r.Diagnostics = append(r.Diagnostics, warnRow(DiagUsage, "stdout passed 1 MiB and was truncated in the envelope", "re-run with --out <file>"))
 	}
 	if res.Code != 0 {
-		r.Diagnostics = append(r.Diagnostics, errorRow(DiagDeviceCommandFailed, fmt.Sprintf("%s exited %d: %s", data.Command, res.Code, stderrTail(res)), data.Command))
+		r.Diagnostics = append(r.Diagnostics, errorRow(DiagDeviceCommandFailed, fmt.Sprintf("%s exited %d: %s", data.Command, res.Code, stderrTail(res)), rerun))
 	}
 	return r, nil
 }
+
+// capBuffer keeps the first max bytes written and drains the rest, counting
+// it, so a streaming command never grows the buffer without bound.
+type capBuffer struct {
+	max     int
+	b       bytes.Buffer
+	dropped int64
+}
+
+func (c *capBuffer) Write(p []byte) (int, error) {
+	keep := min(len(p), max(c.max-c.b.Len(), 0))
+	c.b.Write(p[:keep])
+	c.dropped += int64(len(p) - keep)
+	return len(p), nil
+}
+
+func (c *capBuffer) String() string { return c.b.String() }
 
 func tail(s string, n int) string {
 	if len(s) <= n {
@@ -307,7 +339,8 @@ func (l *Lab) Screencap(ctx context.Context, handle, token string, opts Screenca
 	if h.Device.Platform == PlatformAndroid {
 		stream = opts.Out
 	}
-	res, err := l.runPassthrough(ctx, h.ID, argv, stream, time.Minute)
+	rerun := fmt.Sprintf("perflab device screencap %s --lease %s --out %s --json", h.ID, token, shellword.Quote(opts.Out))
+	res, err := l.runPassthrough(ctx, h.ID, argv, stream, rerun, time.Minute)
 	if err != nil {
 		return Result{}, err
 	}
@@ -388,7 +421,15 @@ func (l *Lab) Pull(ctx context.Context, handle, token string, opts PullOptions) 
 	if err := os.MkdirAll(filepath.Dir(opts.Local), 0o755); err != nil {
 		return Result{}, err
 	}
-	res, err := l.runPassthrough(ctx, h.ID, argv, "", 10*time.Minute)
+	rerun := fmt.Sprintf("perflab device pull %s --lease %s", h.ID, token)
+	if opts.DomainType != "" {
+		rerun += " --domain-type " + shellword.Quote(opts.DomainType)
+	}
+	if opts.DomainID != "" {
+		rerun += " --domain-id " + shellword.Quote(opts.DomainID)
+	}
+	rerun += " " + shellword.Quote(opts.Remote) + " " + shellword.Quote(opts.Local) + " --json"
+	res, err := l.runPassthrough(ctx, h.ID, argv, "", rerun, 10*time.Minute)
 	if err != nil || hasError(res.Diagnostics) {
 		return res, err
 	}

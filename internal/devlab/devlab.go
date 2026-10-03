@@ -190,13 +190,15 @@ func RealExec(ctx context.Context, c Cmd) (CmdOut, error) {
 	cmd := exec.CommandContext(ctx, c.Args[0], c.Args[1:]...)
 	cmd.Env = scrubbedEnv()
 	ownGroup(cmd)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	// stderr only ever feeds a diagnostic's tail, so a chatty one is bounded.
+	stderr := &tailBuffer{max: stderrKeep}
 	if c.Stdout != nil {
 		cmd.Stdout = c.Stdout
 	} else {
 		cmd.Stdout = &stdout
 	}
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	out := CmdOut{Stdout: stdout.String(), Stderr: stderr.String()}
 	var exitErr *exec.ExitError
@@ -245,4 +247,31 @@ func stderrTail(out CmdOut) string {
 		}
 	}
 	return "exit " + strconv.Itoa(out.Code)
+}
+
+// stderrKeep is how much of a command's stderr RealExec keeps: the last
+// 64 KiB, which every diagnostic tail reads from.
+const stderrKeep = 64 << 10
+
+// tailBuffer keeps the last max bytes written. It trims when it reaches
+// twice max, so the copy is amortised over at least max bytes of input.
+type tailBuffer struct {
+	max int
+	b   []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) >= 2*t.max {
+		t.b = append(t.b[:0:0], t.b[len(t.b)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+// String is the kept tail (at most max bytes).
+func (t *tailBuffer) String() string {
+	if len(t.b) > t.max {
+		return string(t.b[len(t.b)-t.max:])
+	}
+	return string(t.b)
 }
