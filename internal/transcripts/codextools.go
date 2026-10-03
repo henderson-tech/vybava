@@ -34,6 +34,36 @@ func RolloutToolLine(line []byte) bool {
 	return bytes.Contains(line, []byte(`"function_call`)) || bytes.Contains(line, []byte(`"custom_tool_call`))
 }
 
+// RolloutCallLine is RolloutToolLine without the outputs — the bulk of a
+// rollout's tool bytes — for a reader that needs only what a call asked for.
+func RolloutCallLine(line []byte) bool {
+	return bytes.Contains(line, []byte(`"function_call"`)) || bytes.Contains(line, []byte(`"custom_tool_call"`))
+}
+
+// PatchFiles lists the paths an apply_patch body adds, updates, deletes or
+// moves a file to, as written (relative to the directory the patch applies
+// in). Text carrying `*** Begin Patch` is read only between its markers.
+func PatchFiles(patch string) []string {
+	var files []string
+	marked := strings.Contains(patch, "*** Begin Patch")
+	in := !marked
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case marked && strings.HasPrefix(line, "*** Begin Patch"):
+			in = true
+		case marked && strings.HasPrefix(line, "*** End Patch"):
+			in = false
+		case !in:
+		case strings.HasPrefix(line, "*** Update File: "), strings.HasPrefix(line, "*** Add File: "),
+			strings.HasPrefix(line, "*** Delete File: "), strings.HasPrefix(line, "*** Move to: "):
+			if p := strings.TrimSpace(line[strings.IndexByte(line, ':')+1:]); p != "" {
+				files = append(files, p)
+			}
+		}
+	}
+	return files
+}
+
 // OutputText is the text an output item returned into context: a plain
 // string, or the input_text blocks of an array joined.
 func (it ResponseItem) OutputText() string {
@@ -89,7 +119,7 @@ func (it ResponseItem) Commands() (cmds []CodexCommand, patches []string) {
 			}
 		}
 		if cmd == "" && len(args.Command) > 0 {
-			cmd = argvCommand(args.Command)
+			cmd = ArgvCommand(args.Command)
 		}
 		if cmd != "" {
 			cmds = append(cmds, CodexCommand{Cmd: cmd, Workdir: args.Workdir})
@@ -98,9 +128,9 @@ func (it ResponseItem) Commands() (cmds []CodexCommand, patches []string) {
 	return cmds, patches
 }
 
-// argvCommand renders an argv as the command line it runs: the script of a
+// ArgvCommand renders an argv as the command line it runs: the script of a
 // `bash -lc <script>` wrapper, else the words joined.
-func argvCommand(argv []string) string {
+func ArgvCommand(argv []string) string {
 	if n := len(argv); n >= 3 && strings.HasPrefix(argv[n-2], "-") && strings.Contains(argv[n-2], "c") {
 		return argv[n-1]
 	}

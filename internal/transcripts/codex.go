@@ -52,6 +52,22 @@ func (m SessionMeta) Interactive() bool {
 	return source != "" && source != "exec"
 }
 
+// ParentThread is the thread that spawned this one (source
+// subagent.thread_spawn.parent_thread_id); "" for a thread nobody spawned.
+func (m SessionMeta) ParentThread() string {
+	var source struct {
+		Subagent struct {
+			ThreadSpawn struct {
+				ParentThreadID string `json:"parent_thread_id"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	}
+	if json.Unmarshal(m.Source, &source) != nil {
+		return ""
+	}
+	return source.Subagent.ThreadSpawn.ParentThreadID
+}
+
 // EventHeader is the part of an event_msg payload that names what happened.
 type EventHeader struct {
 	Type string `json:"type"`

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,6 +62,9 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "state directory (default ~/.local/share/vybava/tokentime)")
 	root.PersistentFlags().StringVar(&claudeRoot, "claude-root", "", "Claude Code projects directory (default ~/.claude/projects)")
 	root.PersistentFlags().StringVar(&codexDir, "codex-dir", "", "Codex directory holding sessions/ (default ~/.codex)")
+	var sideDirs []string
+	root.PersistentFlags().StringArrayVar(&sideDirs, "side-dir", []string{"~/Exports", "~/Backups"},
+		"a deliverables or backups home: a write there never moves an AI minute's repository (repeatable)")
 
 	session := func(cmd *cobra.Command) *runx.Session {
 		return &runx.Session{Tool: "tokentime", JSON: rt.json, Verb: cmd.Name(), Stdout: rt.stdout, Stderr: rt.stderr}
@@ -108,7 +112,12 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 		if opts.CodexDir == "" {
 			opts.CodexDir = filepath.Join(home, ".codex")
 		}
-		for _, p := range []*string{&state, &opts.ClaudeRoot, &opts.CodexDir} {
+		opts.SideDirs = slices.Clone(sideDirs)
+		ps := []*string{&state, &opts.ClaudeRoot, &opts.CodexDir}
+		for i := range opts.SideDirs {
+			ps = append(ps, &opts.SideDirs[i])
+		}
+		for _, p := range ps {
 			if *p, err = expandHome(*p); err != nil {
 				return "", opts, err
 			}
@@ -355,6 +364,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	project.Flags().StringVar(&projBucket, "bucket", "", "series bucket: hour, day or month (default hour for one day, month past 62 days, else day)")
 
 	var beatsFrom, beatsTo string
+	var beatsBridge int
 	beats := &cobra.Command{
 		Use: "beats", Short: "Minutes you prompted in and minutes agents answered in, per project, across local days (read-only, no index pass)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -368,6 +378,11 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
 					Detail: err.Error(), Fix: "tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --json"}})
 			}
+			if cmd.Flags().Changed("bridge") && (beatsBridge < 1 || beatsBridge > tokentime.BeatsBridgeCap) {
+				return finish(s, nil, nil, nil, runx.DiagError{Diag: runx.Diagnostic{Code: diagBadFlag, Severity: "error",
+					Detail: fmt.Sprintf("--bridge is 1..%d minutes, not %d", tokentime.BeatsBridgeCap, beatsBridge),
+					Fix:    "tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --bridge 30 --json"}})
+			}
 			state, _, err := paths()
 			if err != nil {
 				return finish(s, nil, nil, nil, err)
@@ -378,7 +393,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 				return finish(s, nil, nil, nil, storeErr(err))
 			}
 			defer store.Close()
-			out, err := store.Beats(tokentime.BeatsOptions{Range: rng})
+			out, err := store.Beats(tokentime.BeatsOptions{Range: rng, Bridge: beatsBridge})
 			if err != nil {
 				return finish(s, nil, nil, nil, storeErr(err))
 			}
@@ -391,6 +406,7 @@ func (rt *runtime) tokentimeCommand(use string) *cobra.Command {
 	}
 	beats.Flags().StringVar(&beatsFrom, "from", "", "first local day, YYYY-MM-DD")
 	beats.Flags().StringVar(&beatsTo, "to", "", "last local day, YYYY-MM-DD (included)")
+	beats.Flags().IntVar(&beatsBridge, "bridge", 0, fmt.Sprintf("bridge AI minutes per session: fill each session's gaps of up to N minutes (1..%d) with the root it was in, then union per project; sets aiBridge", tokentime.BeatsBridgeCap))
 
 	var limitsSince int64
 	limits := &cobra.Command{

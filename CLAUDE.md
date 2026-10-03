@@ -104,7 +104,15 @@ in the same transaction as buckets and cursors, and the rollup JSON is a contrac
 with claude-switcheroo (`src/arcade/contract.ts`), the beats JSON with its
 timesheet (`src/timesheet/contract.ts`), the limits JSON with its Arcade
 accounts. Beats (per-minute human/ai presence) and Codex limit points backfill
-through their own backlog reads (`files.beats`, `files.points`) that never charge. Rules: `docs/tokentime.md`.
+through their own backlog reads (`files.beats`, `files.points`) that never charge. AI beats
+follow the repository an agent WROTE in (`focus.go`), not the record cwd; tokens never do,
+and a rule change re-reads history through `files.focus` and swaps only days every charged
+response of which is still on disk. Every AI minute goes through `aiBeat` (a seen copy's
+through `copyBeat`: `file_beats` only), which mirrors it into `file_beats` under the file
+being read (`ix.source`, set only by `readFrom`, which also records the file's session family
+in `file_sessions`): `beats --bridge` bridges each session from it, and an AI minute no file
+claims falls back to per-project bridging.
+Rules: `docs/tokentime.md`.
 
 `internal/readeff` measures agent navigation from the same transcripts,
 stateless: it scans on demand and keeps only counts and paths, never command
@@ -134,6 +142,8 @@ the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md
 the directory a literal `cd … &&` chain or `git -C` provably reaches, fail-closed
 (unproven = the hook cwd); a directory carve-out judges that, never the hook cwd
 alone, and `cdTarget`/`cdMove` are the one `cd` parser — never re-derive either.
+The exported `RunDirs` is the same walk for attribution (tokentime), every literal
+cd taken as applied (`cd x; make` runs in x): never a guard's answer.
 
 
 `internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules

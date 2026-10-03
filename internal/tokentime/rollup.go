@@ -683,6 +683,9 @@ type projectSet struct {
 	canon map[int64]int64  // every stored id → the id it rolls up under
 	names map[int64]string // canonical id → unique display name
 	roots map[int64]string // canonical id → absolute root
+	// charged: canonical ids with tokens. A root only a focus beat reached
+	// is no token project: the project verb never selects one.
+	charged map[int64]bool
 }
 
 func (p projectSet) of(id int64) int64 {
@@ -708,7 +711,7 @@ func (p projectSet) members(canon int64) []int64 {
 // time — stored buckets keep the root they were recorded under, so a wrong
 // fold is undone by the next rollup, never baked in.
 func projects(q querier) (projectSet, error) {
-	rs, err := q.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0)
+	rs, err := q.Query(`SELECT p.id, p.root, COALESCE(SUM(b.input + b.output + b.cache_write_5m + b.cache_write_1h + b.cache_read), 0), COUNT(b.project) > 0
 		FROM projects p LEFT JOIN buckets b ON b.project = p.id GROUP BY p.id`)
 	if err != nil {
 		return projectSet{}, err
@@ -717,7 +720,7 @@ func projects(q querier) (projectSet, error) {
 	var candidates []nameCandidate
 	for rs.Next() {
 		var c nameCandidate
-		if err := rs.Scan(&c.id, &c.root, &c.tokens); err != nil {
+		if err := rs.Scan(&c.id, &c.root, &c.tokens, &c.charged); err != nil {
 			return projectSet{}, err
 		}
 		c.live = onDisk(c.root)
@@ -741,25 +744,36 @@ func onDisk(root string) bool {
 // namesake, or with two or more, the dead root stays its own project — a
 // basename alone never picks between candidates. Names are assigned after
 // folding, so a folded root never takes a name of its own.
+//
+// A root without tokens — one only a focus beat reached — never changes how
+// the roots with tokens fold or are named: those fold among themselves and
+// name first, exactly as if it were not there.
 func foldProjects(candidates []nameCandidate) projectSet {
-	ps := projectSet{canon: map[int64]int64{}, roots: map[int64]string{}}
+	ps := projectSet{canon: map[int64]int64{}, roots: map[int64]string{}, charged: map[int64]bool{}}
 	base := func(root string) string { return filepath.Base(filepath.Clean(root)) }
-	liveByBase := map[string][]int64{}
+	liveByBase, liveCharged := map[string][]int64{}, map[string][]int64{}
 	for _, c := range candidates {
 		if c.live {
 			liveByBase[base(c.root)] = append(liveByBase[base(c.root)], c.id)
+			if c.charged {
+				liveCharged[base(c.root)] = append(liveCharged[base(c.root)], c.id)
+			}
 		}
 	}
 	var kept []nameCandidate
 	for _, c := range candidates {
-		target := c.id
-		if live := liveByBase[base(c.root)]; !c.live && c.root != "" && len(live) == 1 {
+		target, pool := c.id, liveByBase
+		if c.charged {
+			pool = liveCharged
+		}
+		if live := pool[base(c.root)]; !c.live && c.root != "" && len(live) == 1 {
 			target = live[0]
 		}
 		ps.canon[c.id] = target
 		if target == c.id {
 			kept = append(kept, c)
 			ps.roots[c.id] = c.root
+			ps.charged[c.id] = c.charged
 		}
 	}
 	ps.names = uniqueNames(kept)
@@ -767,17 +781,19 @@ func foldProjects(candidates []nameCandidate) projectSet {
 }
 
 type nameCandidate struct {
-	id     int64
-	root   string
-	tokens int64
-	live   bool
+	id      int64
+	root    string
+	tokens  int64
+	live    bool
+	charged bool // has buckets
 }
 
 // uniqueNames: among roots sharing a basename, the one still on disk — then
 // the one with the most tokens — keeps the bare basename ("FixIt"); the others
 // are qualified by as many parent directories as it takes ("Work/FixIt"), the
 // full path as a last resort. A moved checkout therefore never pushes the
-// live repository off its short name.
+// live repository off its short name. Roots with tokens name before every
+// root without.
 func uniqueNames(candidates []nameCandidate) map[int64]string {
 	short := func(root string, depth int) string {
 		parts := strings.Split(filepath.ToSlash(filepath.Clean(root)), "/")
@@ -785,6 +801,9 @@ func uniqueNames(candidates []nameCandidate) map[int64]string {
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
+		if a.charged != b.charged {
+			return a.charged
+		}
 		if a.live != b.live {
 			return a.live
 		}

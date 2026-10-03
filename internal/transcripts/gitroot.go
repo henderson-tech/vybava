@@ -22,8 +22,52 @@ import (
 // exact is false when no repository was found or the cwd is gone, so callers
 // can cache exact answers and re-resolve the rest.
 func GitRoot(cwd string) (root string, exact bool) {
+	root, exact, _ = gitRoot(cwd)
+	return root, exact
+}
+
+// RepoRoot is GitRoot for a path an agent wrote to — a file or a directory,
+// which need not exist any more. ok is false when no repository holds it and
+// no worktree directory names its owner: a scratch file under /tmp is no
+// project's work.
+func RepoRoot(path string) (root string, ok bool) {
+	root, _, ok = gitRoot(path)
+	return root, ok
+}
+
+// OnDiskCase spells an existing path the way its directories store each name.
+// On a case-insensitive volume (macOS by default) an agent's
+// /work/adf/forge reaches /work/ADF/forge, and the two spellings must not be
+// two projects. A name with no entry on disk is kept as written.
+func OnDiskCase(path string) string {
+	path = filepath.Clean(path)
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path
+	}
+	parent, name := OnDiskCase(parent), filepath.Base(path)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return filepath.Join(parent, name)
+	}
+	folded := ""
+	for _, e := range entries {
+		if e.Name() == name {
+			return filepath.Join(parent, name)
+		}
+		if folded == "" && strings.EqualFold(e.Name(), name) {
+			folded = e.Name()
+		}
+	}
+	if folded != "" {
+		name = folded
+	}
+	return filepath.Join(parent, name)
+}
+
+func gitRoot(cwd string) (root string, exact, found bool) {
 	if cwd == "" {
-		return "", false
+		return "", false, false
 	}
 	cwd = filepath.Clean(cwd)
 	exact = true
@@ -35,16 +79,17 @@ func GitRoot(cwd string) (root string, exact bool) {
 		info, err := os.Lstat(dotgit)
 		if err == nil {
 			if info.IsDir() {
-				return dir, exact
+				return dir, exact, true
 			}
 			if main, ok := linkedRoot(dotgit); ok {
-				return main, exact
+				return main, exact, true
 			}
-			return dir, exact
+			return dir, exact, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return worktreeOwner(cwd), false
+			owner := worktreeOwner(cwd)
+			return owner, false, owner != cwd
 		}
 	}
 }

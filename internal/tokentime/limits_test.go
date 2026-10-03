@@ -183,7 +183,9 @@ func TestThePointsBacklogRecoversOldRolloutsAndLeavesBeatsAlone(t *testing.T) {
 		return string(r), string(b), string(l)
 	}
 	_, _, lags := answer()
-	if _, err := s.db.Exec(dropPoints + "DELETE FROM meta WHERE key LIKE 'points_%'; PRAGMA user_version=4"); err != nil {
+	// Points dropped alone: with the focus re-attribution settled, the points
+	// backlog has what the token reads leave of the budget to itself.
+	if _, err := s.db.Exec("DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; DELETE FROM meta WHERE key LIKE 'points_%'; PRAGMA user_version=4"); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

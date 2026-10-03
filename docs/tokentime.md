@@ -12,6 +12,7 @@ tokentime rollup --json --days 14 --hours 48 --no-index
 cd <repo> && tokentime project --from 2026-09-01 --to 2026-09-24 --json   # this repository
 tokentime project --project FixIt --from 2026-09-01 --to 2026-09-24 --json  # any project, by its rollup name
 tokentime beats --from 2026-09-01 --to 2026-09-30 --json   # minutes you prompted / agents answered, per project
+tokentime beats --from 2026-09-01 --to 2026-09-30 --bridge 30 --json   # + each agent session's silences up to 30 min filled
 tokentime limits --since 1790550000000 --json   # Codex rate-limit readings, one per response
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
@@ -19,8 +20,9 @@ tokentime prices --json --model "claude-opus-5-5[1m]"   # + how the rollup price
 ```
 
 `--state-dir` (default `~/.local/share/vybava/tokentime`), `--claude-root`
-(default `~/.claude/projects`) and `--codex-dir` (default `~/.codex`) apply to
-every verb. Every verb prints one runx envelope under `--json`.
+(default `~/.claude/projects`), `--codex-dir` (default `~/.codex`) and
+`--side-dir` (repeatable, default `~/Exports` and `~/Backups`; see Beats)
+apply to every verb. Every verb prints one runx envelope under `--json`.
 
 ## What it reads
 
@@ -194,7 +196,7 @@ pass is running — `rollup` or `index` is what brings the store up to date.
 ## Beats — the minutes you and your agents were at work
 
 ```sh
-tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --json
+tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD [--bridge N] --json
 ```
 
 Tokens say how much work went where; beats say *when*, at minute
@@ -219,6 +221,42 @@ them into hours: your attention and agent time, combined per client.
   counts a message's repeated blocks once and copied fork history not at all,
   and a copy keeping its record's time and cwd lands on the original's minute.
 
+**Where an AI minute goes: the repository the agent wrote in.** Agents reach
+sibling repositories by absolute path while every record keeps the cwd the
+session started in, so each transcript (main, subagent, workflow agent,
+rollout) keeps a *focus*: the record cwd's repository until a write lands in
+another one. A write is an Edit/Write/MultiEdit/NotebookEdit of a file; a
+Bash segment a `cd <dir>` (in a `( … )` too, and taken as applied:
+`cd <dir>; make` runs there), `git -C <dir>` or `--cwd <dir>` put somewhere
+— the cwd too, so `cd <cwd> && git commit` brings the focus home, while a
+bare command in the cwd says nothing; where it runs is claude-guards'
+`RunDirs`, relative directories against the record cwd — unless the segment
+only inspects (`ls cat head tail less rg grep find fd wc jq stat file tree du
+pwd which echo printf true awk`, `sed -n`, git `log show status diff blame
+rev-parse ls-files grep fetch`, `branch --list`, `remote -v`, `config --get`);
+the file any output redirect names (`git diff > /tmp/x` writes in no
+repository); an MCP tool's `cwd` (onyx
+`run_command`, its argv judged the same way); a Codex `exec_command`/`shell`
+`workdir` (same rule on its command) and the files an `apply_patch` adds,
+updates, deletes or moves to. Reads (Read, Glob, Grep, WebFetch) never move
+it, and only tool inputs are parsed, never message text. A write outside every
+repository (`/tmp`), into the agents' own state (`~/.claude` — plans,
+memory, handoffs — and `~/.codex`) or into a side directory moves nothing.
+Side directories hold work products no project owns — `--side-dir`,
+repeatable, default `~/Exports` and `~/Backups`: a client deliverable written
+there is the session's project's work, and a root of its own would drop it
+out of every client's hours. A person's prompt, or a
+record cwd in another repository, sets the focus back to the cwd's.
+
+A response's minute goes to every repository its own tool calls wrote in, else
+to the focus. A Claude message's tool calls arrive in later records under the
+same id, so its minute waits — in the file's saved state, across passes —
+until the next message or prompt starts, or the message is 10 minutes old.
+Human minutes, tokens, the rollup and `project` keep the record cwd: a
+repository only focus minutes reached is a `beats` project but never a token
+project (`project` answers `UNKNOWN_PROJECT`), and it never changes how the
+token projects fold or are named.
+
 Beats are stored per minute × project × kind and kept forever, like
 buckets, so they outlive transcript cleanup. A project is the rollup's:
 worktrees fold into their repository, moved checkouts into their live
@@ -228,10 +266,47 @@ projects are sorted by root, and a project with no beat in the range is
 left out. `from`/`to` are inclusive local days, at most 92 of them;
 `timezone` names the zone they were read in.
 
+**`--bridge N`** (1..240 minutes) bridges each agent session — one
+transcript or rollout — on one timeline, the way the timesheet bridges your
+own attention: walking a file's AI minutes in time order, a gap to its next
+one at most N minutes later is filled and credited to the root of the
+earlier minute, and a session holds one root a minute — a minute it answered
+in under several goes to the one its next minute shares (where it went on),
+else to the one the minute before went to, else to the first by root; a
+minute more than N away is neither, so no answer depends on the range. One
+session alternating app → lib → app gives lib its stretch and app only its
+own, where bridging each project apart would fill app across lib's stretch
+too. A session waiting on agents it spawned — a Claude session's subagents
+and workflow agents (its `<session>/subagents/` files), a Codex thread's
+spawned threads (`source.subagent.thread_spawn.parent_thread_id`) — is where
+they are: a minute of its filled silence gives way wherever one of them
+covers it under another root, answering or in a silence of its own, from an
+answer no older than the session's last. A main session that last wrote in
+lib and waits on its read-only subagent in app fills lib only up to the
+subagent's first answer. Its own answers never give way and agents never give
+way to it, so parallel agents add up; a thread a spawned thread spawned is
+its parent's agent alone. The runs are then unioned per project: parallel
+sessions add up, two in one project count once. The `ai` runs are these and
+`aiBridge` is N; `human` is never bridged, and without the flag there is no
+`aiBridge` and `ai` is the minutes as recorded. Minutes up to N beyond the
+range on either side are read, so a gap across its edge is filled up to it.
+Each file's AI minutes are kept for this (`file_beats`: minute × file ×
+project, the file keyed by its path), forever like beats, so a deleted
+transcript keeps its timeline; a response a token read finds already seen
+(a resumed or forked transcript repeating its original's answers, an
+archived rollout) adds its minute there but not to beats, as the focus
+re-read records it. Who spawned each file is recorded as it is read
+(`file_sessions`), since a path's hash cannot be traced back once the
+transcript is deleted. An AI minute no file claims — on a day the
+focus re-read below could not swap, still by cwd, or in a store older than
+schema 6 — is bridged per project instead: its project's minutes, gaps of up
+to N merged.
+
 - **Read-only**, like `project`: no index pass, no lock, `mode=ro`; a
   store never indexed is `NO_STORE`, one without beats (schema 3 or older)
   `STALE_SCHEMA` until one `tokentime index` migrates it. A bad or missing
-  day, or a range past 92 days, is `BAD_FLAG` before the store is opened.
+  day, a range past 92 days, or a `--bridge` outside 1..240, is `BAD_FLAG`
+  before the store is opened.
 - **Coverage.** `coverage.from` is the first local day whose beats are
   complete: the day after the oldest Claude transcript still on disk when
   beats began (sessions that ended before it were deleted unread), never
@@ -255,6 +330,34 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   that read covered, and a backlog that finds the file replaced reads the
   new content from byte 0 and ends where that content does. `index --json` reports what is left as
   `beatsPendingBytes`.
+- **The focus re-read.** A store indexed before AI minutes followed the
+  focus (schema 5 or older) filed them by cwd. Every file on disk owes a
+  re-read of the bytes read before (`files.focus`), paid like the backlog
+  above — after it, before the points backlog, newest files first, charging
+  nothing — into staging tables (`focus_beats`, `focus_found`); while it
+  runs, every pass stages the minutes it records too. Beats keep no
+  provenance, so a staged day replaces a stored one only when it can be
+  vouched for: every response charged on that UTC day (its permanent `seen`
+  identity) was found again, on that day, by a read that staged its minute.
+  Then no deleted transcript holds a minute of that day the re-read lacks, and
+  the day's AI minutes are swapped for the staged ones in the commit that
+  re-reads the last file (meta `focus_rule`), each file's own (`file_beats`)
+  with them. A day a deleted transcript answered in keeps every AI minute it
+  had, by cwd, and no file's: `--bridge` bridges it per project. Beats never
+  shrink with a transcript. Until the swap the re-read counts in `beatsPendingBytes`, so
+  beats coverage stays incomplete. While it runs, a response a token read
+  finds already seen — a transcript replaced or re-read, a rollout archived
+  before its re-read — is staged and found like its original (it still adds
+  no minute to beats); a transcript that shrinks or vanishes — even during
+  the pass re-reading it — leaves its responses unfound and their days as
+  they were. A Claude message still waiting for its tool calls when the
+  re-read settles counts as found (its minute lands once it is whole), so a
+  pass from a live session swaps today too. One unbudgeted `tokentime index`
+  pays it in a single pass, reading every transcript on disk once more —
+  minutes over months of history, longer than claude-switcheroo's 180 s
+  `index` timeout: run it once by hand after upgrading, before the next
+  Timesheet run (a pass the timeout kills keeps its progress, and the next
+  one finishes).
 - **Migrations** add one column each, and only when it is missing: a pass
   killed between a migration and the version bump leaves the column behind,
   and the next pass finishes the migration rather than failing on it.
