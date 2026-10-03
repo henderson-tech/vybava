@@ -315,6 +315,27 @@ func TestTheFocusBackfillSettlesBesideAPendingMessage(t *testing.T) {
 	}
 }
 
+// The re-read ends with the focus a transcript last wrote in; a response
+// appended later, with no prompt between, still answers there — not on the
+// cwd the older binary's state left the token read with.
+func TestTheFocusReReadHandsItsFocusToLaterReads(t *testing.T) {
+	f, r := focusFixture(t)
+	s := f.open(t)
+	f.index(t, s)
+	toLegacy(t, s, f, r)
+	s.Close()
+	s = f.open(t)
+	f.index(t, s) // s4 unchanged: only the re-read reads it, ending in other
+	appendFile(t, filepath.Join(f.claude, "-work-app", "s4.jsonl"),
+		lines(claudeLine("s4", f.repo, "2026-09-23T12:00:00Z", "fo_K", "claude-opus-5-5", 1, 1, 0, 0, 0)))
+	f.index(t, s)
+	b := beatsOf(t, s, "2026-09-23", "2026-09-23")
+	noon := BeatRun{at("2026-09-23T12:00:00Z"), 1}
+	if other, app := beatsOn(b, r.other, true), beatsOn(b, f.repo, true); !slices.Contains(other, noon) || slices.Contains(app, noon) {
+		t.Fatalf("other AI = %v, app AI = %v; want fo_K's 12:00 in other only", other, app)
+	}
+}
+
 // A transcript deleted after the pass listed it — the re-read of months of
 // history outlives some — ends its debt like a shrunk one: it never holds
 // the swap back.

@@ -287,7 +287,8 @@ type indexer struct {
 	// debts are the points backlogs the points backlog moved, by path: its
 	// own column, so no other writer of a file row can put an older one back.
 	debts map[string]string
-	// read is every file row a token read left this pass; commits never clear it.
+	// read is every file row a token read or a backlog left this pass, the
+	// latest of each; commits never clear it.
 	read     map[string]fileRow
 	rootMemo map[string]string
 	newRoots map[string]string
@@ -1113,7 +1114,7 @@ func (ix *indexer) backlog(targets []target, known map[string]fileRow, budget in
 				ix.lost[t.path] = row
 				ix.lostSince = max(ix.lostSince, at/int64(time.Second))
 			} else {
-				ix.files[t.path] = row
+				ix.files[t.path], ix.read[t.path] = row, row
 				sinceCommit++
 			}
 		}

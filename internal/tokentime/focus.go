@@ -594,6 +594,9 @@ func (ix *indexer) focusBacklog(targets []target, known map[string]fileRow, budg
 			if lag, _, err = ix.catchUp(t, &row, lag, budget, readFocus); err != nil {
 				return false, err
 			}
+			if lag.done() && lag.State != nil && carryFocus(&row, *lag.State) {
+				ix.files[t.path], ix.read[t.path] = row, row
+			}
 		}
 		if !lag.done() {
 			if _, err := os.Lstat(t.path); errors.Is(err, os.ErrNotExist) {
@@ -621,6 +624,25 @@ func (ix *indexer) focusBacklog(targets []target, known map[string]fileRow, budg
 		}
 	}
 	return open == 0 && ix.ctx.Err() == nil, nil
+}
+
+// carryFocus hands the focus a finished re-read ended in (cs) to the file's
+// token state, which an older binary saved without one, so the next response
+// goes on from where the agent last wrote rather than from the cwd. A token
+// state that has a focus already — a read this pass placed it — is newer and
+// stays, as does one of other content. It reports whether row.state changed.
+func carryFocus(row *fileRow, cs codexState) bool {
+	var ts codexState
+	if row.state != "" && json.Unmarshal([]byte(row.state), &ts) != nil {
+		return false
+	}
+	if f := ts.Focus; f.Base != "" || f.Root != "" || f.Msg != nil || len(f.Touched) > 0 || ts.Owner != cs.Owner || cs.Focus.Root == "" {
+		return false
+	}
+	ts.Focus = focusState{Base: cs.Focus.Base, Root: cs.Focus.Root}
+	raw, _ := json.Marshal(ts)
+	row.state = string(raw)
+	return true
 }
 
 // pendingFound readies the settling commit for the Claude messages still
