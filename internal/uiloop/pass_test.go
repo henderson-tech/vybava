@@ -630,6 +630,8 @@ func TestRunPrintWritesRunFileAndReusesAnUnshotPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("UILOOP_TEST_PORTAL", "http://10.8.0.10:21782")
+	now := time.Date(2026, 10, 3, 9, 30, 0, 0, time.UTC)
+	tool.Now = func() time.Time { return now }
 	opts := RunOptions{Print: true, Selection: Selection{Only: []string{"tasks*"}, Viewports: []string{"phone"}}}
 	res, err := tool.Run(context.Background(), opts)
 	if err != nil {
@@ -645,7 +647,8 @@ func TestRunPrintWritesRunFileAndReusesAnUnshotPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	if run.V != RunVersion || run.Apps["portal"].BaseURL != "http://10.8.0.10:21782" || run.Viewports["phone"].Insets.Top != 59 ||
-		!slices.Equal(run.Selection.Only, []string{"tasks*"}) || run.Selection.Themes == nil || run.Lint.Grid != 4 || run.Workers != 2 {
+		!slices.Equal(run.Selection.Only, []string{"tasks*"}) || run.Selection.Themes == nil || run.Lint.Grid != 4 || run.Workers != 2 ||
+		run.Clock != "2026-10-03T09:30:00Z" {
 		t.Errorf("run.json: %s", b)
 	}
 	// Nothing was shot into pass 1, so the next run reuses it; a shot moves the next run on.
@@ -653,8 +656,14 @@ func TestRunPrintWritesRunFileAndReusesAnUnshotPass(t *testing.T) {
 		t.Error("an unshot pass is reused")
 	}
 	writePass(t, tool, 1, []shot{{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "dark", status: "ok", bytes: 1}})
+	now = now.Add(48 * time.Hour)
 	if res, _ := tool.Run(context.Background(), opts); res.Data.(*RunData).Pass != 2 {
 		t.Error("a shot pass is never overwritten by a new run")
+	}
+	// The frozen clock is the loop's first run's, carried into every later pass.
+	b, _ = os.ReadFile(filepath.Join(tool.Root, ".ui-loop/pass-2/run.json"))
+	if err := json.Unmarshal(b, &run); err != nil || run.Clock != "2026-10-03T09:30:00Z" || run.CreatedAt != "2026-10-05T09:30:00Z" {
+		t.Errorf("pass 2 run.json: %s %v", b, err)
 	}
 	opts.Wrap = "devbox run -- {cmd}"
 	res, _ = tool.Run(context.Background(), opts)

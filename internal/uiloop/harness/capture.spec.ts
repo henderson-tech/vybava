@@ -37,6 +37,7 @@ import {
   settle,
   shootFull,
   shootViewport,
+  volatileMask,
   waitForGreenBuild,
   writeRecord,
 } from './capture';
@@ -173,6 +174,7 @@ async function capture(browser: Browser, shot: PlannedShot, run: RunFile, files:
   try {
     if (p.theme) await p.theme(context, theme, app);
     const page = await context.newPage();
+    if (p.freezeClock && run.clock) await page.clock.setFixedTime(run.clock);
     await seedLocalStorage(page, screen);
     record.consoleErrors = collectConsoleErrors(page);
     const network = new NetworkTracker(page);
@@ -238,7 +240,8 @@ async function capture(browser: Browser, shot: PlannedShot, run: RunFile, files:
     await freezeMotion(page);
     lap('settle');
 
-    await shootViewport(page, files.png);
+    const mask = volatileMask(page, screen, params);
+    await shootViewport(page, files.png, mask);
     record.files.viewport = path.basename(files.png);
     lap('shot');
     const during = await readBuildHealth(page);
@@ -263,7 +266,7 @@ async function capture(browser: Browser, shot: PlannedShot, run: RunFile, files:
       record.safeArea.emulated = result.insetsEmulated;
       lap('lint');
       if (screen.full !== false) {
-        record.full = await shootFull(page, files.full);
+        record.full = await shootFull(page, files.full, mask);
         if (record.full) record.files.full = path.basename(files.full);
         lap('fullShot');
       }

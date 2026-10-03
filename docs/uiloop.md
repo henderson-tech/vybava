@@ -108,6 +108,7 @@ A repo owns `<dir>/project.ts` (`defineProject`) and `<dir>/screens/*.ts` (`defi
 - `ready`, a selector or a Recipe;
 - `context` (timezone, locale, localStorage);
 - `full: false`, `knownIssues`, `unreachable` and `destructive`;
+- `volatile`: selectors (with `{PARAM}` placeholders) of content that changes between identical renders — a relative time, a live counter, a random avatar — masked in both shots (Playwright `mask`) so it never moves the pixels; the lint still reads it, and `check` refuses an empty selector;
 - `once: true`: shot only at the first viewport × theme the run selects, for a recipe with a side effect that must not repeat per shot (a real failed login that counts against a lockout).
 
 **`Step`** is one of `goto`, `click`, `clickText`, `clickRole` (topmost overlay first), `check`, `uncheck`, `selectOption` (`{ selector, value }`, a native `<select>` option by value or label), `wait` (ms, capped at 2000; prefer `waitFor`), `fill`, `waitFor`, `press`, `hover`, `dblclick`, `longPress`, `drag`, `evaluate` or `upload`. `clickText` takes the exact label (a substring is the last resort) or a `/regex/flags` string; `check` reports an invalid regex and a negative `wait`.
@@ -121,6 +122,9 @@ A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, ex
 - `login(page, as, app, run)`. It either returns a storage-state path or signs in on the page; the harness then saves the state.
 - `signedOut(page, as, app)`. True when a signed-in screen landed on the sign-in page (an expired session): the shot is `recipe-failed`, never `ok`. Every run, `--resume` included, signs in fresh, so a resume re-takes it.
 - `theme(context, theme, app)`, `readTheme(page)`, `settle(page, screen)` and `chrome` (selectors of app chrome that paints its own background).
+- `freezeClock: true` freezes `Date` at run.json's `clock` in every shot (Playwright `page.clock.setFixedTime`, before navigation; timers keep running). The loop's first `run` records that instant and every later run and pass carries it, so the app sees the same "now" in every pass. A run.json without a `clock` (an older vybava) fails the run's setup.
+
+**Deterministic shots.** A screen whose shot is byte-identical to the previous pass's carries that pass's review for free (see Carry-forward); one whose pixels moved by a clock or a counter is reviewed again. `freezeClock` and `volatile` remove those two causes. Data a `prepare` re-dates relative to the real time still moves the pixels.
 
 `states.ts` reaches empty, error and loading without touching seed data:
 
@@ -133,7 +137,7 @@ A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, ex
 
 ## A pass
 
-`run` writes `<out>/pass-<n>/run.json`. It holds the resolved apps (an app's `env` var set on the Mac already overrides `baseUrl`), every viewport, the selection, the lint knobs, the workers and the build wait. Then it runs the command from the repo root:
+`run` writes `<out>/pass-<n>/run.json`. It holds the resolved apps (an app's `env` var set on the Mac already overrides `baseUrl`), every viewport, the selection, the lint knobs, the workers, the build wait and the `clock` a `freezeClock` project freezes `Date` at (the newest earlier run.json's, else now). Then it runs the command from the repo root:
 
 ```sh
 UILOOP_ROOT="$PWD" UILOOP_RUN="$PWD/.ui-loop/pass-3/run.json" pnpm exec playwright test -c "$PWD/tests/ui-loop/vendor/playwright.config.ts"
@@ -517,4 +521,4 @@ Pixels are compared only for an eligible shot whose bytes changed, and a screen
 stops at its first moved PNG. On pwf-ui passes 3 → 4 (a fix round apart: 121
 eligible screens, about 990 PNGs, a median 13% of pixels changed) the plan took
 37 s at 220 MB and carried nothing. Byte-identical shots make carrying cheap and
-likely.
+likely; see Deterministic shots (`freezeClock`, `volatile`).

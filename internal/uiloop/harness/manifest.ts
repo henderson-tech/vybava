@@ -141,6 +141,12 @@ export interface Screen<Area extends string = string, As extends string = string
   };
   /** false: no full-page companion shot (an infinite list has no end). */
   full?: false;
+  /**
+   * Selectors (with `{PARAM}` placeholders) of content that changes between identical renders —
+   * a relative time, a live counter, a random avatar: masked in both shots so it never moves the
+   * pixels. The lint still reads it.
+   */
+  volatile?: readonly string[];
   /** The implementing file plus the 1–2 components that own its look (repo-relative). Fix lanes route by these. */
   sourceFiles: readonly string[];
   /** Defects seen while mapping. A recipe that had to use a text/role selector adds `missing testid: …`. */
@@ -209,6 +215,7 @@ export function validateScreens(screens: readonly Screen[]): string[] {
     if ((s.kind === 'state') !== (s.state !== undefined))
       problems.push(`${s.id}: \`state\` belongs on kind 'state' screens only, and they need it`);
     if (!s.sourceFiles.length && !s.unreachable) problems.push(`${s.id}: no sourceFiles`);
+    if (s.volatile?.some((selector) => !selector.trim())) problems.push(`${s.id}: volatile holds an empty selector`);
     if (Array.isArray(s.open)) problems.push(...stepProblems(s.id, s.open as readonly Step[]));
   }
   for (const s of screens) {

@@ -29,6 +29,7 @@ type RunFile struct {
 	AppMap    string              `json:"appMap"`
 	Vybava    string              `json:"vybava"`
 	CreatedAt string              `json:"createdAt"`
+	Clock     string              `json:"clock"` // the instant a project's freezeClock freezes Date at (runClock)
 	Areas     []string            `json:"areas"`
 	Apps      map[string]App      `json:"apps"`
 	Viewports map[string]Viewport `json:"viewports"`
@@ -104,6 +105,33 @@ func (t *Tool) Passes() ([]int, error) {
 	}
 	sort.Ints(passes)
 	return passes, nil
+}
+
+// runClock is the instant run.json records for a project's freezeClock: the
+// clock of the newest run.json at or before pass that has one (the pass's own
+// on a re-run, else an earlier pass's), so every pass of a loop shoots the
+// same time and an unmoved screen keeps its pixels; the loop's first run
+// takes now.
+func (t *Tool) runClock(pass int) (string, error) {
+	passes, err := t.Passes()
+	if err != nil {
+		return "", err
+	}
+	for i := len(passes) - 1; i >= 0; i-- {
+		if passes[i] > pass {
+			continue
+		}
+		var run struct {
+			Clock string `json:"clock"`
+		}
+		if _, err := readJSON(filepath.Join(t.passAbs(passes[i]), "run.json"), &run); err != nil {
+			return "", err
+		}
+		if run.Clock != "" {
+			return run.Clock, nil
+		}
+	}
+	return t.Now().UTC().Format("2006-01-02T15:04:05Z"), nil
 }
 
 // PassDir is the repo-relative <out>/pass-<n>.
@@ -264,9 +292,14 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	if allow == nil {
 		allow = map[string][]string{}
 	}
+	clock, err := t.runClock(pass)
+	if err != nil {
+		return Result{}, err
+	}
 	run := RunFile{
 		V: RunVersion, Pass: pass, PassDir: passDir, Dir: c.Dir, AppMap: c.AppMap, Vybava: t.Version,
 		CreatedAt: t.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		Clock:     clock,
 		Areas:     c.Areas, Apps: apps, Viewports: c.ResolvedViewports(), Selection: sel,
 		Lint:      RunLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget, Off: off, Ramp: ramp, Allow: allow},
 		BuildWait: o.BuildWait, Workers: o.Workers,
