@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -82,6 +84,7 @@ type Cache struct {
 type rolloutState struct {
 	cursor   transcripts.Cursor
 	known    bool
+	meta     bool
 	floor    time.Time
 	session  Session
 	previous transcripts.CodexUsage
@@ -128,24 +131,32 @@ func readRollout(path string, since time.Time, state *rolloutState) (Session, er
 		*state = rolloutState{}
 	}
 	if !state.known {
-		state.floor = since
+		*state = rolloutState{floor: since, session: Session{File: path}}
+	}
+	// The first line is session_meta and carries the model's base instructions,
+	// so it can be past any record limit — read it unbounded, until it parses.
+	if !state.meta {
+		head, err := readHead(path)
+		if err != nil {
+			return Session{}, err
+		}
+		state.meta = applyMeta(&state.session, head)
 	}
 	opts := transcripts.ScanOptions{Budget: math.MaxInt64, SkipOversize: true}
 	res, err := transcripts.Scan(path, state.cursor, state.known, opts, func(line []byte, offset int64) error {
-		// Offset 0 is a new file or a replaced one: start over. Its first line
-		// is session_meta, carrying the model's base instructions.
-		if offset == 0 {
-			*state = rolloutState{floor: state.floor, session: Session{File: path}}
-			applyMeta(&state.session, line)
-			return nil
-		}
-		if bytes.Contains(line, tokenCountMarker) {
+		if offset > 0 && bytes.Contains(line, tokenCountMarker) {
 			appendSample(&state.session, line, state.floor, &state.previous)
 		}
 		return nil
 	})
 	if err != nil {
 		return Session{}, err
+	}
+	if res.Reset {
+		// A replaced or truncated file: what the cache holds belongs to the old
+		// one, and Scan may have handed over no first line to say so.
+		*state = rolloutState{}
+		return readRollout(path, since, state)
 	}
 	if res.Skipped && !state.known {
 		return Session{}, fmt.Errorf("%s vanished or is not a regular file", filepath.Base(path))
@@ -163,14 +174,29 @@ func readRollout(path string, since time.Time, state *rolloutState) (Session, er
 	return session, nil
 }
 
-func applyMeta(session *Session, line []byte) {
+// readHead reads a rollout's first line, however long.
+func readHead(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	head, err := bufio.NewReaderSize(file, 256*1024).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return head, nil
+}
+
+// applyMeta reads session_meta into session and reports whether it parsed.
+func applyMeta(session *Session, line []byte) bool {
 	var entry transcripts.RolloutLine
 	if json.Unmarshal(line, &entry) != nil || entry.Type != "session_meta" {
-		return
+		return false
 	}
 	var meta transcripts.SessionMeta
 	if json.Unmarshal(entry.Payload, &meta) != nil {
-		return
+		return false
 	}
 	session.ID, session.CWD, session.Version = meta.ID, meta.CWD, meta.CLIVersion
 	if meta.Git != nil {
@@ -182,6 +208,7 @@ func applyMeta(session *Session, line []byte) {
 	if session.ID == "" {
 		session.ID = idFromPath(session.File)
 	}
+	return true
 }
 
 // appendSample records one call, skipping the repeat events Codex emits when
