@@ -94,7 +94,10 @@ double-billing. `rollout.go` owns parsing and the mtime prefilter; `live.go` own
 `internal/transcripts` owns reading agent logs: the incremental cursor (offset, size,
 mtime, prefix digest; never a partial last record), Claude transcript and Codex
 rollout decoding, the projects-tree walk and git-root resolution. operator and
-codexusage read through it; never add a fourth parser. `internal/tokentime`
+codexusage read through it; never add a fourth parser. Its `sessions.go` is the
+one reader of live Claude sessions (`~/.claude/sessions/<pid>.json`, the
+procStart match, the project slug, transcript lookup) — claude-guards, readeff
+and gitkit pr-census use it. `internal/tokentime`
 builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract

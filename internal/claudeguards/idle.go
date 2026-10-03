@@ -68,13 +68,7 @@ const (
 )
 
 // claudeSessionFile is the slice of ~/.claude/sessions/<pid>.json read here.
-type claudeSessionFile struct {
-	SessionID       string `json:"sessionId"`
-	Cwd             string `json:"cwd"`
-	Status          string `json:"status"`
-	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // unix ms
-	ProcStart       string `json:"procStart"`       // ps lstart format, written in UTC
-}
+type claudeSessionFile = transcripts.ClaudeSessionFile
 
 // sessionFacts is what the classification needs beyond the process table;
 // liveSessionFacts reads the machine, tests inject their own.
@@ -141,26 +135,14 @@ func parentSessionID(args string) string {
 }
 
 // procStartMatches checks the session file's procStart against the
-// process's own start (now - etime), within two minutes. Claude Code writes
-// it in ps lstart's format but in UTC (2026-09-25: every file exactly 2 h
-// behind CEST), so either reading is accepted; a recycled pid started hours
-// or days apart, far outside both windows.
+// process's own start (now - etime); transcripts.ProcStartMatches owns the
+// tolerance and the UTC reading.
 func procStartMatches(procStart, etime string, now time.Time) bool {
 	sec, ok := etimeSeconds(etime)
 	if !ok {
 		return false
 	}
-	actual := now.Add(-time.Duration(sec) * time.Second)
-	for _, loc := range []*time.Location{time.UTC, time.Local} {
-		start, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", procStart, loc)
-		if err != nil {
-			return false
-		}
-		if d := actual.Sub(start); d > -2*time.Minute && d < 2*time.Minute {
-			return true
-		}
-	}
-	return false
+	return transcripts.ProcStartMatches(procStart, now.Add(-time.Duration(sec)*time.Second))
 }
 
 // idleSessions classifies every top-level claude process in the table.
@@ -299,19 +281,14 @@ func liveSessionFacts(home string, budget int64, cachePath string) (sessionFacts
 	transcript := func(s claudeSessionFile) (string, bool) {
 		f, known := transcriptOf[s.SessionID]
 		if !known {
-			f.path, f.ok = findTranscript(filepath.Join(claude, "projects"), s.Cwd, s.SessionID)
+			f.path, f.ok = transcripts.FindClaudeTranscript(filepath.Join(claude, "projects"), s.Cwd, s.SessionID)
 			transcriptOf[s.SessionID] = f
 		}
 		return f.path, f.ok
 	}
 	facts := sessionFacts{
 		session: func(pid int) (claudeSessionFile, bool) {
-			var s claudeSessionFile
-			raw, err := os.ReadFile(filepath.Join(claude, "sessions", fmt.Sprintf("%d.json", pid)))
-			if err != nil || json.Unmarshal(raw, &s) != nil || s.SessionID == "" {
-				return claudeSessionFile{}, false
-			}
-			return s, true
+			return transcripts.ReadClaudeSession(claude, pid)
 		},
 		durableCron: func(cwd string) bool {
 			dirs := []string{cwd}
@@ -399,33 +376,6 @@ func hasScheduledTasks(path string) bool {
 		return len(list) > 0
 	}
 	return len(doc) > 0
-}
-
-var slugUnsafe = regexp.MustCompile(`[^A-Za-z0-9]`)
-
-// findTranscript finds <projects>/<slug>/<session>.jsonl. The slug is the
-// project directory with every other character a dash; a session that has
-// since cd'ed into a subdirectory keeps its original slug, so the cwd's
-// ancestors are tried, then every project directory.
-func findTranscript(projects, cwd, sessionID string) (string, bool) {
-	name := sessionID + ".jsonl"
-	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
-		path := filepath.Join(projects, slugUnsafe.ReplaceAllString(dir, "-"), name)
-		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
-			return path, true
-		}
-		if dir == filepath.Dir(dir) {
-			break
-		}
-	}
-	entries, _ := os.ReadDir(projects)
-	for _, e := range entries {
-		path := filepath.Join(projects, e.Name(), name)
-		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
-			return path, true
-		}
-	}
-	return "", false
 }
 
 // cronCreateTag is the prefilter: a tool_use block's name, unescaped, which a
