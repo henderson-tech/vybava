@@ -327,7 +327,10 @@ The runner contract:
 - Step marks: `{runDir}/marks.jsonl` (or `marks.json`), JSONL or a JSON
   array of `{label, atMs}` (epoch ms) or `{label, from, to}` (trace
   seconds). Without marks, the runner log's `performActions` taps plus the
-  row's `stepCycle` label the steps.
+  row's `stepCycle` label the steps: the cycle starts at the first tap
+  inside the captured window (setup taps before it, such as navigating to
+  the screen, are not steps; the lab120 log has 93 taps, 36 = 3 cycles of
+  12 in the window).
 - xctrace's record output saved beside a trace as `<trace>.record.log` is
   read for `TRACE_RUN_ERRORS`.
 - stdout and stderr tee to `<case dir>/run.log`, which ends with
@@ -392,7 +395,9 @@ after the first gap over 60 ms; `restRunMs` is the longest run of presents
 with no gap over 60 ms; `rtDrawMs` is RenderThread `Drawing` per frame;
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4
 periods, blamed on main or RenderThread when either exceeded one period on
-that frame or the one before.
+that frame or the one before. Every present reading but `rtDrawMs` needs
+FrameTimeline (`present.frameTimeline`); without it they are unread, so the
+rest and fling budgets get no check and compare gets no sample.
 
 ## Analyze, compare, report
 

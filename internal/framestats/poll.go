@@ -201,6 +201,9 @@ func AnalyzeSidecar(sc Sidecar, opts StepOptions) (PollResult, []runx.Diagnostic
 	presents, frames := uniquePresents(sc.Dumps, start, end)
 	period := periodMs(sc.PeriodNs(), frames)
 	refresh := 1000 / period
+	// The step cycle starts at the first tap INSIDE the window: the runner
+	// log also holds the setup taps that reach the screen, which are not
+	// steps (lab120: 93 taps in the log, 36 = 3 x 12 in the window).
 	var taps []float64
 	for _, t := range opts.TapsMs {
 		if u := t + res.ClockOffset; u >= start && u <= end {
