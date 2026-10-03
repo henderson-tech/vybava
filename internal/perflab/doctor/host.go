@@ -541,7 +541,9 @@ func (r *run) tunnelRegistry() {
 	}
 	detail := fmt.Sprintf("the tunnel registry lists no tunnel for %s (%s)", d.ID, d.HardwareUDID)
 	if st == Warn {
-		detail += "; a wired phone falls back to usbmux, so this only matters off the cable"
+		// Runs and probes fall back to usbmux; go-ios screenshots do not
+		// (a wired iPhone 11 on iOS 18 refused `device screencap`).
+		detail += "; a wired phone runs and probes over usbmux, but `perflab device screencap` needs the tunnel"
 	}
 	r.add(Check{ID: "tunnel-registry", Status: st, Code: DiagTunnelMissing, Detail: detail, Fix: "restart the tunnel so it picks the phone up: " + r.tunnelSudoLine()})
 }

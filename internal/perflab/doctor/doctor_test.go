@@ -296,8 +296,9 @@ func TestIPhone11RunPreflight(t *testing.T) {
 	if c := check(t, res, "wda"); c.Code != DiagWDAMissing || c.Fix != "perflab wda build --team YJ77YV2PNA --bundle-id app.fixit.WebDriverAgentRunner --json" {
 		t.Fatalf("wda %+v", c)
 	}
-	if c := check(t, res, "tunnel-registry"); c.Status != Warn || c.Code != DiagTunnelMissing || !strings.Contains(c.Fix, "APPIUM_HOME="+w.home) {
-		t.Fatalf("a wired iOS 18 phone without a tunnel only warns: %+v", c)
+	if c := check(t, res, "tunnel-registry"); c.Status != Warn || c.Code != DiagTunnelMissing || !strings.Contains(c.Fix, "APPIUM_HOME="+w.home) ||
+		!strings.Contains(c.Detail, "device screencap` needs the tunnel") {
+		t.Fatalf("a wired iOS 18 phone without a tunnel only warns, naming what still needs it: %+v", c)
 	}
 	if c := check(t, res, "api"); c.Code != DiagDevboxParked || c.Fix != "devbox up fixit-work-marketplace-ui-vt-4229 --box a && devbox hold fixit-work-x --for 4h" {
 		t.Fatalf("api %+v", c)

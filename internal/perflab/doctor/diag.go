@@ -56,7 +56,8 @@ const (
 	DiagWDAMissing = "WDA_MISSING"
 	// DiagTunnelRegistryDown: the RemoteXPC tunnel registry does not answer
 	// OK. An error for an iOS 17+ phone over the local network, a warning
-	// for a wired one (the xcuitest driver falls back to usbmux).
+	// for a wired one (the xcuitest driver falls back to usbmux; an iOS
+	// `device screencap` still needs the tunnel).
 	DiagTunnelRegistryDown = "TUNNEL_REGISTRY_DOWN"
 	// DiagTunnelMissing: the registry lists no tunnel (address + rsdPort)
 	// for the phone's hardware UDID; same severity rule.
