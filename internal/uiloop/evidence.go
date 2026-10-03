@@ -97,7 +97,8 @@ func (t *Tool) sourceSpec(ignore ...string) []string {
 // checkpoints' commits the app is unchanged since (sourceUnchanged, the rig
 // ignored). A pass holds a checkpoint per item but a handful of fix commits,
 // and a git process per checkpoint was most of a state call (fixit/5334), so
-// checkpointFacts asks for all of them in a fixed number of calls.
+// checkpointFacts asks about all of them at once: usually five git calls,
+// whatever the pass holds.
 type commitFacts struct {
 	ancestor, unchanged map[string]bool
 }
@@ -133,23 +134,27 @@ func (t *Tool) checkpointFacts(basis string, cps []Checkpoint) (commitFacts, err
 }
 
 // ancestorsOfHead is `git merge-base --is-ancestor <c> HEAD` for each of
-// commits in two git calls: HEAD's object name, and each ancestor's commit
-// object by its given name. cat-file drops the names this clone lacks (never
-// ancestors) so one gc'd commit cannot fail rev-list for the rest, which then
-// lists everything they reach that HEAD does not: exactly the non-ancestors
-// among them. A git that answers no (not a repository, HEAD unborn) makes
-// none an ancestor, as merge-base's exit code did.
+// commits: HEAD's object name and each ancestor's commit object by its given
+// name. cat-file drops the names this clone lacks (never ancestors), so one
+// gc'd commit cannot fail rev-list for the rest, which then lists what they
+// reach that HEAD does not. That list holds every non-ancestor but can hold
+// an ancestor too (rev-list stops walking early past skewed commit dates), so
+// merge-base confirms each commit it lists, and answers each commit alone
+// when cat-file or rev-list fails. Usually it lists none: two git calls.
 func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[string]string, err error) {
 	objects = map[string]string{}
+	mergeBase := func(c, object string) error {
+		out, err := t.git("merge-base", "--is-ancestor", c, "HEAD")
+		if err == nil && out.Code == 0 {
+			objects[c] = object
+		}
+		return err
+	}
 	names := append([]string{"HEAD"}, commits...)
 	out, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: []string{"git", "cat-file", "--batch-check=%(objectname) %(objecttype)"},
 		Stdin: strings.NewReader(strings.Join(names, "^{commit}\n") + "^{commit}\n")})
-	if err != nil || out.Code != 0 {
-		return "", objects, err
-	}
-	lines := strings.Split(strings.TrimSuffix(out.Stdout, "\n"), "\n")
-	if len(lines) != len(names) {
-		return "", nil, fmt.Errorf("git cat-file --batch-check: %d answers for %d commits", len(lines), len(names))
+	if err != nil {
+		return "", nil, err
 	}
 	object := func(line string) string {
 		if f := strings.Fields(line); len(f) == 2 && f[1] == "commit" {
@@ -157,9 +162,16 @@ func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[strin
 		}
 		return ""
 	}
-	if head = object(lines[0]); head == "" {
+	lines := strings.Split(strings.TrimSuffix(out.Stdout, "\n"), "\n")
+	if out.Code != 0 || len(lines) != len(names) || object(lines[0]) == "" {
+		for _, c := range commits {
+			if err := mergeBase(c, ""); err != nil {
+				return "", nil, err
+			}
+		}
 		return "", objects, nil
 	}
+	head = object(lines[0])
 	revs := []string{"^" + head}
 	for i, c := range commits {
 		if o := object(lines[i+1]); o != "" {
@@ -168,14 +180,21 @@ func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[strin
 		}
 	}
 	walk, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: []string{"git", "rev-list", "--stdin"}, Stdin: strings.NewReader(strings.Join(revs, "\n") + "\n")})
-	if err != nil || walk.Code != 0 {
-		return "", map[string]string{}, err
+	if err != nil {
+		return "", nil, err
 	}
 	outside := map[string]bool{}
 	for _, line := range strings.Fields(walk.Stdout) {
 		outside[line] = true
 	}
-	maps.DeleteFunc(objects, func(_, o string) bool { return outside[o] })
+	for _, c := range slices.Sorted(maps.Keys(objects)) {
+		if o := objects[c]; walk.Code != 0 || outside[o] {
+			delete(objects, c)
+			if err := mergeBase(c, o); err != nil {
+				return "", nil, err
+			}
+		}
+	}
 	return head, objects, nil
 }
 
@@ -185,10 +204,21 @@ func (t *Tool) ancestorsOfHead(commits []string) (head string, objects map[strin
 // (W) are the same for every commit; `diff-tree --stdin` lists each commit's
 // changes against HEAD (T). A path in only one of W and T differs between
 // the commit and the working tree, so unequal sets answer false and two empty
-// ones true; equal non-empty sets (a working tree that undoes commits) and
-// any git failure ask sourceUnchanged itself.
+// ones true. sourceUnchanged itself answers equal non-empty sets (a working
+// tree that undoes commits), a T that touches a gitlink (plumbing diff-tree
+// ignores diff.ignoreSubmodules, which git diff honours) and any git failure.
 func (t *Tool) unchangedSince(head string, objects map[string]string, commits []string, ignore ...string) (map[string]bool, error) {
 	unchanged := map[string]bool{}
+	if head == "" {
+		// cat-file named no HEAD (ancestorsOfHead asked merge-base instead).
+		for _, c := range commits {
+			var err error
+			if unchanged[c], err = t.sourceUnchanged(c, ignore...); err != nil {
+				return nil, err
+			}
+		}
+		return unchanged, nil
+	}
 	if len(commits) == 0 {
 		return unchanged, nil
 	}
@@ -211,12 +241,12 @@ func (t *Tool) unchangedSince(head string, objects map[string]string, commits []
 			pairs = append(pairs, objects[c]+" "+head+"\n")
 		}
 	}
-	trees, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: append([]string{"git", "diff-tree", "--stdin", "-z", "--always", "-r", "--name-status", "--no-renames", "--"}, spec...),
+	trees, err := RealExec(context.Background(), Cmd{Dir: t.Root, Args: append([]string{"git", "diff-tree", "--stdin", "-z", "--always", "-r", "--raw", "--no-renames", "--"}, spec...),
 		Stdin: strings.NewReader(strings.Join(pairs, ""))})
 	if err != nil {
 		return nil, err
 	}
-	changed, parsed := diffTreeNames(trees.Stdout, order)
+	changed, gitlinks, parsed := diffTreeNames(trees.Stdout, order)
 	w := strings.Split(strings.TrimSuffix(worktree.Stdout, "\x00"), "\x00")
 	if worktree.Stdout == "" {
 		w = []string{}
@@ -224,7 +254,7 @@ func (t *Tool) unchangedSince(head string, objects map[string]string, commits []
 	slices.Sort(w)
 	w = slices.Compact(w)
 	for _, c := range commits {
-		known := untracked.Code == 0 && worktree.Code == 0 && trees.Code == 0 && parsed
+		known := untracked.Code == 0 && worktree.Code == 0 && trees.Code == 0 && parsed && !gitlinks[objects[c]]
 		switch {
 		case known && !slices.Equal(changed[objects[c]], w):
 		case known && len(w) == 0:
@@ -238,12 +268,14 @@ func (t *Tool) unchangedSince(head string, objects map[string]string, commits []
 	return unchanged, nil
 }
 
-// diffTreeNames splits `diff-tree --stdin -z --always --name-status` output
-// into each commit's sorted paths. A header is a commit's object name and a
-// status one letter before its path (no renames, so no scores), so the two
-// never mix; ok is false unless the headers are exactly commits, in order.
-func diffTreeNames(out string, commits []string) (names map[string][]string, ok bool) {
-	names = map[string][]string{}
+// diffTreeNames splits `diff-tree --stdin -z --always --raw` output into each
+// commit's sorted paths and the commits whose changes touch a gitlink (mode
+// 160000; a record it cannot read counts as one). A header is a commit's
+// object name and a change a ":<modes> <objects> <status>" record before its
+// path, so the two never mix; ok is false unless the headers are exactly
+// commits, in order.
+func diffTreeNames(out string, commits []string) (names map[string][]string, gitlinks map[string]bool, ok bool) {
+	names, gitlinks = map[string][]string{}, map[string]bool{}
 	tokens := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
 	if out == "" {
 		tokens = nil
@@ -251,21 +283,25 @@ func diffTreeNames(out string, commits []string) (names map[string][]string, ok 
 	seen := 0
 	for i := 0; i < len(tokens); i++ {
 		switch {
-		case len(tokens[i]) == 1 && seen > 0 && i+1 < len(tokens):
-			names[commits[seen-1]] = append(names[commits[seen-1]], tokens[i+1])
+		case strings.HasPrefix(tokens[i], ":") && seen > 0 && i+1 < len(tokens):
+			c := commits[seen-1]
+			if f := strings.Fields(tokens[i]); len(f) < 2 || f[0] == ":160000" || f[1] == "160000" {
+				gitlinks[c] = true
+			}
+			names[c] = append(names[c], tokens[i+1])
 			i++
 		case seen < len(commits) && tokens[i] == commits[seen]:
 			names[commits[seen]] = []string{}
 			seen++
 		default:
-			return nil, false
+			return nil, nil, false
 		}
 	}
 	for c, paths := range names {
 		slices.Sort(paths)
 		names[c] = slices.Compact(paths)
 	}
-	return names, seen == len(commits)
+	return names, gitlinks, seen == len(commits)
 }
 
 // Drift is what changed between a pass's captured revision and the working
@@ -505,7 +541,8 @@ func (t *Tool) cachedReviewBasis(pass int, known []string) (string, error) {
 
 // passSnapshot is one request's read of a pass's evidence (reviewEvidence):
 // the basis and the SHA256 of every file it covers, keyed relative to Root,
-// and its shot records, so a request hashes and decodes the shots once.
+// so a request hashes the shots once. records are the pass's shot records
+// when the request already decoded them (nil: read them when needed).
 type passSnapshot struct {
 	basis   string
 	hashes  map[string]string
@@ -518,11 +555,7 @@ func (t *Tool) snapshot(pass int, known []passSnapshot) (passSnapshot, error) {
 		return known[0], nil
 	}
 	basis, hashes, _, err := t.reviewEvidence(pass)
-	if err != nil {
-		return passSnapshot{}, err
-	}
-	records, err := LoadRecords(t.passAbs(pass))
-	return passSnapshot{basis: basis, hashes: hashes, records: records}, err
+	return passSnapshot{basis: basis, hashes: hashes}, err
 }
 
 // screenEntry is a screen's manifest entry as its shot records recorded it at

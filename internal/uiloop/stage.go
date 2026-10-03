@@ -448,6 +448,11 @@ func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, e
 		return ev, err
 	}
 	records := snap.records
+	if records == nil {
+		if records, err = LoadRecords(t.passAbs(pass)); err != nil {
+			return ev, err
+		}
+	}
 	if ev.digests, err = t.screenDigests(pass, records, snap.hashes); err != nil {
 		return ev, err
 	}
@@ -1317,6 +1322,7 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	snap.records = records
 	raw, err := t.rawBatchIDs(pass, snap)
 	if err != nil {
 		return Result{}, err

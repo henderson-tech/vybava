@@ -556,8 +556,12 @@ rename, so a lost race loses only entries. One that does not decode, has another
 version or cannot be written is a `DIGEST_CACHE` warning on `state` and a rebuild;
 deleting it is always safe. Checkpoints ask git about all their commits at once,
 never per checkpoint: ancestry (two calls), the untracked files, the working
-tree's changes and every commit's changes against HEAD are five git calls
-whatever the pass holds.
+tree's changes and every commit's changes against HEAD are usually five git calls
+whatever the pass holds. A commit that answer cannot settle exactly is asked on
+its own, as before: one `rev-list` lists as unreachable (it can stop walking early
+past skewed commit dates), one whose changes touch a gitlink
+(`diff.ignoreSubmodules` binds only `git diff`), a working tree that undoes the
+commits since one, and every commit when git fails.
 Valid partial raw reviews still merge their findings, while unread screens and
 incomplete batches remain explicit. Scoreboard validates the same evidence for
 both the default backlog and an explicitly supplied backlog (with its adjacent

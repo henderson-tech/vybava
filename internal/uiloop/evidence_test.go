@@ -1,7 +1,9 @@
 package uiloop
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -566,35 +568,71 @@ func TestStateWeighsDriftByTheConfiguredSourceAndPrimitives(t *testing.T) {
 	}
 }
 
+// gitAt runs git in tool's repo as a test identity, committing at
+// 1e9+at seconds when at > 0, and returns its trimmed stdout.
+func gitAt(t *testing.T, tool *Tool, at int, args ...string) string {
+	t.Helper()
+	var env []string
+	if at > 0 {
+		date := fmt.Sprintf("@%d +0000", 1_000_000_000+at)
+		env = []string{"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date}
+	}
+	out, err := RealExec(context.Background(), Cmd{Dir: tool.Root, Env: env, Args: append([]string{"git", "-c", "user.name=Test", "-c", "user.email=test@example.test"}, args...)})
+	if err != nil || out.Code != 0 {
+		t.Fatalf("git %v: %+v %v", args, out, err)
+	}
+	return strings.TrimSpace(out.Stdout)
+}
+
+func commitFile(t *testing.T, tool *Tool, at int, file, body string) string {
+	t.Helper()
+	writeFile(t, filepath.Join(tool.Root, file), body)
+	gitAt(t, tool, 0, "add", "-A")
+	gitAt(t, tool, at, "commit", "-m", file)
+	return gitAt(t, tool, 0, "rev-parse", "HEAD")
+}
+
+// factsPerCommit is checkpointFacts for an open checkpoint at each of
+// commits, failing where it differs from merge-base and sourceUnchanged asked
+// per commit.
+func factsPerCommit(t *testing.T, tool *Tool, name string, commits []string) commitFacts {
+	t.Helper()
+	var cps []Checkpoint
+	for _, c := range commits {
+		cps = append(cps, Checkpoint{Basis: "b", Key: c, Status: "blocked", Commit: c})
+	}
+	facts, err := tool.checkpointFacts("b", cps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range commits {
+		mb, err := tool.git("merge-base", "--is-ancestor", c, "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		unchanged := false
+		if mb.Code == 0 {
+			if unchanged, err = tool.sourceUnchanged(c, tool.Config.Dir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if facts.ancestor[c] != (mb.Code == 0) || facts.unchanged[c] != unchanged {
+			t.Errorf("%s: %s ancestor %v unchanged %v; git per commit: ancestor %v unchanged %v", name, c[:7], facts.ancestor[c], facts.unchanged[c], mb.Code == 0, unchanged)
+		}
+	}
+	return facts
+}
+
 // checkpointFacts asks git about every checkpoint commit at once; each answer
 // must be merge-base's and sourceUnchanged's for that commit alone, also for
 // a working tree that undoes the commits since one (equal change sets).
 func TestCheckpointFactsAnswerAsGitDoesPerCommit(t *testing.T) {
 	tool := newTool(t, testConfig())
 	first := evidenceRepo(t, tool)
-	commit := func(file, body string) string {
-		t.Helper()
-		writeFile(t, filepath.Join(tool.Root, file), body)
-		for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", file}, {"rev-parse", "HEAD"}} {
-			if out, err := tool.git(args...); err != nil || out.Code != 0 {
-				t.Fatalf("git %v: %+v %v", args, out, err)
-			} else if args[0] == "rev-parse" {
-				return strings.TrimSpace(out.Stdout)
-			}
-		}
-		return ""
-	}
-	second := commit("app.ts", "changed\n")
-	rig := commit("tests/ui-loop/screens/tasks.ts", "recipe v1\n")
-	side, err := tool.git("commit-tree", rig+"^{tree}", "-m", "off HEAD's line")
-	if err != nil || side.Code != 0 {
-		t.Fatalf("commit-tree: %+v %v", side, err)
-	}
-	commits := []string{first, second, rig, strings.TrimSpace(side.Stdout), strings.Repeat("ab", 20)}
-	var cps []Checkpoint
-	for _, c := range commits {
-		cps = append(cps, Checkpoint{Basis: "b", Key: c, Status: "blocked", Commit: c})
-	}
+	second := commitFile(t, tool, 0, "app.ts", "changed\n")
+	rig := commitFile(t, tool, 0, "tests/ui-loop/screens/tasks.ts", "recipe v1\n")
+	side := gitAt(t, tool, 0, "commit-tree", rig+"^{tree}", "-m", "off HEAD's line")
+	commits := []string{first, second, rig, side, strings.Repeat("ab", 20)}
 	for _, step := range []struct {
 		name, file, body string
 		unchanged        []string
@@ -608,24 +646,62 @@ func TestCheckpointFactsAnswerAsGitDoesPerCommit(t *testing.T) {
 		if step.file != "" {
 			writeFile(t, filepath.Join(tool.Root, step.file), step.body)
 		}
-		facts, err := tool.checkpointFacts("b", cps)
-		if err != nil {
-			t.Fatal(err)
-		}
+		facts := factsPerCommit(t, tool, step.name, commits)
 		for _, c := range commits {
-			mb, err := tool.git("merge-base", "--is-ancestor", c, "HEAD")
-			if err != nil {
-				t.Fatal(err)
-			}
-			unchanged := false
-			if mb.Code == 0 {
-				if unchanged, err = tool.sourceUnchanged(c, tool.Config.Dir); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if facts.ancestor[c] != (mb.Code == 0) || facts.unchanged[c] != unchanged || unchanged != slices.Contains(step.unchanged, c) {
-				t.Errorf("%s: %s ancestor %v unchanged %v; git per commit: ancestor %v unchanged %v", step.name, c[:7], facts.ancestor[c], facts.unchanged[c], mb.Code == 0, unchanged)
+			if facts.unchanged[c] != slices.Contains(step.unchanged, c) {
+				t.Errorf("%s: %s unchanged %v", step.name, c[:7], facts.unchanged[c])
 			}
 		}
 	}
+}
+
+// Histories where asking git once could answer otherwise than merge-base and
+// sourceUnchanged per commit: rev-list stops walking early past skewed commit
+// dates, plumbing diff-tree ignores diff.ignoreSubmodules, and rev-list fails
+// outright on an unreadable object off HEAD's line.
+func TestCheckpointFactsHoldOnAwkwardHistories(t *testing.T) {
+	t.Run("skewed commit dates behind a merge", func(t *testing.T) {
+		tool := newTool(t, testConfig())
+		evidenceRepo(t, tool)
+		base := gitAt(t, tool, 0, "rev-parse", "HEAD")
+		fixed := commitFile(t, tool, 5000, "app.ts", "fixed\n")
+		for i := range 10 {
+			commitFile(t, tool, 1001+i, "tests/ui-loop/screens/tasks.ts", fmt.Sprintf("recipe %d\n", i))
+		}
+		side := gitAt(t, tool, 3000, "commit-tree", base+"^{tree}", "-p", base, "-m", "side")
+		gitAt(t, tool, 6000, "merge", "--no-ff", "-m", "merge", side)
+		if facts := factsPerCommit(t, tool, "skewed", []string{fixed}); !facts.ancestor[fixed] || !facts.unchanged[fixed] {
+			t.Fatalf("lost the checkpoint commit: %+v", facts)
+		}
+	})
+	t.Run("a gitlink bump under diff.ignoreSubmodules=all", func(t *testing.T) {
+		tool := newTool(t, testConfig())
+		evidenceRepo(t, tool)
+		if err := os.Mkdir(filepath.Join(tool.Root, "lib"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var commits []string
+		for i, sha := range []string{strings.Repeat("1", 40), strings.Repeat("2", 40)} {
+			gitAt(t, tool, 0, "update-index", "--add", "--cacheinfo", "160000,"+sha+",lib")
+			gitAt(t, tool, 0, "commit", "-m", fmt.Sprintf("lib %d", i))
+			commits = append(commits, gitAt(t, tool, 0, "rev-parse", "HEAD"))
+		}
+		gitAt(t, tool, 0, "config", "diff.ignoreSubmodules", "all")
+		if facts := factsPerCommit(t, tool, "gitlink", commits); !facts.unchanged[commits[0]] {
+			t.Fatalf("a hidden gitlink bump staled the checkpoint: %+v", facts)
+		}
+	})
+	t.Run("an unreadable object off HEAD's line", func(t *testing.T) {
+		tool := newTool(t, testConfig())
+		first := evidenceRepo(t, tool)
+		second := commitFile(t, tool, 0, "app.ts", "changed\n")
+		x1 := gitAt(t, tool, 0, "commit-tree", first+"^{tree}", "-p", first, "-m", "x1")
+		x2 := gitAt(t, tool, 0, "commit-tree", first+"^{tree}", "-p", x1, "-m", "x2")
+		if err := os.Remove(filepath.Join(tool.Root, ".git", "objects", x1[:2], x1[2:])); err != nil {
+			t.Fatal(err)
+		}
+		if facts := factsPerCommit(t, tool, "unreadable", []string{first, second, x2}); !facts.ancestor[first] || !facts.ancestor[second] {
+			t.Fatalf("one broken commit hid the others: %+v", facts)
+		}
+	})
 }

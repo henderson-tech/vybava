@@ -62,7 +62,11 @@ func TestTheDigestCacheRehashesARewrittenShotAndIsNeverEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, _, err := tool.planRecords(1, snap.records, nil, snap.hashes)
+	records, err := LoadRecords(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := tool.planRecords(1, records, nil, snap.hashes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +80,7 @@ func TestTheDigestCacheRehashesARewrittenShotAndIsNeverEvidence(t *testing.T) {
 			t.Fatalf("publish plans %+v", set.Files)
 		}
 	}
-	before, err := tool.screenDigests(1, snap.records, snap.hashes)
+	before, err := tool.screenDigests(1, records, snap.hashes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +101,7 @@ func TestTheDigestCacheRehashesARewrittenShotAndIsNeverEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := tool.screenDigests(1, snap.records, snap.hashes)
+	after, err := tool.screenDigests(1, records, snap.hashes)
 	if err != nil {
 		t.Fatal(err)
 	}

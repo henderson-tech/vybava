@@ -74,7 +74,11 @@ func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carri
 	if err != nil || !current {
 		return carried, err
 	}
-	thenRecords := then.records
+	thenRecords, err := LoadRecords(t.passAbs(from))
+	if err != nil {
+		return nil, err
+	}
+	then.records = thenRecords
 	batches, _, err := t.loadBatches(from, thenRecords, 0)
 	if err != nil {
 		return nil, err
