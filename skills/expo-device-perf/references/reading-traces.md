@@ -31,6 +31,8 @@ Evidence cites FixIt, as in `rn-render-cost-rules.md`.
   Evidence: S20 injected drags, appDeadline of neither: customer home 209/234, worker offers 153/193, money 152/180; the GPU completion wait never passed a vsync.
 - RenderThread `Drawing` ms is draw cost; main `Choreographer#doFrame` is UI-thread cost; they join per frame by vsync id.
 - Budget for the worst RenderThread clock the governor picks, not the peak: slow drags held it at 0.5-1.2 GHz on little and mid cores (Exynos 990), where a 7.7 ms draw missed 8.3 ms.
+- A main-thread `doFrame` every vsync at rest is no loop evidence on React Native 0.86: `FabricEventDispatcher` re-posts its TIMERS_EVENTS callback each frame while the activity is resumed (`BatchEventDispatchedListeners` plus `scheduleVsyncLocked`). Judge rest by presents and RenderThread draws.
+  Evidence: S20, 20 s at rest, ~2390 doFrames at 0.75-0.85 ms on every screen, a 0-present chat list included.
 - Main-thread eglSwapBuffers per frame is a Skia or GL canvas redrawing. `drawLayer` counts say how often each hardware layer re-renders.
 
 `analyze <pftrace> --sql <preset>`:
