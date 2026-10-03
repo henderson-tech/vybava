@@ -143,6 +143,18 @@ test('a turn end closes a job only when the in-flight list proves it ended', asy
   expect(stops()).toBe(1)
 })
 
+test('a background shell without a description never puts its command in the ledger text', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  const recorded = fleet(on, [])
+  session(on)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b7' } }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'TOKEN=not-for-the-ledger curl https://example.test', run_in_background: true })
+  const started = recorded.find(one => one.event.id === 'b7' && one.event.status === 'started')
+  expect(started?.event.description).toBe('background shell')
+})
+
 test('/park says whether a restart is safe from the jobs still running', async ($, on) => {
   mock.clock(on, { now: T0 })
   fleet(on, [job('workflow', 'from-before', 'started', { description: 'old run' })])

@@ -95,7 +95,9 @@ export const register: Register = on => {
     if (e.agentId === undefined && e.run_in_background === true && ran.deny === undefined && ran.isError !== true) {
       const taskId = ran.result.backgroundTaskId
       if (taskId !== undefined) {
-        const description = e.description ?? e.command.trim().split('\n')[0] ?? 'shell'
+        // Never the command itself: it can carry a secret, and the ledger
+        // keeps only its digest.
+        const description = e.description ?? 'background shell'
         await launched($, { kind: 'shell', id: taskId, description, startedAt: await $.clock.now() }, e.command)
       }
     }
