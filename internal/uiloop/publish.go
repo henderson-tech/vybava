@@ -27,7 +27,8 @@ type PublishOptions struct {
 	Force  bool
 	DryRun bool
 	// Owner names this publisher in the pass's publish lease, which it holds
-	// until it exits; TTL bounds it (0: DefaultLeaseTTL).
+	// until it exits, renewed every quarter of TTL (0: DefaultLeaseTTL), which
+	// then bounds only a publisher that stopped.
 	Owner string
 	TTL   time.Duration
 }
@@ -385,7 +386,7 @@ func (p *publisher) publishSet(s Set) PublishedSet {
 
 // Publish adopts the pass's split plan into vitrinka sets under
 // <out>/sets, one per area across passes, and pushes them one by one,
-// holding the pass's publish lease until it returns.
+// holding the pass's publish lease, renewed, until it returns.
 func (t *Tool) Publish(ctx context.Context, o PublishOptions) (_ Result, err error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -401,14 +402,14 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (_ Result, err err
 	if o.TTL <= 0 {
 		o.TTL = DefaultLeaseTTL
 	}
-	lease, held, err := t.acquireLease(pass, leasePublish, processLease(o.Owner, "publish", o.TTL))
+	release, held, err := t.holdLease(pass, leasePublish, processLease(o.Owner, "publish", o.TTL))
 	if err != nil {
 		return Result{}, err
 	}
 	if held != nil {
 		return Result{}, leaseHeld(pass, held)
 	}
-	defer t.dropLease(pass, leasePublish, lease, &err)
+	defer release(&err)
 	records, err := LoadRecords(passDir)
 	if err != nil {
 		return Result{}, err

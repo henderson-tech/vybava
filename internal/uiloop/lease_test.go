@@ -1,6 +1,7 @@
 package uiloop
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 // A lease has one holder: a second taker is held and told who holds it,
 // the holder takes it back (renewed, since kept), and only the holder's
-// release removes it.
+// release removes it; an owner lease matches on its owner alone.
 func TestALeaseHasOneHolderAndOnlyItReleasesIt(t *testing.T) {
 	tool := newTool(t, testConfig())
 	now := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
@@ -43,6 +44,32 @@ func TestALeaseHasOneHolderAndOnlyItReleasesIt(t *testing.T) {
 	}
 	if _, held, err := tool.acquireLease(1, leaseSynth, b); err != nil || held != nil {
 		t.Errorf("a released lease is free: %+v %v", held, err)
+	}
+	// An owner lease is its owner's from any host: macOS renames the host per network.
+	claim := Lease{Owner: "run-c", Host: "renamed.local", StartedAt: "2026-10-03T09:50:00Z", TTL: "1h0m0s"}
+	if err := writeJSON(tool.leaseFile(1, batchLease("tasks-1")), claim); err != nil {
+		t.Fatal(err)
+	}
+	if _, held, err := tool.acquireLease(1, batchLease("tasks-1"), leaseReq{owner: "run-c", ttl: time.Hour}); err != nil || held != nil {
+		t.Errorf("run-c takes its claim back under another host name: %+v %v", held, err)
+	}
+}
+
+// A capture's or a publish's lease is renewed while the verb runs, so it
+// holds past its ttl; release drops it.
+func TestAHeldLeaseOutlivesItsTTLWhileItsVerbRuns(t *testing.T) {
+	tool := newTool(t, testConfig())
+	release, held, err := tool.holdLease(1, leasePublish, leaseReq{owner: "ui-loop publish", pid: os.Getpid(), ttl: time.Second})
+	if err != nil || held != nil {
+		t.Fatal(held, err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if h, err := tool.readLease(1, leasePublish); err != nil || h == nil || h.Stale != "" {
+		t.Errorf("renewed past its ttl: %+v %v", h, err)
+	}
+	release(&err)
+	if h, rerr := tool.readLease(1, leasePublish); err != nil || rerr != nil || h != nil {
+		t.Errorf("released: %+v %v %v", h, err, rerr)
 	}
 }
 
@@ -165,5 +192,32 @@ func TestMergeReviewRefusesWhileAnotherOwnerHoldsSynth(t *testing.T) {
 	now = now.Add(2 * time.Hour)
 	if _, err := tool.MergeReview(MergeReviewOptions{Owner: "run-b"}); err != nil {
 		t.Errorf("run-a's synth ran out: %v", err)
+	}
+}
+
+// state's next.parallel counts only the left batches no live claim holds:
+// the runs reviewing the rest need no company.
+func TestParallelCountsOnlyUnclaimedBatches(t *testing.T) {
+	tool := newTool(t, testConfig())
+	var shots []shot
+	for i := range 9 {
+		shots = append(shots, shot{order: i, id: fmt.Sprintf("s%d", i), area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1})
+	}
+	writePass(t, tool, 1, shots)
+	writeFile(t, filepath.Join(tool.passAbs(1), "publish", "index.json"), `{"pass":1,"sets":[{"key":"ui-polish-tasks","area":"tasks","status":"pushed","url":"u1"}]}`)
+	for _, c := range []struct {
+		owner       string
+		claim, want int
+	}{{"", 0, 3}, {"run-a", 4, 2}, {"run-b", 4, 1}} {
+		if _, err := tool.Batches(BatchesOptions{Size: 1, Claim: c.claim, Owner: c.owner}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tool.State(StateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next := res.Data.(StateData).Next; next.Stage != "review" || next.Parallel != c.want {
+			t.Errorf("after %q claimed %d of 9: %+v, want parallel %d", c.owner, c.claim, next, c.want)
+		}
 	}
 }

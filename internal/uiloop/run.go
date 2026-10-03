@@ -190,16 +190,31 @@ func (t *Tool) resolveShotPass(n int) (int, error) {
 	if n != 0 {
 		return t.ResolvePass(n, true)
 	}
-	passes, err := t.Passes()
+	pass, _, err := t.newestShotPass()
 	if err != nil {
 		return 0, err
 	}
+	if pass == 0 || !t.hasShots(pass) {
+		return 0, diag(DiagPassMissing, "no pass under "+t.Config.Out+" holds shots", "vybava ui-loop run")
+	}
+	return pass, nil
+}
+
+// newestShotPass is the pass `state` reads, and newest the newest pass (0,
+// 0 when there is none): the newest pass that holds shots, else the newest.
+// A newer pass without shots is a capture starting, or pending.
+func (t *Tool) newestShotPass() (pass, newest int, err error) {
+	passes, err := t.Passes()
+	if err != nil || len(passes) == 0 {
+		return 0, 0, err
+	}
+	newest = passes[len(passes)-1]
 	for i := len(passes) - 1; i >= 0; i-- {
 		if t.hasShots(passes[i]) {
-			return passes[i], nil
+			return passes[i], newest, nil
 		}
 	}
-	return 0, diag(DiagPassMissing, "no pass under "+t.Config.Out+" holds shots", "vybava ui-loop run")
+	return newest, newest, nil
 }
 
 func (t *Tool) validateSelection(s Selection) error {
@@ -262,7 +277,15 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (_ Result, err error) {
 	} else if held != nil {
 		return Result{}, captureRunning(running, held)
 	}
-	pass, err := t.ResolvePass(o.Pass, o.Selection.Resume)
+	// A bare --resume resumes the pass state reads, never a newer one that
+	// is only pending.
+	pass := o.Pass
+	if pass == 0 && o.Selection.Resume {
+		if pass, _, err = t.newestShotPass(); err != nil {
+			return Result{}, err
+		}
+	}
+	pass, err = t.ResolvePass(pass, o.Selection.Resume)
 	if err != nil {
 		return Result{}, err
 	}
@@ -276,14 +299,14 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (_ Result, err error) {
 	// createdAt run.json is about to record. A run that resolved the same
 	// pass a moment earlier wins the exclusive create.
 	created := t.Now().UTC().Format("2006-01-02T15:04:05Z")
-	lease, held, err := t.acquireLease(pass, leaseCapture, leaseReq{owner: "ui-loop run", pid: os.Getpid(), ttl: captureLeaseTTL, run: created})
+	release, held, err := t.holdLease(pass, leaseCapture, leaseReq{owner: "ui-loop run", pid: os.Getpid(), ttl: captureLeaseTTL, run: created})
 	if err != nil {
 		return Result{}, err
 	}
 	if held != nil {
 		return Result{}, captureRunning(pass, held)
 	}
-	defer t.dropLease(pass, leaseCapture, lease, &err)
+	defer release(&err)
 	if o.Workers <= 0 {
 		o.Workers = 2
 	}

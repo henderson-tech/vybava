@@ -169,10 +169,10 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	runCmd.Flags().StringVar(&themes, "themes", "", "only these themes: light,dark")
 	runCmd.Flags().BoolVar(&opts.Selection.Destructive, "destructive", false, "also shoot destructive recipes (last)")
 	runCmd.Flags().BoolVar(&opts.Selection.Resume, "resume", false, "finish a cut-short pass: keep ok/unreachable shots, retake the rest")
-	runCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the next one; with --resume the latest)")
+	runCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the next one; with --resume the latest with shots, the pass state reads)")
 	runCmd.Flags().IntVar(&opts.Workers, "workers", 2, "Playwright workers")
 	runCmd.Flags().IntVar(&opts.BuildWait, "build-wait", 300, "seconds a shot waits for a red dev server to turn green")
-	runCmd.Flags().BoolVar(&opts.Print, "print", false, "write run.json and print the command without running it")
+	runCmd.Flags().BoolVar(&opts.Print, "print", false, "write run.json and print the command without running it (the capture lease ends with this command, so a printed line runs unleased; --wrap holds it)")
 	runCmd.Flags().StringVar(&opts.Wrap, "wrap", "", `run the command through another; {cmd} is the quoted capture command (e.g. "devbox run -- {cmd}")`)
 
 	splitCmd := &cobra.Command{
@@ -217,7 +217,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 			})
 		}),
 	}
-	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
+	publishCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots; with --follow the running capture's, else the latest)")
 	publishCmd.Flags().StringVar(&areas, "areas", "", "only these areas (comma-separated)")
 	publishCmd.Flags().StringVar(&sets, "sets", "", "only these set keys (comma-separated)")
 	publishCmd.Flags().IntVar(&retries, "retries", 3, "push attempts per set")

@@ -9,7 +9,8 @@ package uiloop
 //
 //   - A process lease (pid > 0: capture, publish, a merge-review without
 //     --owner) is held by one vybava process and released when it exits,
-//     error or not. Only a crash leaves one behind, and its dead pid stales it.
+//     error or not; a capture and a publish renew it while they run
+//     (holdLease). Only a crash leaves one behind, and its dead pid stales it.
 //   - An owner lease (pid 0: a batch claim, a merge-review's synth with
 //     --owner) is held for a workflow run past the verb that took it, until
 //     its ttl runs out; the same owner takes it back (renews it) any time.
@@ -40,9 +41,10 @@ const (
 func batchLease(id string) string { return "batch-" + id }
 
 const (
-	// captureLeaseTTL bounds a capture lease whose pid this host cannot judge
-	// (taken on another host, or a pid reused after a reboot); on its own host
-	// the pid is its liveness and done.json its end. A pass took 10–25 min.
+	// captureLeaseTTL bounds a capture lease whose run stopped renewing it
+	// and whose pid this host cannot judge (taken on another host, or a pid
+	// reused after a crash); on its own host the pid is its liveness and
+	// done.json its end. A pass took 10–25 min.
 	captureLeaseTTL = 6 * time.Hour
 	// DefaultLeaseTTL is synth's and publish's ttl, DefaultClaimTTL a batch claim's.
 	DefaultLeaseTTL = time.Hour
@@ -60,9 +62,14 @@ type Lease struct {
 	Run       string `json:"run"`
 }
 
-// sameHolder: the same owner, host and process (pid 0 for an owner lease,
-// which every process of that owner takes back).
+// sameHolder: the same owner, and for a process lease the same host and
+// process. An owner lease (pid 0) is its owner's on any host, so every
+// process of that owner takes it back, even after macOS renamed the host
+// (it does, per network).
 func (l Lease) sameHolder(o Lease) bool {
+	if l.PID == 0 && o.PID == 0 {
+		return l.Owner == o.Owner
+	}
 	return l.Owner == o.Owner && l.Host == o.Host && l.PID == o.PID
 }
 
@@ -317,6 +324,55 @@ func (t *Tool) dropLease(pass int, name string, l Lease, err *error) {
 	}
 }
 
+// holdLease takes the process lease r of a long verb (a capture, a publish)
+// and renews it every quarter of its ttl while the verb runs, so the ttl
+// bounds only a holder that stopped renewing (a crash, or its pid reused
+// after one), never a verb that outlasts it. release (defer it) stops the
+// renewal and drops the lease; a renewal that failed, or found the lease
+// taken over, joins the verb's error.
+func (t *Tool) holdLease(pass int, name string, r leaseReq) (release func(err *error), held *heldLease, err error) {
+	l, held, err := t.acquireLease(pass, name, r)
+	if err != nil || held != nil {
+		return nil, held, err
+	}
+	type renewal struct {
+		l   Lease
+		err error
+	}
+	quit, last := make(chan struct{}), make(chan renewal, 1)
+	go func() {
+		tick := time.NewTicker(max(r.ttl/4, time.Millisecond))
+		defer tick.Stop()
+		for {
+			select {
+			case <-quit:
+				last <- renewal{l: l}
+				return
+			case <-tick.C:
+			}
+			// A renewal after the lease went stale (the Mac slept past its
+			// ttl) takes it afresh, so release must remove that one.
+			got, held, err := t.acquireLease(pass, name, r)
+			if err == nil && held != nil {
+				err = fmt.Errorf("taken over by %s since %s (%s)", held.Owner, held.StartedAt, held.where())
+			}
+			if err != nil {
+				last <- renewal{l: l, err: fmt.Errorf("renewing %s/locks/%s.json: %w", t.PassDir(pass), name, err)}
+				return
+			}
+			l = got
+		}
+	}()
+	return func(err *error) {
+		close(quit)
+		end := <-last
+		if end.err != nil {
+			*err = errors.Join(*err, end.err)
+		}
+		t.dropLease(pass, name, end.l, err)
+	}, nil, nil
+}
+
 // claimBatches claims up to n of the left batch ids for owner, in order, as
 // batch-<id> owner leases: the ones owner already holds first (renewed),
 // then unclaimed or stale-claimed ones; another owner's live claim is
@@ -358,6 +414,21 @@ func (t *Tool) claimBatches(pass int, left []string, n int, owner string, ttl ti
 		return nil
 	})
 	return claimed, err
+}
+
+// unclaimed counts the batch ids no live claim holds.
+func (t *Tool) unclaimed(pass int, ids []string) (int, error) {
+	n := 0
+	for _, id := range ids {
+		cur, err := t.readLease(pass, batchLease(id))
+		if err != nil {
+			return 0, err
+		}
+		if cur == nil || cur.Stale != "" {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // captureRunning refuses a second capture while h holds pass's.

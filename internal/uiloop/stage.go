@@ -110,11 +110,12 @@ type NextStage struct {
 // batches' claimed.
 const StateContract = 4
 
-// reviewParallel is how many identical review runs the left batches keep
-// busy: one per reviewersPerRun batches, at most maxReviewRuns, and at
-// least the one run that synthesizes once no batch is left.
-func reviewParallel(left int) int {
-	return max(1, min(maxReviewRuns, (left+reviewersPerRun-1)/reviewersPerRun))
+// reviewParallel is how many identical review runs the unclaimed left
+// batches keep busy: one per reviewersPerRun batches, at most
+// maxReviewRuns, and at least the one run that synthesizes once no batch
+// is left.
+func reviewParallel(unclaimed int) int {
+	return max(1, min(maxReviewRuns, (unclaimed+reviewersPerRun-1)/reviewersPerRun))
 }
 
 const (
@@ -800,28 +801,18 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if capture != nil {
 		data.Capture = CaptureState{Running: true, Pass: running, Since: capture.StartedAt, Owner: capture.Owner}
 	}
-	// The default is the newest pass with shots, as resolveShotPass picks it:
+	// The default is the newest pass with shots (newestShotPass):
 	// a newer, shot-less one is a capture still starting (Capture) or one
 	// that never shot (Pending, which the next run reuses), and routing to
 	// it sent every concurrent run to the one pass.
 	pass := o.Pass
 	if pass == 0 {
-		passes, err := t.Passes()
-		if err != nil {
+		var newest int
+		if pass, newest, err = t.newestShotPass(); err != nil {
 			return Result{}, err
 		}
-		for i := len(passes) - 1; i >= 0 && pass == 0; i-- {
-			if t.hasShots(passes[i]) {
-				pass = passes[i]
-			}
-		}
-		if n := len(passes); n > 0 {
-			switch newest := passes[n-1]; {
-			case pass == 0:
-				pass = newest
-			case newest != pass && newest != data.Capture.Pass:
-				data.Pending = &newest
-			}
+		if newest != pass && newest != data.Capture.Pass {
+			data.Pending = &newest
 		}
 	}
 	if pass == 0 {
@@ -1006,8 +997,14 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
 	}
 	data.Next = nextStage(pass, records, data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, drift.App, unjudged, primitives, o.Cap)
+	// Batches a live run has claimed need no new run: counting them sent
+	// each of K parallel runs on to launch K more.
 	if data.Next.Stage == "review" {
-		data.Next.Parallel = reviewParallel(len(data.Review.Left))
+		unclaimed, err := t.unclaimed(pass, data.Review.Left)
+		if err != nil {
+			return Result{}, err
+		}
+		data.Next.Parallel = reviewParallel(unclaimed)
 	}
 	if _, err := readJSON(filepath.Join(t.passAbs(pass), "fix", "recovery.json"), &data.Recovery); err != nil {
 		return Result{}, err

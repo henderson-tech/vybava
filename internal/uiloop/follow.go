@@ -124,7 +124,16 @@ func finalRecords(passDir string, records []Record, run RunFile, done bool) []Re
 // has arrived and no new shot has for --until-idle. It holds the pass's
 // publish lease throughout, renewed every tick.
 func (t *Tool) Follow(ctx context.Context, o FollowOptions) (_ Result, err error) {
-	pass, err := t.ResolvePass(o.Pass, true)
+	// A bare follow fetches the pass a live capture lease names (a newer,
+	// pending pass is not the capture), else the newest: a capture's shots
+	// reach the Mac only through this fetch, so its pass holds none here yet.
+	pass := o.Pass
+	if pass == 0 {
+		if pass, _, err = t.liveCapture(); err != nil {
+			return Result{}, err
+		}
+	}
+	pass, err = t.ResolvePass(pass, true)
 	if err != nil {
 		return Result{}, err
 	}
