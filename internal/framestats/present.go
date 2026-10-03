@@ -17,6 +17,9 @@ const (
 	rtDrawingPrefix = "Drawing "
 	drawLayerPrefix = "drawLayer"
 	eglSwapPrefix   = "eglSwapBuffers"
+	// gpuWaitPrefix: HWUI's GPU completion thread waits this long per
+	// frame for the GPU to finish what the RenderThread queued.
+	gpuWaitPrefix = "waiting for GPU completion"
 	// DropVsyncs: a present gap above this many periods is a dropped frame.
 	DropVsyncs = 1.4
 	// presentTypeDropped: a surface frame SurfaceFlinger never presented.
@@ -122,7 +125,13 @@ type PresentMetrics struct {
 	PresentGaps        PresentGaps   `json:"presentGaps"`
 	RTDrawMs           DurationStats `json:"rtDrawMs"`
 	MainDoFrameMs      DurationStats `json:"mainDoFrameMs"`
-	Drops              Drops         `json:"drops"`
+	// GPUWaitMs is the GPU's time per frame after the RenderThread queued
+	// it (HWUI's "waiting for GPU completion"); GPUWaitOverVsync counts the
+	// frames whose GPU work outlasted a period: there the GPU, not a
+	// thread, paces the frame (a Galaxy A16's worker hub: 655 of 1972).
+	GPUWaitMs        DurationStats `json:"gpuWaitMs"`
+	GPUWaitOverVsync int           `json:"gpuWaitOverVsync"`
+	Drops            Drops         `json:"drops"`
 	// MainEglSwapsPerFrame: main-thread eglSwapBuffers slices per doFrame;
 	// above zero at rest a Skia/GL canvas keeps redrawing.
 	MainEglSwapsPerFrame float64     `json:"mainEglSwapsPerFrame"`
@@ -254,7 +263,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	rt := renderThread(slices)
 	mainByID := map[int64]float64{}
 	rtByID := map[int64]float64{}
-	var doFrames, rtDraws []float64
+	var doFrames, rtDraws, gpuWaits []float64
 	eglSwaps := 0
 	layerCounts := map[string]int{}
 	var drawings []slice
@@ -276,6 +285,11 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 		case rt != 0 && sl.tid == rt && strings.HasPrefix(sl.name, rtDrawingPrefix):
 			rtDraws = append(rtDraws, d)
 			drawings = append(drawings, sl)
+		case strings.HasPrefix(sl.name, gpuWaitPrefix):
+			gpuWaits = append(gpuWaits, d)
+			if d > period {
+				m.GPUWaitOverVsync++
+			}
 		case rt != 0 && sl.tid == rt && strings.HasPrefix(sl.name, drawLayerPrefix):
 			layerCounts[sl.name]++
 		}
@@ -285,6 +299,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	}
 	m.MainDoFrameMs = durationStats(doFrames)
 	m.RTDrawMs = durationStats(rtDraws)
+	m.GPUWaitMs = durationStats(gpuWaits)
 	// A screen at rest presents nothing, which is a reading of zero, not
 	// missing evidence, when the trace proves it: FrameTimeline recorded
 	// (SurfaceFlinger display frames), the app's main thread traced its

@@ -401,7 +401,7 @@ the default budgets below. Metric definitions: `restFrames` counts frames
 after the first gap over 60 ms (every frame when one run lasts to the
 trace's end);
 `restRunMs` is the longest run of presents with no gap over 60 ms;
-`rtDrawMs` is RenderThread `Drawing` per frame;
+`rtDrawMs` is RenderThread `Drawing` per frame (on a GPU-bound phone it includes the queueBuffer wait for a free buffer); `gpuWaitMs` is HWUI's "waiting for GPU completion" per frame and `gpuWaitOverVsync` the frames whose GPU work outlasted a period (the GPU paces those);
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4
 periods, blamed on main or RenderThread when either exceeded one period on
 that frame or the one before, and `drops.appDeadline` counts the neither

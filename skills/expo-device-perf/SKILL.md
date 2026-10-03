@@ -51,6 +51,7 @@ App-wide render sweep: `perflab hazards <appRoot>` lists loop, layer and list si
 | What runs in the slow frame? | `analyze <trace> --window a-b --classify` (Time Profiler) | `analyze <pftrace> --sql perframe` / `children` |
 | Does it draw at rest? | `probe rest`: main-thread ms/s (`iosRestMainMsPerS`; hitches miss a smooth loop) | `probe rest`: frames, main-thread eglSwaps |
 | Is the RenderThread clock-starved? | n/a | `--sql rtfreq` |
+| Is the GPU pacing it? | n/a | `present.gpuWaitMs` / `gpuWaitOverVsync` (a mid-range GPU fills a full-screen gradient slower than the vsync) |
 | Does it degrade with use? | slope over N cycles | same |
 | Is the component compiled? | the project's React Compiler gate (rule 14) | same |
 | How much JS per render? | dev-client React Profiler, relative only | same |

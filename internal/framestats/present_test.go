@@ -78,6 +78,10 @@ func presentTraceFor(surfacePid int) []byte {
 		marker{101, renderTi, "B|4242|Drawing 0.00 0.00 780.00 768.00"}, marker{103, renderTi, "E|4242"},
 		marker{71, renderTi, "B|4242|drawLayer [g] 1080.0 x 2148.0"}, marker{72, renderTi, "E|4242"},
 		marker{82, appPid, "B|4242|eglSwapBuffers"}, marker{82.5, appPid, "E|4242"},
+		// HWUI's GPU completion thread: one frame's GPU work fits, one
+		// outlasts the 8.3 ms period.
+		marker{75, 4260, "B|4242|waiting for GPU completion 11"}, marker{78, 4260, "E|4242"},
+		marker{105, 4260, "B|4242|waiting for GPU completion 12"}, marker{117, 4260, "E|4242"},
 	)
 	parts = append(parts,
 		ftracePacket(m),
@@ -110,6 +114,9 @@ func TestReadPresentMeasuresWhatReachedTheGlass(t *testing.T) {
 	// is already a main drop.
 	if pm.Drops != (Drops{Total: 3, Main: 2, Neither: 1, AppDeadline: 1}) {
 		t.Errorf("drops = %+v", pm.Drops)
+	}
+	if pm.GPUWaitMs.Count != 2 || val(t, "gpu wait avg", pm.GPUWaitMs.Avg) != 7.5 || pm.GPUWaitOverVsync != 1 {
+		t.Errorf("gpu wait = %+v, over vsync %d", pm.GPUWaitMs, pm.GPUWaitOverVsync)
 	}
 	if pm.MainDoFrameMs.Count != 5 || val(t, "doFrame p50", pm.MainDoFrameMs.P50) != 2 || pm.MainEglSwapsPerFrame != 0.2 {
 		t.Errorf("main = %+v, egl %v", pm.MainDoFrameMs, pm.MainEglSwapsPerFrame)
