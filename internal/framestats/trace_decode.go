@@ -67,6 +67,8 @@ type rawTrace struct {
 	// switches and freqs feed the CPU placement of RenderThread work.
 	switches []schedSwitch
 	freqs    []cpuFreq
+	// compactSched: the trace carries compact sched bundles (not decoded).
+	compactSched bool
 }
 
 // schedSwitch is one sched_switch on a CPU.
@@ -149,6 +151,11 @@ func (t *rawTrace) decodeFtrace(bundle []byte) error {
 	for _, bf := range bfs {
 		if bf.num == 1 && bf.wt == 0 {
 			cpu = int(bf.u)
+		}
+		// FtraceEventBundle.compact_sched=4: sched switches this reader
+		// does not decode (Android 16's traced writes them by default).
+		if bf.num == 4 && bf.wt == 2 {
+			t.compactSched = true
 		}
 	}
 	for _, bf := range bfs {

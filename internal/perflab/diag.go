@@ -108,7 +108,7 @@ var packageCodes = [][]string{
 		framestats.DiagNotFramestats, framestats.DiagMissingColumns, framestats.DiagMalformedRows,
 		framestats.DiagNoFrames, framestats.DiagNotATrace, framestats.DiagTraceIncomplete,
 		framestats.DiagPackageNotInTrace, framestats.DiagNoAppFrames, framestats.DiagNoRenderThread,
-		framestats.DiagNoVsyncIDs, framestats.DiagNoFrameTimeline, framestats.DiagColumnOrderSwapped,
+		framestats.DiagNoVsyncIDs, framestats.DiagNoFrameTimeline, framestats.DiagCompactSched, framestats.DiagColumnOrderSwapped,
 		framestats.DiagCappedFpsSource, framestats.DiagStepsUnmapped, framestats.DiagPresetUnknown,
 		framestats.DiagPresetFailed, framestats.DiagToolMissing, framestats.DiagFileUnreadable,
 	},

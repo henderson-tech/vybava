@@ -341,6 +341,10 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	}
 	m.RTDrawByRect = byRect(drawings)
 	m.RTCpu = placeOnCPUs(drawings, rt, t.switches, t.freqs)
+	if t.compactSched && len(t.switches) == 0 && len(drawings) > 0 {
+		diags = append(diags, warn(DiagCompactSched, "the sched switches are compact sched bundles, so rtCpu (RenderThread per CPU and clock) is unread",
+			`re-record with ftrace_config { compact_sched { enabled: false } } (perflab probe's config sets it)`))
+	}
 	return m, diags, nil
 }
 

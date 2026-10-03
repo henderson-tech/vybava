@@ -54,6 +54,11 @@ const (
 	// app; the config lacks the android.surfaceflinger.frametimeline data
 	// source. Warning.
 	DiagNoFrameTimeline = "NO_FRAME_TIMELINE"
+	// DiagCompactSched: the trace's sched switches came compact (Android
+	// 16's traced default), which this reader does not decode, so the
+	// RenderThread's CPU and clock placement (rtCpu) is unread. Warning; the
+	// fix records with ftrace_config compact_sched { enabled: false }.
+	DiagCompactSched = "COMPACT_SCHED"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

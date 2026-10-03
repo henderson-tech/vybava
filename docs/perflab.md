@@ -553,7 +553,7 @@ exact command where one exists.
 | `STEPS_UNMAPPED` | marks or taps outside the recording (warning) | check the marks file or log belongs to the window |
 | `FILE_UNREADABLE` | an input file cannot be read | the path |
 | `NOT_FRAMESTATS` / `MISSING_COLUMNS` / `MALFORMED_ROWS` / `NO_FRAMES` | a gfxinfo dump that is not one / lacks columns / has bad rows / holds none | re-dump with `dumpsys gfxinfo <pkg> framestats` |
-| `NOT_A_PERFETTO_TRACE` / `TRACE_INCOMPLETE` / `PACKAGE_NOT_IN_TRACE` / `NO_APP_FRAMES` / `NO_RENDER_THREAD` / `NO_VSYNC_IDS` / `NO_FRAME_TIMELINE` | the Perfetto trace cannot answer (as in `docs/framestats.md`) | re-record with the probe config |
+| `NOT_A_PERFETTO_TRACE` / `TRACE_INCOMPLETE` / `PACKAGE_NOT_IN_TRACE` / `NO_APP_FRAMES` / `NO_RENDER_THREAD` / `NO_VSYNC_IDS` / `NO_FRAME_TIMELINE` / `COMPACT_SCHED` | the Perfetto trace cannot answer (as in `docs/framestats.md`; compact sched: an Android 16 trace without `compact_sched { enabled: false }`, rtCpu unread) | re-record with the probe config |
 | `COLUMN_ORDER_SWAPPED` / `CAPPED_FPS_SOURCE` | Android 13 rows (info) / a 60-capped FPS source on a faster display (warning) | none / use the display metrics |
 | `PRESET_UNKNOWN` / `PRESET_FAILED` | `--sql` names no preset / trace_processor_shell failed | `perflab analyze … --sql frames` / install from get.perfetto.dev |
 | `TOO_FEW_RUNS` / `NOISY` / `CONFOUNDED` | compare inputs | `perflab run … --repeat 2 --alternate` / `--allow-confound` |

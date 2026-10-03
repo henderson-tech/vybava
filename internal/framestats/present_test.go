@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // schedPacket writes sched_switch events (prev_pid=2, next_pid=6) on cpu
@@ -311,4 +313,54 @@ func TestRestReadingSplitsTicksFromLoops(t *testing.T) {
 				c.name, got.frames, got.ticks, got.tickFrames, got.tickIntervalMs, c.frames, c.ticks, c.tickFrames, c.intervalMs)
 		}
 	}
+}
+
+// Android 16's traced writes sched switches as compact sched bundles by
+// default (a Galaxy A16): the reader decodes none, so the RenderThread's CPU
+// placement came back empty without a word. It now says so, and the probe
+// config turns compact sched off.
+func TestCompactSchedSaysRenderThreadPlacementIsUnread(t *testing.T) {
+	const P = 11.111
+	main := []byte("TX - app.test/app.test.MainActivity$_4242#1")
+	var parts [][]byte
+	var m []marker
+	for i, at := range []float64{100, 100 + P, 100 + 2*P} {
+		id := int64(300 + i)
+		parts = append(parts,
+			timelinePacket(at-20, tlActualSurface, pbVarint(1, int64(20+i)), pbVarint(2, id), pbVarint(4, appPid), pbBytes(5, main), pbVarint(6, 1)),
+			timelinePacket(at, tlFrameEnd, pbVarint(1, int64(20+i))))
+		m = append(m, marker{at - 20, appPid, "B|4242|Choreographer#doFrame " + itoa(id)}, marker{at - 18, appPid, "E|4242"},
+			marker{at - 15, renderTi, "B|4242|DrawFrames " + itoa(id)}, marker{at - 12, renderTi, "E|4242"},
+			marker{at - 14.5, renderTi, "B|4242|Drawing 0.00 0.00 1080.00 2340.00"}, marker{at - 12.5, renderTi, "E|4242"})
+	}
+	compact := pbBytes(fTracePacket, pbBytes(fFtraceBundle, pbMsg(pbVarint(1, 6), pbBytes(4, pbVarint(1, 1)))))
+	for _, c := range []struct {
+		name  string
+		extra [][]byte
+		warns bool
+	}{
+		{"compact sched bundles", [][]byte{compact}, true},
+		{"full sched_switch events", [][]byte{schedPacket(6, [][3]float64{{70, 0, renderTi}, {130, renderTi, 0}}, [][3]float64{{10, 6, 2_200_000}})}, false},
+	} {
+		trace := pbMsg(append(append(append([][]byte{}, parts...), ftracePacket(m)), c.extra...)...)
+		pm, diags, err := ReadPresent(trace, PresentOptions{Package: "app.test", PID: appPid})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := hasDiag(diags, DiagCompactSched); got != c.warns {
+			t.Errorf("%s: COMPACT_SCHED %v, want %v (diags %+v)", c.name, got, c.warns, diags)
+		}
+		if c.warns != (len(pm.RTCpu) == 0) {
+			t.Errorf("%s: rtCpu %+v", c.name, pm.RTCpu)
+		}
+	}
+}
+
+func hasDiag(diags []runx.Diagnostic, code string) bool {
+	for _, d := range diags {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
 }
