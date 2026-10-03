@@ -321,6 +321,100 @@ func (t *Tool) cachedReviewBasis(pass int, known []string) (string, error) {
 	return t.reviewBasis(pass)
 }
 
+// passSnapshot is one request's read of a pass's evidence (reviewEvidence):
+// the basis and the SHA256 of every file it covers, keyed relative to Root,
+// so a request hashes the shots once.
+type passSnapshot struct {
+	basis  string
+	hashes map[string]string
+}
+
+// snapshot is known[0], else the pass's evidence read now.
+func (t *Tool) snapshot(pass int, known []passSnapshot) (passSnapshot, error) {
+	if len(known) > 0 {
+		return known[0], nil
+	}
+	basis, hashes, _, err := t.reviewEvidence(pass)
+	return passSnapshot{basis: basis, hashes: hashes}, err
+}
+
+// screenEntry is a screen's manifest entry as its shot records recorded it at
+// capture (harness/capture.spec.ts copies it into every record).
+type screenEntry struct {
+	ID          string   `json:"id"`
+	App         string   `json:"app"`
+	Area        string   `json:"area"`
+	Kind        string   `json:"kind"`
+	State       string   `json:"state"`
+	Title       string   `json:"title"`
+	Route       string   `json:"route"`
+	ParentID    string   `json:"parentId"`
+	VariantOf   string   `json:"variantOf"`
+	As          string   `json:"as"`
+	SourceFiles []string `json:"sourceFiles"`
+	KnownIssues []string `json:"knownIssues"`
+	Destructive bool     `json:"destructive"`
+}
+
+// screenDigests is each screen's review evidence: the SHA256 of the compact
+// JSON {shots, screen, spec}, where shots are the sorted [file, SHA256] pairs
+// of its ok shots' PNGs (file relative to the pass directory), screen is its
+// manifest entry as its first record recorded it (a resume refuses a changed
+// rig, so every record of a pass agrees) and spec is the spec's SHA256 as the
+// basis read it ("" without one). A --resume retake that changes a PNG moves
+// its screen's digest and no other; a rig or spec edit after capture moves none.
+func (t *Tool) screenDigests(pass int, records []Record, hashes map[string]string) (map[string]string, error) {
+	prefix, err := filepath.Rel(t.Root, t.passAbs(pass))
+	if err != nil {
+		return nil, err
+	}
+	spec := ""
+	if t.Config.Spec != "" {
+		rel, err := filepath.Rel(t.Root, t.abs(t.Config.Spec))
+		if err != nil {
+			return nil, err
+		}
+		spec = hashes[filepath.ToSlash(rel)]
+	}
+	type evidence struct {
+		Shots  [][2]string `json:"shots"`
+		Screen screenEntry `json:"screen"`
+		Spec   string      `json:"spec"`
+	}
+	byID := map[string]*evidence{}
+	for _, r := range records {
+		e := byID[r.ID]
+		if e == nil {
+			e = &evidence{Shots: [][2]string{}, Spec: spec, Screen: screenEntry{
+				ID: r.ID, App: r.App, Area: r.Area, Kind: r.Kind, State: r.State, Title: r.Title, Route: r.Route,
+				ParentID: r.ParentID, VariantOf: r.VariantOf, As: r.As, SourceFiles: r.SourceFiles, KnownIssues: r.KnownIssues, Destructive: r.Destructive,
+			}}
+			byID[r.ID] = e
+		}
+		if r.Status != "ok" {
+			continue
+		}
+		for _, name := range []string{r.Files.Viewport, r.Files.Full} {
+			if name != "" {
+				file := path.Join(r.Dir, name)
+				e.Shots = append(e.Shots, [2]string{file, hashes[path.Join(filepath.ToSlash(prefix), file)]})
+			}
+		}
+	}
+	digests := make(map[string]string, len(byID))
+	for id, e := range byID {
+		sort.Slice(e.Shots, func(i, j int) bool { return e.Shots[i][0] < e.Shots[j][0] })
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(e); err != nil {
+			return nil, err
+		}
+		digests[id] = digest(strings.TrimSuffix(b.String(), "\n"), 64)
+	}
+	return digests, nil
+}
+
 // reviewEvidence is the basis, the per-file hashes it covers (keyed relative to
 // Root) and a warning when a strict pass's manifest and spec had to be read
 // from the working tree because its captured revision is not in this clone.

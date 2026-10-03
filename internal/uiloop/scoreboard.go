@@ -50,6 +50,9 @@ type Finding struct {
 	Shots []string `json:"shots,omitempty"`
 	// Refs: board cards, spec sections, tasks.
 	Refs []string `json:"refs,omitempty"`
+	// CarriedFrom is the earlier pass whose review of an unmoved screen this
+	// item was copied from as it stood (merge-review); 0 when judged this pass.
+	CarriedFrom int `json:"carriedFrom,omitempty"`
 }
 
 // Severities worst first.
@@ -93,6 +96,9 @@ func (b Backlog) Validate() []string {
 		}
 		if f.Open() && len(f.Files) == 0 {
 			problems = append(problems, at+": an open finding names the files a fix lane edits")
+		}
+		if f.CarriedFrom < 0 || f.CarriedFrom >= max(b.Pass, 1) {
+			problems = append(problems, fmt.Sprintf("%s: carriedFrom %d is not an earlier pass", at, f.CarriedFrom))
 		}
 	}
 	for i, id := range b.Reviewed {
@@ -271,7 +277,12 @@ func ComputeScoreboard(pass int, areaOrder []string, records []Record, backlog *
 	if backlog != nil {
 		for _, f := range backlog.Findings {
 			a := get(f.Area)
-			switch f.Status {
+			// A carried item is an earlier pass's verdict, never one of this pass.
+			status := f.Status
+			if f.CarriedFrom > 0 {
+				status = ""
+			}
+			switch status {
 			case "open":
 				a.Open++
 			case "met":

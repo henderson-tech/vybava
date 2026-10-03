@@ -307,7 +307,7 @@ func TestBatchesPersistAndRefuseToRedefineAStartedReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := res.Data.(BatchesData)
-	want := []Batch{{"tasks-1", "tasks", []string{"task-detail"}}, {"tasks-2", "tasks", []string{"tasks"}}, {"admin-1", "admin", []string{"users"}}}
+	want := []Batch{{ID: "tasks-1", Area: "tasks", Screens: []string{"task-detail"}}, {ID: "tasks-2", Area: "tasks", Screens: []string{"tasks"}}, {ID: "admin-1", Area: "admin", Screens: []string{"users"}}}
 	if b.Size != 1 || b.Screens != 3 || len(b.Batches) != 3 || !slices.Equal(b.Batches[1].Screens, want[1].Screens) || b.Batches[2].ID != "admin-1" {
 		t.Fatalf("batches: %+v", b)
 	}

@@ -230,6 +230,13 @@ export interface UiLoopConfig {
   source?: string[];
   /** Directory prefixes holding shared primitives: `lanes --primitives`' default; a change under one makes a verify a full reshoot. */
   primitives?: string[];
+  review?: {
+    /**
+     * Fraction of a shot's pixels that may differ from the previous pass's for its screen to carry that
+     * pass's review instead of being batched again (default 0.001; 0 asks for identical pixels).
+     */
+    carryTolerance?: number;
+  };
 }
 
 /** One axis of the polish verb: what the pass polishes. */

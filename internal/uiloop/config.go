@@ -40,6 +40,23 @@ type Config struct {
 	// Primitives are directory prefixes holding shared primitives: the fix
 	// lanes' default, and a change under one makes a verify a full reshoot.
 	Primitives []string `json:"primitives,omitempty"`
+	Review     Review   `json:"review,omitempty"`
+}
+
+// Review tunes the review stage.
+type Review struct {
+	// CarryTolerance is the fraction of a shot's pixels that may differ from
+	// the previous pass's shot for its screen to carry that pass's review
+	// (planCarry); nil is DefaultCarryTolerance, 0 asks for identical pixels.
+	CarryTolerance *float64 `json:"carryTolerance,omitempty"`
+}
+
+// CarryToleranceOrDefault is Review.CarryTolerance, else DefaultCarryTolerance.
+func (c Config) CarryToleranceOrDefault() float64 {
+	if c.Review.CarryTolerance != nil {
+		return *c.Review.CarryTolerance
+	}
+	return DefaultCarryTolerance
 }
 
 // App is one app of the repo the loop shoots.
@@ -114,6 +131,8 @@ type Publish struct {
 const (
 	DefaultGrid        = 4
 	DefaultTouchTarget = 44
+	// DefaultCarryTolerance is uiLoop.review.carryTolerance's default.
+	DefaultCarryTolerance = 0.001
 	// MaxSetFiles mirrors vitrinka's ingest.MaxSetFiles: the files one set
 	// holds on the per-file door, its manifest included.
 	MaxSetFiles = 20_000
@@ -354,6 +373,9 @@ func (c Config) Validate() []string {
 			add("primitives holds an empty prefix")
 		}
 		add(relPath("primitives", p, false))
+	}
+	if tol := c.CarryToleranceOrDefault(); tol < 0 || tol >= 1 {
+		add(fmt.Sprintf("review.carryTolerance %v must be a fraction of the pixels, at least 0 and below 1", tol))
 	}
 	if c.Vitrinka.Project == "" {
 		add("vitrinka.project is required")

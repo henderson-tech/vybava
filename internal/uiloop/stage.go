@@ -10,10 +10,12 @@ package uiloop
 // summarized (pwf-ui pass 1).
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,15 +34,27 @@ type Batch struct {
 	ID      string   `json:"id"`
 	Area    string   `json:"area"`
 	Screens []string `json:"screens"`
+	// Digests (v2) is each screen's screenDigests digest: a reviewer copies
+	// the ones of the screens it read into its raw file's screens.
+	Digests map[string]string `json:"digests,omitempty"`
+}
+
+// Carried is a screen no batch holds: its review comes from pass From (planCarry).
+type Carried struct {
+	Screen string `json:"screen"`
+	From   int    `json:"from"`
 }
 
 // BatchesFile is <pass>/review/batches.json: the one definition of the
-// pass's review batches, shared by the review stage and merge-review.
+// pass's review batches, shared by the review stage and merge-review. v1
+// batches are judged by the whole-pass basis; v2 batches carry per-screen
+// digests and the carried screens.
 type BatchesFile struct {
-	V       int     `json:"v"`
-	Pass    int     `json:"pass"`
-	Size    int     `json:"size"`
-	Batches []Batch `json:"batches"`
+	V       int       `json:"v"`
+	Pass    int       `json:"pass"`
+	Size    int       `json:"size"`
+	Batches []Batch   `json:"batches"`
+	Carried []Carried `json:"carried,omitempty"`
 }
 
 // Checkpoint is one fix item's <pass>/fix/<key>.json. A key with "/" is a
@@ -82,8 +96,10 @@ type NextStage struct {
 // (workflows-src/lib/uiloop.js UILOOP_STATE_CONTRACT, which refuses a lower
 // one). Bump it whenever a field a workflow reads is added or changes format,
 // digests included. 2: drift, sourceUnchanged as "drift.app is empty",
-// next.only and config.source/primitives.
-const StateContract = 2
+// next.only and config.source/primitives. 3: review.carried and
+// review.carriedFrom, batches v2 (per-screen digests, carried) and raws
+// judged screen by screen.
+const StateContract = 3
 
 // StateConfig is the part of the section the workflow's briefs need.
 type StateConfig struct {
@@ -134,6 +150,10 @@ type StateReview struct {
 	Done          []string `json:"done"`
 	Left          []string `json:"left"`
 	ReviewedAreas []string `json:"reviewedAreas"`
+	// Carried counts the screens batches.json carries into this pass and
+	// CarriedFrom names the pass they came from (null when none carry).
+	Carried     int  `json:"carried"`
+	CarriedFrom *int `json:"carriedFrom"`
 }
 
 // BacklogCounts summarizes a backlog without its bodies.
@@ -305,90 +325,120 @@ func (t *Tool) loadBatches(pass int, records []Record, size int) (BatchesFile, b
 	return BatchesFile{V: 1, Pass: pass, Size: size, Batches: ComputeBatches(passScreens(records), t.Config.Areas, size)}, false, nil
 }
 
-// rawBatchIDs lists the batch ids whose review/raw/<id>.json completes the
-// batch. With provenance (capture.json) that means the current basis, the
-// file's own batch id, screensRead inside the batch and covering every batch
-// screen with an ok shot.
-func (t *Tool) rawBatchIDs(pass int, knownBasis ...string) (map[string]bool, error) {
-	return t.rawBatchEvidence(pass, false, knownBasis...)
+// rawBatchIDs lists the batch ids the pass's raw reviews complete (rawBatchEvidence).
+func (t *Tool) rawBatchIDs(pass int, known ...passSnapshot) (map[string]bool, error) {
+	ev, err := t.rawBatchEvidence(pass, known...)
+	return ev.complete, err
 }
 
-// A valid partial review is mergeable but does not complete its batch.
-func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (map[string]bool, error) {
+// rawEvidence is what a pass's review/raw/*.json prove.
+type rawEvidence struct {
+	// merged are the raw files merge-review takes, by name (.json trimmed).
+	merged map[string]bool
+	// complete are the batch ids the raws complete.
+	complete map[string]bool
+	// digests are the screens' current screenDigests; nil without provenance.
+	digests map[string]string
+}
+
+// rawBatchEvidence judges review/raw/*.json. Without provenance (no
+// capture.json) every raw file is merged and completes the batch of its name.
+// With provenance a raw is judged by its shape:
+//
+//   - v1 (basis, screensRead) is judged whole: it is merged when it carries
+//     the current basis and its own batch id and its screensRead stays inside
+//     the batch, and it completes the batch when screensRead also names every
+//     batch screen with an ok shot. A valid partial review is mergeable but
+//     does not complete its batch.
+//   - v2 (screens: {id: digest}, copied from its batch's digests) is judged
+//     screen by screen: a screen counts as read when its digest is the
+//     screen's current one, so a --resume retake reopens that screen alone
+//     and the rest of the raw still counts. Every v2 raw is merged; merge-review
+//     keeps only what it says of the screens it read. A batch is complete when
+//     every screen in it with an ok shot was read by some v2 raw, whatever the
+//     raws are named, so split parts and a hand-merged raw complete their
+//     batch together. A batch without an ok shot needs a v2 raw naming it.
+func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, error) {
+	ev := rawEvidence{merged: map[string]bool{}, complete: map[string]bool{}}
 	paths, err := filepath.Glob(filepath.Join(t.reviewDir(pass), "raw", "*.json"))
 	if err != nil {
-		return nil, err
+		return ev, err
 	}
-	ids := map[string]bool{}
 	var marker captureEvidence
 	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
 	if err != nil {
-		return nil, err
+		return ev, err
 	}
-	var basis string
-	var batches BatchesFile
+	if !strict {
+		for _, p := range paths {
+			name := strings.TrimSuffix(filepath.Base(p), ".json")
+			ev.merged[name], ev.complete[name] = true, true
+		}
+		return ev, nil
+	}
+	snap, err := t.snapshot(pass, known)
+	if err != nil {
+		return ev, err
+	}
+	records, err := LoadRecords(t.passAbs(pass))
+	if err != nil {
+		return ev, err
+	}
+	if ev.digests, err = t.screenDigests(pass, records, snap.hashes); err != nil {
+		return ev, err
+	}
+	batches, _, err := t.loadBatches(pass, records, 0)
+	if err != nil {
+		return ev, err
+	}
 	// shot names the screens with at least one ok record. A batch also holds
 	// screens the pass could not shoot (unreachable, recipe-failed, error);
 	// a reviewer can only list those as unreviewed, so they never hold a
-	// batch open. A shot screen must be in screensRead. An unreviewed entry
-	// never blocks: it is a capture or recipe defect the reviewer could not
-	// judge from the shots, and re-reviewing the same shots cannot change it.
+	// batch open. A shot screen must be read. An unreviewed entry never
+	// blocks: it is a capture or recipe defect the reviewer could not judge
+	// from the shots, and re-reviewing the same shots cannot change it.
 	// merge-review still keeps such a screen (a screen-level entry, or shot
 	// entries naming every ok shot it has) out of reviewed and lists it as
 	// unreviewed.
 	shot := map[string]bool{}
-	if strict {
-		basis, err = t.cachedReviewBasis(pass, knownBasis)
-		if err != nil {
-			return nil, err
-		}
-		records, err := LoadRecords(t.passAbs(pass))
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range records {
-			if r.Status == "ok" {
-				shot[r.ID] = true
-			}
-		}
-		batches, _, err = t.loadBatches(pass, records, 0)
-		if err != nil {
-			return nil, err
+	for _, r := range records {
+		if r.Status == "ok" {
+			shot[r.ID] = true
 		}
 	}
+	read, named := map[string]bool{}, map[string]bool{}
 	for _, p := range paths {
-		if strict {
-			var r rawReview
-			if _, err := readJSON(p, &r); err != nil {
-				return nil, err
-			}
-			if r.Basis != basis || r.Batch != strings.TrimSuffix(filepath.Base(p), ".json") {
-				continue
-			}
-			valid := false
-			for _, batch := range batches.Batches {
-				if batch.ID != r.Batch {
-					continue
-				}
-				valid = true
-				for _, screen := range batch.Screens {
-					if !partial && shot[screen] && !slices.Contains(r.ScreensRead, screen) {
-						valid = false
-					}
-				}
-				for _, screen := range r.ScreensRead {
-					if !slices.Contains(batch.Screens, screen) {
-						valid = false
-					}
-				}
-			}
-			if !valid {
-				continue
-			}
+		name := strings.TrimSuffix(filepath.Base(p), ".json")
+		var r rawReview
+		if _, err := readJSON(p, &r); err != nil {
+			return ev, err
 		}
-		ids[strings.TrimSuffix(filepath.Base(p), ".json")] = true
+		if r.Screens != nil {
+			ev.merged[name] = true
+			named[cmp.Or(r.Batch, name)] = true
+			maps.Copy(read, r.readNow(ev.digests))
+			continue
+		}
+		i := slices.IndexFunc(batches.Batches, func(b Batch) bool { return b.ID == r.Batch })
+		if r.Basis != snap.basis || r.Batch != name || i < 0 {
+			continue
+		}
+		batch := batches.Batches[i]
+		if slices.ContainsFunc(r.ScreensRead, func(s string) bool { return !slices.Contains(batch.Screens, s) }) {
+			continue
+		}
+		ev.merged[name] = true
+		if !slices.ContainsFunc(batch.Screens, func(s string) bool { return shot[s] && !slices.Contains(r.ScreensRead, s) }) {
+			ev.complete[name] = true
+		}
 	}
-	return ids, nil
+	for _, b := range batches.Batches {
+		covered := !slices.ContainsFunc(b.Screens, func(s string) bool { return shot[s] && !read[s] })
+		if covered && (named[b.ID] || slices.ContainsFunc(b.Screens, func(s string) bool { return shot[s] })) {
+			ev.complete[b.ID] = true
+		}
+	}
+	return ev, nil
 }
 
 // archivedRound is a <pass>/fix/r<N>/ directory: an earlier fix round's
@@ -808,11 +858,14 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, err := t.rawBatchIDs(pass, data.ReviewBasis)
+	raw, err := t.rawBatchIDs(pass, passSnapshot{basis: data.ReviewBasis, hashes: hashes})
 	if err != nil {
 		return Result{}, err
 	}
 	data.Review.BatchesFile, data.Review.Size, data.Review.Planned = persisted, batches.Size, len(batches.Batches)
+	if data.Review.Carried = len(batches.Carried); data.Review.Carried > 0 {
+		data.Review.CarriedFrom = &batches.Carried[0].From
+	}
 	areaLeft := map[string]bool{}
 	for _, b := range batches.Batches {
 		if raw[b.ID] {
@@ -1064,9 +1117,14 @@ type BatchesData struct {
 	Batches []Batch  `json:"batches"` // only --areas when given
 	Done    []string `json:"done"`
 	Left    []string `json:"left"`
+	// Carried are the screens no batch holds because they carry an earlier
+	// pass's review (planCarry), sorted by screen; only --areas when given.
+	Carried []Carried `json:"carried"`
 }
 
 // Batches plans the review batches and persists them to review/batches.json.
+// A review started on v1 batches (a raw file exists) keeps them; any other
+// is planned v2 (planBatches).
 func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -1097,7 +1155,11 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 			size = prior.Size
 		}
 	}
-	raw, err := t.rawBatchIDs(pass)
+	snap, err := t.snapshot(pass, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	raw, err := t.rawBatchIDs(pass, snap)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1106,11 +1168,33 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 		return Result{}, diag(DiagSelectionInvalid, fmt.Sprintf("the review of %s started with --size %d and has raw batches; --size %d would redefine them", t.PassDir(pass), prior.Size, size),
 			fmt.Sprintf("omit --size (or pass --size %d)", prior.Size))
 	}
+	started, err := filepath.Glob(filepath.Join(t.reviewDir(pass), "raw", "*.json"))
+	if err != nil {
+		return Result{}, err
+	}
 	all := BatchesFile{V: 1, Pass: pass, Size: size, Batches: ComputeBatches(passScreens(records), t.Config.Areas, size)}
+	if !found || prior.V >= 2 || len(started) == 0 {
+		if all, err = t.planBatches(pass, records, size, snap); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := writeJSON(file, all); err != nil {
 		return Result{}, err
 	}
-	data := BatchesData{Pass: pass, PassDir: t.PassDir(pass), File: t.PassDir(pass) + "/review/batches.json", Size: size, Batches: []Batch{}, Done: []string{}, Left: []string{}}
+	// Done and left are judged against the batches just written.
+	if raw, err = t.rawBatchIDs(pass, snap); err != nil {
+		return Result{}, err
+	}
+	data := BatchesData{Pass: pass, PassDir: t.PassDir(pass), File: t.PassDir(pass) + "/review/batches.json", Size: size, Batches: []Batch{}, Done: []string{}, Left: []string{}, Carried: []Carried{}}
+	areaOf := map[string]string{}
+	for _, s := range passScreens(records) {
+		areaOf[s.id] = s.area
+	}
+	for _, c := range all.Carried {
+		if len(o.Areas) == 0 || slices.Contains(o.Areas, areaOf[c.Screen]) {
+			data.Carried = append(data.Carried, c)
+		}
+	}
 	for _, b := range all.Batches {
 		if len(o.Areas) > 0 && !slices.Contains(o.Areas, b.Area) {
 			continue
@@ -1128,10 +1212,13 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 
 // ---- merge-review
 
-// rawReview is one reviewer's <pass>/review/raw/<batch>.json.
+// rawReview is one reviewer's <pass>/review/raw/<batch>.json: v1 carries the
+// pass's basis and screensRead, v2 the screens it read with the digests its
+// batch gave them (rawBatchEvidence).
 type rawReview struct {
 	Basis       string            `json:"basis"`
 	ScreensRead []string          `json:"screensRead"`
+	Screens     map[string]string `json:"screens"`
 	Batch       string            `json:"batch"`
 	Area        string            `json:"area"`
 	Findings    []json.RawMessage `json:"findings"`
@@ -1140,6 +1227,17 @@ type rawReview struct {
 		Verdict string `json:"verdict"`
 	} `json:"acceptance"`
 	Unreviewed []string `json:"unreviewed"`
+}
+
+// readNow is the screens a v2 raw read at their current digest.
+func (r rawReview) readNow(digests map[string]string) map[string]bool {
+	read := map[string]bool{}
+	for id, d := range r.Screens {
+		if d != "" && d == digests[id] {
+			read[id] = true
+		}
+	}
+	return read
 }
 
 // ReviewProblem is a raw finding merge-review could not take as is.
@@ -1237,7 +1335,12 @@ func union(a, b []string) []string {
 
 // MergeReview folds the raw batches and the previous backlog into the draft.
 // okShots maps a screen id to its ok shot keys (<id>@<viewport>.<theme>).
-func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch, okShots map[string][]string) (Backlog, []string, []ReviewProblem, []string) {
+// digests are the screens' current digests (nil without provenance): a v2
+// raw speaks only for the screens it read at their current digest, so its
+// findings and verdicts on any other screen are left out. The screens
+// batches carries from the previous pass take that pass's items on them
+// as they stood, with carriedFrom, and count as reviewed.
+func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesFile, okShots map[string][]string, digests map[string]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
 	put := func(f Finding) {
@@ -1245,15 +1348,30 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch,
 		items[f.Key] = &f
 	}
 	skips := make([]map[string]bool, len(raws))
+	// reads are the screens each v2 raw read at their current digest; nil for v1.
+	reads := make([]map[string]bool, len(raws))
 	for i, r := range raws {
 		skips[i] = unreviewedScreens(r.Unreviewed, okShots)
+		if r.Screens != nil && digests != nil {
+			reads[i] = r.readNow(digests)
+		}
+	}
+	readBy := func(i int, screen string) bool {
+		if reads[i] != nil {
+			return reads[i][screen]
+		}
+		return slices.Contains(raws[i].ScreensRead, screen)
+	}
+	carried := map[string]bool{}
+	for _, c := range batches.Carried {
+		carried[c.Screen] = previous != nil && c.From == previous.Pass
 	}
 	verdicts := map[string]string{}
 	for i, r := range raws {
 		for _, a := range r.Acceptance {
-			if r.Basis != "" && previous != nil {
+			if (r.Basis != "" || reads[i] != nil) && previous != nil {
 				read := slices.ContainsFunc(previous.Findings, func(f Finding) bool {
-					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !skips[i][f.Screen]
+					return f.Key == a.Key && readBy(i, f.Screen) && !skips[i][f.Screen]
 				})
 				if !read {
 					continue
@@ -1267,6 +1385,11 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch,
 	unjudged := []string{}
 	if previous != nil {
 		for _, p := range previous.Findings {
+			if carried[p.Screen] {
+				p.CarriedFrom = previous.Pass
+				put(p)
+				continue
+			}
 			if !p.Open() {
 				continue
 			}
@@ -1280,11 +1403,14 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch,
 		}
 	}
 	problems := []ReviewProblem{}
-	for _, r := range raws {
+	for ri, r := range raws {
 		for i, msg := range r.Findings {
 			var f Finding
 			if err := json.Unmarshal(msg, &f); err != nil {
 				problems = append(problems, ReviewProblem{Batch: r.Batch, Index: i, Missing: []string{"decodable finding: " + err.Error()}})
+				continue
+			}
+			if reads[ri] != nil && f.Screen != "" && !reads[ri][f.Screen] {
 				continue
 			}
 			if f.Area == "" {
@@ -1335,15 +1461,33 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch,
 		}
 		b.Findings = append(b.Findings, *f)
 	}
-	// reviewed: every raw batch's screens (its batches.json definition, or
+	// reviewed: every v1 raw batch's screens (its batches.json definition, or
 	// for an id batches.json does not know, the screens its findings and
-	// verdicts name) minus every screen a reviewer marked unreviewed.
+	// verdicts name), every screen a v2 raw read at its current digest and
+	// every carried screen, minus every screen a reviewer marked unreviewed.
+	// A screen of a batch a v2 raw names that no raw read stays unreviewed.
 	byID := map[string][]string{}
-	for _, bt := range batches {
+	for _, bt := range batches.Batches {
 		byID[bt.ID] = bt.Screens
 	}
 	judged, skipped := map[string]bool{}, map[string]bool{}
+	for id, fromPrevious := range carried {
+		if fromPrevious {
+			judged[id] = true
+		} else {
+			skipped[id] = true
+		}
+	}
+	var named []string
 	for i, r := range raws {
+		if reads[i] != nil {
+			maps.Copy(judged, reads[i])
+			named = append(named, r.Batch)
+			for id := range skips[i] {
+				skipped[id] = true
+			}
+			continue
+		}
 		ids, known := byID[r.Batch]
 		if !known {
 			for _, msg := range r.Findings {
@@ -1364,6 +1508,13 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch,
 		}
 		for id := range skips[i] {
 			skipped[id] = true
+		}
+	}
+	for _, batch := range named {
+		for _, id := range byID[batch] {
+			if !judged[id] {
+				skipped[id] = true
+			}
 		}
 	}
 	b.Reviewed = []string{}
@@ -1427,17 +1578,13 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 		}
 		return paths[i] < paths[j]
 	})
-	validRaw, err := t.rawBatchEvidence(pass, true)
-	if err != nil {
-		return Result{}, err
-	}
-	completeRaw, err := t.rawBatchIDs(pass)
+	evidence, err := t.rawBatchEvidence(pass)
 	if err != nil {
 		return Result{}, err
 	}
 	raws := make([]rawReview, 0, len(paths))
 	for _, p := range paths {
-		if !validRaw[id(p)] {
+		if !evidence.merged[id(p)] {
 			continue
 		}
 		var r rawReview
@@ -1459,7 +1606,7 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 			okShots[r.ID] = append(okShots[r.ID], r.Key())
 		}
 	}
-	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches.Batches, okShots)
+	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches, okShots, evidence.digests)
 	file := t.PassDir(pass) + "/review/backlog.draft.json"
 	if err := writeJSON(filepath.Join(t.reviewDir(pass), "backlog.draft.json"), backlog); err != nil {
 		return Result{}, err
@@ -1471,13 +1618,9 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	if data.Invalid == nil {
 		data.Invalid = []string{}
 	}
-	have := map[string]bool{}
-	for _, r := range raws {
-		have[r.Batch] = completeRaw[r.Batch]
-	}
 	var diags []runxDiagnostic
 	for _, b := range batches.Batches {
-		if !have[b.ID] {
+		if !evidence.complete[b.ID] {
 			data.Left = append(data.Left, b.ID)
 		}
 	}
