@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/henderson-tech/vybava/internal/shellseg"
 	"github.com/henderson-tech/vybava/internal/transcripts"
 )
 
@@ -111,10 +112,40 @@ func namesWorktree(tc touch, worktree, home string) bool {
 	return false
 }
 
-var (
-	ghPRVerb  = regexp.MustCompile(`\bgh pr (?:checkout|checks|comment|edit|merge|ready|review|close|reopen)\b[^|;&\n]*?\s#?(\d+)\b`)
-	otherRepo = regexp.MustCompile(`(?:\s-R\s*|--repo[=\s])([\w.-]+/[\w.-]+)`)
-)
+// workingVerbs drive a PR; view, diff and list only read it.
+var workingVerbs = map[string]bool{"checkout": true, "checks": true, "comment": true, "edit": true, "merge": true,
+	"ready": true, "review": true, "close": true, "reopen": true}
+
+// drivesPR reports a `gh pr <working verb> <n>` segment in text whose own
+// -R/--repo, if any, is this repository. Segmentation is internal/shellseg's:
+// a quoted string is not a command, and one segment's flags never leak into
+// another's.
+func drivesPR(text string, n int, slug string) bool {
+	for _, seg := range shellseg.Segments(text) {
+		f := shellseg.Fields(seg)
+		if len(f) < 4 || f[0] != "gh" || f[1] != "pr" || !workingVerbs[f[2]] {
+			continue
+		}
+		number, repo := 0, ""
+		for i := 3; i < len(f); i++ {
+			switch a := f[i]; {
+			case (a == "-R" || a == "--repo") && i+1 < len(f):
+				repo = f[i+1]
+				i++
+			case strings.HasPrefix(a, "--repo="):
+				repo = strings.TrimPrefix(a, "--repo=")
+			case strings.HasPrefix(a, "-R") && len(a) > 2:
+				repo = a[2:]
+			case number == 0:
+				number, _ = strconv.Atoi(strings.TrimPrefix(a, "#"))
+			}
+		}
+		if number == n && (repo == "" || strings.EqualFold(repo, slug) || strings.HasSuffix(strings.ToLower(repo), "/"+strings.ToLower(slug))) {
+			return true
+		}
+	}
+	return false
+}
 
 // names reports whether one tool call works on the PR: it ran inside the
 // worktree, names the worktree, links the PR, or drives it with a gh verb
@@ -131,18 +162,7 @@ func (t prTarget) names(tc touch) bool {
 	for _, dir := range t.repoDirs {
 		inRepo = inRepo || within(tc.cwd, dir)
 	}
-	if !inRepo {
-		return false
-	}
-	if m := otherRepo.FindStringSubmatch(tc.text); m != nil && !strings.EqualFold(m[1], t.slug) {
-		return false
-	}
-	for _, m := range ghPRVerb.FindAllStringSubmatch(tc.text, -1) {
-		if m[1] == n {
-			return true
-		}
-	}
-	return false
+	return inRepo && drivesPR(tc.text, t.number, t.slug)
 }
 
 // holdersOf matches a PR against every session's log.

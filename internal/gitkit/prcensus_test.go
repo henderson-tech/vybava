@@ -215,6 +215,18 @@ func TestCodexLogsHonorsCodexHome(t *testing.T) {
 	}
 }
 
+// PR #167 review: a gh command is read per shell segment with its own -R,
+// and a quoted string is not a command.
+func TestPRTargetNamesReadsShellSegments(t *testing.T) {
+	target := prTarget{number: 42, slug: "acme/app", repoDirs: []string{"/w/app"}}
+	if target.names(touch{cwd: "/w/app", text: "git commit -m 'merge after gh pr merge 42 lands'"}) {
+		t.Error("a quoted gh pr merge counted as driving the PR")
+	}
+	if !target.names(touch{cwd: "/w/app", text: "gh pr checks 42 --watch && gh pr view 9 -R acme/back"}) {
+		t.Error("another segment's -R cancelled gh pr checks 42")
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).
