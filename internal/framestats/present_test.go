@@ -174,3 +174,47 @@ func TestReadPresentWithOnlyAnotherProcessesSurfaces(t *testing.T) {
 		t.Fatalf("frameTimeline=%v frames=%d diags=%+v", pm.FrameTimeline, pm.Frames, diags)
 	}
 }
+
+// A screen at rest presents nothing (the FixIt search tab: 20 s, no app
+// surface frame, only the main thread's Choreographer tick). With
+// FrameTimeline recording (display frames) and atrace reaching the app
+// (its doFrames) and nothing in the app drawing, zero presents are a
+// reading, so the rest budget can pass (a RenderThread DrawFrames that
+// only synced draws nothing); one app Drawing without its own surface
+// frames keeps them unread.
+func TestReadPresentOfAScreenAtRest(t *testing.T) {
+	trace := func(sync, draw bool) []byte {
+		parts := [][]byte{
+			timelinePacket(80, tlActualDisplay, pbVarint(1, 61), pbVarint(2, 900)),
+			timelinePacket(88, tlActualDisplay, pbVarint(1, 62), pbVarint(2, 901)),
+		}
+		var m []marker
+		for i := 0; i < 5; i++ {
+			at := 100 + float64(i)*8.333
+			m = append(m, marker{at, appPid, "B|4242|Choreographer#doFrame " + itoa(int64(200+i))}, marker{at + 0.8, appPid, "E|4242"})
+		}
+		if sync || draw {
+			m = append(m, marker{101, renderTi, "B|4242|DrawFrames 200"}, marker{103, renderTi, "E|4242"})
+		}
+		if draw {
+			m = append(m, marker{101.5, renderTi, "B|4242|Drawing 0.00 0.00 1080.00 2400.00"}, marker{102.5, renderTi, "E|4242"})
+		}
+		return pbMsg(append(parts, ftracePacket(m))...)
+	}
+	for _, c := range []struct {
+		sync, draw bool
+		timeline   bool
+	}{{false, false, true}, {true, false, true}, {true, true, false}} {
+		pm, diags, err := ReadPresent(trace(c.sync, c.draw), PresentOptions{Package: "app.test", PID: appPid, VsyncPeriodNs: 8_333_333})
+		if err != nil {
+			t.Fatal(err)
+		}
+		warned := false
+		for _, d := range diags {
+			warned = warned || d.Code == DiagNoFrameTimeline
+		}
+		if pm.FrameTimeline != c.timeline || warned == c.timeline || pm.Frames != 0 || pm.RestFrames != 0 || pm.RestRunMs != 0 {
+			t.Errorf("sync=%v draw=%v: frameTimeline=%v (want %v) frames=%d rest=%d/%v diags=%+v", c.sync, c.draw, pm.FrameTimeline, c.timeline, pm.Frames, pm.RestFrames, pm.RestRunMs, diags)
+		}
+	}
+}

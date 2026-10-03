@@ -400,7 +400,11 @@ reading (500 ms bins, animating fps p10 and median, janky %) of the same
 presents, first to last. Every present reading but `rtDrawMs` needs
 the app's own FrameTimeline surface frames (`present.frameTimeline`);
 without them (no FrameTimeline, or only another process's) they are unread,
-so the rest and fling budgets get no check and compare gets no sample.
+so the rest and fling budgets get no check and compare gets no sample. A
+screen at rest is the exception the trace proves: FrameTimeline recorded
+(display frames), the app's main thread traced its `doFrame`s and nothing in the
+app drew (no RenderThread `Drawing`, no main-thread GL swap; a `DrawFrames`
+that only synced queues no buffer), so zero presents read as zero frames.
 
 ## Analyze, compare, report
 

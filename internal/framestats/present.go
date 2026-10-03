@@ -117,9 +117,11 @@ type PresentMetrics struct {
 	// GPU, nil without FrameTimeline display frames.
 	GPUCompositionShare Ms `json:"gpuCompositionShare"`
 	// FrameTimeline: the trace carries FrameTimeline surface frames of the
-	// app's pid. Without them (no FrameTimeline at all, or only another
-	// process's) Frames, RestFrames, RestRunMs, PresentGaps and Drops are
-	// unread, not zero: a budget never passes on them (NO_FRAME_TIMELINE).
+	// app's pid, or proves the app presented nothing (display frames, the
+	// app's doFrames, no Drawing: a screen at rest reads zero). Otherwise
+	// (no FrameTimeline at all, or only another process's) Frames,
+	// RestFrames, RestRunMs, PresentGaps and Drops are unread, not zero: a
+	// budget never passes on them (NO_FRAME_TIMELINE).
 	FrameTimeline bool `json:"frameTimeline"`
 	// display is the display-rate reading of the same presents (DisplayRate).
 	display *DisplayMetrics
@@ -203,10 +205,6 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 		presents = append(presents, present{at: end, token: e.token})
 	}
 	sort.Slice(presents, func(i, j int) bool { return presents[i].at < presents[j].at })
-	if len(starts) == 0 {
-		diags = append(diags, warn(DiagNoFrameTimeline, fmt.Sprintf("no FrameTimeline surface frame for pid %d", m.PID),
-			`add data_sources { config { name: "android.surfaceflinger.frametimeline" } } to the trace config`))
-	}
 	m.Frames = len(presents)
 	gaps := make([]float64, 0, len(presents))
 	for i := 1; i < len(presents); i++ {
@@ -233,9 +231,6 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	// Per-frame thread work.
 	slices := buildSlices(t.prints, m.PID)
 	rt := renderThread(slices)
-	if rt == 0 {
-		diags = append(diags, warn(DiagNoRenderThread, "no app thread traced a DrawFrame(s) slice", "record with atrace_categories gfx and view"))
-	}
 	mainByID := map[int64]float64{}
 	rtByID := map[int64]float64{}
 	var doFrames, rtDraws []float64
@@ -269,6 +264,24 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	}
 	m.MainDoFrameMs = durationStats(doFrames)
 	m.RTDrawMs = durationStats(rtDraws)
+	// A screen at rest presents nothing, which is a reading of zero, not
+	// missing evidence, when the trace proves it: FrameTimeline recorded
+	// (SurfaceFlinger display frames), the app's main thread traced its
+	// frames (atrace reaches the app) and nothing in the app drew (no
+	// RenderThread Drawing, no main-thread GL swap; a DrawFrames that only
+	// synced, as on an S20 at rest, queues no buffer). Any app draw without
+	// its own surface frames stays unread.
+	idle := len(starts) == 0 && displayFrames > 0 && len(doFrames) > 0 && len(rtDraws) == 0 && eglSwaps == 0
+	if idle {
+		m.FrameTimeline = true
+	}
+	if !m.FrameTimeline {
+		diags = append(diags, warn(DiagNoFrameTimeline, fmt.Sprintf("no FrameTimeline surface frame for pid %d", m.PID),
+			`add data_sources { config { name: "android.surfaceflinger.frametimeline" } } to the trace config`))
+	}
+	if rt == 0 && !idle {
+		diags = append(diags, warn(DiagNoRenderThread, "no app thread traced a DrawFrame(s) slice", "record with atrace_categories gfx and view"))
+	}
 	if len(doFrames) > 0 {
 		m.MainEglSwapsPerFrame = math.Round(100*float64(eglSwaps)/float64(len(doFrames))) / 100
 	}
