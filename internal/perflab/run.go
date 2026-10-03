@@ -526,11 +526,19 @@ func (t *Tool) newRunDir(o RunOptions, c *Config) (string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
-	ignore := "# perflab: evidence stays out of git; the numbers beside it are committable.\n*.trace/\n*.pftrace\n*.xml\nframes/*.txt\ncrashes/\n"
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(ignore), 0o644); err != nil {
+	if err := writeEvidenceIgnore(root); err != nil {
 		return "", err
 	}
 	return root, nil
+}
+
+// writeEvidenceIgnore keeps a run dir's evidence (traces, pftraces, exports,
+// crash reports) out of git; the numbers beside it are committable. Every
+// run dir gets it, a probe's --out included (the FixIt sweep's probe dirs
+// under ~/Exports held 10 MB pftraces with no ignore).
+func writeEvidenceIgnore(dir string) error {
+	ignore := "# perflab: evidence stays out of git; the numbers beside it are committable.\n*.trace/\n*.pftrace\n*.xml\nframes/*.txt\ncrashes/\n"
+	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(ignore), 0o644)
 }
 
 func writeRunFile(dir string, rf analysis.RunFile) error {

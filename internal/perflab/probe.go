@@ -211,16 +211,8 @@ func (t *Tool) Probe(ctx context.Context, o ProbeOptions) (Result, error) {
 	if o.Label != "" {
 		scenario += "-" + slug(o.Label)
 	}
-	runDir := o.Out
-	if runDir == "" {
-		var c Config
-		if t.Config != nil {
-			c = *t.Config
-		}
-		if runDir, err = t.newRunDir(RunOptions{Topic: "probe-" + o.Kind}, &c); err != nil {
-			return Result{}, err
-		}
-	} else if err := os.MkdirAll(runDir, 0o755); err != nil {
+	runDir, err := t.probeRunDir(o)
+	if err != nil {
 		return Result{}, err
 	}
 	var diags []runx.Diagnostic
@@ -580,4 +572,21 @@ func gestureMovedNothing(kind string, ra analysis.RunAnalysis, device string) []
 	return []runx.Diagnostic{warn(framestats.DiagNoAppFrames,
 		"the "+kind+" gestures presented no frame: nothing scrolled under them (content shorter than the window, or the gestures missed the scroller)",
 		"judge the screen by perflab probe rest --device "+device+" --lease <token> --json, or aim a --gesture-file at the scroller")}
+}
+
+// probeRunDir is the probe's run dir: --out as given, else the adapter's
+// out template; either way with the evidence .gitignore (writeEvidenceIgnore).
+func (t *Tool) probeRunDir(o ProbeOptions) (string, error) {
+	if o.Out == "" {
+		var c Config
+		if t.Config != nil {
+			c = *t.Config
+		}
+		return t.newRunDir(RunOptions{Topic: "probe-" + o.Kind}, &c)
+	}
+	dir := expandHome(o.Out)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, writeEvidenceIgnore(dir)
 }

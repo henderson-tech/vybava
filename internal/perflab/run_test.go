@@ -428,3 +428,17 @@ func TestCompareJoinsRunDirsPerSide(t *testing.T) {
 		t.Errorf("the report line lists every dir as its own word: %s", res.Next[0])
 	}
 }
+
+// A probe's --out dir keeps its evidence out of git like a run's: the FixIt
+// sweep's probe dirs under ~/Exports held 10 MB pftraces with no ignore.
+func TestProbeRunDirIgnoresTheEvidence(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "probes", "hub-rest-1")
+	dir, err := (&Tool{Now: time.Now}).probeRunDir(ProbeOptions{Kind: "rest", Out: out})
+	if err != nil || dir != out {
+		t.Fatalf("dir %q err %v", dir, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(out, ".gitignore"))
+	if err != nil || !strings.Contains(string(raw), "*.pftrace") || !strings.Contains(string(raw), "*.trace/") {
+		t.Fatalf(".gitignore = %q (%v)", raw, err)
+	}
+}
