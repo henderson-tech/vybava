@@ -69,32 +69,54 @@ type PauseData struct {
 	Released []string `json:"released,omitempty"`
 }
 
+// underPause runs fn holding <out>/.pause.lock (an flock the kernel drops
+// with its process): pause and resume each read and write paused.json under
+// it, so of two pauses the first stands and a resume never removes a pause
+// taken while it ran.
+func (t *Tool) underPause(fn func() error) error {
+	dir := t.abs(t.Config.Out)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockLeases(filepath.Join(dir, ".pause.lock"))
+	if err != nil {
+		return err
+	}
+	err = fn()
+	if uerr := unlock(); err == nil {
+		err = uerr
+	}
+	return err
+}
+
 // Pause writes paused.json, or leaves the pause already there as it is.
 func (t *Tool) Pause(o PauseOptions) (Result, error) {
-	p, err := t.paused()
-	if err != nil {
-		return Result{}, err
-	}
-	if p != nil {
-		return Result{Data: PauseData{Paused: p}, Next: []string{resumeCommand}}, nil
-	}
-	pass, _, err := t.newestShotPass()
-	if err != nil {
-		return Result{}, err
-	}
-	by := o.By
-	if by == "" {
-		host, err := leaseHost()
-		if err != nil {
-			return Result{}, err
+	var data PauseData
+	err := t.underPause(func() error {
+		p, err := t.paused()
+		if err != nil || p != nil {
+			data.Paused = p
+			return err
 		}
-		by = os.Getenv("USER") + "@" + host
-	}
-	p = &Pause{By: by, At: t.Now().UTC().Format(time.RFC3339), Reason: o.Reason, Pass: pass}
-	if err := writeJSON(t.pauseFile(), p); err != nil {
+		pass, _, err := t.newestShotPass()
+		if err != nil {
+			return err
+		}
+		by := o.By
+		if by == "" {
+			host, err := leaseHost()
+			if err != nil {
+				return err
+			}
+			by = os.Getenv("USER") + "@" + host
+		}
+		data = PauseData{Paused: &Pause{By: by, At: t.Now().UTC().Format(time.RFC3339), Reason: o.Reason, Pass: pass}, Changed: true}
+		return writeJSON(t.pauseFile(), data.Paused)
+	})
+	if err != nil {
 		return Result{}, err
 	}
-	return Result{Data: PauseData{Paused: p, Changed: true}, Next: []string{resumeCommand}}, nil
+	return Result{Data: data, Next: []string{resumeCommand}}, nil
 }
 
 // Resume removes paused.json and frees every pass's owner leases (batch
@@ -102,25 +124,46 @@ func (t *Tool) Pause(o PauseOptions) (Result, error) {
 // pause, and the next run takes their batches at once. Without a pause it
 // does nothing, so a live run's claims are never freed.
 func (t *Tool) Resume() (Result, error) {
-	p, err := t.paused()
+	next := []string{"vybava ui-loop state --json"}
+	// Without a pause there is nothing to lock either.
+	if p, err := t.paused(); err != nil || p == nil {
+		return Result{Data: PauseData{}, Next: next}, err
+	}
+	var data PauseData
+	err := t.underPause(func() error {
+		p, err := t.paused()
+		if err != nil || p == nil {
+			return err
+		}
+		if data, err = t.freeOwnerLeases(); err != nil {
+			return err
+		}
+		if err := os.Remove(t.pauseFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		data.Changed = true
+		return nil
+	})
 	if err != nil {
 		return Result{}, err
 	}
-	next := []string{"vybava ui-loop state --json"}
-	if p == nil {
-		return Result{Data: PauseData{}, Next: next}, nil
-	}
+	return Result{Data: data, Next: next}, nil
+}
+
+// freeOwnerLeases removes every pass's owner leases (pid 0), each pass under
+// its lease mutex; a pass without one is not locked, so no locks/ appears.
+func (t *Tool) freeOwnerLeases() (PauseData, error) {
 	passes, err := t.Passes()
 	if err != nil {
-		return Result{}, err
+		return PauseData{}, err
 	}
-	data := PauseData{Changed: true}
+	var data PauseData
 	owned := func(h heldLease) bool { return h.PID == 0 }
 	for _, pass := range passes {
-		// Readers need no mutex; only a pass holding an owner lease is locked.
+		// Readers need no mutex.
 		held, err := t.passLeases(pass)
 		if err != nil {
-			return Result{}, err
+			return PauseData{}, err
 		}
 		if !slices.ContainsFunc(held, owned) {
 			continue
@@ -142,11 +185,8 @@ func (t *Tool) Resume() (Result, error) {
 			return nil
 		})
 		if err != nil {
-			return Result{}, err
+			return PauseData{}, err
 		}
 	}
-	if err := os.Remove(t.pauseFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return Result{}, err
-	}
-	return Result{Data: data, Next: next}, nil
+	return data, nil
 }

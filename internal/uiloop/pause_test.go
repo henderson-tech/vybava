@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -137,5 +139,44 @@ func TestResumeFreesOwnerLeasesOnlyOutOfAPause(t *testing.T) {
 	}
 	if left := locksOf(t, tool); len(left) != 1 || filepath.Base(left[0]) != "publish.json" {
 		t.Fatalf("leases after resume: %v", left)
+	}
+}
+
+// A pause holds where the loop is fragile: of concurrent pauses one writes,
+// a split under a pause still splits (only its claim is refused), and a pass
+// state cannot read still routes paused.
+func TestAPauseHoldsUnderRacesSplitsAndUnreadablePasses(t *testing.T) {
+	tool := pausedLoop(t)
+	if _, err := tool.Batches(BatchesOptions{Size: 2}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var wrote atomic.Int32
+	for i := range 8 {
+		wg.Go(func() {
+			res, err := tool.Pause(PauseOptions{Reason: fmt.Sprintf("pause %d", i)})
+			if err != nil {
+				t.Error(err)
+			} else if res.Data.(PauseData).Changed {
+				wrote.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if wrote.Load() != 1 {
+		t.Fatalf("%d of 8 concurrent pauses wrote paused.json", wrote.Load())
+	}
+	res, err := tool.Batches(BatchesOptions{Split: "tasks-1", Claim: 2, Owner: "run-a"})
+	if diagCode(err) != DiagPaused || len(res.Data.(SplitData).Parts) != 2 {
+		t.Fatalf("split under a pause: %+v %v", res.Data, err)
+	}
+	if again, err := tool.Batches(BatchesOptions{}); err != nil || slices.ContainsFunc(again.Data.(BatchesData).Batches, func(b Batch) bool { return b.ID == "tasks-1" }) {
+		t.Fatalf("the split did not stand: %v", err)
+	}
+	writeFile(t, filepath.Join(tool.passAbs(1), "capture.json"), `{}`)
+	writeFile(t, filepath.Join(tool.passAbs(1), "review", "raw", "tasks-2.json"), `{"batch":"tasks-2","findi`)
+	state, err := tool.State(StateOptions{})
+	if err != nil || state.Data.(StateData).Next.Stage != "paused" || state.Data.(StateData).Paused == nil || len(state.Diagnostics) != 1 {
+		t.Fatalf("an unreadable pass hid the pause: %+v %v", state, err)
 	}
 }

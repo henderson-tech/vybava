@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/henderson-tech/vybava/internal/runx"
 )
 
 // DefaultBatchSize is the screens a reviewer judges in one batch.
@@ -828,21 +830,32 @@ func (t *Tool) boardRows(pass int) ([]BoardRow, error) {
 // State reads a pass back: `ui-loop state`. A pause (`ui-loop pause`) routes
 // `paused` over whatever the pass would run next.
 func (t *Tool) State(o StateOptions) (Result, error) {
-	res, err := t.state(o)
+	paused, err := t.paused()
 	if err != nil {
+		return Result{}, err
+	}
+	res, err := t.state(o)
+	if paused == nil {
 		return res, err
+	}
+	if err != nil {
+		// A pass it cannot read never hides the pause from a stage's
+		// boundary check: the route stays paused, the error a diagnostic.
+		d := errDiag(runx.DiagInfraError, err.Error(), "")
+		var de runx.DiagError
+		if errors.As(err, &de) {
+			d = de.Diag
+		}
+		res = Result{Data: t.stateBase(o), Diagnostics: []runxDiagnostic{d}}
 	}
 	data := res.Data.(StateData)
-	if data.Paused, err = t.paused(); err != nil || data.Paused == nil {
-		res.Data = data
-		return res, err
-	}
-	data.Next = NextStage{Stage: "paused", Reason: data.Paused.why()}
+	data.Paused, data.Next = paused, NextStage{Stage: "paused", Reason: paused.why()}
 	res.Data, res.Next = data, []string{resumeCommand}
 	return res, nil
 }
 
-func (t *Tool) state(o StateOptions) (Result, error) {
+// stateBase is state's data before it reads a pass: the config and empty counts.
+func (t *Tool) stateBase(o StateOptions) StateData {
 	c := t.Config
 	primitives := o.Primitives
 	if primitives == nil {
@@ -854,9 +867,15 @@ func (t *Tool) state(o StateOptions) (Result, error) {
 		cfg.Apps = append(cfg.Apps, app)
 	}
 	sort.Strings(cfg.Apps)
-	data := StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
+	return StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
 		Review:      StateReview{Done: []string{}, Left: []string{}, Blocked: []BlockedBatch{}, ReviewedAreas: []string{}, Stalls: map[string]int{}},
 		Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
+}
+
+func (t *Tool) state(o StateOptions) (Result, error) {
+	c := t.Config
+	data := t.stateBase(o)
+	primitives := data.Config.Primitives
 	running, capture, err := t.liveCapture()
 	if err != nil {
 		return Result{}, err
@@ -1314,7 +1333,10 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	if err := o.actionProblem(pass); err != nil {
 		return Result{}, err
 	}
-	if o.Claim > 0 {
+	// A plain claim fails fast; a split's claim is refused in claimBatches,
+	// after the split, which a stalled batch needs whether or not the loop
+	// is paused.
+	if o.Claim > 0 && o.Split == "" {
 		if err := t.refusePaused("batches --claim"); err != nil {
 			return Result{}, err
 		}

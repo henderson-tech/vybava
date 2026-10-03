@@ -388,6 +388,11 @@ func (t *Tool) claimBatches(pass int, left []string, n int, owner string, ttl ti
 	me := Lease{Owner: owner, Host: host}
 	claimed := []string{}
 	err = t.underLeases(pass, func() error {
+		// Under the mutex: a pause that lands while the batches are planned
+		// still stops the claim.
+		if err := t.refusePaused("batches --claim"); err != nil {
+			return err
+		}
 		var f BatchesFile
 		if _, err := readJSON(filepath.Join(t.reviewDir(pass), "batches.json"), &f); err != nil {
 			return err
