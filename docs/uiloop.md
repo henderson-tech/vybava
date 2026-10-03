@@ -33,7 +33,7 @@ ui-loop split       [--pass N] [--areas a,b]
 ui-loop publish     [--pass N] [--areas a,b] [--sets key,…] [--retries 3] [--force] [--dry-run]
 ui-loop publish     --follow [--from user@host:path] [--interval 30s] [--until-idle 10m] [--pass N] [--areas a,b] [--retries 3]
 ui-loop scoreboard  [--pass N] [--backlog FILE] [--previous N] [--no-delta]
-ui-loop state       [--pass N] [--cap 6]
+ui-loop state       [--pass N] [--cap 6] [--primitives dir,dir]
 ui-loop batches     [--pass N] [--size 14] [--areas a,b]
 ui-loop merge-review [--pass N]
 ui-loop lanes       [--pass N] [--primitives dir,dir] [--max 4]
@@ -67,8 +67,12 @@ uiLoop: {
   },
   vitrinka: { project: 'powerflow', boardPrefix: 'ui-polish' },
   publish: { from: 'devops:ws/pwf/pwf-ui' },  // the repo on the capture box, for publish --follow
+  source: ['apps', 'libs', ':(exclude,glob)**/*.spec.ts'],  // git pathspecs of the app source (default below)
+  primitives: ['libs/ui-lib', 'libs/tailwind-preset'],      // lanes' default; a change here makes a verify a full reshoot
 }
 ```
+
+`source` is the application source as git pathspecs (`:(exclude)…`, `:(glob)…` magic included; git does the matching). Only a change there stales a pass (see `state`'s `drift`). Empty, it is the whole repo from its top (`:(top)`, so a config root below it still sees the library beside it) minus `out`, `.vitrinka`, `dir`, `spec` and `appMap` (relative to the config root, like every pathspec without `:(top)`), every `*.md` and every `.claude/`. `state` relays the effective list as `config.source`. `primitives` are directory prefixes (`libs/ui-lib` matches `libs/ui-lib/…`): the default of `lanes --primitives` and `state --primitives`.
 
 Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobile` means touch, a phone/tablet UA and the touch-target lint.
 
@@ -263,7 +267,7 @@ The fields follow these rules:
 **`doctor [--for capture|review|fix|verify]`** runs every check a stage depends on and writes nothing:
 
 ```json
-{ "ok": false, "vybava": "0.32.0", "contract": 1,
+{ "ok": false, "vybava": "0.32.0", "contract": 2,
   "checks": [{ "id": "apps", "status": "fail", "detail": "portal http://10.8.0.10:21782 ($UI_LOOP_PORTAL_URL): answers 200 with the Vite error overlay", "fix": "fix the build error …" }] }
 ```
 
@@ -282,13 +286,16 @@ Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` 
 
 A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377 screens, 31 batches, a 340-item backlog of 500 KB) the workflow's agents dropped the screen list, abridged the raw review files and refused the backlog, so a backlog was synthesized from 7 of 31 batches and a fix stage planned 0 lanes. These four verbs own every list instead. An agent runs one and relays its envelope; an agent that needs an item's body reads it from the file by key (`jq '.findings[] | select(.key=="<key>")' <pass>/review/backlog.json`).
 
-**`state [--pass N] [--cap 6]`** reads a pass back as counts, never item bodies. It defaults to the latest pass, and a repo with no pass answers pass 0 and `capture`. It writes nothing.
+**`state [--pass N] [--cap 6] [--primitives dir,dir]`** reads a pass back as counts, never item bodies. It defaults to the latest pass, and a repo with no pass answers pass 0 and `capture`. It writes nothing.
 
 ```json
 {
-  "vybava": "0.32.0", "contract": 1,
+  "vybava": "0.32.0", "contract": 2,
   "pass": 1, "passDir": ".ui-loop/pass-1",
-  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 } },
+  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 },
+              "source": [":(top)", ":(exclude,literal).ui-loop", "…"], "primitives": ["libs/ui-lib"] },
+  "capturedHeadSha": "<sha>", "sourceUnchanged": false,
+  "drift": { "app": ["apps/portal/src/app/tasks/tasks.component.ts"], "rig": ["tests/ui-loop/screens/tasks.ts"], "spec": ["PWF-B04"], "appTotal": 1 },
   "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
   "published": true, "unpublished": [], "sets": [{ "area", "key", "status", "url" }],
   "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [] },
@@ -297,7 +304,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
   "previous": { "pass", "file", "open" },
   "checkpoints": { "total": 47, "byStatus": { "done": 43, "blocked": 4 } },
   "boards": [{ "area", "url", "slug", "section" }],
-  "next": { "stage": "fix", "resume": true, "reason": "293 of 340 open items without a checkpoint" }
+  "next": { "stage": "fix", "resume": true, "reason": "293 of 340 open items without a checkpoint", "only": null }
 }
 ```
 
@@ -307,14 +314,25 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
-- `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
-  - `capture`: no shots yet, or the pass is unpublished (`resume`);
-  - `review`: no backlog, or an area has a batch left;
-  - `done`: nothing is open;
-  - `fix`: open items lack a finishing checkpoint (`done`, `skipped` or `blocked`);
-  - `done`: the pass reached `--cap`;
-  - `done`: the round fixed nothing;
-  - otherwise `verify`.
+- `drift` is what changed from `capturedHeadSha` to the working tree (tracked edits and untracked, non-ignored files), by class. `app` is the changed paths inside `config.source`, relative to the config root (`../` for one outside it), sorted and capped at 20 (`appTotal` is the uncapped count). `rig` is the changed paths under `dir`, `vendor/` included, capped at 20. `spec` is the rule ids whose text changed in `spec`, sorted: a rule id is a token like `PWF-D01` (`[A-Z][A-Z0-9]*-[A-Z]*[0-9]+`). Each added or removed line names the ids on it, else the first id of the nearest line above it in its section, else of the nearest enclosing heading that carries one, else its section's heading text (so a spec without ids still reports something), else the spec's path. A heading closes a section, so an earlier section's last rule never claims an edit to the next section's prose. The lists are empty, never null. `drift` is null when it cannot be weighed: for a pass without provenance in a git repo, and for one whose revision this clone lacks (`state` also warns `CAPTURE_REVISION_MISSING`). `next` then treats the pass as drifted (the table below). Outside git no capture has provenance, so there is no drift to weigh and `next` routes as if there were none.
+- `sourceUnchanged` is `drift.app` being empty. **Spec and docs commits never stale a pass; only app drift does.** The rig is repaired between review and verify, the basis reads the manifest and the spec at the captured revision, and a spec edit is reported by rule in `drift.spec`, never recaptured.
+- `next` is the one router: the review-loop runs it verbatim. Its rules, in order:
+
+  | Stage | When | `only` |
+  |---|---|---|
+  | `capture` | no shots yet | null |
+  | `capture` | the pass is unpublished and `drift` is null | `[]` |
+  | `capture` (`resume`) | the pass is unpublished, or it has provenance and no shots; with provenance, only while the tree outside `out` and `.vitrinka` (the rig's included) matches its revision, which is capture's own check for a resume | null |
+  | `capture` | the pass has shots and provenance but is unpublished, and that tree changed, so capture would refuse the resume | `[]` |
+  | `capture` | the review is incomplete and `drift.app` is not empty (`reason` names up to 3 drifted paths), or `drift` is null | `[]` |
+  | `review` | no backlog, or an area has a batch left | null |
+  | `fix` | open items lack a finishing checkpoint (`done`, `skipped` or `blocked`); drift is expected while fixing | null |
+  | `done` | nothing is open, `drift.app` is empty and `drift` is not null | null |
+  | `done` | the pass reached `--cap` | null |
+  | `done` | open items remain and the round fixed nothing | null |
+  | `verify` | otherwise: the round is checkpointed, or nothing is open but the app drifted (or `drift` is null) | the selection; `[]` when `drift` is null |
+
+  An interrupted writer (`fix/recovery.json`) overrides them all with `fix` (`resume`). `only` is the screen ids to reshoot, sorted, on `verify` and on a `capture` that reshoots the pass; `[]` is a full reshoot, and `reason` says why. The verify selection is the screens of the open findings (any status but `met`), the `screens` of the `done` checkpoints, and every screen whose shot records' `sourceFiles` meet the full `drift.app` list (a source file meets a drift path when they are equal or one is a directory prefix of the other). Any `drift.app` path under a `--primitives` prefix (default `uiLoop.primitives`) makes it a full reshoot (`primitive changed → full reshoot: <path>`), and so does a selection that comes out empty. The `checkpoints` verb stays for a workflow that still computes the selection itself.
 
 **`batches [--pass N] [--size 14] [--areas a,b]`** gives the reviewer batches: each area's screens sorted by id, in chunks of `--size`, with areas in config order. The ids are `<area>-<n>`. The verb writes every batch to `review/batches.json` (`{v, pass, size, batches}`), the one definition the review stage and `merge-review` share. It returns `{pass, passDir, file, size, screens, batches: [{id, area, screens}], done, left}`, narrowed to `--areas` (the file never is). Without `--size` the size the file was made with stays. A different `--size` once raw batches exist is refused (`SELECTION_INVALID`), because it would redefine what a finished batch covered.
 
@@ -338,7 +356,7 @@ It returns counts plus what needs an agent's judgement: `{pass, passDir, file, p
 ```
 
 1. **Home.** Each open item's home is the directory of its first file that is inside the repo and not an i18n catalog (a `.json` under a directory named `i18n`). An absolute path is made repo-relative. A path outside the repo (another repo, or `../`) never counts. An item without a home is `foreign` (warned `FOREIGN_ITEMS`), or `i18n` when its only in-repo files are catalogs.
-2. **Groups.** Items group by home. A group is primitive when its dir is under a `--primitives` prefix (a directory prefix, `libs/ui-lib` matches `libs/ui-lib/…`) or when items of two areas share it. `frozen` lists every primitive dir.
+2. **Groups.** Items group by home. A group is primitive when its dir is under a `--primitives` prefix (a directory prefix, `libs/ui-lib` matches `libs/ui-lib/…`; without the flag, `uiLoop.primitives`) or when items of two areas share it. `frozen` lists every primitive dir.
 3. **Packing.** The groups pack greedily into at most `--max` lanes per phase: the biggest group first, onto the lightest lane, ties by dir. The primitives phase runs first.
 4. **Order inside a lane:** worst severity first, then carried items (`not-met`, `partly`) before fresh ones, then key.
 5. **A resumed round** classifies every open item, so `frozen` stays stable, but packs only the items without a finishing checkpoint (`finished` counts them).
@@ -394,24 +412,30 @@ The harness must type-check under TS 5.3 strict, with `noUncheckedIndexedAccess`
 
 ### Durable workflow evidence
 
-The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
+The stage reader also reports `headSha`, `capturedHeadSha`, `drift`, `sourceUnchanged`,
 `reviewBasis`, `scoreboardBasis`, `scoreboardCurrent` and `checkpointApiNotes`.
 `run` writes `capture.json` atomically before starting the interruptible runner;
-resume retains that revision and refuses application drift. Workflows recapture
-legacy passes without provenance. Captures outside git have no verified revision.
+resume retains that revision and refuses any drift outside `out` and `.vitrinka`,
+the rig's included, anywhere in the repo (a capture refuses an uncommitted change
+the same way). `state` routes a legacy pass without provenance to a full reshoot.
+Captures outside git have no verified revision.
 
 `reviewBasis` is the SHA256 of the sorted `[path, SHA256(bytes)]` pairs over the
 pass's shots (`*.png`, `*.json`), the manifest (`*.ts` under `dir`, `vendor/`
 skipped) and the `spec`. **A pass's evidence is immutable**: with provenance, the
-manifest is read from git at `capturedHeadSha`, never from the working tree, so a
-recipe repair or `knownIssues` correction committed after capture leaves the
-reviews, backlog and checkpoints of that pass current. The verify pass is the one
-that captures with the repaired rig. Shots and the spec still move the basis: the
-spec is the owner's live rule set and is read from the working tree. A pass
-without provenance reads the manifest from the working tree as before. So does a
-pass whose revision this clone lacks (gc'd after its branch went, or copied from
-another clone), and `state` warns `CAPTURE_REVISION_MISSING` for it: fetch the
-revision or capture a new pass.
+manifest and the spec are read from git at `capturedHeadSha`, never from the
+working tree, so a recipe repair, a `knownIssues` correction or a spec edit
+committed after capture leaves the reviews, backlog and checkpoints of that pass
+current. The verify pass is the one that captures with the repaired rig; a spec
+edit shows up as its rule ids in `state`'s `drift.spec`. Only the shots still move
+the basis. A pass without provenance reads the manifest and the spec from the
+working tree as before. So does a pass whose revision this clone lacks (gc'd after
+its branch went, or copied from another clone), and `state` warns
+`CAPTURE_REVISION_MISSING` for it: fetch the revision or capture a new pass.
+Vybava 0.33 and earlier read the spec from the working tree, so a pass whose spec
+changed between capture and review, reviewed under those, holds evidence stamped
+with another basis: after the upgrade its reviews, backlog and checkpoints read as
+stale once, and the pass is reviewed again.
 
 For passes with provenance, a raw review completes its batch when it carries the
 current `basis` and its own batch id, and its `screensRead` stays inside the batch
@@ -424,8 +448,9 @@ Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path t
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
 are reevaluated. Skips/blocks are reusable only with unchanged application source,
 where the rig under `dir` does not count (only capture and its resume count it).
-The spec stays unchanged during fixes, since an edit stales the pass. Manifest
-repairs may land between review and verify. API notes live beside source
+Manifest repairs may land between review and verify. A spec edit no longer stales
+the pass, but it is still source to a skip or block (the rule above), so it
+re-opens those items. API notes live beside source
 and in ignored checkpoints. The state reader keeps item bodies on disk.
 
 After scoreboard callouts are confirmed by board readback, the workflow writes

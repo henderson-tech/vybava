@@ -259,11 +259,12 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "A pass's state as counts (shots, screens, published, review batches, backlog, checkpoints) and the next stage",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
-			return t.State(uiloop.StateOptions{Pass: pass, Cap: stageCap})
+			return t.State(uiloop.StateOptions{Pass: pass, Cap: stageCap, Primitives: uiloop.SplitList(primitives)})
 		}),
 	}
 	stateCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
 	stateCmd.Flags().IntVar(&stageCap, "cap", 6, "the pass cap the next stage respects")
+	stateCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated; default: uiLoop.primitives)")
 
 	batchesCmd := &cobra.Command{
 		Use:   "batches",
@@ -296,7 +297,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		}),
 	}
 	lanesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
-	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated)")
+	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated; default: uiLoop.primitives)")
 	lanesCmd.Flags().IntVar(&maxLanes, "max", 4, "lanes per phase")
 
 	checkpointsCmd := &cobra.Command{

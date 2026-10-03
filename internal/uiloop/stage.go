@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -66,18 +67,23 @@ func (c Checkpoint) Finishes() bool {
 	return c.Status == "done" || c.Status == "skipped" || c.Status == "blocked"
 }
 
-// NextStage is where a pass stands (vitrinka workflows-src/lib/uiloop.js nextStage).
+// NextStage is where a pass stands (nextStage); the vitrinka workflow runs it verbatim.
 type NextStage struct {
 	Stage  string `json:"stage"` // capture | review | fix | verify | done
 	Resume bool   `json:"resume"`
 	Reason string `json:"reason"`
+	// Only is the screens a verify, or a capture that reshoots the pass,
+	// shoots, sorted; empty is a full reshoot (Reason says why). nil on
+	// every other stage.
+	Only []string `json:"only"`
 }
 
 // StateContract is the shape of `state`'s data the vitrinka workflow reads
 // (workflows-src/lib/uiloop.js UILOOP_STATE_CONTRACT, which refuses a lower
 // one). Bump it whenever a field a workflow reads is added or changes format,
-// digests included.
-const StateContract = 1
+// digests included. 2: drift, sourceUnchanged as "drift.app is empty",
+// next.only and config.source/primitives.
+const StateContract = 2
 
 // StateConfig is the part of the section the workflow's briefs need.
 type StateConfig struct {
@@ -90,6 +96,10 @@ type StateConfig struct {
 	Project     string    `json:"project"`
 	BoardPrefix string    `json:"boardPrefix"`
 	Lint        StateLint `json:"lint"`
+	// Source and Primitives are the effective pathspecs and prefixes state
+	// judged drift and the verify selection with.
+	Source     []string `json:"source"`
+	Primitives []string `json:"primitives"`
 }
 
 // StateLint is the lint the pass's shots were linted with (its run.json, which
@@ -175,7 +185,8 @@ type StateData struct {
 	HeadSHA            string           `json:"headSha"`
 	ReviewBasis        string           `json:"reviewBasis"`
 	CapturedHeadSHA    string           `json:"capturedHeadSha"`
-	SourceUnchanged    bool             `json:"sourceUnchanged"`
+	Drift              *Drift           `json:"drift"`           // nil without provenance, or when this clone lacks the captured revision
+	SourceUnchanged    bool             `json:"sourceUnchanged"` // drift.app is empty
 	ScoreboardBasis    string           `json:"scoreboardBasis"`
 	ScoreboardCurrent  bool             `json:"scoreboardCurrent"`
 	CheckpointAPINotes []string         `json:"checkpointApiNotes"`
@@ -201,6 +212,8 @@ type StateData struct {
 type StateOptions struct {
 	Pass int
 	Cap  int // pass cap for the next stage (default 6)
+	// Primitives are directory prefixes holding shared primitives (nil: the config's).
+	Primitives []string
 }
 
 // screen is one screen of a pass: its id and area.
@@ -675,8 +688,12 @@ func (t *Tool) boardRows(pass int) ([]BoardRow, error) {
 // State reads a pass back: `ui-loop state`.
 func (t *Tool) State(o StateOptions) (Result, error) {
 	c := t.Config
+	primitives := o.Primitives
+	if primitives == nil {
+		primitives = append([]string{}, c.Primitives...)
+	}
 	cfg := StateConfig{Dir: c.Dir, Out: c.Out, Spec: c.Spec, AppMap: c.AppMap, Areas: c.Areas, Project: c.Vitrinka.Project, BoardPrefix: c.Vitrinka.BoardPrefix,
-		Lint: StateLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget}}
+		Lint: StateLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget}, Source: c.SourceOrDefault(), Primitives: primitives}
 	for app := range c.Apps {
 		cfg.Apps = append(cfg.Apps, app)
 	}
@@ -717,9 +734,21 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		return Result{}, err
 	}
 	data.CapturedHeadSHA = marker.HeadSHA
-	data.SourceUnchanged, err = t.sourceUnchanged(marker.HeadSHA)
+	drift, provenance, err := t.drift(marker.HeadSHA)
 	if err != nil {
 		return Result{}, err
+	}
+	// unjudged is why the drift cannot be weighed; nextStage then reshoots.
+	// Outside git no capture has provenance, so there is nothing to weigh.
+	var unjudged string
+	switch {
+	case provenance:
+		capped := drift.capped()
+		data.Drift, data.SourceUnchanged = &capped, len(drift.App) == 0
+	case marker.HeadSHA != "":
+		unjudged = fmt.Sprintf("was captured at %s, which this clone lacks (%s)", marker.HeadSHA, DiagCaptureRevisionMissing)
+	case data.HeadSHA != "":
+		unjudged = "has no capture provenance"
 	}
 	if _, err := os.Stat(t.passAbs(pass)); err != nil {
 		return Result{}, diag(DiagPassMissing, data.PassDir+" does not exist", "omit --pass for the latest pass")
@@ -856,7 +885,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	for _, cp := range checkpoints {
 		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
 	}
-	data.Next = nextStage(pass, len(records), data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, o.Cap)
+	data.Next = nextStage(pass, records, data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, drift.App, unjudged, primitives, o.Cap)
 	if _, err := readJSON(filepath.Join(t.passAbs(pass), "fix", "recovery.json"), &data.Recovery); err != nil {
 		return Result{}, err
 	}
@@ -866,23 +895,43 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		}
 		data.Next = NextStage{Stage: "fix", Resume: true, Reason: "recover the interrupted writer before checkpoint filtering"}
 	}
-	if data.Recovery == nil && data.Shots == 0 && data.CapturedHeadSHA != "" && data.SourceUnchanged {
-		data.Next = NextStage{Stage: "capture", Resume: true, Reason: "the interrupted pass has provenance but no shots yet"}
+	if data.Recovery == nil && data.CapturedHeadSHA != "" && (data.Shots == 0 || data.Next.Stage == "capture" && data.Next.Resume) {
+		// A resume is capture's own provenance check, which still counts the
+		// rig: a pass it would refuse is shot again instead.
+		resumable, err := t.sourceUnchanged(marker.HeadSHA)
+		if err != nil {
+			return Result{}, err
+		}
+		switch {
+		case resumable && data.Shots == 0:
+			data.Next = NextStage{Stage: "capture", Resume: true, Reason: "the interrupted pass has provenance but no shots yet"}
+		case !resumable && data.Shots > 0:
+			data.Next = NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d has shots that are not published, and its tree changed since capture, so it cannot resume: reshoot", pass)}
+		}
 	}
 	return Result{Data: data, Diagnostics: diags}, nil
 }
 
-// nextStage is vitrinka's nextStage (workflows-src/lib/uiloop.js), ported:
-// capture (no shots, or not published — then resume), review (no backlog,
-// or an area with an unreviewed batch), fix (open items without a finishing
-// checkpoint), verify (the round is checkpointed and fixed something), done
-// (nothing open, the cap reached, or a round that fixed nothing).
-func nextStage(pass, shots int, published bool, areas, reviewedAreas []string, hasBacklog bool, findings []Finding, checkpoints []Checkpoint, limit int) NextStage {
+// nextStage is the one router; vitrinka's review-loop runs it verbatim:
+// capture (no shots, or not published — then resume), capture again as a
+// full reshoot when the app drifted before the review finished, review (no
+// backlog, or an area with an unreviewed batch), fix (open items without a
+// finishing checkpoint; drift is expected while fixing), done (nothing open
+// and no app drift, the cap reached, or a round that fixed nothing), else
+// verify (the round is checkpointed, or a converged pass's app drifted) with
+// verifySelection's screens. appDrift is drift.app uncapped. unjudged, when
+// set, is why the pass's drift cannot be weighed (it has no provenance, or
+// this clone lacks its revision): the pass may have drifted, so it is reshot
+// in full wherever app drift would reshoot it, an unpublished one included.
+func nextStage(pass int, records []Record, published bool, areas, reviewedAreas []string, hasBacklog bool, findings []Finding, checkpoints []Checkpoint, appDrift []string, unjudged string, primitives []string, limit int) NextStage {
 	if limit < 1 {
 		limit = 6
 	}
-	if pass == 0 || shots == 0 {
+	if pass == 0 || len(records) == 0 {
 		return NextStage{Stage: "capture", Reason: "no pass with shots yet"}
+	}
+	if !published && unjudged != "" {
+		return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d has shots that are not published, and it %s: reshoot", pass, unjudged)}
 	}
 	if !published {
 		return NextStage{Stage: "capture", Resume: true, Reason: fmt.Sprintf("pass %d has shots that are not published", pass)}
@@ -894,6 +943,12 @@ func nextStage(pass, shots int, published bool, areas, reviewedAreas []string, h
 		}
 	}
 	if !hasBacklog || len(unreviewed) > 0 {
+		if len(appDrift) > 0 {
+			return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("application source changed since pass %d was captured (%s): reshoot before the review", pass, samplePaths(appDrift))}
+		}
+		if unjudged != "" {
+			return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d %s: reshoot before the review", pass, unjudged)}
+		}
 		reason := "no backlog yet"
 		if len(unreviewed) > 0 {
 			reason = "areas not reviewed: " + strings.Join(unreviewed, ", ")
@@ -918,16 +973,78 @@ func nextStage(pass, shots int, published bool, areas, reviewedAreas []string, h
 		}
 	}
 	switch {
-	case open == 0:
-		return NextStage{Stage: "done", Reason: fmt.Sprintf("pass %d backlog has no open item — converged", pass)}
 	case todo > 0:
 		return NextStage{Stage: "fix", Resume: len(finished) > 0, Reason: fmt.Sprintf("%d of %d open items without a checkpoint", todo, open)}
+	case open == 0 && len(appDrift) == 0 && unjudged == "":
+		return NextStage{Stage: "done", Reason: fmt.Sprintf("pass %d backlog has no open item — converged", pass)}
 	case pass >= limit:
 		return NextStage{Stage: "done", Reason: fmt.Sprintf("cap of %d passes reached with %d items open", limit, open)}
-	case !fixed:
+	case open > 0 && !fixed:
 		return NextStage{Stage: "done", Reason: "the fix round fixed nothing — the open items need a human"}
 	}
-	return NextStage{Stage: "verify", Reason: fmt.Sprintf("fix round of pass %d is checkpointed", pass)}
+	reason := fmt.Sprintf("fix round of pass %d is checkpointed", pass)
+	switch {
+	case open > 0:
+	case unjudged != "":
+		reason = fmt.Sprintf("pass %d has no open item", pass)
+	default:
+		reason = fmt.Sprintf("pass %d converged, but application source changed since capture (%s)", pass, samplePaths(appDrift))
+	}
+	only, full := verifySelection(records, findings, checkpoints, appDrift, primitives)
+	if unjudged != "" {
+		only, full = []string{}, fmt.Sprintf("it %s → full reshoot", unjudged)
+	}
+	if full != "" {
+		reason += "; " + full
+	}
+	return NextStage{Stage: "verify", Reason: reason, Only: only}
+}
+
+// verifySelection is the screens a verify reshoots, sorted: every open
+// finding's, every done checkpoint's, and every screen whose shot records'
+// sourceFiles meet the app drift (equal, or one a directory prefix of the
+// other). An app change under a primitives prefix reshoots everything, and
+// so does a selection that comes out empty: only is then empty and full
+// says why.
+func verifySelection(records []Record, findings []Finding, checkpoints []Checkpoint, appDrift, primitives []string) (only []string, full string) {
+	for _, p := range appDrift {
+		if underPrefix(p, primitives) {
+			return []string{}, "primitive changed → full reshoot: " + p
+		}
+	}
+	only = []string{}
+	for _, f := range findings {
+		if f.Open() && f.Screen != "" {
+			only = append(only, f.Screen)
+		}
+	}
+	for _, c := range checkpoints {
+		if c.Status == "done" {
+			only = append(only, c.Screens...)
+		}
+	}
+	for _, r := range records {
+		if slices.ContainsFunc(r.SourceFiles, func(src string) bool {
+			return slices.ContainsFunc(appDrift, func(p string) bool {
+				return underPrefix(path.Clean(src), []string{p}) || underPrefix(p, []string{src})
+			})
+		}) {
+			only = append(only, r.ID)
+		}
+	}
+	sort.Strings(only)
+	if only = slices.Compact(only); len(only) == 0 {
+		return only, "no screen's sourceFiles name the changed source → full reshoot"
+	}
+	return only, ""
+}
+
+// samplePaths names up to three paths, then how many more there are.
+func samplePaths(paths []string) string {
+	if len(paths) <= 3 {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:3], ", "), len(paths)-3)
 }
 
 // BatchesOptions are `batches`' flags.

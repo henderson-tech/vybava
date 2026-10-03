@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -32,40 +33,213 @@ func isRevision(s string) bool {
 	return (len(s) == 40 || len(s) == 64) && err == nil
 }
 
-// sourceUnchanged reports whether the tree (tracked edits and untracked files)
-// still matches head, Config.Out, .vitrinka and the ignore dirs aside. Capture
-// counts the rig (Config.Dir) as source; a skip or block judges the app and
-// passes it in ignore.
-func (t *Tool) sourceUnchanged(head string, ignore ...string) (bool, error) {
+// changedSince lists the paths (relative to Root, sorted, never nil) inside
+// pathspec whose tracked content differs between head and the working tree,
+// both sides of a rename, plus the untracked files git does not ignore. git
+// does the pathspec matching, relative to Root unless a pathspec says
+// `:(top)`; a path outside Root (a config root below the repo's top) is
+// listed with its `../`. ok is false when head is not a revision this clone
+// has.
+func (t *Tool) changedSince(head string, pathspec ...string) (files []string, ok bool, err error) {
 	if !isRevision(head) {
-		return false, nil
+		return nil, false, nil
 	}
-	out, err := t.git("diff", "--name-only", head, "--")
-	if err != nil {
-		return false, err
+	prefix, err := t.git("rev-parse", "--show-prefix")
+	if err != nil || prefix.Code != 0 {
+		return nil, false, err
 	}
-	if out.Code != 0 {
-		return false, nil
-	}
-	files := strings.Split(strings.TrimSpace(out.Stdout), "\n")
-	out, err = t.git("ls-files", "--others", "--exclude-standard")
-	if err != nil {
-		return false, err
-	}
-	if out.Code != 0 {
-		return false, nil
-	}
-	files = append(files, strings.Split(strings.TrimSpace(out.Stdout), "\n")...)
-	ignore = append([]string{t.Config.Out, ".vitrinka"}, ignore...)
-	for _, file := range files {
-		if file != "" && !slices.ContainsFunc(ignore, func(dir string) bool {
-			dir = strings.TrimRight(dir, "/")
-			return file == dir || strings.HasPrefix(file, dir+"/")
-		}) {
-			return false, nil
+	files = []string{}
+	for _, args := range [][]string{{"diff", "--name-only", "-z", "--no-renames", "--no-relative", head}, {"ls-files", "-z", "--full-name", "--others", "--exclude-standard"}} {
+		out, err := t.git(append(append(args, "--"), pathspec...)...)
+		if err != nil {
+			return nil, false, err
+		}
+		if out.Code != 0 {
+			return nil, false, nil
+		}
+		for _, file := range strings.Split(out.Stdout, "\x00") {
+			if file == "" {
+				continue
+			}
+			rel, err := filepath.Rel(filepath.FromSlash(strings.TrimSpace(prefix.Stdout)), filepath.FromSlash(file))
+			if err != nil {
+				return nil, false, err
+			}
+			files = append(files, filepath.ToSlash(rel))
 		}
 	}
-	return true, nil
+	sort.Strings(files)
+	return slices.Compact(files), true, nil
+}
+
+// sourceUnchanged reports whether the repo (tracked edits and untracked
+// files, outside Root too) still matches head, Config.Out, .vitrinka and the
+// ignore dirs aside. Capture counts the rig (Config.Dir) as source; a skip or
+// block judges the app and passes it in ignore. State judges a pass by drift
+// instead.
+func (t *Tool) sourceUnchanged(head string, ignore ...string) (bool, error) {
+	spec := []string{":(top)"}
+	for _, dir := range append([]string{t.Config.Out, ".vitrinka"}, ignore...) {
+		spec = append(spec, ":(exclude,literal)"+strings.TrimRight(dir, "/"))
+	}
+	files, ok, err := t.changedSince(head, spec...)
+	return ok && len(files) == 0, err
+}
+
+// Drift is what changed between a pass's captured revision and the working
+// tree, by what it stales. Only App stales the pass: the rig is repaired
+// between review and verify, and a spec edit is reported by rule, never
+// recaptured.
+type Drift struct {
+	// App is the changed paths inside Config.SourceOrDefault.
+	App []string `json:"app"`
+	// Rig is the changed paths under Config.Dir, vendor/ included.
+	Rig []string `json:"rig"`
+	// Spec is the rule ids whose text changed in Config.Spec (specDrift).
+	Spec []string `json:"spec"`
+	// AppTotal is len(App) before state caps it at driftCap.
+	AppTotal int `json:"appTotal"`
+}
+
+// driftCap is the paths state lists per drift class.
+const driftCap = 20
+
+// capped is d as state reports it: App and Rig cut to driftCap.
+func (d Drift) capped() Drift {
+	d.App, d.Rig = d.App[:min(len(d.App), driftCap)], d.Rig[:min(len(d.Rig), driftCap)]
+	return d
+}
+
+// drift classifies the change since head, every list complete and never
+// nil; ok is false when head is not a revision this clone has.
+func (t *Tool) drift(head string) (d Drift, ok bool, err error) {
+	if d.App, ok, err = t.changedSince(head, t.Config.SourceOrDefault()...); err != nil || !ok {
+		return Drift{}, ok, err
+	}
+	if d.Rig, ok, err = t.changedSince(head, ":(literal)"+strings.TrimRight(t.Config.Dir, "/")); err != nil || !ok {
+		return Drift{}, ok, err
+	}
+	if d.Spec, err = t.specDrift(head); err != nil {
+		return Drift{}, false, err
+	}
+	d.AppTotal = len(d.App)
+	return d, true, nil
+}
+
+var (
+	ruleID  = regexp.MustCompile(`\b[A-Z][A-Z0-9]*-[A-Z]*[0-9]+\b`)
+	heading = regexp.MustCompile(`^ {0,3}(#{1,6})\s+(.*?)[\s#]*$`)
+	hunk    = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+)
+
+// specDrift is the rules whose text changed in the spec between head and
+// the working tree, sorted. A changed (added or removed) line names the ids
+// it carries, else the first id of the nearest line above it in its section,
+// else of the nearest enclosing heading that carries one, else its section's
+// heading text, else the spec's path.
+func (t *Tool) specDrift(head string) ([]string, error) {
+	rules := []string{}
+	if t.Config.Spec == "" {
+		return rules, nil
+	}
+	out, err := t.git("diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", head, "--", t.Config.Spec)
+	if err != nil {
+		return nil, err
+	}
+	if out.Code != 0 {
+		return nil, fmt.Errorf("git diff %s -- %s: exit %d: %s", head, t.Config.Spec, out.Code, strings.TrimSpace(out.Stderr))
+	}
+	if out.Stdout == "" {
+		return rules, nil
+	}
+	before, _, err := t.committedFile(head, t.Config.Spec)
+	if err != nil {
+		return nil, err
+	}
+	after, err := os.ReadFile(t.abs(t.Config.Spec))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	sides := [2][]string{strings.Split(before, "\n"), strings.Split(string(after), "\n")}
+	// ruleAt names what line n (1-based) of lines belongs to. Walking up, a
+	// heading closes the section: past it only an enclosing (shallower)
+	// heading can still name the rule, so an earlier section's last rule
+	// never claims an edit to the next section's prose.
+	ruleAt := func(lines []string, n int) []string {
+		if n < 1 || n > len(lines) {
+			return []string{t.Config.Spec}
+		}
+		if ids := ruleID.FindAllString(lines[n-1], -1); len(ids) > 0 {
+			return ids
+		}
+		level, section := 7, ""
+		for i := n - 1; i >= 0; i-- {
+			m := heading.FindStringSubmatch(lines[i])
+			if (m == nil && level < 7) || (m != nil && len(m[1]) >= level) {
+				continue
+			}
+			if ids := ruleID.FindAllString(lines[i], -1); len(ids) > 0 {
+				return ids[:1]
+			}
+			if m != nil {
+				level = len(m[1])
+				if section == "" {
+					section = m[2]
+				}
+			}
+		}
+		if section != "" {
+			return []string{section}
+		}
+		return []string{t.Config.Spec}
+	}
+	// next is each side's 1-based line number of the hunk line being read.
+	var next [2]int
+	inHunk := false
+	for _, line := range strings.Split(out.Stdout, "\n") {
+		if m := hunk.FindStringSubmatch(line); m != nil {
+			for side := range next {
+				if next[side], err = strconv.Atoi(m[side+1]); err != nil {
+					return nil, fmt.Errorf("git diff %s -- %s: hunk %q: %w", head, t.Config.Spec, line, err)
+				}
+			}
+			inHunk = true
+			continue
+		}
+		if !inHunk || line == "" {
+			continue
+		}
+		switch line[0] {
+		case '-':
+			rules = append(rules, ruleAt(sides[0], next[0])...)
+			next[0]++
+		case '+':
+			rules = append(rules, ruleAt(sides[1], next[1])...)
+			next[1]++
+		case ' ':
+			next[0]++
+			next[1]++
+		}
+	}
+	sort.Strings(rules)
+	return slices.Compact(rules), nil
+}
+
+// committedFile reads rel (relative to Root) at head, a revision this clone
+// has; found is false when head holds no such path.
+func (t *Tool) committedFile(head, rel string) (body string, found bool, err error) {
+	object := head + ":./" + filepath.ToSlash(rel)
+	out, err := t.git("cat-file", "-e", object)
+	if err != nil || out.Code != 0 {
+		return "", false, err
+	}
+	if out, err = t.git("cat-file", "blob", object); err != nil {
+		return "", false, err
+	}
+	if out.Code != 0 {
+		return "", false, fmt.Errorf("git cat-file blob %s: exit %d: %s", object, out.Code, strings.TrimSpace(out.Stderr))
+	}
+	return out.Stdout, true, nil
 }
 
 func (t *Tool) backlogEvidenceCurrent(pass int, file string, knownBasis ...string) (bool, error) {
@@ -132,9 +306,9 @@ func (t *Tool) captureProvenance(pass int, resume bool) error {
 // Content basis: compact JSON of sorted [relative filename, SHA256(bytes)]
 // pairs over the pass's shots, the manifest (*.ts under Config.Dir, vendor/
 // skipped) and the spec. A pass's evidence is immutable: with provenance its
-// manifest is read at the captured revision, so a rig repair committed after
-// capture never stales the reviews, backlog and checkpoints of that pass. The
-// spec is the owner's live rule set and stays a working-tree read.
+// manifest and its spec are read at the captured revision, so neither a rig
+// repair nor a spec edit committed after capture stales the reviews, backlog
+// and checkpoints of that pass; state reports the spec edit as drift.spec.
 func (t *Tool) reviewBasis(pass int) (string, error) {
 	basis, _, _, err := t.reviewEvidence(pass)
 	return basis, err
@@ -148,8 +322,8 @@ func (t *Tool) cachedReviewBasis(pass int, known []string) (string, error) {
 }
 
 // reviewEvidence is the basis, the per-file hashes it covers (keyed relative to
-// Root) and a warning when a strict pass's manifest had to be read from the
-// working tree because its captured revision is not in this clone.
+// Root) and a warning when a strict pass's manifest and spec had to be read
+// from the working tree because its captured revision is not in this clone.
 func (t *Tool) reviewEvidence(pass int) (string, map[string]string, []runxDiagnostic, error) {
 	entries := [][2]string{}
 	hashes := map[string]string{}
@@ -184,7 +358,7 @@ func (t *Tool) reviewEvidence(pass int) (string, map[string]string, []runxDiagno
 		}
 		if !committed {
 			diags = append(diags, warn(DiagCaptureRevisionMissing,
-				fmt.Sprintf("%s was captured at %s, which is not in this clone; its manifest basis is read from the working tree, so a rig change since capture stales its reviews, backlog and checkpoints", t.PassDir(pass), marker.HeadSHA),
+				fmt.Sprintf("%s was captured at %s, which is not in this clone; its manifest and spec basis is read from the working tree, so a rig or spec change since capture stales its reviews, backlog and checkpoints", t.PassDir(pass), marker.HeadSHA),
 				"fetch that revision, or capture a new pass"))
 		}
 		for rel, hash := range manifest {
@@ -219,7 +393,22 @@ func (t *Tool) reviewEvidence(pass int) (string, map[string]string, []runxDiagno
 			return "", nil, nil, err
 		}
 	}
-	if t.Config.Spec != "" {
+	switch {
+	case t.Config.Spec == "":
+	case committed:
+		body, found, err := t.committedFile(marker.HeadSHA, t.Config.Spec)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		rel, err := filepath.Rel(t.Root, t.abs(t.Config.Spec))
+		if err != nil {
+			return "", nil, nil, err
+		}
+		if found {
+			hashes[filepath.ToSlash(rel)] = digest(body, 64)
+			entries = append(entries, [2]string{filepath.ToSlash(rel), hashes[filepath.ToSlash(rel)]})
+		}
+	default:
 		if err := add(t.abs(t.Config.Spec)); err != nil {
 			return "", nil, nil, err
 		}

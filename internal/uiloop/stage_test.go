@@ -3,6 +3,7 @@ package uiloop
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -67,12 +68,81 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 	if !s.HasBacklog || s.Backlog.Open != 2 || s.Backlog.BySeverity["broken"] != 1 || s.Backlog.Reviewed != 2 || s.Checkpoints.Total != 1 {
 		t.Fatalf("backlog %+v, checkpoints %+v", s.Backlog, s.Checkpoints)
 	}
-	if s.Next != (NextStage{Stage: "fix", Resume: true, Reason: "1 of 2 open items without a checkpoint"}) {
+	if !reflect.DeepEqual(s.Next, NextStage{Stage: "fix", Resume: true, Reason: "1 of 2 open items without a checkpoint"}) {
 		t.Errorf("next: %+v", s.Next)
 	}
 	writeFile(t, filepath.Join(dir, "fix", "b.json"), `{"v":1,"key":"b","status":"skipped","note":"spec"}`)
 	if s = state(); s.Next.Stage != "verify" {
 		t.Errorf("checkpointed round: %+v", s.Next)
+	}
+}
+
+// Only app drift moves a pass: before the review it reshoots everything,
+// while fixing it is expected, after the round (or on a converged pass) the
+// verify reshoots the open, the fixed and the drift-touched screens, and a
+// changed primitive reshoots everything.
+func TestNextStageRoutesAppDriftAndSelectsTheVerify(t *testing.T) {
+	records := []Record{
+		{ID: "users", Area: "admin", SourceFiles: []string{"apps/portal/users.ts"}},
+		{ID: "profile", Area: "admin", SourceFiles: []string{"libs/ui-lib/avatar.ts"}},
+		{ID: "tasks", Area: "tasks", Viewport: "phone", SourceFiles: []string{"apps/portal/tasks"}},
+		{ID: "tasks", Area: "tasks", Viewport: "desktop", SourceFiles: []string{"apps/portal/tasks"}},
+		{ID: "task-detail", Area: "tasks", SourceFiles: []string{"apps/portal/task-detail.ts"}},
+	}
+	areas := []string{"tasks", "admin"}
+	open := []Finding{{Key: "a", Screen: "users", Status: "open"}, {Key: "b", Screen: "profile", Status: "met"}}
+	met := open[1:]
+	round := []Checkpoint{{Key: "a", Status: "done", Screens: []string{"users", "task-detail"}}}
+	for _, c := range []struct {
+		name              string
+		reviewed          []string
+		findings          []Finding
+		checkpoints       []Checkpoint
+		drift, primitives []string
+		stage, reason     string
+		only              []string
+	}{
+		{"an app commit after a checkpointed round", areas, open, round, []string{"apps/portal/tasks/list.ts"}, nil, "verify", "checkpointed", []string{"task-detail", "tasks", "users"}},
+		{"an app change under a primitive", areas, open, round, []string{"apps/portal/tasks/list.ts", "libs/ui-lib/button.ts"}, []string{"libs/ui-lib"}, "verify", "primitive changed → full reshoot: libs/ui-lib/button.ts", []string{}},
+		{"an app change before the review finished", []string{"tasks"}, nil, nil, []string{"apps/portal/users.ts"}, nil, "capture", "apps/portal/users.ts", []string{}},
+		{"an app change while fixing", areas, open, nil, []string{"apps/portal/users.ts"}, nil, "fix", "", nil},
+		{"a converged pass whose app drifted", areas, met, nil, []string{"libs/ui-lib/avatar.ts"}, nil, "verify", "converged", []string{"profile"}},
+		{"a converged pass", areas, met, nil, nil, nil, "done", "converged", nil},
+	} {
+		n := nextStage(2, records, true, areas, c.reviewed, c.findings != nil, c.findings, c.checkpoints, c.drift, "", c.primitives, 6)
+		if n.Stage != c.stage || !strings.Contains(n.Reason, c.reason) || n.Resume || (n.Only == nil) != (c.only == nil) || !slices.Equal(n.Only, c.only) {
+			t.Errorf("%s: %+v", c.name, n)
+		}
+	}
+}
+
+// A pass whose drift cannot be weighed (no provenance, or a revision this
+// clone lacks) may have drifted: it is reshot in full wherever app drift
+// would reshoot it, an unpublished one included, and only a fix round in
+// progress keeps fixing.
+func TestNextStageReshootsAPassWhoseDriftCannotBeWeighed(t *testing.T) {
+	records := []Record{{ID: "users", Area: "admin"}, {ID: "tasks", Area: "tasks"}}
+	areas := []string{"tasks", "admin"}
+	open := []Finding{{Key: "a", Screen: "users", Status: "open"}}
+	met := []Finding{{Key: "a", Screen: "users", Status: "met"}}
+	missing := "was captured at " + strings.Repeat("ab", 20) + ", which this clone lacks (CAPTURE_REVISION_MISSING)"
+	for _, c := range []struct {
+		name, unjudged string
+		published      bool
+		reviewed       []string
+		findings       []Finding
+		stage, reason  string
+		only           []string
+	}{
+		{"an unpublished pass without provenance", "has no capture provenance", false, nil, nil, "capture", "not published, and it has no capture provenance: reshoot", []string{}},
+		{"a pass without provenance before the review", "has no capture provenance", true, []string{"tasks"}, nil, "capture", "pass 2 has no capture provenance: reshoot before the review", []string{}},
+		{"a pass without provenance while fixing", "has no capture provenance", true, areas, open, "fix", "1 of 1 open items", nil},
+		{"a converged pass whose revision is missing", missing, true, areas, met, "verify", "CAPTURE_REVISION_MISSING) → full reshoot", []string{}},
+	} {
+		n := nextStage(2, records, c.published, areas, c.reviewed, c.findings != nil, c.findings, nil, nil, c.unjudged, nil, 6)
+		if n.Stage != c.stage || !strings.Contains(n.Reason, c.reason) || n.Resume || (n.Only == nil) != (c.only == nil) || !slices.Equal(n.Only, c.only) {
+			t.Errorf("%s: %+v", c.name, n)
+		}
 	}
 }
 
@@ -358,6 +428,23 @@ func TestLanesOwnDirectoriesAndPackPrimitivesFirst(t *testing.T) {
 	if !slices.Equal(l.Areas[0].Dirs, []string{"apps/x/tasks"}) || !slices.Equal(l.Areas[0].Keys, []string{"t2", "t1"}) ||
 		!slices.Equal(l.Areas[1].Dirs, []string{"apps/x/tasks/sub", "apps/x/users"}) || !slices.Equal(l.Areas[1].Keys, []string{"t3", "u1"}) {
 		t.Errorf("areas: %+v", l.Areas)
+	}
+}
+
+// Without --primitives, lanes freezes uiLoop.primitives.
+func TestLanesDefaultToTheConfiguredPrimitives(t *testing.T) {
+	cfg := testConfig()
+	cfg.Primitives = []string{"libs/ui"}
+	tool := newTool(t, cfg)
+	dir := stagePass(t, tool)
+	writeFile(t, filepath.Join(dir, "review", "backlog.json"), `{"v":1,"pass":1,"findings":[
+		{"key":"a","screen":"tasks","area":"tasks","severity":"polish","status":"open","title":"t","files":["libs/ui/button/button.ts"],"acceptance":"x"}]}`)
+	res, err := tool.Lanes(LanesOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := res.Data.(LanesData); !slices.Equal(l.Frozen, []string{"libs/ui/button"}) || len(l.Primitives) != 1 {
+		t.Fatalf("lanes without --primitives: frozen %v, primitives %+v", l.Frozen, l.Primitives)
 	}
 }
 
