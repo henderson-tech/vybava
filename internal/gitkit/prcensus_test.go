@@ -292,6 +292,16 @@ func TestClaudeTouchesKeepPathsWithSpaces(t *testing.T) {
 	}
 }
 
+// PR #167 review: an apply_patch fed through a quoted heredoc names its files
+// in the heredoc body, which shellseg strips.
+func TestPRTargetNamesHeredocPatch(t *testing.T) {
+	target := prTarget{number: 42, slug: "acme/app", worktree: "/w/app/.worktrees/fix"}
+	text := "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: /w/app/.worktrees/fix/a.go\n@@\n-x\n+y\n*** End Patch\nEOF"
+	if !target.names(touch{cwd: "/tmp", text: text}) {
+		t.Error("a heredoc-fed apply_patch did not name the worktree")
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).

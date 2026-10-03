@@ -99,14 +99,15 @@ func mentionsNumber(text, ref string) bool {
 }
 
 // namesWorktree reports a tool call naming a path inside the worktree: one
-// of its whole paths, or a word of its command (internal/shellseg, so a
-// quoted path with spaces stays one word; --flag=value yields value). Each
+// of its whole paths, a word of its command (internal/shellseg, so a quoted
+// path with spaces stays one word; --flag=value yields value), or a file an
+// apply_patch names inside a heredoc shellseg strips. Each
 // is resolved as the shell would — absolute, ~/, or relative to the call's
 // directory (./x, ../x, .worktrees/x) — and compared as a path, so ../fix-2
 // and ../../fix never name ../fix. A bare word without a slash is not read
 // as a path.
 func namesWorktree(tc touch, worktree, home string) bool {
-	candidates := append([]string{}, tc.paths...)
+	candidates := append(append([]string{}, tc.paths...), patchFiles(tc.text)...)
 	for _, seg := range shellseg.Segments(tc.text) {
 		for _, word := range shellseg.Fields(seg) {
 			if strings.HasPrefix(word, "-") {
