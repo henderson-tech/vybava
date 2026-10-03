@@ -207,6 +207,9 @@ func TestFindRedactsSecrets(t *testing.T) {
 	if s := res.Sessions[0]; strings.Contains(s.Prompt+s.Title, token) {
 		t.Fatalf("token leaked: prompt=%q title=%q", s.Prompt, s.Title)
 	}
+	if fix := rerunFull("push with " + token); strings.Contains(fix, token) {
+		t.Fatalf("token leaked into the rerun: %q", fix)
+	}
 }
 
 // A paste with no plain-word phrase still yields at most maxNeedles needles.

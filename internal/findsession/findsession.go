@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/runx"
+	"github.com/henderson-tech/vybava/internal/secretscan"
 )
 
 // Diagnostic codes — the closed vocabulary of find-session.
@@ -270,10 +271,11 @@ func verdict(res Result, query string) []runx.Diagnostic {
 }
 
 // rerunFull is the full-scan rerun of a query: exact for a short one-line
-// query, else a note to feed the same text again.
+// query, else a note to feed the same text again — also when the query holds
+// a credential, which never reaches the output.
 func rerunFull(query string) string {
 	query = strings.TrimSpace(query)
-	if strings.Contains(query, "\n") || len(query) > 120 {
+	if strings.Contains(query, "\n") || len(query) > 120 || len(secretscan.Find(query, secretscan.All, nil)) > 0 {
 		return "find-session --full  # with the same text on stdin"
 	}
 	return "find-session --full '" + strings.ReplaceAll(query, "'", `'\''`) + "'"
