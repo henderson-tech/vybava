@@ -1229,11 +1229,11 @@ type BatchesOptions struct {
 
 // BatchesData is `ui-loop batches`.
 type BatchesData struct {
-	Pass    int      `json:"pass"`
-	PassDir string   `json:"passDir"`
-	File    string   `json:"file"`
-	Size    int      `json:"size"`
-	Screens int      `json:"screens"` // screens across the batches returned
+	Pass    int    `json:"pass"`
+	PassDir string `json:"passDir"`
+	File    string `json:"file"`
+	Size    int    `json:"size"`
+	Screens int    `json:"screens"` // screens across the batches returned
 	// Batches are the batches a reviewer takes, a split batch's parts in its
 	// place (batches.json keeps the split batch too); only --areas when
 	// given. Done and Left are of these, a blocked batch in neither.
@@ -1517,7 +1517,8 @@ func union(a, b []string) []string {
 // batches carries from the previous pass take that pass's items on them
 // as they stood, with carriedFrom, and count as reviewed; a carried screen
 // retaken since (carriesNow) takes nothing and is unreviewed. A blocked
-// batch's screens no raw read are unreviewed as "<id> (stalled: <reason>)".
+// batch's screens no raw read or listed are unreviewed as
+// "<id> (stalled: <reason>)".
 func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesFile, okShots map[string][]string, digests map[string]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
@@ -1701,10 +1702,13 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 			}
 		}
 	}
+	// A screen of a blocked batch that no raw judged, and no reviewer listed
+	// unreviewed with a why of its own, stalled.
 	stalled := map[string]string{}
 	for _, bt := range batches.leaves() {
 		for _, id := range bt.Screens {
-			if bt.Blocked && !judged[id] {
+			listed := slices.ContainsFunc(skips, func(s map[string]bool) bool { return s[id] })
+			if bt.Blocked && !judged[id] && !listed {
 				skipped[id], stalled[id] = true, bt.BlockedReason
 			}
 		}

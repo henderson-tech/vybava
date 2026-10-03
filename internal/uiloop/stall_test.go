@@ -1,6 +1,7 @@
 package uiloop
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,6 +194,18 @@ func TestABlockedPartsScreensAreUnreviewedAndTheReviewSynthesizes(t *testing.T) 
 	if len(m.Left) != 0 || len(merged.Diagnostics) != 0 || m.Reviewed != 3 ||
 		!slices.Equal(m.Unreviewed, []string{"s3 (stalled: reviewer stalled twice)", "s4 (stalled: reviewer stalled twice)"}) {
 		t.Errorf("merge with a blocked part: %+v %+v", m, merged.Diagnostics)
+	}
+	// A reviewer's own unreviewed entry keeps its why: that screen is no stall.
+	var raw rawReview
+	if err := json.Unmarshal([]byte(`{"batch":"tasks-1.2","screens":{},"unreviewed":["s4 (blank)"]}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var f BatchesFile
+	if _, err := readJSON(filepath.Join(tool.reviewDir(1), "batches.json"), &f); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, u := MergeReview(1, nil, []rawReview{raw}, f, nil, map[string]string{}); !slices.Equal(u, []string{"s3 (stalled: reviewer stalled twice)", "s4"}) {
+		t.Errorf("unreviewed beside a reviewer's own entry: %v", u)
 	}
 }
 
