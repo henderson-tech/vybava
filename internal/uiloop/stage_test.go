@@ -3,6 +3,7 @@ package uiloop
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -67,12 +68,51 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 	if !s.HasBacklog || s.Backlog.Open != 2 || s.Backlog.BySeverity["broken"] != 1 || s.Backlog.Reviewed != 2 || s.Checkpoints.Total != 1 {
 		t.Fatalf("backlog %+v, checkpoints %+v", s.Backlog, s.Checkpoints)
 	}
-	if s.Next != (NextStage{Stage: "fix", Resume: true, Reason: "1 of 2 open items without a checkpoint"}) {
+	if !reflect.DeepEqual(s.Next, NextStage{Stage: "fix", Resume: true, Reason: "1 of 2 open items without a checkpoint"}) {
 		t.Errorf("next: %+v", s.Next)
 	}
 	writeFile(t, filepath.Join(dir, "fix", "b.json"), `{"v":1,"key":"b","status":"skipped","note":"spec"}`)
 	if s = state(); s.Next.Stage != "verify" {
 		t.Errorf("checkpointed round: %+v", s.Next)
+	}
+}
+
+// Only app drift moves a pass: before the review it reshoots everything,
+// while fixing it is expected, after the round (or on a converged pass) the
+// verify reshoots the open, the fixed and the drift-touched screens, and a
+// changed primitive reshoots everything.
+func TestNextStageRoutesAppDriftAndSelectsTheVerify(t *testing.T) {
+	records := []Record{
+		{ID: "users", Area: "admin", SourceFiles: []string{"apps/portal/users.ts"}},
+		{ID: "profile", Area: "admin", SourceFiles: []string{"libs/ui-lib/avatar.ts"}},
+		{ID: "tasks", Area: "tasks", Viewport: "phone", SourceFiles: []string{"apps/portal/tasks"}},
+		{ID: "tasks", Area: "tasks", Viewport: "desktop", SourceFiles: []string{"apps/portal/tasks"}},
+		{ID: "task-detail", Area: "tasks", SourceFiles: []string{"apps/portal/task-detail.ts"}},
+	}
+	areas := []string{"tasks", "admin"}
+	open := []Finding{{Key: "a", Screen: "users", Status: "open"}, {Key: "b", Screen: "profile", Status: "met"}}
+	met := open[1:]
+	round := []Checkpoint{{Key: "a", Status: "done", Screens: []string{"users", "task-detail"}}}
+	for _, c := range []struct {
+		name              string
+		reviewed          []string
+		findings          []Finding
+		checkpoints       []Checkpoint
+		drift, primitives []string
+		stage, reason     string
+		only              []string
+	}{
+		{"an app commit after a checkpointed round", areas, open, round, []string{"apps/portal/tasks/list.ts"}, nil, "verify", "checkpointed", []string{"task-detail", "tasks", "users"}},
+		{"an app change under a primitive", areas, open, round, []string{"apps/portal/tasks/list.ts", "libs/ui-lib/button.ts"}, []string{"libs/ui-lib"}, "verify", "primitive changed → full reshoot: libs/ui-lib/button.ts", []string{}},
+		{"an app change before the review finished", []string{"tasks"}, nil, nil, []string{"apps/portal/users.ts"}, nil, "capture", "apps/portal/users.ts", []string{}},
+		{"an app change while fixing", areas, open, nil, []string{"apps/portal/users.ts"}, nil, "fix", "", nil},
+		{"a converged pass whose app drifted", areas, met, nil, []string{"libs/ui-lib/avatar.ts"}, nil, "verify", "converged", []string{"profile"}},
+		{"a converged pass", areas, met, nil, nil, nil, "done", "converged", nil},
+	} {
+		n := nextStage(2, records, true, areas, c.reviewed, c.findings != nil, c.findings, c.checkpoints, c.drift, c.primitives, 6)
+		if n.Stage != c.stage || !strings.Contains(n.Reason, c.reason) || n.Resume || (n.Only == nil) != (c.only == nil) || !slices.Equal(n.Only, c.only) {
+			t.Errorf("%s: %+v", c.name, n)
+		}
 	}
 }
 

@@ -234,10 +234,10 @@ func TestPassEvidenceRejectsStaleReviewsCheckpointsAndScoreboard(t *testing.T) {
 	}
 }
 
-// A pass's evidence is immutable: with provenance the manifest part of its
-// basis is read at the captured revision, so a rig repair committed between
-// review and verify keeps the reviewed pass current. Shots and the spec (the
-// owner's live rule set) still move it; a legacy pass still follows the tree.
+// A pass's evidence is immutable: with provenance the manifest and spec parts
+// of its basis are read at the captured revision, so a rig repair or a spec
+// edit between review and verify keeps the reviewed pass current. Shots still
+// move it; a legacy pass still follows the tree.
 func TestReviewBasisReadsTheManifestAtTheCapturedRevision(t *testing.T) {
 	untouched := map[bool]string{}
 	for _, strict := range []bool{true, false} {
@@ -303,14 +303,65 @@ func TestReviewBasisReadsTheManifestAtTheCapturedRevision(t *testing.T) {
 			t.Fatal("a shot change kept the basis")
 		}
 		writeFile(t, filepath.Join(tool.Root, cfg.Spec), "rules v2\n")
-		if basis() == shot {
-			t.Fatal("a spec change kept the basis")
+		if basis() != shot {
+			t.Fatal("a spec edit after capture moved the basis")
 		}
 	}
 	// An untouched tree hashes alike either way (vendor/ skipped in both), so a
 	// receipt written before this rule stays current.
 	if untouched[true] != untouched[false] {
 		t.Fatalf("committed manifest basis %s, working-tree basis %s", untouched[true], untouched[false])
+	}
+}
+
+// Spec, docs and rig commits never stale a pass: state lists them as drift
+// (the spec by rule) and keeps sourceUnchanged and the basis; only an app
+// change stales it.
+func TestStateStalesAPassOnlyOnAppDrift(t *testing.T) {
+	cfg := testConfig()
+	cfg.Spec = "docs/ui-spec.md"
+	tool := newTool(t, cfg)
+	spec := filepath.Join(tool.Root, cfg.Spec)
+	writeFile(t, spec, "# UI spec\n\n## Density\n\n- PWF-D01 Spacing sits on the 4 px grid.\n  Half steps only inside primitives.\n- PWF-D02 Rows are 40 px.\n\n## Tone\n\nCalm, no exclamation marks.\n")
+	writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/tasks.ts"), "recipe v1\n")
+	evidenceRepo(t, tool)
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	stagePass(t, tool)
+	captured, err := tool.reviewBasis(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := func(msg string) {
+		t.Helper()
+		for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", msg}} {
+			if out, err := tool.git(args...); err != nil || out.Code != 0 {
+				t.Fatalf("git %v: %+v %v", args, out, err)
+			}
+		}
+	}
+	state := func() StateData {
+		t.Helper()
+		res, err := tool.State(StateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Data.(StateData)
+	}
+	writeFile(t, spec, "# UI spec\n\n## Density\n\n- PWF-D01 Spacing sits on the 4 px grid.\n  Half steps nowhere.\n- PWF-D02 Rows are 44 px (see PWF-B04).\n\n## Tone\n\nCalm.\n")
+	writeFile(t, filepath.Join(tool.Root, "docs/notes.md"), "a decision\n")
+	writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/tasks.ts"), "recipe v2\n")
+	commit("spec, docs and rig")
+	s := state()
+	if s.Drift == nil || !s.SourceUnchanged || s.ReviewBasis != captured || len(s.Drift.App) != 0 ||
+		!slices.Equal(s.Drift.Rig, []string{"tests/ui-loop/screens/tasks.ts"}) || !slices.Equal(s.Drift.Spec, []string{"PWF-B04", "PWF-D01", "PWF-D02", "Tone"}) {
+		t.Fatalf("spec, docs and rig staled the pass: unchanged %v, basis moved %v, drift %+v", s.SourceUnchanged, s.ReviewBasis != captured, s.Drift)
+	}
+	writeFile(t, filepath.Join(tool.Root, "apps/portal/tasks.ts"), "fixed\n")
+	commit("app")
+	if s = state(); s.SourceUnchanged || !slices.Equal(s.Drift.App, []string{"apps/portal/tasks.ts"}) || s.Drift.AppTotal != 1 {
+		t.Fatalf("an app commit kept the pass: unchanged %v, drift %+v", s.SourceUnchanged, s.Drift)
 	}
 }
 
