@@ -116,6 +116,20 @@ func (t *Tool) resolveRunDir(arg string) (dir, label string, err error) {
 		"perflab compare <runDirA> <runDirB> --json")
 }
 
+// runDirIdentity is a run dir as stored evidence: absolute, cleaned and
+// symlinks resolved, so ./, a link or a relative spelling of one dir is the
+// same evidence to compare's self-comparison check.
+func runDirIdentity(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
 func (t *Tool) analyzeRunDir(ctx context.Context, dir string, opts analysis.Options) (analysis.RunAnalysis, []runx.Diagnostic, error) {
 	rf, err := analysis.LoadRunDir(dir)
 	if err != nil {
@@ -187,10 +201,11 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 				}
 				side.Variant = label
 				side.Runs = append(side.Runs, ra)
-				sideDirs = append(sideDirs, dir)
-				if !slices.Contains(dirs, dir) {
+				id := runDirIdentity(dir)
+				if !slices.Contains(sideDirs, id) && !slices.ContainsFunc(dirs, func(d string) bool { return runDirIdentity(d) == id }) {
 					dirs = append(dirs, dir)
 				}
+				sideDirs = append(sideDirs, id)
 			}
 			if n := len(side.Runs); n > 1 {
 				side.Label += fmt.Sprintf(" +%d", n-1)

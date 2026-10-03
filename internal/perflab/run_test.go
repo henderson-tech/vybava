@@ -528,6 +528,18 @@ func TestCompareLabelsOfOneAlternatingRunDir(t *testing.T) {
 	if _, err := tool.Compare(context.Background(), []string{runDir, runDir}, CompareOptions{MinRuns: 1}); CodeOf(err) != DiagUsage {
 		t.Errorf("a run dir compared with itself: %v", err)
 	}
+	// A run dir is one identity however it is spelled: ./, a symlink or a
+	// relative path name the same stored evidence.
+	link := filepath.Join(t.TempDir(), "run-link")
+	if err := os.Symlink(runDir, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Dir(runDir))
+	for _, b := range []string{runDir + "/.", link, filepath.Base(runDir)} {
+		if _, err := tool.Compare(context.Background(), []string{runDir, b}, CompareOptions{MinRuns: 1}); CodeOf(err) != DiagUsage {
+			t.Errorf("%s against %s is a self-comparison: %v", runDir, b, err)
+		}
+	}
 }
 
 // report --gate and a confounded compare fail with their data kept: the
