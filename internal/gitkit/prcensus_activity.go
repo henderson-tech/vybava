@@ -79,20 +79,25 @@ func within(path, dir string) bool {
 	return dir != "" && (path == dir || strings.HasPrefix(path, dir+"/"))
 }
 
-// mentionsDir reports text naming dir as a whole path: the next byte, if
-// any, must not continue a file name, so .worktrees/fix never matches
-// .worktrees/fix-2.
+const nameBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+
+// mentionsDir reports text naming dir as a whole path: the byte after it
+// must not continue a file name (.worktrees/fix never matches fix-2), and
+// the byte before it must not extend the path (../fix never matches
+// ../../fix).
 func mentionsDir(text, dir string) bool {
 	for i := 0; dir != ""; {
 		j := strings.Index(text[i:], dir)
 		if j < 0 {
 			return false
 		}
-		end := i + j + len(dir)
-		if end == len(text) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-", rune(text[end])) {
+		start, end := i+j, i+j+len(dir)
+		before := start == 0 || !strings.ContainsRune(nameBytes+"/", rune(text[start-1]))
+		after := end == len(text) || !strings.ContainsRune(nameBytes, rune(text[end]))
+		if before && after {
 			return true
 		}
-		i = end
+		i = start + 1
 	}
 	return false
 }
@@ -114,7 +119,8 @@ func mentionsNumber(text, ref string) bool {
 }
 
 // namesWorktree reports a tool call naming the worktree: absolute, relative
-// to the call's directory, or ~-relative.
+// to the call's directory (a sibling worktree's ../fix included), or
+// ~-relative.
 func namesWorktree(tc touch, worktree, home string) bool {
 	if mentionsDir(tc.text, worktree) {
 		return true
@@ -122,7 +128,7 @@ func namesWorktree(tc touch, worktree, home string) bool {
 	if home != "" && within(worktree, home) && mentionsDir(tc.text, "~"+strings.TrimPrefix(worktree, home)) {
 		return true
 	}
-	if rel, err := filepath.Rel(tc.cwd, worktree); err == nil && tc.cwd != "" && !strings.HasPrefix(rel, "..") && rel != "." {
+	if rel, err := filepath.Rel(tc.cwd, worktree); err == nil && tc.cwd != "" && rel != "." {
 		return mentionsDir(tc.text, rel)
 	}
 	return false

@@ -240,6 +240,20 @@ func TestPRTargetNamesWholeNumberInLinks(t *testing.T) {
 	}
 }
 
+// PR #167 review: a session in one sibling worktree can work on another
+// through a ../ path.
+func TestPRTargetNamesSiblingRelativePath(t *testing.T) {
+	target := prTarget{number: 42, slug: "acme/app", worktree: "/w/app/.worktrees/fix"}
+	if !target.names(touch{cwd: "/w/app/.worktrees/other", text: "git -C ../fix status"}) {
+		t.Error("git -C ../fix from a sibling worktree did not name it")
+	}
+	for _, text := range []string{"git -C ../fix-2 status", "git -C ../../fix status"} {
+		if target.names(touch{cwd: "/w/app/.worktrees/other", text: text}) {
+			t.Errorf("%q named ../fix", text)
+		}
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).
