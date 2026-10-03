@@ -23,7 +23,7 @@ It is framework-agnostic: it drives only Playwright and the DOM. It has been run
 ```text
 ui-loop init        [--json]   scaffold <dir> (project.ts, screens/), the spec template and the out gitignore line; sync
 ui-loop sync        [--force]  write the embedded harness into <dir>/vendor + STAMP.json (version, sha256 per file)
-ui-loop check       [--no-ts]  vendor drift · project.ts · manifest validation · app-map freshness, each reported separately
+ui-loop check       [--no-ts]  vendor drift · project.ts · spec lint lines · manifest validation · app-map freshness, each reported separately
 ui-loop map                    render uiLoop.appMap from the manifest
 ui-loop run         [--app a,b] [--only id,area,prefix*] [--viewports v,…] [--themes light,dark]
                     [--destructive] [--resume] [--pass N] [--workers 2] [--build-wait 300]
@@ -82,6 +82,8 @@ Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobi
 | `desktop` | 1440×810 | no | — |
 
 `lint.allow` takes defect rules only (an informational rule is refused), each with at least one selector. It exists for a spec that allows an off-grid value in named places only: pwf-ui allows Tailwind half steps (6/10 px) inside primitive recipes, and without it the grid rule flagged 6,033 hits on 38 shots, nearly all primitives and chrome. An allowed hit is still counted, under `info` in the shot record, so the report shows how much the allowlist absorbs. An invalid selector fails the lint loudly on the first shot.
+
+The spec states what the lint measures. `init` writes two lines from `lint.grid` and `lint.touchTarget` into it (`scaffold/ui-spec.md.tmpl`: "Spacing, control heights and icon sizes sit on the 4px grid." and "Touch targets are at least 44×44px on coarse pointers."). `check` renders both again from the current config and warns `SPEC_LINT_DRIFT` for each one the spec no longer holds, naming the line and the knob's value; whitespace and rewrapping do not count. A spec written in its own words warns until it carries the two lines too. No `spec` configured, or no file there, means no warning.
 
 ## The manifest contract
 
@@ -359,7 +361,9 @@ These cost real incidents. The review-loop workflow carries them into every lane
 
 ## Changing the harness
 
-Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrored in Go, and tests keep them equal:
+Edit `internal/uiloop/harness/`, never a vendored copy. A sync that writes nothing keeps `STAMP.json`, so a clean vendor's stamp can name an older release than the binary; `check` reports `vendor.syncedBy` (the stamp's release) only when the vendor drifts, where it says which release synced it.
+
+These tables are mirrored in Go, and tests keep them equal:
 
 - `BUILTIN_VIEWPORTS` ↔ `viewports.go`;
 - `LINT_RULES` ↔ `LintRules` and `LintInfoRules`;

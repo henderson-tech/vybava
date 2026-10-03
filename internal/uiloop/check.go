@@ -96,9 +96,39 @@ func (t *Tool) projectExists() (bool, error) {
 	return err == nil, err
 }
 
-// Check reports vendor drift, the project file, manifest validity and the
-// app map's freshness — each separately. skipTS skips the two parts that
-// need the repo's tsRunner.
+// specLintDrift warns for each lint line init would write today (specRules)
+// that the spec no longer holds. Whitespace runs compare equal, so a line
+// rewrapped in the spec still counts; no spec configured or on disk, no warning.
+func (t *Tool) specLintDrift() ([]runxDiagnostic, error) {
+	if t.Config.Spec == "" {
+		return nil, nil
+	}
+	spec, err := os.ReadFile(t.abs(t.Config.Spec))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rules, err := specRules(t.Config.Lint)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.Join(strings.Fields(string(spec)), " ")
+	var out []runxDiagnostic
+	for _, r := range rules {
+		if strings.Contains(text, strings.Join(strings.Fields(r.Line), " ")) {
+			continue
+		}
+		out = append(out, warn(DiagSpecLintDrift, fmt.Sprintf("%s does not state uiLoop.%s %d: missing %q", t.Config.Spec, r.Knob, r.Value, r.Line),
+			fmt.Sprintf("between passes (a spec edit stales the current pass's reviews), add `- %s` to %s, or set uiLoop.%s to the value the spec states", r.Line, t.Config.Spec, r.Knob)))
+	}
+	return out, nil
+}
+
+// Check reports vendor drift, the project file, the spec's lint lines,
+// manifest validity and the app map's freshness — each separately. skipTS
+// skips the two parts that need the repo's tsRunner.
 func (t *Tool) Check(skipTS bool) (Result, error) {
 	data := CheckData{
 		Root: t.Root, Config: t.ConfigPath, TSRunner: t.Config.TSRunner,
@@ -111,6 +141,12 @@ func (t *Tool) Check(skipTS bool) (Result, error) {
 		return res, err
 	}
 	data.Vendor = vendor
+	if vendor.Clean {
+		// A clean vendor's stamp can name an older release whose harness was
+		// identical (sync keeps the stamp), which reads as a version skew;
+		// syncedBy only explains drift.
+		data.Vendor.Synced = ""
+	}
 	var drift, edited []string
 	for _, f := range vendor.Files {
 		switch f.State {
@@ -134,6 +170,11 @@ func (t *Tool) Check(skipTS bool) (Result, error) {
 	if !data.Project {
 		res.Diagnostics = append(res.Diagnostics, errDiag(DiagProjectMissing, t.Config.Dir+"/project.ts does not exist", "vybava ui-loop init"))
 	}
+	specDrift, err := t.specLintDrift()
+	if err != nil {
+		return res, err
+	}
+	res.Diagnostics = append(res.Diagnostics, specDrift...)
 	switch {
 	case skipTS:
 		data.Manifest.Reason, data.AppMap.Reason = "--no-ts", "--no-ts"

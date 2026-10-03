@@ -18,6 +18,12 @@ const (
 	// DiagVendorEdited: a vendored file was edited in the repo; sync would
 	// overwrite the edit — move it into Výbava first (warning on check).
 	DiagVendorEdited = "VENDOR_EDITED"
+	// DiagSpecLintDrift: the spec (uiLoop.spec) no longer holds a line init
+	// writes for a lint knob, rendered with the config's current value
+	// ("Touch targets are at least 40×40px …"), so reviewers judge against
+	// one value while the lint measures another (warning on check) — restore
+	// the line, or set the knob to the value the spec states.
+	DiagSpecLintDrift = "SPEC_LINT_DRIFT"
 	// DiagManifestInvalid: check.ts found manifest problems; the detail lists them.
 	DiagManifestInvalid = "MANIFEST_INVALID"
 	// DiagAppMapStale: the committed app map differs from the manifest — run map.
