@@ -109,9 +109,10 @@ const (
 	DiagForeignItems = "FOREIGN_ITEMS"
 	// DiagCaptureRevisionMissing: a pass's capture.json names a revision this
 	// clone does not have (gc'd after its branch went, or the pass was copied
-	// from another clone), so its manifest basis is read from the working tree
-	// and a rig change since capture stales the pass (warning) — fetch that
-	// revision, or capture a new pass.
+	// from another clone), so its manifest and spec basis is read from the
+	// working tree, a rig or spec change since capture stales the pass, and
+	// its drift cannot be weighed, so state routes a reshoot (warning) —
+	// fetch that revision, or capture a new pass.
 	DiagCaptureRevisionMissing = "CAPTURE_REVISION_MISSING"
 )
 

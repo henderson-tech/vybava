@@ -157,20 +157,21 @@ func (c Config) TSRunnerOrDefault() string {
 	return "npx --yes tsx"
 }
 
-// SourceOrDefault is Source, else the whole repo minus what never changes
-// a shot: the run root, .vitrinka, the rig, the spec, the app map, every
-// Markdown file and .claude/.
+// SourceOrDefault is Source, else the whole repo (from its top, so a config
+// root below it still sees the library beside it) minus what never changes
+// a shot: the run root, .vitrinka, the rig, the spec and the app map (those
+// relative to Root), every Markdown file and every .claude/.
 func (c Config) SourceOrDefault() []string {
 	if len(c.Source) > 0 {
 		return c.Source
 	}
-	out := []string{"."}
+	out := []string{":(top)"}
 	for _, p := range []string{c.Out, ".vitrinka", c.Dir, c.Spec, c.AppMap} {
 		if p != "" {
 			out = append(out, ":(exclude,literal)"+strings.TrimRight(p, "/"))
 		}
 	}
-	return append(out, ":(exclude,glob)**/*.md", ":(exclude,glob).claude/**")
+	return append(out, ":(top,exclude,glob)**/*.md", ":(top,exclude,glob)**/.claude/**")
 }
 
 // ResolvedViewports is the built-in table with the config's additions and overrides.

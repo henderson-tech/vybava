@@ -367,7 +367,8 @@ func TestStateStalesAPassOnlyOnAppDrift(t *testing.T) {
 
 // A captured revision this clone lacks cannot pin the manifest: the basis falls
 // back to the working tree, and state says so instead of quietly reporting the
-// pass unreviewed after the next rig change.
+// pass unreviewed after the next rig change. Its drift cannot be weighed
+// either (null), so the pass is shot again rather than routed as clean.
 func TestStateWarnsWhenTheCapturedRevisionIsMissing(t *testing.T) {
 	tool := newTool(t, testConfig())
 	writeFile(t, filepath.Join(tool.Root, "tests/ui-loop/screens/tasks.ts"), "recipe v1\n")
@@ -392,5 +393,79 @@ func TestStateWarnsWhenTheCapturedRevisionIsMissing(t *testing.T) {
 	})
 	if s := res.Data.(StateData); s.ReviewBasis != pinned || !warned {
 		t.Fatalf("missing revision: basis moved %v, diagnostics %v", s.ReviewBasis != pinned, res.Diagnostics)
+	}
+	if s := res.Data.(StateData); s.Drift != nil || s.SourceUnchanged || s.Next.Stage != "capture" || s.Next.Resume || s.Next.Only == nil || len(s.Next.Only) != 0 ||
+		!strings.Contains(s.Next.Reason, DiagCaptureRevisionMissing) {
+		t.Fatalf("missing revision routed as weighed: drift %+v, unchanged %v, next %+v", s.Drift, s.SourceUnchanged, s.Next)
+	}
+}
+
+// A config root below the repo's top judges the whole repo: capture refuses
+// an uncommitted change in the library beside it, and state lists that
+// change, tracked or untracked, with its ../.
+func TestAConfigRootBelowTheTopJudgesTheWholeRepo(t *testing.T) {
+	top := t.TempDir()
+	root := filepath.Join(top, "web")
+	tool, err := New(root, filepath.Join(root, "vybava.config.json"), testConfig(), "1.2.3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, ".gitignore"), ".ui-loop/\n.vitrinka/\n")
+	writeFile(t, filepath.Join(top, "shared/lib.ts"), "original\n")
+	for _, args := range [][]string{{"init"}, {"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "initial"}} {
+		if out, err := tool.git(append([]string{"-C", top}, args...)...); err != nil || out.Code != 0 {
+			t.Fatalf("git %v: %+v %v", args, out, err)
+		}
+	}
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	stagePass(t, tool)
+	writeFile(t, filepath.Join(top, "shared/lib.ts"), "dirty\n")
+	writeFile(t, filepath.Join(top, "shared/new.ts"), "untracked\n")
+	if err := tool.captureProvenance(2, false); diagCode(err) != DiagSelectionInvalid {
+		t.Fatalf("capture beside an uncommitted library change: %v", err)
+	}
+	res, err := tool.State(StateOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Data.(StateData); s.Drift == nil || s.SourceUnchanged || !slices.Equal(s.Drift.App, []string{"../shared/lib.ts", "../shared/new.ts"}) {
+		t.Fatalf("the library beside the root: unchanged %v, drift %+v", s.SourceUnchanged, s.Drift)
+	}
+}
+
+// uiLoop.source decides what stales a pass and uiLoop.primitives is state's
+// default, both relayed as the effective values; --primitives overrides it.
+// An unpublished pass whose tree changed cannot resume, so it is shot again.
+func TestStateWeighsDriftByTheConfiguredSourceAndPrimitives(t *testing.T) {
+	cfg := testConfig()
+	cfg.Source, cfg.Primitives = []string{"apps"}, []string{"apps/ui"}
+	tool := newTool(t, cfg)
+	evidenceRepo(t, tool)
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	stagePass(t, tool)
+	writeFile(t, filepath.Join(tool.Root, "apps/portal/tasks.ts"), "fixed\n")
+	writeFile(t, filepath.Join(tool.Root, "app.ts"), "outside the source\n")
+	state := func(o StateOptions) StateData {
+		t.Helper()
+		res, err := tool.State(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Data.(StateData)
+	}
+	s := state(StateOptions{})
+	if !slices.Equal(s.Config.Source, []string{"apps"}) || !slices.Equal(s.Config.Primitives, []string{"apps/ui"}) ||
+		s.SourceUnchanged || !slices.Equal(s.Drift.App, []string{"apps/portal/tasks.ts"}) || s.Drift.AppTotal != 1 {
+		t.Fatalf("config %+v, unchanged %v, drift %+v", s.Config, s.SourceUnchanged, s.Drift)
+	}
+	if s.Next.Stage != "capture" || s.Next.Resume || s.Next.Only == nil || len(s.Next.Only) != 0 {
+		t.Errorf("an unpublished pass whose tree changed: %+v", s.Next)
+	}
+	if s = state(StateOptions{Primitives: []string{"libs/ui-lib"}}); !slices.Equal(s.Config.Primitives, []string{"libs/ui-lib"}) {
+		t.Errorf("--primitives did not override uiLoop.primitives: %v", s.Config.Primitives)
 	}
 }

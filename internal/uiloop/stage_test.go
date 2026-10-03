@@ -109,7 +109,37 @@ func TestNextStageRoutesAppDriftAndSelectsTheVerify(t *testing.T) {
 		{"a converged pass whose app drifted", areas, met, nil, []string{"libs/ui-lib/avatar.ts"}, nil, "verify", "converged", []string{"profile"}},
 		{"a converged pass", areas, met, nil, nil, nil, "done", "converged", nil},
 	} {
-		n := nextStage(2, records, true, areas, c.reviewed, c.findings != nil, c.findings, c.checkpoints, c.drift, c.primitives, 6)
+		n := nextStage(2, records, true, areas, c.reviewed, c.findings != nil, c.findings, c.checkpoints, c.drift, "", c.primitives, 6)
+		if n.Stage != c.stage || !strings.Contains(n.Reason, c.reason) || n.Resume || (n.Only == nil) != (c.only == nil) || !slices.Equal(n.Only, c.only) {
+			t.Errorf("%s: %+v", c.name, n)
+		}
+	}
+}
+
+// A pass whose drift cannot be weighed (no provenance, or a revision this
+// clone lacks) may have drifted: it is reshot in full wherever app drift
+// would reshoot it, an unpublished one included, and only a fix round in
+// progress keeps fixing.
+func TestNextStageReshootsAPassWhoseDriftCannotBeWeighed(t *testing.T) {
+	records := []Record{{ID: "users", Area: "admin"}, {ID: "tasks", Area: "tasks"}}
+	areas := []string{"tasks", "admin"}
+	open := []Finding{{Key: "a", Screen: "users", Status: "open"}}
+	met := []Finding{{Key: "a", Screen: "users", Status: "met"}}
+	missing := "was captured at " + strings.Repeat("ab", 20) + ", which this clone lacks (CAPTURE_REVISION_MISSING)"
+	for _, c := range []struct {
+		name, unjudged string
+		published      bool
+		reviewed       []string
+		findings       []Finding
+		stage, reason  string
+		only           []string
+	}{
+		{"an unpublished pass without provenance", "has no capture provenance", false, nil, nil, "capture", "not published, and it has no capture provenance: reshoot", []string{}},
+		{"a pass without provenance before the review", "has no capture provenance", true, []string{"tasks"}, nil, "capture", "pass 2 has no capture provenance: reshoot before the review", []string{}},
+		{"a pass without provenance while fixing", "has no capture provenance", true, areas, open, "fix", "1 of 1 open items", nil},
+		{"a converged pass whose revision is missing", missing, true, areas, met, "verify", "CAPTURE_REVISION_MISSING) → full reshoot", []string{}},
+	} {
+		n := nextStage(2, records, c.published, areas, c.reviewed, c.findings != nil, c.findings, nil, nil, c.unjudged, nil, 6)
 		if n.Stage != c.stage || !strings.Contains(n.Reason, c.reason) || n.Resume || (n.Only == nil) != (c.only == nil) || !slices.Equal(n.Only, c.only) {
 			t.Errorf("%s: %+v", c.name, n)
 		}
@@ -398,6 +428,23 @@ func TestLanesOwnDirectoriesAndPackPrimitivesFirst(t *testing.T) {
 	if !slices.Equal(l.Areas[0].Dirs, []string{"apps/x/tasks"}) || !slices.Equal(l.Areas[0].Keys, []string{"t2", "t1"}) ||
 		!slices.Equal(l.Areas[1].Dirs, []string{"apps/x/tasks/sub", "apps/x/users"}) || !slices.Equal(l.Areas[1].Keys, []string{"t3", "u1"}) {
 		t.Errorf("areas: %+v", l.Areas)
+	}
+}
+
+// Without --primitives, lanes freezes uiLoop.primitives.
+func TestLanesDefaultToTheConfiguredPrimitives(t *testing.T) {
+	cfg := testConfig()
+	cfg.Primitives = []string{"libs/ui"}
+	tool := newTool(t, cfg)
+	dir := stagePass(t, tool)
+	writeFile(t, filepath.Join(dir, "review", "backlog.json"), `{"v":1,"pass":1,"findings":[
+		{"key":"a","screen":"tasks","area":"tasks","severity":"polish","status":"open","title":"t","files":["libs/ui/button/button.ts"],"acceptance":"x"}]}`)
+	res, err := tool.Lanes(LanesOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := res.Data.(LanesData); !slices.Equal(l.Frozen, []string{"libs/ui/button"}) || len(l.Primitives) != 1 {
+		t.Fatalf("lanes without --primitives: frozen %v, primitives %+v", l.Frozen, l.Primitives)
 	}
 }
 

@@ -72,7 +72,7 @@ uiLoop: {
 }
 ```
 
-`source` is the application source as git pathspecs (`:(exclude)…`, `:(glob)…` magic included; git does the matching). Only a change there stales a pass (see `state`'s `drift`). Empty, it is the whole repo minus `out`, `.vitrinka`, `dir`, `spec`, `appMap`, every `*.md` and `.claude/`. `state` relays the effective list as `config.source`. `primitives` are directory prefixes (`libs/ui-lib` matches `libs/ui-lib/…`): the default of `lanes --primitives` and `state --primitives`.
+`source` is the application source as git pathspecs (`:(exclude)…`, `:(glob)…` magic included; git does the matching). Only a change there stales a pass (see `state`'s `drift`). Empty, it is the whole repo from its top (`:(top)`, so a config root below it still sees the library beside it) minus `out`, `.vitrinka`, `dir`, `spec` and `appMap` (relative to the config root, like every pathspec without `:(top)`), every `*.md` and every `.claude/`. `state` relays the effective list as `config.source`. `primitives` are directory prefixes (`libs/ui-lib` matches `libs/ui-lib/…`): the default of `lanes --primitives` and `state --primitives`.
 
 Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobile` means touch, a phone/tablet UA and the touch-target lint.
 
@@ -293,7 +293,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
   "vybava": "0.32.0", "contract": 2,
   "pass": 1, "passDir": ".ui-loop/pass-1",
   "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 },
-              "source": [".", ":(exclude,literal).ui-loop", "…"], "primitives": ["libs/ui-lib"] },
+              "source": [":(top)", ":(exclude,literal).ui-loop", "…"], "primitives": ["libs/ui-lib"] },
   "capturedHeadSha": "<sha>", "sourceUnchanged": false,
   "drift": { "app": ["apps/portal/src/app/tasks/tasks.component.ts"], "rig": ["tests/ui-loop/screens/tasks.ts"], "spec": ["PWF-B04"], "appTotal": 1 },
   "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
@@ -314,21 +314,23 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
-- `drift` is what changed from `capturedHeadSha` to the working tree (tracked edits and untracked, non-ignored files), by class. `app` is the changed paths inside `config.source`, sorted and capped at 20 (`appTotal` is the uncapped count). `rig` is the changed paths under `dir`, `vendor/` included, capped at 20. `spec` is the rule ids whose text changed in `spec`, sorted: a rule id is a token like `PWF-D01` (`[A-Z][A-Z0-9]*-[A-Z]*[0-9]+`). Each added or removed line names the ids on it, else the first id of the nearest line above it in its section, else of the nearest enclosing heading that carries one, else its section's heading text (so a spec without ids still reports something), else the spec's path. A heading closes a section, so an earlier section's last rule never claims an edit to the next section's prose. The lists are empty, never null. `drift` is null for a pass without provenance and for one whose revision this clone lacks.
+- `drift` is what changed from `capturedHeadSha` to the working tree (tracked edits and untracked, non-ignored files), by class. `app` is the changed paths inside `config.source`, relative to the config root (`../` for one outside it), sorted and capped at 20 (`appTotal` is the uncapped count). `rig` is the changed paths under `dir`, `vendor/` included, capped at 20. `spec` is the rule ids whose text changed in `spec`, sorted: a rule id is a token like `PWF-D01` (`[A-Z][A-Z0-9]*-[A-Z]*[0-9]+`). Each added or removed line names the ids on it, else the first id of the nearest line above it in its section, else of the nearest enclosing heading that carries one, else its section's heading text (so a spec without ids still reports something), else the spec's path. A heading closes a section, so an earlier section's last rule never claims an edit to the next section's prose. The lists are empty, never null. `drift` is null when it cannot be weighed: for a pass without provenance in a git repo, and for one whose revision this clone lacks (`state` also warns `CAPTURE_REVISION_MISSING`). `next` then treats the pass as drifted (the table below). Outside git no capture has provenance, so there is no drift to weigh and `next` routes as if there were none.
 - `sourceUnchanged` is `drift.app` being empty. **Spec and docs commits never stale a pass; only app drift does.** The rig is repaired between review and verify, the basis reads the manifest and the spec at the captured revision, and a spec edit is reported by rule in `drift.spec`, never recaptured.
 - `next` is the one router: the review-loop runs it verbatim. Its rules, in order:
 
   | Stage | When | `only` |
   |---|---|---|
   | `capture` | no shots yet | null |
-  | `capture` (`resume`) | the pass is unpublished, or it has provenance, no shots and an unchanged tree (rig included: capture's own check) | null |
-  | `capture` | the review is incomplete and `drift.app` is not empty; `reason` names up to 3 drifted paths | `[]` |
+  | `capture` | the pass is unpublished and `drift` is null | `[]` |
+  | `capture` (`resume`) | the pass is unpublished, or it has provenance and no shots; with provenance, only while the tree outside `out` and `.vitrinka` (the rig's included) matches its revision, which is capture's own check for a resume | null |
+  | `capture` | the pass has shots and provenance but is unpublished, and that tree changed, so capture would refuse the resume | `[]` |
+  | `capture` | the review is incomplete and `drift.app` is not empty (`reason` names up to 3 drifted paths), or `drift` is null | `[]` |
   | `review` | no backlog, or an area has a batch left | null |
   | `fix` | open items lack a finishing checkpoint (`done`, `skipped` or `blocked`); drift is expected while fixing | null |
-  | `done` | nothing is open and `drift.app` is empty | null |
+  | `done` | nothing is open, `drift.app` is empty and `drift` is not null | null |
   | `done` | the pass reached `--cap` | null |
   | `done` | open items remain and the round fixed nothing | null |
-  | `verify` | otherwise: the round is checkpointed, or nothing is open but the app drifted | the selection |
+  | `verify` | otherwise: the round is checkpointed, or nothing is open but the app drifted (or `drift` is null) | the selection; `[]` when `drift` is null |
 
   An interrupted writer (`fix/recovery.json`) overrides them all with `fix` (`resume`). `only` is the screen ids to reshoot, sorted, on `verify` and on a `capture` that reshoots the pass; `[]` is a full reshoot, and `reason` says why. The verify selection is the screens of the open findings (any status but `met`), the `screens` of the `done` checkpoints, and every screen whose shot records' `sourceFiles` meet the full `drift.app` list (a source file meets a drift path when they are equal or one is a directory prefix of the other). Any `drift.app` path under a `--primitives` prefix (default `uiLoop.primitives`) makes it a full reshoot (`primitive changed → full reshoot: <path>`), and so does a selection that comes out empty. The `checkpoints` verb stays for a workflow that still computes the selection itself.
 
@@ -414,8 +416,9 @@ The stage reader also reports `headSha`, `capturedHeadSha`, `drift`, `sourceUnch
 `reviewBasis`, `scoreboardBasis`, `scoreboardCurrent` and `checkpointApiNotes`.
 `run` writes `capture.json` atomically before starting the interruptible runner;
 resume retains that revision and refuses any drift outside `out` and `.vitrinka`,
-the rig's included (a capture refuses an uncommitted change the same way). Workflows recapture
-legacy passes without provenance. Captures outside git have no verified revision.
+the rig's included, anywhere in the repo (a capture refuses an uncommitted change
+the same way). `state` routes a legacy pass without provenance to a full reshoot.
+Captures outside git have no verified revision.
 
 `reviewBasis` is the SHA256 of the sorted `[path, SHA256(bytes)]` pairs over the
 pass's shots (`*.png`, `*.json`), the manifest (`*.ts` under `dir`, `vendor/`
@@ -429,6 +432,10 @@ the basis. A pass without provenance reads the manifest and the spec from the
 working tree as before. So does a pass whose revision this clone lacks (gc'd after
 its branch went, or copied from another clone), and `state` warns
 `CAPTURE_REVISION_MISSING` for it: fetch the revision or capture a new pass.
+Vybava 0.33 and earlier read the spec from the working tree, so a pass whose spec
+changed between capture and review, reviewed under those, holds evidence stamped
+with another basis: after the upgrade its reviews, backlog and checkpoints read as
+stale once, and the pass is reviewed again.
 
 For passes with provenance, a raw review completes its batch when it carries the
 current `basis` and its own batch id, and its `screensRead` stays inside the batch

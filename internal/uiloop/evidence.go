@@ -36,14 +36,20 @@ func isRevision(s string) bool {
 // changedSince lists the paths (relative to Root, sorted, never nil) inside
 // pathspec whose tracked content differs between head and the working tree,
 // both sides of a rename, plus the untracked files git does not ignore. git
-// does the pathspec matching. ok is false when head is not a revision this
-// clone has.
+// does the pathspec matching, relative to Root unless a pathspec says
+// `:(top)`; a path outside Root (a config root below the repo's top) is
+// listed with its `../`. ok is false when head is not a revision this clone
+// has.
 func (t *Tool) changedSince(head string, pathspec ...string) (files []string, ok bool, err error) {
 	if !isRevision(head) {
 		return nil, false, nil
 	}
+	prefix, err := t.git("rev-parse", "--show-prefix")
+	if err != nil || prefix.Code != 0 {
+		return nil, false, err
+	}
 	files = []string{}
-	for _, args := range [][]string{{"diff", "--name-only", "-z", "--no-renames", "--relative", head}, {"ls-files", "-z", "--others", "--exclude-standard"}} {
+	for _, args := range [][]string{{"diff", "--name-only", "-z", "--no-renames", "--no-relative", head}, {"ls-files", "-z", "--full-name", "--others", "--exclude-standard"}} {
 		out, err := t.git(append(append(args, "--"), pathspec...)...)
 		if err != nil {
 			return nil, false, err
@@ -52,21 +58,27 @@ func (t *Tool) changedSince(head string, pathspec ...string) (files []string, ok
 			return nil, false, nil
 		}
 		for _, file := range strings.Split(out.Stdout, "\x00") {
-			if file != "" {
-				files = append(files, file)
+			if file == "" {
+				continue
 			}
+			rel, err := filepath.Rel(filepath.FromSlash(strings.TrimSpace(prefix.Stdout)), filepath.FromSlash(file))
+			if err != nil {
+				return nil, false, err
+			}
+			files = append(files, filepath.ToSlash(rel))
 		}
 	}
 	sort.Strings(files)
 	return slices.Compact(files), true, nil
 }
 
-// sourceUnchanged reports whether the tree (tracked edits and untracked files)
-// still matches head, Config.Out, .vitrinka and the ignore dirs aside. Capture
-// counts the rig (Config.Dir) as source; a skip or block judges the app and
-// passes it in ignore. State judges a pass by drift instead.
+// sourceUnchanged reports whether the repo (tracked edits and untracked
+// files, outside Root too) still matches head, Config.Out, .vitrinka and the
+// ignore dirs aside. Capture counts the rig (Config.Dir) as source; a skip or
+// block judges the app and passes it in ignore. State judges a pass by drift
+// instead.
 func (t *Tool) sourceUnchanged(head string, ignore ...string) (bool, error) {
-	spec := []string{"."}
+	spec := []string{":(top)"}
 	for _, dir := range append([]string{t.Config.Out, ".vitrinka"}, ignore...) {
 		spec = append(spec, ":(exclude,literal)"+strings.TrimRight(dir, "/"))
 	}

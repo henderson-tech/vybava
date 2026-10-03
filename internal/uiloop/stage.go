@@ -738,9 +738,17 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if provenance {
+	// unjudged is why the drift cannot be weighed; nextStage then reshoots.
+	// Outside git no capture has provenance, so there is nothing to weigh.
+	var unjudged string
+	switch {
+	case provenance:
 		capped := drift.capped()
 		data.Drift, data.SourceUnchanged = &capped, len(drift.App) == 0
+	case marker.HeadSHA != "":
+		unjudged = fmt.Sprintf("was captured at %s, which this clone lacks (%s)", marker.HeadSHA, DiagCaptureRevisionMissing)
+	case data.HeadSHA != "":
+		unjudged = "has no capture provenance"
 	}
 	if _, err := os.Stat(t.passAbs(pass)); err != nil {
 		return Result{}, diag(DiagPassMissing, data.PassDir+" does not exist", "omit --pass for the latest pass")
@@ -877,7 +885,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	for _, cp := range checkpoints {
 		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
 	}
-	data.Next = nextStage(pass, records, data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, drift.App, primitives, o.Cap)
+	data.Next = nextStage(pass, records, data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, drift.App, unjudged, primitives, o.Cap)
 	if _, err := readJSON(filepath.Join(t.passAbs(pass), "fix", "recovery.json"), &data.Recovery); err != nil {
 		return Result{}, err
 	}
@@ -887,14 +895,18 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		}
 		data.Next = NextStage{Stage: "fix", Resume: true, Reason: "recover the interrupted writer before checkpoint filtering"}
 	}
-	if data.Recovery == nil && data.Shots == 0 && data.CapturedHeadSHA != "" {
-		// A resume is capture's own provenance check, which still counts the rig.
+	if data.Recovery == nil && data.CapturedHeadSHA != "" && (data.Shots == 0 || data.Next.Stage == "capture" && data.Next.Resume) {
+		// A resume is capture's own provenance check, which still counts the
+		// rig: a pass it would refuse is shot again instead.
 		resumable, err := t.sourceUnchanged(marker.HeadSHA)
 		if err != nil {
 			return Result{}, err
 		}
-		if resumable {
+		switch {
+		case resumable && data.Shots == 0:
 			data.Next = NextStage{Stage: "capture", Resume: true, Reason: "the interrupted pass has provenance but no shots yet"}
+		case !resumable && data.Shots > 0:
+			data.Next = NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d has shots that are not published, and its tree changed since capture, so it cannot resume: reshoot", pass)}
 		}
 	}
 	return Result{Data: data, Diagnostics: diags}, nil
@@ -907,13 +919,19 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 // finishing checkpoint; drift is expected while fixing), done (nothing open
 // and no app drift, the cap reached, or a round that fixed nothing), else
 // verify (the round is checkpointed, or a converged pass's app drifted) with
-// verifySelection's screens. appDrift is drift.app uncapped.
-func nextStage(pass int, records []Record, published bool, areas, reviewedAreas []string, hasBacklog bool, findings []Finding, checkpoints []Checkpoint, appDrift, primitives []string, limit int) NextStage {
+// verifySelection's screens. appDrift is drift.app uncapped. unjudged, when
+// set, is why the pass's drift cannot be weighed (it has no provenance, or
+// this clone lacks its revision): the pass may have drifted, so it is reshot
+// in full wherever app drift would reshoot it, an unpublished one included.
+func nextStage(pass int, records []Record, published bool, areas, reviewedAreas []string, hasBacklog bool, findings []Finding, checkpoints []Checkpoint, appDrift []string, unjudged string, primitives []string, limit int) NextStage {
 	if limit < 1 {
 		limit = 6
 	}
 	if pass == 0 || len(records) == 0 {
 		return NextStage{Stage: "capture", Reason: "no pass with shots yet"}
+	}
+	if !published && unjudged != "" {
+		return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d has shots that are not published, and it %s: reshoot", pass, unjudged)}
 	}
 	if !published {
 		return NextStage{Stage: "capture", Resume: true, Reason: fmt.Sprintf("pass %d has shots that are not published", pass)}
@@ -927,6 +945,9 @@ func nextStage(pass int, records []Record, published bool, areas, reviewedAreas 
 	if !hasBacklog || len(unreviewed) > 0 {
 		if len(appDrift) > 0 {
 			return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("application source changed since pass %d was captured (%s): reshoot before the review", pass, samplePaths(appDrift))}
+		}
+		if unjudged != "" {
+			return NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d %s: reshoot before the review", pass, unjudged)}
 		}
 		reason := "no backlog yet"
 		if len(unreviewed) > 0 {
@@ -954,7 +975,7 @@ func nextStage(pass int, records []Record, published bool, areas, reviewedAreas 
 	switch {
 	case todo > 0:
 		return NextStage{Stage: "fix", Resume: len(finished) > 0, Reason: fmt.Sprintf("%d of %d open items without a checkpoint", todo, open)}
-	case open == 0 && len(appDrift) == 0:
+	case open == 0 && len(appDrift) == 0 && unjudged == "":
 		return NextStage{Stage: "done", Reason: fmt.Sprintf("pass %d backlog has no open item — converged", pass)}
 	case pass >= limit:
 		return NextStage{Stage: "done", Reason: fmt.Sprintf("cap of %d passes reached with %d items open", limit, open)}
@@ -962,10 +983,17 @@ func nextStage(pass int, records []Record, published bool, areas, reviewedAreas 
 		return NextStage{Stage: "done", Reason: "the fix round fixed nothing — the open items need a human"}
 	}
 	reason := fmt.Sprintf("fix round of pass %d is checkpointed", pass)
-	if open == 0 {
+	switch {
+	case open > 0:
+	case unjudged != "":
+		reason = fmt.Sprintf("pass %d has no open item", pass)
+	default:
 		reason = fmt.Sprintf("pass %d converged, but application source changed since capture (%s)", pass, samplePaths(appDrift))
 	}
 	only, full := verifySelection(records, findings, checkpoints, appDrift, primitives)
+	if unjudged != "" {
+		only, full = []string{}, fmt.Sprintf("it %s → full reshoot", unjudged)
+	}
 	if full != "" {
 		reason += "; " + full
 	}

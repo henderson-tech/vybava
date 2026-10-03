@@ -224,7 +224,8 @@ export interface UiLoopConfig {
   };
   /**
    * The application source as git pathspecs: only a change here stales a pass (`state`'s drift.app).
-   * Default: the repo minus out, .vitrinka, dir, spec, appMap, every *.md and .claude/.
+   * Pathspecs are relative to the config root unless `:(top)`. Default: the whole repo from its top minus
+   * out, .vitrinka, dir, spec, appMap, every *.md and every .claude/.
    */
   source?: string[];
   /** Directory prefixes holding shared primitives: `lanes --primitives`' default; a change under one makes a verify a full reshoot. */
