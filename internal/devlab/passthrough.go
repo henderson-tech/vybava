@@ -159,12 +159,18 @@ func shellArgv(id string, dev *Device, token string, args []string) ([]string, e
 }
 
 // deviceFlag reports whether the arguments already name the device with
-// --device / -d; naming any other device is refused.
+// --device / -d. Every selector is checked, since devicectl may honour the
+// last one: naming any other device, or a selector without its value, is
+// refused.
 func deviceFlag(id string, dev *Device, args []string) (bool, error) {
+	named := false
 	for i, a := range args {
 		var v string
 		switch {
-		case (a == "--device" || a == "-d") && i+1 < len(args):
+		case a == "--device" || a == "-d":
+			if i+1 >= len(args) {
+				return false, usage(a+" has no value: the passthrough only reaches the leased device", "drop "+a+"; the passthrough adds it")
+			}
 			v = args[i+1]
 		case strings.HasPrefix(a, "--device="):
 			v = strings.TrimPrefix(a, "--device=")
@@ -174,9 +180,9 @@ func deviceFlag(id string, dev *Device, args []string) (bool, error) {
 		if !strings.EqualFold(v, id) && !matchesAlias(dev, v) {
 			return false, usage(fmt.Sprintf("--device %s is not %s: the passthrough only reaches the leased device", v, id), "drop --device; the passthrough adds it")
 		}
-		return true, nil
+		named = true
 	}
-	return false, nil
+	return named, nil
 }
 
 func matchesAlias(dev *Device, v string) bool {
