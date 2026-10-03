@@ -68,13 +68,13 @@ func (c Client) Subscribe(ctx context.Context, after int64, categories []string)
 	_ = conn.SetDeadline(c.deadline(ctx))
 	if err := json.NewEncoder(conn).Encode(request{ID: "vybava-events", Method: "events.stream", Params: params}); err != nil {
 		conn.Close()
-		return nil, &UnreachableError{Socket: c.Socket, Err: err, Closed: true}
+		return nil, unanswered(c.Socket, err)
 	}
 	s := &Stream{conn: conn, r: bufio.NewReaderSize(conn, 64<<10)}
 	line, err := readLine(s.r)
 	if err != nil {
 		conn.Close()
-		return nil, &UnreachableError{Socket: c.Socket, Err: err, Closed: true}
+		return nil, unanswered(c.Socket, err)
 	}
 	var first struct {
 		Type string `json:"type"`

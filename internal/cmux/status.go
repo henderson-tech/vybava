@@ -59,6 +59,9 @@ func (c Client) Check(ctx context.Context) Status {
 		case errors.As(err, &unreachable) && unreachable.Closed:
 			status.State, status.Detail = StateDenied, err.Error()
 			status.Fix = "cmux Settings → Socket Control → Automation (admits clients cmux did not start)"
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			status.State, status.Detail = StateUnreachable, "cmux did not answer in time: "+err.Error()
+			status.Fix = "cmux is busy; the next read retries"
 		case errors.As(err, &unreachable):
 			status.State, status.Detail = StateUnreachable, err.Error()
 			status.Fix = "start cmux"

@@ -292,3 +292,15 @@ func TestSocketPathPrefersTheEnvThenWhatCmuxLastWrote(t *testing.T) {
 }
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
+
+func TestCheckTellsABusyCmuxFromARefusingOne(t *testing.T) {
+	f := newFake(t, func(fakeCall, int) []string {
+		time.Sleep(300 * time.Millisecond)
+		return ok(`{}`)
+	})
+	client := f.client()
+	client.Timeout = 50 * time.Millisecond
+	if s := client.Check(context.Background()); s.State != StateUnreachable || !strings.Contains(s.Detail, "did not answer in time") {
+		t.Fatalf("a slow reply = %+v, want unreachable (busy), never denied", s)
+	}
+}

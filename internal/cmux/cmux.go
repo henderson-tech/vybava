@@ -92,7 +92,8 @@ func ErrNotFound(err error) bool {
 type UnreachableError struct {
 	Socket string
 	Err    error
-	// Closed is true when the dial succeeded but no reply came.
+	// Closed is true when cmux closed the connection without a reply (a
+	// deadline that ran out is not Closed).
 	Closed bool
 }
 
@@ -198,11 +199,11 @@ func (c Client) once(ctx context.Context, method string, params any) (json.RawMe
 		return nil, err
 	}
 	if err := json.NewEncoder(conn).Encode(request{ID: "vybava-" + method, Method: method, Params: params}); err != nil {
-		return nil, &UnreachableError{Socket: c.Socket, Err: err, Closed: true}
+		return nil, unanswered(c.Socket, err)
 	}
 	line, err := readLine(bufio.NewReaderSize(conn, 64<<10))
 	if err != nil {
-		return nil, &UnreachableError{Socket: c.Socket, Err: err, Closed: true}
+		return nil, unanswered(c.Socket, err)
 	}
 	var resp response
 	if err := json.Unmarshal(line, &resp); err != nil {
@@ -235,4 +236,11 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 			return line, nil
 		}
 	}
+}
+
+// unanswered classifies a request that got no reply: cmux closing the
+// connection is its access mode refusing us; a deadline is a busy main
+// thread, which is not a refusal.
+func unanswered(socket string, err error) *UnreachableError {
+	return &UnreachableError{Socket: socket, Err: err, Closed: !errors.Is(err, os.ErrDeadlineExceeded)}
 }
