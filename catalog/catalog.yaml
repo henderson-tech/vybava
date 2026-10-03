@@ -133,6 +133,18 @@ items:
     description: How agents navigate code — what Claude Code and Codex reads and searches put into context against what they changed, with re-reads, whole-file reads of big files, search hit rates and the most-read files, per repository, session and file. Scans on demand; stores nothing.
     applet: readeff
 
+  - id: find-session-cli
+    kind: applet
+    status: experimental
+    description: Find the Claude Code session a pasted conversation came from — the session that wrote the text ranked above any that only quoted it — and the one switcheroo line (cc, cco, ccoo, ccol, cch, ccl) that resumes it from its launch directory the way it started. Scans newest first, stores nothing.
+    applet: find-session
+
+  - id: find-session
+    kind: skill
+    status: experimental
+    description: Thin wrapper over the find-session applet — finds the session a pasted conversation came from and relays its reopen line.
+    source: skills/find-session
+
   - id: repolicy
     kind: applet
     status: experimental
@@ -475,6 +487,8 @@ groups:
       - codexusage
       - tokentime
       - readeff
+      - find-session-cli
+      - find-session
       - repolicy
       - skipci
       - redact
@@ -594,6 +608,8 @@ groups:
       - codexusage
       - tokentime
       - readeff
+      - find-session-cli
+      - find-session
       - repolicy
       - skipci
       - redact

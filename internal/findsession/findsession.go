@@ -1,0 +1,248 @@
+// Package findsession finds the Claude Code session a piece of conversation
+// came from — a pasted ending, a phrase or a session id — and names the
+// switcheroo preset (cc, cco, ccoo, …) that reopens it the way it started.
+// It scans main-session transcripts on demand and stores nothing.
+package findsession
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/henderson-tech/vybava/internal/runx"
+)
+
+// Diagnostic codes — the closed vocabulary of find-session.
+const (
+	DiagEmptyQuery  = "EMPTY_QUERY"
+	DiagNoNeedles   = "NO_NEEDLES"
+	DiagNoMatch     = "NO_MATCH"
+	DiagAmbiguous   = "AMBIGUOUS"
+	DiagQuotedOnly  = "QUOTED_ONLY"
+	DiagCwdMissing  = "CWD_MISSING"
+	DiagRootMissing = "ROOT_MISSING"
+	DiagPartial     = "PARTIAL_SCAN"
+)
+
+// Options scope one search.
+type Options struct {
+	// Root is the Claude projects directory (~/.claude/projects).
+	Root string
+	// Home shortens paths in the reopen command to ~/….
+	Home string
+	// Exclude is a session id left out — the caller's own session, which
+	// holds the paste it is searching for.
+	Exclude string
+	// Since > 0 keeps only transcripts written within it.
+	Since time.Duration
+	// Limit caps the sessions returned (default 3).
+	Limit int
+	// Full scans every transcript at once instead of newest tier first.
+	Full bool
+}
+
+// Result is one search: the needles it used and the sessions ranked best
+// first.
+type Result struct {
+	Mode        string            `json:"mode"`
+	Needles     []string          `json:"needles,omitempty"`
+	Need        int               `json:"need,omitempty"`
+	Scanned     int               `json:"scanned"`
+	Total       int               `json:"total"`
+	Elapsed     string            `json:"elapsed"`
+	Sessions    []Session         `json:"sessions"`
+	Diagnostics []runx.Diagnostic `json:"-"`
+}
+
+// Find resolves a query: an id or id prefix is looked up by file name;
+// anything else is matched as text.
+func Find(query string, opts Options) (Result, error) {
+	start := time.Now()
+	if opts.Limit <= 0 {
+		opts.Limit = 3
+	}
+	if strings.TrimSpace(query) == "" {
+		return Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: DiagEmptyQuery, Severity: "error",
+			Detail: "no text to search: pass it as arguments, pipe it on stdin, or copy it to the clipboard",
+			Fix:    "pbpaste | find-session"}}
+	}
+	files, err := listSessions(opts.Root, opts.Since)
+	if errors.Is(err, os.ErrNotExist) {
+		return Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: DiagRootMissing, Severity: "error",
+			Detail: "no Claude projects directory at " + opts.Root,
+			Fix:    "find-session --root <claude-config-dir>/projects '<text>'"}}
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	kept := files[:0]
+	for _, f := range files {
+		if f.ID != opts.Exclude {
+			kept = append(kept, f)
+		}
+	}
+	files = kept
+
+	var res Result
+	if id, ok := ParseID(query); ok {
+		res.Mode = "id"
+		var hits []scanned
+		for _, f := range files {
+			if strings.HasPrefix(f.ID, id) {
+				hits = append(hits, scanned{File: f})
+			}
+		}
+		res.Scanned = len(files)
+		if res.Sessions, err = rankHits(hits, nil, opts, map[string]Session{}); err != nil {
+			return Result{}, err
+		}
+	} else {
+		res.Mode = "text"
+		frags, need := Fragments(query)
+		if len(frags) == 0 {
+			return Result{}, runx.DiagError{Diag: runx.Diagnostic{Code: DiagNoNeedles, Severity: "error",
+				Detail: "the query has no run of 3+ characters to match",
+				Fix:    "find-session '<a longer phrase from the conversation>'"}}
+		}
+		res.Needles, res.Need = frags, need
+		needles := make([]needle, len(frags))
+		for i, f := range frags {
+			needles[i] = newNeedle(f)
+		}
+		// Newest tier first; stop at the first tier where a session wrote
+		// the text. files is sorted newest first, so each tier is a prefix.
+		tiers := []time.Duration{0}
+		if opts.Since == 0 && !opts.Full {
+			tiers = []time.Duration{2 * 24 * time.Hour, 14 * 24 * time.Hour, 0}
+		}
+		var hits []scanned
+		inspected := map[string]Session{}
+		for _, tier := range tiers {
+			end := len(files)
+			if tier > 0 {
+				cutoff := start.Add(-tier)
+				end = sort.Search(len(files), func(i int) bool { return files[i].ModTime.Before(cutoff) })
+			}
+			if end <= res.Scanned {
+				continue
+			}
+			more, err := scan(files[res.Scanned:end], needles, need)
+			if err != nil {
+				return Result{}, err
+			}
+			hits, res.Scanned = append(hits, more...), end
+			if res.Sessions, err = rankHits(hits, needles, opts, inspected); err != nil {
+				return Result{}, err
+			}
+			if len(res.Sessions) > 0 && res.Sessions[0].Own() {
+				break
+			}
+		}
+	}
+	res.Total = len(files)
+	res.Elapsed = time.Since(start).Round(time.Millisecond).String()
+	res.Diagnostics = verdict(res)
+	return res, nil
+}
+
+// rankHits inspects the best scan hits and orders them. It inspects a few
+// more than the limit: authorship reorders the scan's ranking, and sessions
+// that only quote the text must not crowd out the one that wrote it.
+func rankHits(hits []scanned, needles []needle, opts Options, inspected map[string]Session) ([]Session, error) {
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].Found != hits[j].Found {
+			return hits[i].Found > hits[j].Found
+		}
+		return hits[i].File.ModTime.After(hits[j].File.ModTime)
+	})
+	var sessions []Session
+	for _, hit := range hits[:min(len(hits), opts.Limit*3)] {
+		s, ok := inspected[hit.File.Path]
+		if !ok {
+			var err error
+			s, err = inspect(hit.File, needles)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			s.Found = hit.Found
+			if s.Cwd != "" {
+				if _, err := os.Stat(s.Cwd); errors.Is(err, os.ErrNotExist) {
+					s.CwdMissing = true
+				}
+			}
+			s.Reopen = reopenCommand(s, opts.Home)
+			inspected[hit.File.Path] = s
+		}
+		sessions = append(sessions, s)
+	}
+	sort.SliceStable(sessions, func(i, j int) bool { return rank(sessions[i], sessions[j]) })
+	if len(sessions) > opts.Limit {
+		sessions = sessions[:opts.Limit]
+	}
+	return sessions, nil
+}
+
+// rank orders sessions: the one that wrote the text before those that only
+// quote it, then more needles matched, then the text closer to the
+// session's end, then the newer session.
+func rank(a, b Session) bool {
+	if a.Own() != b.Own() {
+		return a.Own()
+	}
+	if a.Found != b.Found {
+		return a.Found > b.Found
+	}
+	if ta, tb := tail(a), tail(b); ta != tb {
+		return ta < tb
+	}
+	return a.Ended.After(b.Ended)
+}
+
+func tail(s Session) int {
+	if s.LastHit == 0 {
+		return s.Lines
+	}
+	return s.Lines - s.LastHit
+}
+
+func verdict(res Result) []runx.Diagnostic {
+	if len(res.Sessions) == 0 {
+		fix := "find-session '<a shorter, distinctive phrase>'"
+		if res.Mode == "id" {
+			fix = "find-session '<text from the conversation>'"
+		}
+		return []runx.Diagnostic{{Code: DiagNoMatch, Severity: "error",
+			Detail: fmt.Sprintf("no session among %d holds the query", res.Scanned), Fix: fix}}
+	}
+	var diags []runx.Diagnostic
+	top := res.Sessions[0]
+	if res.Mode == "text" && !top.Own() {
+		diags = append(diags, runx.Diagnostic{Code: DiagQuotedOnly, Severity: "warning",
+			Detail: "the best match only quotes the text (a paste or tool output) — the session that wrote it may be a subagent or deleted"})
+	}
+	if len(res.Sessions) > 1 {
+		second := res.Sessions[1]
+		if second.Own() == top.Own() && second.Found == top.Found && tail(second) == tail(top) {
+			diags = append(diags, runx.Diagnostic{Code: DiagAmbiguous, Severity: "warning",
+				Detail: "the top sessions match equally — tell them apart by title, directory and time",
+				Fix:    "find-session '<a longer passage>'"})
+		}
+	}
+	if res.Scanned < res.Total {
+		diags = append(diags, runx.Diagnostic{Code: DiagPartial, Severity: "info",
+			Detail: fmt.Sprintf("searched the %d newest of %d sessions, stopping at the first that wrote it", res.Scanned, res.Total),
+			Fix:    "find-session --full"})
+	}
+	if top.CwdMissing {
+		diags = append(diags, runx.Diagnostic{Code: DiagCwdMissing, Severity: "warning",
+			Detail: "the launch directory " + top.Cwd + " is gone; resume finds the transcript only from there",
+			Fix:    "mkdir -p " + shellPath(top.Cwd, "") + " && " + top.Reopen})
+	}
+	return diags
+}

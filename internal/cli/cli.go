@@ -116,6 +116,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "readeff" {
 		return rt.readeffApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "find-session" {
+		return rt.findSessionApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "worktime" {
 		return rt.worktimeApplet(), nil
 	}
@@ -223,6 +226,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.codexusageCommand("codexusage"),
 		rt.tokentimeCommand("tokentime"),
 		rt.readeffCommand("readeff"),
+		rt.findSessionCommand("find-session"),
 		rt.worktimeCommand("worktime"),
 		rt.reconcileCommand("reconcile"),
 		rt.menubarCommand("menubar-doctor"),
