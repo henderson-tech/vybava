@@ -25,7 +25,8 @@ import (
 // step to it is certain — a literal cd (or -C) target, success guaranteed by
 // `&&` from the cd all the way to the segment (a `;`, `||`, `|`, `&` or
 // newline after a cd at the same shell level breaks the chain), no cd inside a
-// subshell or substitution that closed before the segment, no pushd/popd, no
+// subshell or substitution that closed before the segment, no cd that is a
+// pipeline element (`echo | cd x` runs in its own subshell), no pushd/popd, no
 // remote runner. Anything else leaves known false and dir at the cwd — exactly
 // what every rule saw before this walk existed. An absolute target
 // re-establishes certainty by itself: `cd x; cd /abs && git checkout` is
@@ -74,6 +75,7 @@ func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []ru
 	cur := level{dir: dir, known: known}
 	var stack []level
 	backtick := false
+	pipe := false // the segments since the last command hang off a `|`: each runs in its own subshell
 	push := func() {
 		stack = append(stack, cur)
 		cur.moved = false
@@ -92,10 +94,14 @@ func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []ru
 			push()
 		}
 		if s := shellseg.TrimAssignments(shellseg.TrimSubshell(raw)); s != "" {
-			out = w.segment(out, s, &cur, depth)
+			out = w.segment(out, s, &cur, pipe && opens == 0, depth)
+			pipe = false
 		}
 		for i := 0; i < closes; i++ {
 			pop()
+		}
+		if p.Sep == "|" {
+			pipe = true
 		}
 		switch p.Sep {
 		case "&&", "":
@@ -121,8 +127,10 @@ func (w dirWalk) scan(out []runSeg, cmd, dir string, known bool, depth int) []ru
 // segment records s, which runs at cur, then applies what s does to the
 // commands after it: a cd moves them, pushd/popd lose them, a runner's payload
 // is its own level starting where the runner runs — a cd inside never moves
-// the commands after the runner.
-func (w dirWalk) segment(out []runSeg, s string, cur *level, depth int) []runSeg {
+// the commands after the runner. piped marks a later element of a pipeline
+// (`echo | cd x && …`): it runs in its own subshell, so its cd or pushd never
+// moves the shell either, and the commands after it run where they did before.
+func (w dirWalk) segment(out []runSeg, s string, cur *level, piped bool, depth int) []runSeg {
 	fields := shellseg.Fields(s)
 	word := shellseg.CommandWord(s)
 	dir, known := cur.dir, cur.known
@@ -134,6 +142,9 @@ func (w dirWalk) segment(out []runSeg, s string, cur *level, depth int) []runSeg
 	}
 	out = append(out, runSeg{text: s, dir: dir, known: known})
 	if target, ok := cdTarget(fields); ok {
+		if piped {
+			return out
+		}
 		cur.moved = true
 		if target == "-" || !literalPath(target) {
 			cur.known = false
@@ -143,7 +154,7 @@ func (w dirWalk) segment(out []runSeg, s string, cur *level, depth int) []runSeg
 		}
 		return out
 	}
-	if word == "pushd" || word == "popd" {
+	if !piped && (word == "pushd" || word == "popd") {
 		cur.moved, cur.known = true, false
 	}
 	if depth < shellseg.MaxRunnerDepth {

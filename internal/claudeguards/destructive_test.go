@@ -66,6 +66,7 @@ func TestDestructiveMatch(t *testing.T) {
 		{"relative cd into worktree then checkout", "cd .worktrees/h && git checkout -q main", mainClone, ""},
 		{"cd ; checkout is not proven", "cd .worktrees/h; git checkout main", mainClone, "git-switch"},
 		{"cd || checkout is not proven", "cd .worktrees/h || git checkout main", mainClone, "git-switch"},
+		{"cd in a pipeline is a subshell", "echo | cd .worktrees/h && git checkout main", mainClone, "git-switch"},
 		{"-C literal worktree", "git -C " + mainClone + "/.worktrees/h checkout -q --detach origin/x", mainClone, ""},
 		{"-C variable is not proven", "W=" + mainClone + "/.worktrees/h; git -C $W checkout -q main", mainClone, "git-switch"},
 		{"subshell cd closed before checkout", "(cd .worktrees/h && bun test); git checkout main", mainClone, "git-switch"},

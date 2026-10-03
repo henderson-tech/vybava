@@ -503,8 +503,8 @@ PROVABLY runs in, and every directory carve-out — a branch switch in a
 worktree, a `down -v` on a `wt-` stack — judges that directory. Fail-closed: a
 segment's directory is known only through a literal `cd`/`-C` target whose
 success is guaranteed by `&&` all the way to the segment, outside any subshell
-or substitution that closed before it, with no `pushd`/`popd` and no remote
-runner in between; anything else (`$W`, `cd x;`, `cd x ||`) is judged at the
+or substitution that closed before it, not a pipeline element (`echo | cd x` runs
+in its own subshell), with no `pushd`/`popd` and no remote runner in between; anything else (`$W`, `cd x;`, `cd x ||`) is judged at the
 cwd, exactly as before. The gap ran both ways: the git-switch denial
 recommended `cd .worktrees/<name>` and then blocked it, and from a worktree
 cwd `cd ../.. && git checkout` switched the primary clone unseen.

@@ -30,6 +30,8 @@ func TestRunDirs(t *testing.T) {
 		{"cd variable", "cd .worktrees/$B && git checkout x", m, "git checkout x", m, false},
 		{"cd -", "cd - && git checkout x", wt, "git checkout x", wt, false},
 		{"pushd", "pushd .worktrees/h && git checkout x", m, "git checkout x", m, false},
+		{"cd in a pipeline runs in a subshell", "echo | cd .worktrees/h && git checkout x", m, "git checkout x", m, true},
+		{"subshell in a pipeline keeps its cd", "echo | (cd .worktrees/h && git checkout x)", m, "git checkout x", wt, true},
 		{"subshell cd applies inside", "(cd .worktrees/h && git checkout x)", m, "git checkout x", wt, true},
 		{"subshell cd ends at its paren", "(cd .worktrees/h && bun test); git checkout x", m, "git checkout x", m, true},
 		{"quoted paren is not a close", "cd .worktrees/h && (cd " + m + ` && echo ")" && git checkout x)`, m, "git checkout x", m, true},
