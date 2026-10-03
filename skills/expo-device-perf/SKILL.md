@@ -49,7 +49,7 @@ App-wide render sweep: `perflab hazards <appRoot>` lists loop, layer and list si
 | Which step? | `analyze --marks` | `analyze --marks` |
 | Commit or render? | hitch narrative + offscreen passes | Perfetto: main `doFrame` vs RenderThread draw |
 | What runs in the slow frame? | `analyze <trace> --window a-b --classify` (Time Profiler) | `analyze <pftrace> --sql perframe` / `children` |
-| Does it draw at rest? | `probe rest` | `probe rest`: frames, main-thread eglSwaps |
+| Does it draw at rest? | `probe rest`: main-thread ms/s (`iosRestMainMsPerS`; hitches miss a smooth loop) | `probe rest`: frames, main-thread eglSwaps |
 | Is the RenderThread clock-starved? | n/a | `--sql rtfreq` |
 | Does it degrade with use? | slope over N cycles | same |
 | Is the component compiled? | the project's React Compiler gate (rule 14) | same |
@@ -70,6 +70,7 @@ Never judge 120 Hz Android by Flashlight FPS or gfxinfo "Janky frames".
 | `androidDragRtDrawMsMax` | 4 ms RenderThread draw per frame |
 | `androidFlingTwoVsyncGapsMax` | the baseline's count per 20 s script |
 | `slopeMax` | 1.05 (cycleN / cycle1) |
+| `iosRestMainMsPerSMax` | 50 ms/s main thread in an iOS `probe rest` (a smooth loop never hitches) |
 
 Scenario rows override with calibrated numbers. The 60-capped `androidFpsP10Min` is reported and never gates a 120 Hz phone.
 

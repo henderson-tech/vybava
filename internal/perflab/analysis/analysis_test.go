@@ -436,3 +436,34 @@ func TestReportJudgesProbesAndMergesAScreensBoardRow(t *testing.T) {
 		t.Errorf("a scenario fills the columns its budget names: %+v", s)
 	}
 }
+
+// An iOS rest probe is judged on the main thread's work at rest: FixIt's
+// iPhone 11 read 0 hitches both ways, but 3.3 s of main thread per 20 s
+// with a looping comet and 0.42 s once it rested.
+func TestIOSRestProbeIsJudgedOnMainThreadWork(t *testing.T) {
+	budget, err := ParseBudget("probe-rest-ios-dispatch-home", ProbeBudget("rest", PlatformIOS))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		mainMs  float64
+		perS    float64
+		verdict RowVerdict
+	}{{"comet looping", 3296, 164.8, RowFail}, {"rested", 418, 20.9, RowPass}} {
+		m := Metrics{Kind: KindIOSTrace, IOS: &xctrace.HitchMetrics{RecordingMs: 20000},
+			Profile: []xctrace.WindowProfile{{Threads: []xctrace.ThreadProfile{
+				{Thread: "com.facebook.react.runtime.JavaScript", RunningMs: 209}, {Thread: "Main Thread", RunningMs: c.mainMs}}}}}
+		got := restMainMsPerS(m)
+		if got == nil || *got != c.perS {
+			t.Fatalf("%s: %v ms/s, want %v", c.name, got, c.perS)
+		}
+		m.IOSRestMainMsPerS = got
+		if v := verdictOf(checkBudget(budget, m, 60)); v != c.verdict {
+			t.Errorf("%s: verdict %s, want %s (0 hitches either way)", c.name, v, c.verdict)
+		}
+	}
+	if restMainMsPerS(Metrics{IOS: &xctrace.HitchMetrics{RecordingMs: 20000}}) != nil {
+		t.Error("a trace without Time Profiler reads nothing, never 0")
+	}
+}

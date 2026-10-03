@@ -38,6 +38,10 @@ type Budget struct {
 	AndroidFlingTwoVsyncGapsMax *float64 `json:"androidFlingTwoVsyncGapsMax,omitempty"`
 	// SlopeMax: last round's cost over the first's.
 	SlopeMax *float64 `json:"slopeMax,omitempty"`
+	// IOSRestMainMsPerSMax: an iOS rest probe's main-thread running ms per
+	// recorded second (Time Profiler): a screen at rest leaves the main
+	// thread idle, so a smooth loop fails here though it never hitches.
+	IOSRestMainMsPerSMax *float64 `json:"iosRestMainMsPerSMax,omitempty"`
 	// AndroidFpsP10Min is the 60-capped worst decile, kept for old
 	// scenario rows: reported, and never gating a display above 60 Hz.
 	AndroidFpsP10Min *float64 `json:"androidFpsP10Min,omitempty"`
@@ -131,6 +135,11 @@ type ReportOptions struct {
 // (the baseline's count per script).
 func ProbeBudget(kind string, platform Platform) json.RawMessage {
 	if platform == PlatformIOS {
+		if kind == "rest" {
+			// 50 ms/s is 5% of the main thread: FixIt's iPhone 11 rested at
+			// 21 ms/s and read 164 with a looping comet.
+			return json.RawMessage(`{"iosHitchRatioMsPerSMax":5,"iosRestMainMsPerSMax":50}`)
+		}
 		return json.RawMessage(`{"iosHitchRatioMsPerSMax":5}`)
 	}
 	switch kind {
@@ -272,6 +281,9 @@ func checkBudget(b Budget, m Metrics, refreshHz float64) []Check {
 			atMost("iosHitchRatioMsPerSMax", b.IOSHitchRatioMsPerSMax, ios.HitchRatioMsPerS, true)
 		}
 		atMost("iosWorstHitchMsMax", b.IOSWorstHitchMsMax, ios.WorstAppHitchMs, true)
+	}
+	if m.IOSRestMainMsPerS != nil {
+		atMost("iosRestMainMsPerSMax", b.IOSRestMainMsPerSMax, *m.IOSRestMainMsPerS, true)
 	}
 	if d := m.Display; d != nil && d.Frames > 0 {
 		if b.AndroidAnimatingFpsP10MinShare != nil && d.RefreshHz > 0 {

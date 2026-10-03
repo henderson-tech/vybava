@@ -41,6 +41,10 @@ type Metrics struct {
 	// Slope is the last round's cost over the first's (hitch ms on iOS,
 	// dropped-frame share on Android), nil without rounds or a zero first.
 	Slope *float64 `json:"slope,omitempty"`
+	// IOSRestMainMsPerS: an iOS rest probe's main-thread running ms per
+	// recorded second (Time Profiler, whole recording): hitches alone pass
+	// a screen that redraws smoothly at rest.
+	IOSRestMainMsPerS *float64 `json:"iosRestMainMsPerS,omitempty"`
 }
 
 // Options tunes Analyze; every field is optional.
@@ -335,7 +339,16 @@ func AnalyzeRunFile(ctx context.Context, rf RunFile, opts Options) (RunAnalysis,
 		var err error
 		switch {
 		case ev.Trace != "":
+			kind, _, probe := probeScreen(rec.Scenario)
+			rest := probe && kind == "rest"
+			if rest {
+				// The whole recording's per-thread totals (no windows, no classes).
+				ro.Profile, ro.ProfileOptions = true, xctrace.ProfileOptions{}
+			}
 			in, d, err = analyzeTrace(ctx, rf.path(ev.Trace), ro)
+			if err == nil && rest {
+				in.Metrics.IOSRestMainMsPerS = restMainMsPerS(in.Metrics)
+			}
 		case ev.Frames != "":
 			in, d, err = analyzeSidecar(rf.path(ev.Frames), ro)
 		case ev.Pftrace != "":
@@ -417,4 +430,21 @@ func dedupeDiags(in []runx.Diagnostic) []runx.Diagnostic {
 		}
 	}
 	return out
+}
+
+// restMainMsPerS is the main thread's running ms per recorded second over
+// the whole recording (the profile's one window), nil when the trace has no
+// Time Profiler or no main-thread sample. FixIt's iPhone 11 at rest read
+// 164 ms/s with a looping comet and 21 ms/s after it rested, 0 hitches both.
+func restMainMsPerS(m Metrics) *float64 {
+	if m.IOS == nil || m.IOS.RecordingMs <= 0 || len(m.Profile) == 0 {
+		return nil
+	}
+	for _, th := range m.Profile[0].Threads {
+		if th.Thread == "Main Thread" {
+			v := round2(th.RunningMs / (m.IOS.RecordingMs / 1000))
+			return &v
+		}
+	}
+	return nil
 }

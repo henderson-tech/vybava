@@ -390,7 +390,9 @@ A drag or fling whose gestures presented no frame warns `NO_APP_FRAMES`
 (nothing scrolled: judge that screen by `rest`). The exact adb commands are
 in `data.gestures`; the input source is `adb`
 (pessimistic: it skips Samsung's touch boost). iOS probes `rest` only: an
-xctrace window (Hitches + Time Profiler) attached to the launched app.
+xctrace window (Hitches + Time Profiler) attached to the launched app,
+judged on hitches and on `iosRestMainMsPerS`, the main thread's running ms
+per recorded second (a smooth loop at rest never hitches).
 Each probe writes a run dir and is analyzed like a run; `data.verdict` uses
 the default budgets below. Metric definitions: `restFrames` counts frames
 after the first gap over 60 ms (every frame when one run lasts to the
@@ -428,11 +430,12 @@ that only synced queues no buffer), so zero presents read as zero frames.
   `iosWorstHitchMsMax`, `androidAnimatingFpsP10MinShare`,
   `androidJankyPctMax`, `androidRestFramesMax`, `androidRestRunMsMax`,
   `androidDragRtDrawMsMax`, `androidFlingTwoVsyncGapsMax`, `slopeMax`,
-  `androidFpsP10Min` (60-capped: reported, never gates a 120 Hz phone).
+  `androidFpsP10Min` (60-capped: reported, never gates a 120 Hz phone),
+  `iosRestMainMsPerSMax` (an iOS rest probe's main-thread ms per second).
   Probe defaults (`analysis.ProbeBudget`, applied by `probe` and by `report`
   to a `probe-<kind>-<label>` row no adapter row names): rest 0 frames /
   6000 ms, drag 4 ms and animating p10 0.75 x refresh, fling animating p10
-  0.75 x refresh, iOS 5 ms/s.
+  0.75 x refresh, iOS 5 ms/s, an iOS rest 50 ms/s of main thread.
 - Board rows (`data.boardRows`, 4740's table): one per screen x device. A
   probed screen merges its probes, each column from its own kind (rest
   frames from `rest`, draw ms and fps p10 from `drag`, two-vsync gaps and

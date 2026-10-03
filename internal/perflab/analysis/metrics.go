@@ -17,6 +17,7 @@ const (
 	MetricTwoVsyncGaps       Metric = "twoVsyncGaps"
 	MetricDrops              Metric = "drops"
 	MetricSlope              Metric = "slope"
+	MetricIOSRestMainMsPerS  Metric = "iosRestMainMsPerS"
 )
 
 // Direction says which way a metric gets better.
@@ -33,7 +34,7 @@ var AllMetrics = []Metric{
 	MetricHitchRatio, MetricWorstAppHitch, MetricHitchCount,
 	MetricAnimatingFpsP10, MetricAnimatingFpsMedian, MetricJankyPct, MetricFpsP10,
 	MetricRestFrames, MetricRestRunMs, MetricRTDrawAvgMs, MetricTwoVsyncGaps, MetricDrops,
-	MetricSlope,
+	MetricSlope, MetricIOSRestMainMsPerS,
 }
 
 // MetricDirections is the exhaustive direction table.
@@ -51,6 +52,7 @@ var MetricDirections = map[Metric]Direction{
 	MetricTwoVsyncGaps:       LowerIsBetter,
 	MetricDrops:              LowerIsBetter,
 	MetricSlope:              LowerIsBetter,
+	MetricIOSRestMainMsPerS:  LowerIsBetter,
 }
 
 // Scalars flattens the metrics into the comparable vocabulary. A metric
@@ -82,6 +84,9 @@ func (m Metrics) Scalars() map[Metric]float64 {
 	}
 	if m.Slope != nil {
 		out[MetricSlope] = *m.Slope
+	}
+	if m.IOSRestMainMsPerS != nil {
+		out[MetricIOSRestMainMsPerS] = *m.IOSRestMainMsPerS
 	}
 	return out
 }
