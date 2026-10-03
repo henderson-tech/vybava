@@ -189,10 +189,25 @@ func (s Store) ExportBundle(ctx context.Context, r Runner, spec BundleSpec) (Bun
 	if err != nil {
 		return BundleResult{}, err
 	}
-	return BundleResult{Hit: existed, Bundle: b, Source: src, Next: []string{
-		fmt.Sprintf("perflab build find --platform %s --profile %s --json", spec.Platform, spec.Profile),
-		fmt.Sprintf("perflab pack --native <key> --bundle %s --json", sum[:16]),
-	}}, nil
+	return BundleResult{Hit: existed, Bundle: b, Source: src, Next: s.packNext(t, m.SourceKey, sum[:16])}, nil
+}
+
+// packNext is the line after an export: pack onto the newest indexed native
+// build of the target whose native sources match the bundle's (pack's own
+// FINGERPRINT_MISMATCH rule), else build that native first. A `<key>`
+// placeholder sat here although the index knew the key.
+func (s Store) packNext(t Target, sourceKey, sha string) []string {
+	builds, _ := s.ListBuilds()
+	for _, b := range builds {
+		m := b.Manifest
+		if m.Platform == t.Platform && m.Profile == t.Profile && m.Kind == t.Kind && m.SourceKey == sourceKey && fileExists(b.Path) {
+			return []string{fmt.Sprintf("perflab pack --native %s --bundle %s --json", m.Key, sha)}
+		}
+	}
+	return []string{
+		fmt.Sprintf("perflab build native --platform %s --profile %s --kind %s --json", t.Platform, t.Profile, t.Kind),
+		fmt.Sprintf("perflab pack --native <key the build prints> --bundle %s --json", sha),
+	}
 }
 
 // checkHBC refuses a bundle that is not Hermes bytecode and returns its

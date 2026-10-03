@@ -236,3 +236,20 @@ func TestProjectRunnerSerialisesOneCheckout(t *testing.T) {
 	}
 	again()
 }
+
+// After a bundle export the next line packs onto the indexed native build
+// whose native sources match (the FixIt sweep read `--native <key>` while
+// the index held pf1-eee19b76f90b2b546ecc), the newest of them; without
+// one it builds first.
+func TestPackNextNamesTheMatchingNativeBuild(t *testing.T) {
+	s := testStore(t)
+	putBuild(t, s, "pf1-0000000000000000000a", "pf1s-old", time.Now().Add(-2*time.Hour).UTC())
+	putBuild(t, s, "pf1-0000000000000000000b", "pf1s-src", time.Now().Add(-time.Hour).UTC())
+	putBuild(t, s, "pf1-0000000000000000000c", "pf1s-src", time.Now().UTC())
+	if got := s.packNext(androidTarget, "pf1s-src", "da4288d812090000"); len(got) != 1 || got[0] != "perflab pack --native pf1-0000000000000000000c --bundle da4288d812090000 --json" {
+		t.Errorf("next = %q", got)
+	}
+	if got := s.packNext(androidTarget, "pf1s-new", "da4288d812090000"); len(got) != 2 || !strings.HasPrefix(got[0], "perflab build native --platform android --profile perf --kind bundled") {
+		t.Errorf("no matching build: next = %q", got)
+	}
+}
