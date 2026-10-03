@@ -103,6 +103,28 @@ func TestAnUnmovedScreenWithoutOpenItemsCarriesItsReview(t *testing.T) {
 	}
 }
 
+// A pass whose every screen carried has no batch and no raw file to wait
+// for: merge-review drafts its backlog from the carried review alone.
+func TestAPassWhoseEveryScreenCarriedMergesWithoutARaw(t *testing.T) {
+	tool := carryPasses(t)
+	writeFile(t, filepath.Join(tool.reviewDir(1), "backlog.json"), `{"v":1,"pass":1,"reviewed":["task-detail","tasks"],"findings":[
+		{"key":"detail-met","screen":"task-detail","area":"tasks","severity":"broken","status":"met","title":"O","files":["d.ts"],"acceptance":"x"}]}`)
+	res, err := tool.Batches(BatchesOptions{Pass: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := res.Data.(BatchesData); len(b.Batches) != 0 || len(b.Carried) != 2 {
+		t.Fatalf("batches of pass 2: %+v", b)
+	}
+	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := merged.Data.(MergeReviewData); m.Reviewed != 2 || m.Findings != 1 || m.Open != 0 || len(m.Left) != 0 || len(merged.Diagnostics) != 0 {
+		t.Errorf("merge of a carried pass: %+v %+v", m, merged.Diagnostics)
+	}
+}
+
 // A shot whose PNG changed carries only while the share of differing pixels
 // stays within uiLoop.review.carryTolerance; a size change always moves it.
 func TestCarryWeighsChangedPixelsAgainstTheTolerance(t *testing.T) {

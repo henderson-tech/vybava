@@ -1559,7 +1559,8 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if len(paths) == 0 {
+	// A pass whose every screen carried has no batch, so nothing to wait for.
+	if len(paths) == 0 && len(batches.Batches) > 0 {
 		return Result{}, diag(DiagPassMissing, t.PassDir(pass)+"/review/raw holds no reviewer batch", "run the review stage first")
 	}
 	// Raw files in batch order, then by name for ids batches.json does not know.

@@ -514,8 +514,10 @@ A carried screen leaves the batches and is listed in `batches`' `carried` and in
 `batches.json`; `state.review` counts the screens (`carried`) and names the pass
 (`carriedFrom`); `merge-review` copies that pass's items on it with `carriedFrom` and
 counts it reviewed, so it stays clean on the scoreboard and can carry again into the
-next pass. The review stage runs `batches` every time, so a retake after it planned
-is seen by its next run. A review that started on v1 batches never carries.
+next pass. A pass whose every screen carried has no batch, so `merge-review` drafts
+its backlog from the carried review without a raw file. The review stage runs
+`batches` every time, so a retake after it planned is seen by its next run. A
+review that started on v1 batches never carries.
 
 Pixels are compared only for an eligible shot whose bytes changed, and a screen
 stops at its first moved PNG. On pwf-ui passes 3 → 4 (a fix round apart: 121
