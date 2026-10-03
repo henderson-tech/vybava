@@ -84,35 +84,49 @@ func TestProcessKill(t *testing.T) {
 		"sudo FOO=1 kill 60209":                "process:session-kill",
 		"sudo -u x -- FOO=1 kill 60209":        "process:session-kill",
 		"env - pkill -f codex":                 "process:pattern-kill",
+		"sudo -Eu x kill 60209":                "process:session-kill",
+		"sudo -Eu x pkill -f codex":            "process:pattern-kill",
+		"env -iu HOME kill 60209":              "process:session-kill",
+		"env -S 'pkill -f codex'":              "process:pattern-kill",
+		"env --split-string='kill 60209'":      "process:session-kill",
+		"pkill -s 0 -f claude":                 "process:pattern-kill",
+		"pkill -f -- -0":                       "process:pattern-kill",
+		"kill 0":                               "process:session-kill",
+		"kill -TERM 0":                         "process:session-kill",
 		// Allowed: own work, probes, unknown or ordinary PIDs, read-only listings.
-		"kill $!":                         "",
-		`kill "$!" 2>/dev/null`:           "",
-		"kill %1":                         "",
-		"kill 12345":                      "",
-		"kill 777":                        "",
-		"kill -INT 40813 40841 50000":     "",
-		"kill -- -74357":                  "",
-		"kill -- -900":                    "",
-		`sudo printf '%s\n' pkill`:        "",
-		"env echo kill 60209":             "",
-		"xargs docker kill < ids; ps aux": "",
-		"kill -0 123":                     "",
-		"kill -0 60209":                   "",
-		"kill -l":                         "",
-		"kill $PID":                       "",
-		"kill $(cat /tmp/app.pid)":        "",
-		"ps aux | grep foo":               "",
-		"pgrep -fl appium":                "",
-		"lsof -ti:3000":                   "",
-		"ps -p 777 && kill 777":           "",
-		"kill $!; pgrep -fl appium":       "",
-		"pkill -0 -f appium":              "",
-		"killall -l":                      "",
-		"command -v pkill":                "",
-		"docker ps -q | xargs docker kill; ps aux":         "",
-		"ssh devops 'pkill -f node'":                       "",
-		`git commit -m "stop pkill -f appium"`:             "",
-		`rg -n 'pkill -f|killall' docs`:                    "",
+		"kill $!":                                  "",
+		`kill "$!" 2>/dev/null`:                    "",
+		"kill %1":                                  "",
+		"kill 12345":                               "",
+		"kill 777":                                 "",
+		"kill -INT 40813 40841 50000":              "",
+		"kill -- -74357":                           "",
+		"kill -- -900":                             "",
+		`sudo printf '%s\n' pkill`:                 "",
+		"env echo kill 60209":                      "",
+		"xargs docker kill < ids; ps aux":          "",
+		"kill -0 123":                              "",
+		"kill -0 60209":                            "",
+		"kill -l":                                  "",
+		"kill $PID":                                "",
+		"kill $(cat /tmp/app.pid)":                 "",
+		"ps aux | grep foo":                        "",
+		"pgrep -fl appium":                         "",
+		"lsof -ti:3000":                            "",
+		"ps -p 777 && kill 777":                    "",
+		"kill $!; pgrep -fl appium":                "",
+		"pkill -0 -f appium":                       "",
+		"pkill --signal 0 -f appium":               "",
+		"killall -s 0 node":                        "",
+		"kill -0 0":                                "",
+		"sudo -uroot printf kill":                  "",
+		"env -S 'echo kill 60209'":                 "",
+		"killall -l":                               "",
+		"command -v pkill":                         "",
+		"docker ps -q | xargs docker kill; ps aux": "",
+		"ssh devops 'pkill -f node'":               "",
+		`git commit -m "stop pkill -f appium"`:     "",
+		`rg -n 'pkill -f|killall' docs`:            "",
 		"while kill -0 $pid 2>/dev/null; do sleep 1; done": "",
 	} {
 		in := &HookInput{}
@@ -147,6 +161,21 @@ func TestProcessKillMessage(t *testing.T) {
 	in.ToolInput.Command = "kill 30521"
 	if d := Codex(in); d == nil || !strings.Contains(d.Message, "an ancestor of the agent session") {
 		t.Errorf("Codex must refuse a session's ancestor, got %v", d)
+	}
+}
+
+// kill 0 signals the caller's own group: refused when the hook's or its
+// session's group holds an agent, and when the hook is not in the table.
+func TestProcessKillZeroIsTheCallersGroup(t *testing.T) {
+	withKillTree(t)
+	in := &HookInput{}
+	in.ToolInput.Command = "kill 0"
+	if d := guardProcessKill(in); d == nil || !strings.Contains(d.Message, "PID 32255") {
+		t.Errorf("kill 0 with the session in the caller's group: want a refusal naming PID 32255, got %v", d)
+	}
+	hookPID = func() int { return 99999 }
+	if d := guardProcessKill(in); d == nil || !strings.Contains(d.Message, "cannot be proven") {
+		t.Errorf("kill 0 from a hook outside the table: want an unproven refusal, got %v", d)
 	}
 }
 

@@ -101,7 +101,8 @@ func killInvocation(seg string) (word string, args []string, viaXargs bool) {
 // timeout's duration. `--` ends the options only: the assignments and the
 // duration after it are still consumed (`timeout -- 5 pkill`, `sudo -- FOO=1
 // kill`). Only that word is the child; `sudo printf '%s\n' pkill` runs printf,
-// and `xargs docker kill` runs docker.
+// and `xargs docker kill` runs docker. (env -S's quoted string reaches the
+// rules as a segment of its own.)
 func launcherChild(w string, valueFlags map[string]bool, toks []string, j int) int {
 	positional := 0
 	if w == "timeout" || w == "gtimeout" {
@@ -116,7 +117,7 @@ func launcherChild(w string, valueFlags map[string]bool, toks []string, j int) i
 			optsDone = true
 		case !optsDone && w == "env" && t == "-": // env's `-` is -i
 		case !optsDone && len(t) > 1 && t[0] == '-':
-			if valueFlags[t] {
+			if optionTakesValue(valueFlags, t) {
 				j++
 			}
 		case assigns && shellseg.AssignPrefix.MatchString(t):
@@ -127,6 +128,25 @@ func launcherChild(w string, valueFlags map[string]bool, toks []string, j int) i
 		}
 	}
 	return j
+}
+
+// optionTakesValue reports whether a launcher option consumes the next word:
+// `-u` or `--user` itself, or a short-option cluster whose LAST letter takes a
+// value (`sudo -Eu x`). A letter that takes a value earlier in a cluster takes
+// the rest of it (`-uroot`, `timeout -sKILL`), never the next word.
+func optionTakesValue(valueFlags map[string]bool, t string) bool {
+	if valueFlags[t] {
+		return true
+	}
+	if strings.HasPrefix(t, "--") {
+		return false
+	}
+	for k := 1; k < len(t); k++ {
+		if valueFlags["-"+t[k:k+1]] {
+			return k == len(t)-1
+		}
+	}
+	return false
 }
 
 // killArgs reads kill's argv: the signal named (or ""), whether it only lists
@@ -178,10 +198,15 @@ func ownOperand(op string) bool {
 }
 
 // patternSignalsNothing reports a pkill/killall that sends no signal: signal
-// 0, help or version, killall's signal list.
+// 0, help or version, killall's signal list. Only options count: after `--`
+// every word is a pattern (`pkill -f -- -0` kills). pkill's -s selects a
+// session ID (`pkill -s 0 -f x` sends SIGTERM); only killall's -s names the
+// signal.
 func patternSignalsNothing(word string, args []string) bool {
 	for i, a := range args {
 		switch a {
+		case "--":
+			return false
 		case "-0", "--signal=0", "--help", "-V", "--version":
 			return true
 		case "-l", "--list":
@@ -189,7 +214,7 @@ func patternSignalsNothing(word string, args []string) bool {
 				return true
 			}
 		case "-s", "--signal":
-			if i+1 < len(args) && args[i+1] == "0" {
+			if (a == "--signal" || word == "killall") && i+1 < len(args) && args[i+1] == "0" {
 				return true
 			}
 		}
@@ -434,6 +459,24 @@ func sessionTarget(pids []int, table []procRow, self int) (target int, hit procR
 					members = append(members, r)
 				}
 			}
+		case t == 0:
+			// kill 0 signals the calling shell's own process group. That shell
+			// is not born yet: it shares the group of this hook or of the
+			// session that spawns both, so either group counts, and a hook the
+			// table does not hold proves nothing.
+			me, found := byPID[self]
+			if !found {
+				return 0, procRow{}, "this hook is not in the process table, so the group cannot be proven free of an agent session", true
+			}
+			groups := map[int]bool{me.pgid: true}
+			if p, found := byPID[me.ppid]; found {
+				groups[p.pgid] = true
+			}
+			for _, r := range table {
+				if groups[r.pgid] {
+					members = append(members, r)
+				}
+			}
 		}
 		for _, m := range members {
 			if underRoot(m.pid) {
@@ -490,14 +533,22 @@ processes.
 	}
 	if t, hit, why, ok := sessionTarget(plan.pids, table, hookPID()); ok {
 		target := fmt.Sprintf("PID %d", t)
-		if t < 0 {
+		switch {
+		case t < 0:
 			target = fmt.Sprintf("process group %d, which holds PID %d", -t, hit.pid)
+		case t == 0 && hit.pid == 0:
+			target = "its own process group (kill 0)"
+		case t == 0:
+			target = fmt.Sprintf("its own process group (kill 0), which holds PID %d", hit.pid)
 		}
-		return deny("process:session-kill", fmt.Sprintf(`kill would signal %s (%s): %s.
+		if hit.args != "" {
+			target += " (" + shortArgs(hit.args, 100) + ")"
+		}
+		return deny("process:session-kill", fmt.Sprintf(`kill would signal %s: %s.
 Signalling it ends an agent session, this one or the user's, with every task,
 subagent and sidekick under it.
 
-%s`, target, shortArgs(hit.args, 100), why, killAlternative), "")
+%s`, target, why, killAlternative), "")
 	}
 	return nil
 }
