@@ -38,7 +38,8 @@ const (
 	DiagPackageNotInTrace = "PACKAGE_NOT_IN_TRACE"
 	// DiagNoAppFrames: the app's main thread traced no Choreographer#doFrame
 	// slice; the trace config lacks the `view` and `gfx` atrace categories
-	// or the app did not draw. Warning.
+	// or the app did not draw. Also a drag or fling probe whose gestures
+	// presented no frame (nothing scrolled under them). Warning.
 	DiagNoAppFrames = "NO_APP_FRAMES"
 	// DiagNoRenderThread: no app thread traced a DrawFrame(s) slice, so the
 	// RenderThread metrics and the per-frame RenderThread counts are empty.

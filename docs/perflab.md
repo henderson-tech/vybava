@@ -386,7 +386,9 @@ period comes from `dumpsys SurfaceFlinger --latency`, gestures scale from
 | `fling` | to top x2, mid | 6 x (1900 -> 500 and 600 -> 2000, 90 ms, 1.3 s coast) |
 | `custom` | none | `--gesture-file`: `[{swipe:[x1,y1,x2,y2,ms]} \| {tap:[x,y]} \| {sleepMs:n}]` |
 
-The exact adb commands are in `data.gestures`; the input source is `adb`
+A drag or fling whose gestures presented no frame warns `NO_APP_FRAMES`
+(nothing scrolled: judge that screen by `rest`). The exact adb commands are
+in `data.gestures`; the input source is `adb`
 (pessimistic: it skips Samsung's touch boost). iOS probes `rest` only: an
 xctrace window (Hitches + Time Profiler) attached to the launched app.
 Each probe writes a run dir and is analyzed like a run; `data.verdict` uses

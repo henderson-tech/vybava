@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/henderson-tech/vybava/internal/devlab"
+	"github.com/henderson-tech/vybava/internal/framestats"
 	"github.com/henderson-tech/vybava/internal/perflab/analysis"
 )
 
@@ -221,6 +222,19 @@ func TestProbeHelpers(t *testing.T) {
 	}
 	if _, err := (&Tool{}).Probe(context.Background(), ProbeOptions{Kind: "drag", Tap: "760,160"}); CodeOf(err) != DiagUsage {
 		t.Errorf("--tap on a drag probe is USAGE before any device call: %v", err)
+	}
+	still := func(frames int) analysis.RunAnalysis {
+		m := &analysis.Metrics{Present: &framestats.PresentMetrics{FrameTimeline: true, Frames: frames}}
+		return analysis.RunAnalysis{Records: []analysis.RecordResult{{Metrics: m}}}
+	}
+	for _, c := range []struct {
+		kind   string
+		frames int
+		warns  int
+	}{{"drag", 0, 1}, {"fling", 0, 1}, {"drag", 2600, 0}, {"rest", 0, 0}} {
+		if d := gestureMovedNothing(c.kind, still(c.frames), "s20"); len(d) != c.warns || (c.warns == 1 && d[0].Code != framestats.DiagNoAppFrames) {
+			t.Errorf("%s with %d frames: %+v (an empty Messages screen does not scroll)", c.kind, c.frames, d)
+		}
 	}
 	_, drag := recipes("drag")
 	if len(drag) != 24 || scriptDuration(drag) != 6*(2*1200+2*300)*time.Millisecond {

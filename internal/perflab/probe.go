@@ -264,6 +264,7 @@ func (t *Tool) Probe(ctx context.Context, o ProbeOptions) (Result, error) {
 	rf.Dir = runDir
 	ra, ad := analysis.AnalyzeRunFile(ctx, rf, opts)
 	diags = append(diags, ad...)
+	diags = append(diags, gestureMovedNothing(o.Kind, ra, h.ID)...)
 	data := map[string]any{"runDir": runDir, "device": h.ID, "kind": o.Kind, "package": pkg, "gestures": gestures, "runs": ra.Records}
 	if budget := probeBudget(o.Kind, string(h.Device.Platform)); budget != nil {
 		if b, err := analysis.ParseBudget(scenario, budget); err == nil {
@@ -561,4 +562,22 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// gestureMovedNothing warns when a drag or fling presented no frame: the
+// screen does not scroll under the recipe (content shorter than the window,
+// or the gestures missed the scroller), so the trace says nothing about
+// scrolling and the row stays unbudgeted. FixIt's empty Messages and
+// Activity screens read so in the 2026-10-03 sweep.
+func gestureMovedNothing(kind string, ra analysis.RunAnalysis, device string) []runx.Diagnostic {
+	if kind != "drag" && kind != "fling" || len(ra.Records) == 0 {
+		return nil
+	}
+	m := ra.Records[0].Metrics
+	if m == nil || m.Present == nil || !m.Present.FrameTimeline || m.Present.Frames > 0 {
+		return nil
+	}
+	return []runx.Diagnostic{warn(framestats.DiagNoAppFrames,
+		"the "+kind+" gestures presented no frame: nothing scrolled under them (content shorter than the window, or the gestures missed the scroller)",
+		"judge the screen by perflab probe rest --device "+device+" --lease <token> --json, or aim a --gesture-file at the scroller")}
 }
