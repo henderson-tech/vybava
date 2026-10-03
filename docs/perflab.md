@@ -404,7 +404,10 @@ trace's end);
 `rtDrawMs` is RenderThread `Drawing` per frame;
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4
 periods, blamed on main or RenderThread when either exceeded one period on
-that frame or the one before; `display` is the framestats display-rate
+that frame or the one before, and `drops.appDeadline` counts the neither
+drops whose surface frame FrameTimeline marks App Deadline Missed (no
+thread over a period, the frame's main, RenderThread and GPU work together
+over it); `display` is the framestats display-rate
 reading (500 ms bins, animating fps p10 and median, janky %) of the same
 presents, first to last. Every present reading but `rtDrawMs` needs
 the app's own FrameTimeline surface frames (`present.frameTimeline`);

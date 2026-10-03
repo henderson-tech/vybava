@@ -56,13 +56,22 @@ type DurationStats struct {
 
 // Drops blames each dropped frame on the thread that ran over a period on
 // it or the frame before: main (doFrame), rt (DrawFrames), both, neither.
+// AppDeadline counts the neither drops whose surface frame FrameTimeline
+// marks App Deadline Missed: no thread ran over a period, but main,
+// RenderThread and GPU together did, so the app's per-frame cost owns them
+// (on the S20's injected drags most neither drops were these, not input
+// cadence); the rest are the compositor or the input.
 type Drops struct {
-	Total   int `json:"total"`
-	Main    int `json:"main"`
-	RT      int `json:"rt"`
-	Both    int `json:"both"`
-	Neither int `json:"neither"`
+	Total       int `json:"total"`
+	Main        int `json:"main"`
+	RT          int `json:"rt"`
+	Both        int `json:"both"`
+	Neither     int `json:"neither"`
+	AppDeadline int `json:"appDeadline"`
 }
+
+// jankAppDeadlineMissed is FrameTimeline's APP_DEADLINE_MISSED jank bit.
+const jankAppDeadlineMissed = 64
 
 // LayerDraw counts a RenderThread drawLayer slice name (one per hardware
 // layer redraw).
@@ -204,6 +213,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	type present struct {
 		at    int64
 		token int64
+		jank  int
 	}
 	var presents []present
 	for cookie, e := range starts {
@@ -211,7 +221,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 		if !ok || e.layer != m.Layer || e.presentType == presentTypeDropped {
 			continue
 		}
-		presents = append(presents, present{at: end, token: e.token})
+		presents = append(presents, present{at: end, token: e.token, jank: e.jankType})
 	}
 	sort.Slice(presents, func(i, j int) bool { return presents[i].at < presents[j].at })
 	m.Frames = len(presents)
@@ -324,6 +334,9 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 			m.Drops.RT++
 		default:
 			m.Drops.Neither++
+			if presents[i].jank&jankAppDeadlineMissed != 0 {
+				m.Drops.AppDeadline++
+			}
 		}
 	}
 	m.RTDrawByRect = byRect(drawings)

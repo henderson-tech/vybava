@@ -27,7 +27,8 @@ Evidence cites FixIt, as in `rn-render-cost-rules.md`.
 - framestats bins are 500 ms at the display rate: a present interval of n periods drops n-1 vsyncs, a gap over 60 ms is rest, an idle bin counts full rate, an animating bin holds >= 6 intervals, janky = interval over 1.5 periods. Read animating fps p10 and median, and janky %.
 - Never judge a phone above 60 Hz by Flashlight FPS (capped at 60; a 120 Hz S20 read 60 in every bin, 554fd04739) or gfxinfo "Janky frames" (62.89% and 0.71% on one identical script).
 - Perfetto present gaps at 120 Hz: 7-10 ms is one vsync, 10-18 two, 18-40 three to four, over 40 longer.
-- Drops are gaps over 1.4 vsync, blamed on main, rt, both or neither by which thread exceeded a vsync. "Neither" (both threads under 8.3 ms) is probably adb injection cadence or the compositor; unproven.
+- Drops are gaps over 1.4 vsync, blamed on main, rt, both or neither by which thread exceeded a vsync. Most "neither" drops (both threads under 8.3 ms) are the app's: `drops.appDeadline` counts those FrameTimeline marks App Deadline Missed, where main, RenderThread and GPU together overran the frame, so cut the whole frame's cost; only the remainder is the compositor or input cadence.
+  Evidence: S20 injected drags, appDeadline of neither: customer home 209/234, worker offers 153/193, money 152/180; the GPU completion wait never passed a vsync.
 - RenderThread `Drawing` ms is draw cost; main `Choreographer#doFrame` is UI-thread cost; they join per frame by vsync id.
 - Budget for the worst RenderThread clock the governor picks, not the peak: slow drags held it at 0.5-1.2 GHz on little and mid cores (Exynos 990), where a 7.7 ms draw missed 8.3 ms.
 - Main-thread eglSwapBuffers per frame is a Skia or GL canvas redrawing. `drawLayer` counts say how often each hardware layer re-renders.

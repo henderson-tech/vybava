@@ -42,8 +42,14 @@ func presentTraceFor(surfacePid int) []byte {
 	for i, at := range presents {
 		id := int64(200 + i)
 		cookie := int64(10 + i)
+		// FrameTimeline marks 202 (a neither drop) and 204 (a main drop)
+		// App Deadline Missed.
+		jank := int64(1)
+		if i == 2 || i == 4 {
+			jank = 64
+		}
 		parts = append(parts,
-			timelinePacket(at-20, tlActualSurface, pbVarint(1, cookie), pbVarint(2, id), pbVarint(4, int64(surfacePid)), pbBytes(5, main), pbVarint(6, 1)),
+			timelinePacket(at-20, tlActualSurface, pbVarint(1, cookie), pbVarint(2, id), pbVarint(4, int64(surfacePid)), pbBytes(5, main), pbVarint(6, 1), pbVarint(9, jank)),
 			timelinePacket(at, tlFrameEnd, pbVarint(1, cookie)))
 		mainMs := 2.0
 		if i == 3 {
@@ -96,9 +102,11 @@ func TestReadPresentMeasuresWhatReachedTheGlass(t *testing.T) {
 	if pm.PresentGaps != (PresentGaps{OneVsync: 1, TwoVsync: 1, ThreeToFour: 1, Longer: 1}) {
 		t.Errorf("gaps = %+v", pm.PresentGaps)
 	}
-	// Three gaps over 1.4 periods: 202 and 204 by neither thread, 203 by
-	// the main thread's 12 ms doFrame (204's predecessor counts too).
-	if pm.Drops != (Drops{Total: 3, Main: 2, Neither: 1}) {
+	// Three gaps over 1.4 periods: 202 by neither thread, 203 and 204 by
+	// the main thread's 12 ms doFrame (204's predecessor counts too). 202's
+	// surface frame missed the app deadline, so the app owns it; 204's mark
+	// is already a main drop.
+	if pm.Drops != (Drops{Total: 3, Main: 2, Neither: 1, AppDeadline: 1}) {
 		t.Errorf("drops = %+v", pm.Drops)
 	}
 	if pm.MainDoFrameMs.Count != 5 || val(t, "doFrame p50", pm.MainDoFrameMs.P50) != 2 || pm.MainEglSwapsPerFrame != 0.2 {
