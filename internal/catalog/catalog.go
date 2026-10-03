@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -17,7 +18,15 @@ const (
 	// KindTool is an external app or CLI Výbava installs through its own
 	// published channel and detects live; it is never recorded in state.
 	KindTool ItemKind = "tool"
+	// KindMod is a Claude Code mod (a plugin of function hooks) under
+	// mods/<id>, installed into a Claude skills folder where the engine
+	// auto-loads it. Claude Code only: Codex has no mods. docs/mods.md.
+	KindMod ItemKind = "mod"
 )
+
+// ModManifests are the files every mods/<id> payload must carry: the
+// plugin manifest and the hooks.json naming its one hooks module.
+var ModManifests = []string{".claude-plugin/plugin.json", "hooks/hooks.json"}
 
 type Status string
 
@@ -98,6 +107,10 @@ func (c Catalog) Validate(source fs.FS) error {
 		case KindTool:
 			if err := item.Tool.validate(); err != nil {
 				return fmt.Errorf("tool item %q: %w", item.ID, err)
+			}
+		case KindMod:
+			if err := validateMod(source, item); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("item %q has invalid kind %q", item.ID, item.Kind)
@@ -188,6 +201,34 @@ func (c Catalog) GroupIDsFor(itemID string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// validateMod holds a mod payload to what the engine loads: its manifests
+// exist and plugin.json names the mod by its catalog id, so the installed
+// folder, the engine's plugin name and the $.state contract agree.
+func validateMod(source fs.FS, item Item) error {
+	if item.Source != "mods/"+item.ID {
+		return fmt.Errorf("mod item %q source must be mods/%s", item.ID, item.ID)
+	}
+	for _, name := range ModManifests {
+		if _, err := fs.Stat(source, item.Source+"/"+name); err != nil {
+			return fmt.Errorf("mod item %q source: %w", item.ID, err)
+		}
+	}
+	data, err := fs.ReadFile(source, item.Source+"/.claude-plugin/plugin.json")
+	if err != nil {
+		return fmt.Errorf("mod item %q manifest: %w", item.ID, err)
+	}
+	var manifest struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("mod item %q manifest: %w", item.ID, err)
+	}
+	if manifest.Name != item.ID {
+		return fmt.Errorf("mod item %q manifest names %q; plugin.json name must be the catalog id", item.ID, manifest.Name)
+	}
+	return nil
 }
 
 func validID(value string) bool {

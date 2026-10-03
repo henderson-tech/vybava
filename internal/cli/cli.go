@@ -131,6 +131,12 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "macwatch" {
 		return rt.macwatchApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "fleet" {
+		return rt.fleetApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "watch" {
+		return rt.watchApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "plugin-gc" {
 		return rt.pluginGCApplet(), nil
 	}
@@ -233,6 +239,8 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.gitkitCommand("gitkit"),
 		rt.reclaimCommand("reclaim"),
 		rt.macwatchCommand("macwatch"),
+		rt.fleetCommand("fleet"),
+		rt.watchCommand("watch"),
 		rt.pluginGCCommand("plugin-gc"),
 		rt.skipCICommand("skipci"),
 		rt.redactCommand("redact"),
@@ -319,6 +327,9 @@ func (rt *runtime) install(selectors []string, options installer.Options) error 
 	if len(tools) > 0 {
 		fmt.Fprintf(rt.stderr, "tools install through their own channels — run: vybava setup team --only %s\n", strings.Join(tools, ","))
 	}
+	if err := rt.noteCodexMods(selectors, items, options.Agent); err != nil {
+		return err
+	}
 	operations, err := rt.installer.Plan(items, options)
 	if err != nil {
 		return err
@@ -327,6 +338,33 @@ func (rt *runtime) install(selectors []string, options installer.Options) error 
 		return err
 	}
 	return rt.printOperations(operations, options.DryRun, "installed", "would install")
+}
+
+// noteCodexMods holds mods to Claude Code under --agent codex: a mod named
+// outright is refused, and mods a group reaches are skipped and named here.
+func (rt *runtime) noteCodexMods(selectors []string, items []catalog.Item, agent installer.Agent) error {
+	if agent != installer.AgentCodex {
+		return nil
+	}
+	named := make(map[string]bool, len(selectors))
+	for _, selector := range selectors {
+		named[strings.TrimPrefix(selector, "group:")] = true
+	}
+	var skipped []string
+	for _, item := range items {
+		if item.Kind != catalog.KindMod {
+			continue
+		}
+		if named[item.ID] {
+			return fmt.Errorf("mod %q is Claude Code only: Codex has no mods", item.ID)
+		}
+		skipped = append(skipped, item.ID)
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		fmt.Fprintf(rt.stderr, "mods are Claude Code only — skipped for --agent codex: %s\n", strings.Join(skipped, ","))
+	}
+	return nil
 }
 
 func (rt *runtime) uninstallCommand() *cobra.Command {
@@ -339,6 +377,9 @@ func (rt *runtime) uninstallCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, selectors []string) error {
 			items, err := rt.catalog.Resolve(selectors)
 			if err != nil {
+				return err
+			}
+			if err := rt.noteCodexMods(selectors, items, installer.Agent(agent)); err != nil {
 				return err
 			}
 			operations, err := rt.installer.Plan(items, installer.Options{

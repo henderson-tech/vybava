@@ -119,8 +119,67 @@ func Run(c catalog.Catalog, store state.Store) Report {
 			report.Checks = append(report.Checks, Check{ID: id, Status: StatusPass, Message: installed.Destination})
 		}
 	}
+	report.Checks = append(report.Checks, modChecks(current.Installed, claudeValidate)...)
 	report.Checks = append(report.Checks, guardHooksCheck())
 	return report
+}
+
+// errNoClaude stands for a machine without the claude CLI: a mod there is
+// reported unvalidated, never failed.
+var errNoClaude = errors.New("claude is not on PATH")
+
+// claudeValidate runs `claude plugin validate` on an installed mod: the
+// engine's own reading of the manifest and hooks module, the check that
+// catches a mod an API change broke before a session refuses it.
+func claudeValidate(dir string) ([]byte, error) {
+	claude, err := exec.LookPath("claude")
+	if err != nil {
+		return nil, errNoClaude
+	}
+	return exec.Command(claude, "plugin", "validate", dir).CombinedOutput()
+}
+
+func modChecks(installed []state.Installed, validate func(dir string) ([]byte, error)) []Check {
+	var checks []Check
+	for _, item := range installed {
+		if item.Kind != string(catalog.KindMod) {
+			continue
+		}
+		if _, err := os.Stat(item.Destination); err != nil {
+			continue // the installed:<id> check already reports it missing
+		}
+		id := "mod:" + item.ItemID
+		output, err := validate(item.Destination)
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			checks = append(checks, Check{ID: id, Status: StatusPass, Message: "claude plugin validate passed for " + item.Destination})
+		case errors.As(err, &exit):
+			checks = append(checks, Check{
+				ID: id, Status: StatusFail, Message: "claude plugin validate failed: " + failureLine(output),
+				Remedy: "claude plugin validate " + item.Destination + " — then vybava update " + item.ItemID,
+			})
+		default:
+			checks = append(checks, Check{ID: id, Status: StatusWarn, Message: "mod not validated: " + err.Error(), Remedy: "install Claude Code, then vybava doctor"})
+		}
+	}
+	return checks
+}
+
+// failureLine picks the reason out of validate's report, which opens with
+// "Validating plugin manifest: <path>": the first ✘ line, else the last line.
+func failureLine(output []byte) string {
+	last := "no output"
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "✘") {
+			return line
+		}
+		if line != "" {
+			last = line
+		}
+	}
+	return last
 }
 
 // guardHooksCheck verifies ~/.claude/settings.json still wires every

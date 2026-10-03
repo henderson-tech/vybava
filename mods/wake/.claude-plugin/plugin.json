@@ -1,0 +1,7 @@
+{
+  "name": "wake",
+  "version": "0.1.0",
+  "description": "Wakes an idle session when a watched PR, CI run, Eve review, devbox, vitrinka task or deployik deploy reaches the state it asked for — one shared poller (vybava watch) instead of per-session sleep loops.",
+  "author": { "name": "FixIt Technologies" },
+  "types": "./types/index.d.ts"
+}

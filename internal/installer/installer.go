@@ -51,6 +51,9 @@ type Installer struct {
 	Payload fs.FS
 	Store   statepkg.Store
 	Now     func() time.Time
+	// StageDir is where a mod is staged before its swap into a skills
+	// folder; empty means ~/.cache/vybava/stage.
+	StageDir string
 }
 
 type marker struct {
@@ -108,6 +111,16 @@ func (i Installer) Plan(items []catalog.Item, options Options) ([]Operation, err
 					Destination: filepath.Join(base, item.ID), Action: "install skill",
 				})
 			}
+		case catalog.KindMod:
+			if options.Agent == AgentCodex {
+				// Codex has no mods: a group reaching one under --agent codex
+				// skips it (the CLI refuses a mod named outright).
+				continue
+			}
+			operations = append(operations, Operation{
+				ItemID: item.ID, Kind: string(item.Kind), Agent: string(AgentClaude), Scope: string(options.Scope),
+				Destination: filepath.Join(skillBase(AgentClaude, options.Scope, home, root), item.ID), Action: "install mod",
+			})
 		default:
 			return nil, fmt.Errorf("item %q has unsupported kind %q", item.ID, item.Kind)
 		}
@@ -137,6 +150,10 @@ func (i Installer) Apply(operations []Operation, dryRun bool) error {
 		case string(catalog.KindSkill):
 			if err := i.installSkill(operation.ItemID, operation.Destination); err != nil {
 				return fmt.Errorf("install %s for %s: %w", operation.ItemID, operation.Agent, err)
+			}
+		case string(catalog.KindMod):
+			if err := i.installMod(operation.ItemID, operation.Destination); err != nil {
+				return fmt.Errorf("install mod %s: %w", operation.ItemID, err)
 			}
 		default:
 			return fmt.Errorf("unsupported operation kind %q", operation.Kind)
@@ -178,6 +195,10 @@ func (i Installer) Remove(operations []Operation, dryRun bool) error {
 				}
 				if err := os.RemoveAll(operation.Destination); err != nil {
 					return fmt.Errorf("remove skill %s: %w", operation.ItemID, err)
+				}
+			case string(catalog.KindMod):
+				if err := i.removeMod(operation.ItemID, operation.Destination); err != nil {
+					return fmt.Errorf("remove mod %s: %w", operation.ItemID, err)
 				}
 			}
 		}

@@ -1,0 +1,7 @@
+{
+  "name": "peek",
+  "version": "0.1.0",
+  "description": "The spinner says what the turn is waiting on and for how long; a turn past 30 minutes ends with its time and token breakdown.",
+  "author": { "name": "FixIt Technologies" },
+  "types": "./types/index.d.ts"
+}

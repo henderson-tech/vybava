@@ -1,0 +1,7 @@
+{
+  "name": "lazarus",
+  "version": "0.1.0",
+  "description": "Records the background jobs a session starts; after a crash or restart one key resumes what died, a usage-limit stall continues by itself at the reset, and /park says whether a restart is safe.",
+  "author": { "name": "FixIt Technologies" },
+  "types": "./types/index.d.ts"
+}

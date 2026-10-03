@@ -1,0 +1,7 @@
+{
+  "name": "fleet-pane",
+  "version": "0.1.0",
+  "description": "/fleet: every Claude session on this Mac, waiting-on-you first and dead ones marked, with reply and copy-resume; a quiet status line counts the sessions waiting on you.",
+  "author": { "name": "FixIt Technologies" },
+  "types": "./types/index.d.ts"
+}
