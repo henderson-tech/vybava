@@ -203,3 +203,30 @@ func TestWatchAgentInstallRefusesAGoRunBinary(t *testing.T) {
 		t.Fatalf("%d %q", code, out)
 	}
 }
+
+func TestAgentRunsHomebrewsLinkNotTheVersionedCaskroomBinary(t *testing.T) {
+	prefix, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(prefix, "Caskroom", "vybava", "0.34.0", "vybava")
+	link := filepath.Join(prefix, "bin", "vybava")
+	for _, dir := range []string{filepath.Dir(binary), filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(binary, link); err != nil {
+		t.Fatal(err)
+	}
+	// `brew upgrade` deletes 0.34.0/; the link survives and is repointed.
+	if got := stableLink(binary, []string{"/nonexistent/vybava", link}); got != link {
+		t.Fatalf("stableLink = %s, want the Homebrew link %s", got, link)
+	}
+	if got := stableLink("/Users/me/.local/bin/vybava", []string{link}); got != "/Users/me/.local/bin/vybava" {
+		t.Fatalf("a binary outside Homebrew's versioned dirs is kept: %s", got)
+	}
+}

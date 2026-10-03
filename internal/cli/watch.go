@@ -113,7 +113,10 @@ func fleetPublisher(home string) (*fleet.Publisher, cmux.Client) {
 }
 
 // stableExecutable is the real binary behind the applet link — what the
-// LaunchAgent must run. A `go run` build lives in a temp dir that vanishes.
+// LaunchAgent must run. A `go run` build lives in a temp dir that vanishes,
+// and a Homebrew binary in a versioned Caskroom/Cellar dir the next `brew
+// upgrade` deletes: there the agent runs Homebrew's bin link instead, which
+// every upgrade repoints.
 func stableExecutable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -127,7 +130,24 @@ func stableExecutable() (string, error) {
 			Detail: exe + " is a go run build that disappears; the LaunchAgent needs an installed binary",
 			Fix:    "vybava watch agent install --bin ~/.local/bin/vybava"}}
 	}
-	return exe, nil
+	return stableLink(exe, homebrewLinks), nil
+}
+
+// homebrewLinks are where Homebrew links vybava on Apple silicon and Intel.
+var homebrewLinks = []string{"/opt/homebrew/bin/vybava", "/usr/local/bin/vybava"}
+
+// stableLink returns the first link resolving to exe when exe sits in a
+// versioned package dir; any other exe is already stable.
+func stableLink(exe string, links []string) string {
+	if !strings.Contains(exe, "/Caskroom/") && !strings.Contains(exe, "/Cellar/") {
+		return exe
+	}
+	for _, link := range links {
+		if target, err := filepath.EvalSymlinks(link); err == nil && target == exe {
+			return link
+		}
+	}
+	return exe
 }
 
 func (rt *runtime) watchCommandWith(use string, deps watchDeps) *cobra.Command {
