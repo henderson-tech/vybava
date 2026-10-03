@@ -271,7 +271,7 @@ Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` 
 
 | Id | What it checks | Fails for |
 |---|---|---|
-| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. | `capture`, `verify`, which run the harness (warns for `review`, `fix`) |
+| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. `VENDOR_DRIFT` only warns: the capture stage syncs it first, and `run` still refuses a drifted vendor. | `capture`, `verify`, which run the harness (warns for `review`, `fix`) |
 | `contract` | Always `ok`; the detail names `StateContract`, so a workflow can compare. | — |
 | `apps` | Each app's base URL, resolved like the capture's (the app's `env` var when it is set here), answers 2xx/3xx within 5 s and is no dev-server error page: the Vite overlay or error page, `Cannot GET`, an Angular CLI/esbuild compile error (`✘ [ERROR]`) or `Failed to compile`. A redirect is an answer and is not followed (`APP_UNREACHABLE`). | `capture`, `verify` (warns for `review`, `fix`) |
 | `pass` | The newest pass has shots. A shot-less one warns: the next `run` reuses it, never skips it, and `state` reads it as the latest. Its fix is what `state` chains: `run --resume --pass N` while the source still matches the revision in its `capture.json` (a resume from a moved HEAD is refused), else a plain `run`, which reuses it; or deleting it when it is a stray `--print` and an earlier pass is the one to carry on. No pass at all is `ok` for `capture` and without `--for`, since `run` starts pass-1 (`PASS_MISSING`). | `review`, `fix`, `verify`, when no pass holds shots |

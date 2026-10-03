@@ -129,11 +129,19 @@ func neededBy(c DoctorCheck, stage string, stages ...string) DoctorCheck {
 }
 
 // doctorCheck folds `check` in: its errors fail the row, its warnings warn
-// it, and its diagnostics travel with their own codes.
+// it, and its diagnostics travel with their own codes. A VENDOR_DRIFT only
+// warns: `ui-loop sync` is the capture stage's own first step and `run` still
+// refuses a drifted vendor, so failing here would stop every stage after each
+// harness-changing upgrade.
 func (t *Tool) doctorCheck() (DoctorCheck, error) {
 	res, err := t.Check(false)
 	if err != nil {
 		return DoctorCheck{}, err
+	}
+	for i, d := range res.Diagnostics {
+		if d.Code == DiagVendorDrift && d.Severity == "error" {
+			res.Diagnostics[i].Severity = "warning"
+		}
 	}
 	data := res.Data.(*CheckData)
 	row := DoctorCheck{ID: "check", Status: DoctorOK, diags: res.Diagnostics,

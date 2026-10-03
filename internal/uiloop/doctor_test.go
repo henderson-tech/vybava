@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,14 @@ func TestDoctorFailsOnAFailingCheckAndWarnsAnotherStagesApp(t *testing.T) {
 	d, status = doctor("review")
 	if !d.OK || status["apps"] != DoctorWarn {
 		t.Errorf("review does not need the app: %+v", d)
+	}
+
+	// A harness-changing upgrade drifts the vendor; the capture's first step syncs it.
+	if err := os.Remove(filepath.Join(tool.VendorDir(), "states.ts")); err != nil {
+		t.Fatal(err)
+	}
+	if d, status = doctor("capture"); status["check"] != DoctorWarn || !strings.Contains(d.Checks[0].Detail, DiagVendorDrift) {
+		t.Errorf("a vendor drift warns, the capture syncs it: %+v", d)
 	}
 }
 
