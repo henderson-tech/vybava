@@ -23,7 +23,8 @@ It is framework-agnostic: it drives only Playwright and the DOM. It has been run
 ```text
 ui-loop init        [--json]   scaffold <dir> (project.ts, screens/), the spec template and the out gitignore line; sync
 ui-loop sync        [--force]  write the embedded harness into <dir>/vendor + STAMP.json (version, sha256 per file)
-ui-loop check       [--no-ts]  vendor drift · project.ts · manifest validation · app-map freshness, each reported separately
+ui-loop check       [--no-ts]  vendor drift · project.ts · spec lint lines · manifest validation · app-map freshness, each reported separately
+ui-loop doctor      [--for capture|review|fix|verify]  preflight a stage: check · contract · apps · pass (· workspace · signin, skipped)
 ui-loop map                    render uiLoop.appMap from the manifest
 ui-loop run         [--app a,b] [--only id,area,prefix*] [--viewports v,…] [--themes light,dark]
                     [--destructive] [--resume] [--pass N] [--workers 2] [--build-wait 300]
@@ -82,6 +83,8 @@ Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobi
 | `desktop` | 1440×810 | no | — |
 
 `lint.allow` takes defect rules only (an informational rule is refused), each with at least one selector. It exists for a spec that allows an off-grid value in named places only: pwf-ui allows Tailwind half steps (6/10 px) inside primitive recipes, and without it the grid rule flagged 6,033 hits on 38 shots, nearly all primitives and chrome. An allowed hit is still counted, under `info` in the shot record, so the report shows how much the allowlist absorbs. An invalid selector fails the lint loudly on the first shot.
+
+The spec states what the lint measures. `init` writes two lines from `lint.grid` and `lint.touchTarget` into it (`scaffold/ui-spec.md.tmpl`: "Spacing, control heights and icon sizes sit on the 4px grid." and "Touch targets are at least 44×44px on coarse pointers."). `check` renders both again from the current config and warns `SPEC_LINT_DRIFT` for each one the spec no longer holds, naming the line and the knob's value; whitespace and rewrapping do not count. A spec written in its own words warns until it carries the two lines too. No `spec` configured, or no file there, means no warning.
 
 ## The manifest contract
 
@@ -255,6 +258,26 @@ The fields follow these rules:
 - **Required:** `title` and `acceptance`. Every finding that is not `met` also names the `files` a fix lane edits.
 - **`reviewed`** lists the screen ids a reviewer actually judged this pass, whether or not they found anything. It is the only thing that makes a screen clean: a screen with no open finding that is missing from `reviewed` is counted `unreviewed` per area and in the totals, and the markdown table shows the column. A backlog without `reviewed` (the format before v0.24.1) still scores every screen without an open finding as clean, with the unreviewed column shown as `—`, and `scoreboard` warns `REVIEWED_MISSING`. An empty list means nothing was judged.
 
+## Doctor: preflight a stage
+
+**`doctor [--for capture|review|fix|verify]`** runs every check a stage depends on and writes nothing:
+
+```json
+{ "ok": false, "vybava": "0.32.0", "contract": 1,
+  "checks": [{ "id": "apps", "status": "fail", "detail": "portal http://10.8.0.10:21782 ($UI_LOOP_PORTAL_URL): answers 200 with the Vite error overlay", "fix": "fix the build error …" }] }
+```
+
+Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` is false iff a check fails; the envelope then carries the failing checks' diagnostics as errors and exits 2. Like `check`'s, `next` lists only the fixes of what fails, never a warning's. A check the `--for` stage does not need warns instead of failing. Without `--for`, every stage needs every check.
+
+| Id | What it checks | Fails for |
+|---|---|---|
+| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. `VENDOR_DRIFT` only warns: the capture stage syncs it first, and `run` still refuses a drifted vendor. | `capture`, `verify`, which run the harness (warns for `review`, `fix`) |
+| `contract` | Always `ok`; the detail names `StateContract`, so a workflow can compare. | — |
+| `apps` | Each app's base URL, resolved like the capture's (the app's `env` var when it is set here), answers 2xx/3xx within 5 s and is no dev-server error page: the Vite overlay or error page, `Cannot GET`, an Angular CLI/esbuild compile error (`✘ [ERROR]`) or `Failed to compile`. A redirect is an answer and is not followed (`APP_UNREACHABLE`). | `capture`, `verify` (warns for `review`, `fix`) |
+| `pass` | The newest pass has shots. A shot-less one warns: the next `run` reuses it, never skips it, and `state` reads it as the latest. Its fix is what `state` chains: `run --resume --pass N` while the source still matches the revision in its `capture.json` (a resume from a moved HEAD is refused), else a plain `run`, which reuses it; or deleting it when it is a stray `--print` and an earlier pass is the one to carry on. No pass at all is `ok` for `capture` and without `--for`, since `run` starts pass-1 (`PASS_MISSING`). | `review`, `fix`, `verify`, when no pass holds shots |
+| `workspace` | Always `skip`: the Devbox workspace and its hold are not in the config yet. | — |
+| `signin` | Always `skip`: per-persona sign-in is not probed yet. | — |
+
 ## Stage verbs: what the review-loop reads back
 
 A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377 screens, 31 batches, a 340-item backlog of 500 KB) the workflow's agents dropped the screen list, abridged the raw review files and refused the backlog, so a backlog was synthesized from 7 of 31 batches and a fix stage planned 0 lanes. These four verbs own every list instead. An agent runs one and relays its envelope; an agent that needs an item's body reads it from the file by key (`jq '.findings[] | select(.key=="<key>")' <pass>/review/backlog.json`).
@@ -263,8 +286,9 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 
 ```json
 {
+  "vybava": "0.32.0", "contract": 1,
   "pass": 1, "passDir": ".ui-loop/pass-1",
-  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix" },
+  "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 } },
   "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
   "published": true, "unpublished": [], "sets": [{ "area", "key", "status", "url" }],
   "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [] },
@@ -277,6 +301,8 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 }
 ```
 
+- `vybava` is this binary's version as `vybava --version` prints it (`dev` for a source build). `contract` is `StateContract` (`stage.go`): it is bumped whenever a field a workflow reads is added or changes format, digests included, and the review-loop refuses a lower one (`UILOOP_STATE_CONTRACT`). A `state` without it predates the contract: `brew upgrade --cask vybava`.
+- `config.lint` is the lint the pass was captured with (its `run.json`), else the config's before the first pass: `grid` and `touchTarget` with the defaults (4, 44) filled, so a reviewer brief quotes the values the shot records were measured with, even after `vybava.config.ts` changed.
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
@@ -356,7 +382,9 @@ These cost real incidents. The review-loop workflow carries them into every lane
 
 ## Changing the harness
 
-Edit `internal/uiloop/harness/`, never a vendored copy. These tables are mirrored in Go, and tests keep them equal:
+Edit `internal/uiloop/harness/`, never a vendored copy. A sync that writes nothing keeps `STAMP.json`, so a clean vendor's stamp can name an older release than the binary; `check` reports `vendor.syncedBy` (the stamp's release) only when the vendor drifts, where it says which release synced it.
+
+These tables are mirrored in Go, and tests keep them equal:
 
 - `BUILTIN_VIEWPORTS` ↔ `viewports.go`;
 - `LINT_RULES` ↔ `LintRules` and `LintInfoRules`;

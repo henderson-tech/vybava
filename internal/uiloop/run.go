@@ -243,11 +243,7 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	c := t.Config
 	apps := map[string]App{}
 	for name, app := range c.Apps {
-		if app.Env != "" {
-			if v := os.Getenv(app.Env); v != "" {
-				app.BaseURL = v
-			}
-		}
+		app.BaseURL, _ = app.baseURLHere()
 		apps[name] = app
 	}
 	sel := o.Selection

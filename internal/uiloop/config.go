@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -43,6 +44,18 @@ type App struct {
 	Env       string   `json:"env,omitempty"`
 	Viewports []string `json:"viewports"`
 	Themes    []string `json:"themes"`
+}
+
+// baseURLHere is the base URL a capture started on this machine shoots: the
+// app's env var when it is set here, else baseUrl (harness/run.ts baseUrlOf).
+// from names the source: "$<ENV>" or "baseUrl".
+func (a App) baseURLHere() (base, from string) {
+	if a.Env != "" {
+		if v := os.Getenv(a.Env); v != "" {
+			return v, "$" + a.Env
+		}
+	}
+	return a.BaseURL, "baseUrl"
 }
 
 // Viewport is a capture size; Mobile means a coarse pointer.

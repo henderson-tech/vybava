@@ -73,16 +73,31 @@ type NextStage struct {
 	Reason string `json:"reason"`
 }
 
+// StateContract is the shape of `state`'s data the vitrinka workflow reads
+// (workflows-src/lib/uiloop.js UILOOP_STATE_CONTRACT, which refuses a lower
+// one). Bump it whenever a field a workflow reads is added or changes format,
+// digests included.
+const StateContract = 1
+
 // StateConfig is the part of the section the workflow's briefs need.
 type StateConfig struct {
-	Dir         string   `json:"dir"`
-	Out         string   `json:"out"`
-	Spec        string   `json:"spec"`
-	AppMap      string   `json:"appMap"`
-	Areas       []string `json:"areas"`
-	Apps        []string `json:"apps"`
-	Project     string   `json:"project"`
-	BoardPrefix string   `json:"boardPrefix"`
+	Dir         string    `json:"dir"`
+	Out         string    `json:"out"`
+	Spec        string    `json:"spec"`
+	AppMap      string    `json:"appMap"`
+	Areas       []string  `json:"areas"`
+	Apps        []string  `json:"apps"`
+	Project     string    `json:"project"`
+	BoardPrefix string    `json:"boardPrefix"`
+	Lint        StateLint `json:"lint"`
+}
+
+// StateLint is the lint the pass's shots were linted with (its run.json, which
+// the config does not stale), else the config's, defaults filled, so a
+// reviewer brief quotes the values the shot records measured, not the spec's.
+type StateLint struct {
+	Grid        int `json:"grid"`
+	TouchTarget int `json:"touchTarget"`
 }
 
 // AreaCount is one area's screens in the pass.
@@ -153,6 +168,9 @@ type RecoveryLane struct {
 
 // StateData carries only the interrupted writer's bounded ownership, never item bodies.
 type StateData struct {
+	// Vybava is this binary's version (`vybava --version`); Contract is StateContract.
+	Vybava             string           `json:"vybava"`
+	Contract           int              `json:"contract"`
 	Recovery           *RecoveryLane    `json:"recovery,omitempty"`
 	HeadSHA            string           `json:"headSha"`
 	ReviewBasis        string           `json:"reviewBasis"`
@@ -657,12 +675,13 @@ func (t *Tool) boardRows(pass int) ([]BoardRow, error) {
 // State reads a pass back: `ui-loop state`.
 func (t *Tool) State(o StateOptions) (Result, error) {
 	c := t.Config
-	cfg := StateConfig{Dir: c.Dir, Out: c.Out, Spec: c.Spec, AppMap: c.AppMap, Areas: c.Areas, Project: c.Vitrinka.Project, BoardPrefix: c.Vitrinka.BoardPrefix}
+	cfg := StateConfig{Dir: c.Dir, Out: c.Out, Spec: c.Spec, AppMap: c.AppMap, Areas: c.Areas, Project: c.Vitrinka.Project, BoardPrefix: c.Vitrinka.BoardPrefix,
+		Lint: StateLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget}}
 	for app := range c.Apps {
 		cfg.Apps = append(cfg.Apps, app)
 	}
 	sort.Strings(cfg.Apps)
-	data := StateData{Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
+	data := StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
 		Review: StateReview{Done: []string{}, Left: []string{}, ReviewedAreas: []string{}}, Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
 	pass := o.Pass
 	if pass == 0 {
@@ -704,6 +723,16 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	if _, err := os.Stat(t.passAbs(pass)); err != nil {
 		return Result{}, diag(DiagPassMissing, data.PassDir+" does not exist", "omit --pass for the latest pass")
+	}
+	var run struct {
+		Lint StateLint `json:"lint"`
+	}
+	ran, err := readJSON(filepath.Join(t.passAbs(pass), "run.json"), &run)
+	if err != nil {
+		return Result{}, err
+	}
+	if ran {
+		data.Config.Lint = run.Lint
 	}
 	records, err := LoadRecords(t.passAbs(pass))
 	if err != nil {

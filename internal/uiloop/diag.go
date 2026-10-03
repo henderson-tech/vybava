@@ -18,6 +18,12 @@ const (
 	// DiagVendorEdited: a vendored file was edited in the repo; sync would
 	// overwrite the edit — move it into Výbava first (warning on check).
 	DiagVendorEdited = "VENDOR_EDITED"
+	// DiagSpecLintDrift: the spec (uiLoop.spec) no longer holds a line init
+	// writes for a lint knob, rendered with the config's current value
+	// ("Touch targets are at least 40×40px …"), so reviewers judge against
+	// one value while the lint measures another (warning on check) — add the
+	// line, or set the knob when the spec means another value.
+	DiagSpecLintDrift = "SPEC_LINT_DRIFT"
 	// DiagManifestInvalid: check.ts found manifest problems; the detail lists them.
 	DiagManifestInvalid = "MANIFEST_INVALID"
 	// DiagAppMapStale: the committed app map differs from the manifest — run map.
@@ -30,6 +36,11 @@ const (
 	DiagSelectionInvalid = "SELECTION_INVALID"
 	// DiagPassMissing: the pass directory (or its shots) does not exist.
 	DiagPassMissing = "PASS_MISSING"
+	// DiagAppUnreachable: doctor's GET of an app's base URL (its env var's
+	// value when set here) got no 2xx/3xx answer within a few seconds, or got
+	// a dev server's error page (Vite overlay, `Cannot GET`, a compile error)
+	// — start the dev server or fix its build, or point the env var at it.
+	DiagAppUnreachable = "APP_UNREACHABLE"
 	// DiagRunFailed: the capture command exited non-zero (harness errors;
 	// recipe failures are results, not this) — see its output.
 	DiagRunFailed = "RUN_FAILED"
