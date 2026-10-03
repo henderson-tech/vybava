@@ -71,6 +71,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		catalog: c, stdout: a.Stdout, stderr: a.Stderr, stdin: a.Stdin, version: a.Version,
 		installer: installer.Installer{Payload: assets.FS, Store: store},
 	}
+	if filepath.Base(invokedAs) == "journeys" {
+		return rt.journeysApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "memorylint" {
 		return rt.memorylintApplet(), nil
 	}
@@ -100,6 +103,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	}
 	if filepath.Base(invokedAs) == "polish-kit" {
 		return rt.polishKitApplet(), nil
+	}
+	if filepath.Base(invokedAs) == "perflab" {
+		return rt.perflabApplet(), nil
 	}
 	if filepath.Base(invokedAs) == "codexsync" {
 		return rt.codexsyncApplet(), nil
@@ -214,6 +220,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.hotfixCommand("hotfix"),
 		rt.blipCommand("blip"),
 		rt.polishKitCommand("polish-kit"),
+		rt.perflabCommand("perflab"),
 		rt.readinessCommand("readiness"),
 		rt.uiLoopCommand("ui-loop"),
 		rt.codexsyncCommand("codexsync"),
@@ -230,6 +237,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.skipCICommand("skipci"),
 		rt.redactCommand("redact"),
 		rt.tsgateCommand("tsgate"),
+		rt.journeysCommand("journeys"),
 		rt.handoffsCommand("handoffs"),
 		rt.operatorCommand("operator"),
 		rt.plaudCommand("plaud"),
@@ -817,13 +825,13 @@ func (rt *runtime) memorylintApplet() *cobra.Command {
 }
 
 func (rt *runtime) memoryLintCommand(use string) *cobra.Command {
-	var failOn string
+	var failOn, base string
 	command := &cobra.Command{
 		Use:   use,
 		Short: "Lint memory homes",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, paths []string) error {
-			report, err := memorylint.Lint(paths)
+			report, err := memorylint.LintWith(paths, memorylint.Options{Base: base})
 			if err != nil {
 				return err
 			}
@@ -853,6 +861,7 @@ func (rt *runtime) memoryLintCommand(use string) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&failOn, "fail-on", "warning", "minimum finding severity that produces a non-zero exit (warning, error, never)")
+	command.Flags().StringVar(&base, "base", "auto", "ref a team ledger's ids must agree with (L009): auto = the branch's base when one resolves, none = skip")
 	return command
 }
 

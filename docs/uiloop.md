@@ -14,7 +14,7 @@ The applet owns what must not depend on judgment:
 - the pass directory and its `run.json`;
 - the split into vitrinka sets and the publish;
 - the scoreboard;
-- the stage state the review-loop reads back: `state`, the review `batches`, `merge-review` and the fix `lanes`.
+- the stage state the review-loop reads back: `state`, the review `batches`, `merge-review`, the fix `lanes` and the fix `checkpoints`.
 
 The orchestration (reviewers per area, synthesis, fix lanes, boards) lives in the vitrinka `map` and `review-loop` workflows, which drive this CLI. There is no Výbava skill for it.
 
@@ -36,6 +36,7 @@ ui-loop state       [--pass N] [--cap 6]
 ui-loop batches     [--pass N] [--size 14] [--areas a,b]
 ui-loop merge-review [--pass N]
 ui-loop lanes       [--pass N] [--primitives dir,dir] [--max 4]
+ui-loop checkpoints [--pass N]
 ```
 
 Every verb emits the `{v, ok, verb, data, diagnostics, next}` envelope (`--json` for machines). The output of the commands a verb runs streams to stderr. Exit codes: 0 ok, 1 infra, 2 diagnostics. The codes are the closed enum in `internal/uiloop/diag.go`.
@@ -277,8 +278,8 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 ```
 
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
-- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists. An area is reviewed when none of its batches is left.
-- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts `fix/*.json`, `lanes.json` excluded.
+- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
+- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
 - `next` follows vitrinka's `nextStage` rules (`workflows-src/lib/uiloop.js`), evaluated in this order:
   - `capture`: no shots yet, or the pass is unpublished (`resume`);
@@ -296,7 +297,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 - **Previous items:** each previous open item keeps its key and takes its worst verdict across the batches (`not-met` beats `partly`, which beats `met`). An item nobody judged stands as `not-met` and is listed in `unjudged`.
 - **Fresh findings** are keyed by screen + title (slugged, 80 characters). Two with one key fold into one: the worst severity wins, and viewports, themes, shots and files are unioned. A fresh finding whose key is a previous item's is that item's verdict, never a second item. A raw finding's `area` defaults to its batch's.
 - **Problems:** a raw finding missing its screen, title, acceptance, files or a valid severity stays out of the draft and is listed in `problems` (`{batch, index, screen, title, missing}`).
-- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. An entry naming one shot (`<id>@<viewport>`) skips nothing, because the screen was judged at its other shots.
+- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. Entries naming single shots (`<id>@<viewport>.<theme>`, or `<id>@<viewport>` for every theme) skip nothing unless they name every `ok` shot of the screen; otherwise the screen was judged at its other shots. The same rule decides whether a raw's acceptance verdict on a previous finding counts.
 
 It returns counts plus what needs an agent's judgement: `{pass, passDir, file, previous, raw, left, findings, open, byStatus, bySeverity, reviewed, unreviewed, unjudged, problems, invalid}`. `invalid` is what the draft still breaks of the contract. Planned batches without a raw file are listed in `left` and warned `REVIEW_INCOMPLETE`. The synthesis agent judges only those keys, writes `backlog.json` and validates it with `scoreboard`.
 
@@ -324,6 +325,16 @@ On pwf-ui pass 1 this planned 4 × ~62 primitive items and 4 × ~22 area items. 
 - **Frozen.** Area lanes never edit a `frozen` dir.
 - **Catalogs.** i18n catalogs are owned by nobody. Lanes return the keys they need (`{key, <locale>: text}`), and the fix stage's settle step applies them, type-checks, and resolves the `i18n` items.
 - **Foreign items** get a `blocked` checkpoint that names where the fix lands, so the round can finish.
+
+**Checkpoint files.** A lane writes each item's checkpoint to `fix/<key>.json`, so a key with `/` (`portal-shell-6/topbar-phone-touch-targets`) lands in a subdirectory. One reader maps those files to items, and `state`, `lanes` and `checkpoints` all go through it:
+
+1. It walks `fix/` recursively. `lanes.json`, `recovery.json` and the top-level `fix/r<N>/` directories are left out: a round that rewrites an earlier checkpoint moves the original into `fix/r<N>/`, and an archive never counts.
+2. The item is the JSON `key` field, else the path under `fix/` minus `.json`.
+3. A file that does not decode, or has neither `key` nor `status`, is skipped with `CHECKPOINT_INVALID`.
+4. In a pass with provenance, a stale file (see Durable workflow evidence) is not admitted.
+5. Only admitted files compete for a key, so a stale file never hides a current one. The file at `fix/<key>.json` counts first, then the newer one; each other file is warned `CHECKPOINT_INVALID`, and the warning names the file that counts.
+
+A workflow never globs `fix/*.json`: the glob misses a slash key's subdirectory and admits stale files. It reads **`checkpoints [--pass N]`**, which returns `{v, pass, passDir, checkpoints: [{key, status, lane, basis, commit, fileDigests, apiChanges, screens, i18n, note}]}`, one per item, with `i18n` passed through verbatim. For example, the screens a round changed are `vybava ui-loop checkpoints --pass N --json | jq -r '.data.checkpoints[] | select(.status == "done") | .screens[]?'`, and the strings it needs are `… | jq -c '.data.checkpoints[].i18n[]?'`.
 
 ## Operational rules
 
@@ -361,12 +372,32 @@ The stage reader also reports `headSha`, `capturedHeadSha`, `sourceUnchanged`,
 resume retains that revision and refuses application drift. Workflows recapture
 legacy passes without provenance. Captures outside git have no verified revision.
 
-For passes with provenance, raw reviews need the current `basis` and explicit
-`screensRead` covering their batch. Backlogs use `review/basis.json` as a sidecar.
+`reviewBasis` is the SHA256 of the sorted `[path, SHA256(bytes)]` pairs over the
+pass's shots (`*.png`, `*.json`), the manifest (`*.ts` under `dir`, `vendor/`
+skipped) and the `spec`. **A pass's evidence is immutable**: with provenance, the
+manifest is read from git at `capturedHeadSha`, never from the working tree, so a
+recipe repair or `knownIssues` correction committed after capture leaves the
+reviews, backlog and checkpoints of that pass current. The verify pass is the one
+that captures with the repaired rig. Shots and the spec still move the basis: the
+spec is the owner's live rule set and is read from the working tree. A pass
+without provenance reads the manifest from the working tree as before. So does a
+pass whose revision this clone lacks (gc'd after its branch went, or copied from
+another clone), and `state` warns `CAPTURE_REVISION_MISSING` for it: fetch the
+revision or capture a new pass.
+
+For passes with provenance, a raw review completes its batch when it carries the
+current `basis` and its own batch id, and its `screensRead` stays inside the batch
+and names every batch screen with an `ok` shot. A screen the pass could not shoot
+need not be read. `unreviewed` entries never hold a batch open: they are capture or
+recipe defects the reviewer could not judge, and `merge-review` still keeps their
+screen out of `reviewed` and lists it as `unreviewed` (a screen-level entry, or
+shot entries naming every `ok` shot of the screen). Backlogs use `review/basis.json` as a sidecar.
 Fix checkpoints need `basis`, an ancestor `commit`, `fileDigests` (source path to
 SHA256 of its current bytes) and optional `apiChanges`; stale or reverted fixes
-are reevaluated. Skips/blocks are reusable only with unchanged application source.
-The spec and manifests stay unchanged during fixes; API notes live beside source
+are reevaluated. Skips/blocks are reusable only with unchanged application source,
+where the rig under `dir` does not count (only capture and its resume count it).
+The spec stays unchanged during fixes, since an edit stales the pass. Manifest
+repairs may land between review and verify. API notes live beside source
 and in ignored checkpoints. The state reader keeps item bodies on disk.
 
 After scoreboard callouts are confirmed by board readback, the workflow writes

@@ -1,0 +1,22 @@
+{
+  "status": "OK",
+  "tunnels": {
+    "00008150-00116D4C1E40401C": {
+      "udid": "00008150-00116D4C1E40401C",
+      "address": "fdd7:dc03:bca5::1",
+      "rsdPort": 63650,
+      "connectionType": "Network"
+    },
+    "00008030-001E6D961122802E": {
+      "udid": "00008030-001E6D961122802E",
+      "address": "fdcc:a1a5:582b::1",
+      "rsdPort": 55936,
+      "connectionType": "USB"
+    }
+  },
+  "metadata": {
+    "lastUpdated": "2026-10-01T17:35:14.214Z",
+    "totalTunnels": 2,
+    "activeTunnels": 2
+  }
+}

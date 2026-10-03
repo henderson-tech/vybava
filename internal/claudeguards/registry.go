@@ -72,6 +72,7 @@ var Rules = []Rule{
 	{"machine:devbox-only", "machine", eventBash, "a command a repo's guards.devboxOnly routes to the Devbox ran locally", escapeLocalStack},
 	{"machine:devbox-ssh-exec", "machine", eventBash, "ssh <host> … docker (compose) exec into a devbox-… workspace container; use devbox run -- 'docker compose exec -T <svc> …'", escapeNone},
 	{"machine:devbox-workspace", "machine", eventBash, "a command a repo's guards.devboxWhenWorkspace routes to the Devbox ran locally in a checkout that has a workspace", escapeLocalStack},
+	{"machine:device-leased", "machine", eventBash, "a raw adb, devicectl, xctrace, go-ios or Appium command naming a phone perflab has leased, or a bare adb device command while an Android phone is leased; use perflab device shell|screencap|pull", escapeNone},
 	{"machine:sim-cap", "machine", eventBash, "a simulator boot while guards.simCap simulators are already booted", escapeMachineCap},
 	{"machine:test-worker-cap", "machine", eventBash, "playwright/vitest/jest on this Mac with no worker cap or one above guards.testWorkerCap", escapeWorkers},
 	{"memo:ledger-hand-write", "memo", eventBash, "a shell write (redirect, tee, sed -i, cp/mv, rm) to a memo home's LEDGER.md, MEMORY.md or usage.jsonl; use memo add/render/touch", escapeNone},

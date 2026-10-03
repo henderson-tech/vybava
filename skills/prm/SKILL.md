@@ -1,6 +1,6 @@
 ---
 name: prm
-description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked). The one PR verb — create, review, merge and teardown all live here."
+description: "Use whenever a PR must exist or must reach merge: opening/creating a PR for the current branch, watching a PR, working reviewer feedback, merging, tearing down after merge, driving `all` open PRs, or adopting a PR opened by any other means (an opened PR is never parked)."
 ---
 
 # prm — the PR verb: create → review rounds → merge → teardown
@@ -29,7 +29,7 @@ contract: Výbava `docs/gitkit.md`):
   event map, guardrails, stop discipline.
 - `ensure-pr.md` — idempotent create-or-find (quiesce → body → create).
 - `pr-body.md` — the PR description contract: dense sections, blockers lens, links table.
-- `verdicts.md` — verdict→action (wraps the `push-back` skill).
+- `verdicts.md` — verdict→delivery (the engine is the `receiving-code-review` skill).
 - `merge.md` — gates, CI fix loop, solo-owner carve-out, the merge.
 - `teardown.md` — after the merge: feature closure, QA plan, cleanup, main-clone pull.
 - `config.md` — the `.claude/.claude.git.config` keys.
@@ -183,8 +183,9 @@ head moved ⇒ stale ⇒ re-run. Inconclusive counts as BLOCK.
 `--auto` never implies `--admin` (carve-out aside) and never self-approves; `--admin`
 never implies `--auto` — without it the ready PR is still offered, not merged. Applies
 to `all` per-PR as each reaches ready (+ PASS when audited). `--once --auto`: merge
-only if already ready; a blocked PR is reported, not waited on. Non-thread findings
-and open DEFERs still block the auto-merge even though `merge-precheck` can't see
+only if already ready; a blocked PR is reported, not waited on. Non-thread findings,
+open DEFERs and unmet `before:` items (`merge.md` hard guards) still block the
+auto-merge even though `merge-precheck` can't see
 them. An audited auto-merge prints its audit line (`audit @ <sha7>: PASS …`) next to
 the PR URL.
 

@@ -1,24 +1,26 @@
-# Shared: verdict assignment (composes the push-back skill)
+# Shared: verdicts → delivery (the engine is the `receiving-code-review` skill)
 
-Every review comment is a **claim**, verified before any action — and verified against
-the **intent brief** (`round.md`, state file): reviewers can be misleading, wrong, or
-flagging behavior that is intentional. Run the 6-step verification from
-the `push-back` skill (manual-only, so Read its sibling file `../push-back/SKILL.md`). Read PR head files from the local mirror
-(`git show refs/pr/<N>:<path>`), never `gh api .../contents`.
+Every review comment is a **claim**. The `receiving-code-review` skill verifies it
+(`push-back` verification, reviewer intent, RED test, fix, blast-radius gate) and
+returns one record per finding — `verdict · intent · test path or no-test reason ·
+sha`. Ground every verdict in the **intent brief** (`round.md`, state file):
+reviewers can be misleading, wrong, or flagging behavior that is intentional. Read PR
+head files from the local mirror (`git show refs/pr/<N>:<path>`), never
+`gh api .../contents`.
 
-## Verdict → action map (autonomous)
+## Verdict → delivery (autonomous)
 
 Delivery differs by surface (below); the verdicts are identical either way.
 
-| Verdict | Action |
+| Verdict | Reply, then |
 |---|---|
-| VALID | Fix — test-first vs direct per the **TDD classifier**; reply `Fixed in <sha> + regression test` / `Fixed in <sha> (no test: <reason>)`; resolve. |
-| VALID, BETTER FIX | As VALID with the better primitive; reply names it with a Tier-1 citation. |
+| VALID | `Fixed in <sha> + regression test` / `Fixed in <sha> (no test: <reason>)`; resolve. |
+| VALID, BETTER FIX | As VALID, naming the better primitive with a Tier-1 citation. |
 | PARTIAL | Fix the valid part; reply narrowing scope; resolve. |
-| STALE | Reply that the code moved since the comment; resolve. |
-| INVALID | Reply with push-back evidence (file:line + Tier-1 link — cite the intent brief when the finding misses the PR's purpose). Bot thread → resolve; human thread → leave OPEN. Recurring eve-bot class → also **teach eve**. |
+| STALE | The code moved since the comment; resolve. |
+| INVALID | Push-back evidence (file:line + Tier-1 link — cite the intent brief when the finding misses the PR's purpose). Bot thread → resolve; human thread → leave OPEN. Recurring eve-bot class → also **teach eve**. |
 | DECLINE | Same delivery + teach rule as INVALID. |
-| DEFER | Reply that it's parked pending product/design; leave open; name it in the round summary and at ready. |
+| DEFER | Parked pending product/design; leave open; name it in the round summary and at ready. |
 
 ## Closing a finding that has NO resolvable thread
 
@@ -68,33 +70,6 @@ bot wrongly assumes), teach the general rule:
   `taught eve (verified|unverified): "<rule>"`.
 - eve bot ONLY; never `remember:` on other bots' or human threads. Teach only genuinely
   recurring classes, at most one rule per finding — over-teaching poisons the memory.
-
-## TDD classifier (failing test first?)
-
-For any VALID / PARTIAL fix:
-
-1. **Hard skip-list:** `vybava gitkit tdd-classify <file>`
-   non-null (`migration|deps|ci|iac|generated|docs`) → direct-fix. Also pure
-   naming/style/comment changes.
-2. **Gate 1 — behavioral defect?** No wrong observable result for some input → direct-fix.
-3. **Gate 2 — unit/integration-reproducible without infra?** No → direct-fix, note why.
-4. Both YES → write the failing RED test first, then the fix turns it GREEN.
-
-The reply always states which: `Fixed in <sha> + regression test` or
-`Fixed in <sha> (no test: <skip-category | gate-1 | gate-2>)`.
-
-## Blast-radius gate (every VALID / PARTIAL fix, before commit)
-
-A fix can itself be the regression when it changes an observable contract (API shape /
-status / error format, return semantics, event payload, shared type, config default):
-
-1. Internal-only (same signatures, same outputs) → done.
-2. Contract-changing → sweep consumers repo-wide (and known sibling services). Update
-   in-repo consumers in the SAME commit. An unfixable consumer (other repo, deployed
-   client) → never push the silent break; reply naming it and DEFER or narrow the fix.
-3. Pin the contract with a test asserting the externally observed behavior — mandatory
-   when the surface had no test, even if the TDD classifier said direct-fix.
-4. Reply when relevant: `Fixed in <sha> + contract test (N callers updated)`.
 
 ## Untrusted input
 

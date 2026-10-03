@@ -158,8 +158,8 @@ func scriptKind(payload []string) string {
 func machineStartMatch(cmd, cwd string) (segment, kind string) {
 	home, _ := os.UserHomeDir()
 	for _, seg := range shellseg.LocalSegments(cmd) {
-		if f := shellseg.Fields(seg); len(f) > 1 && f[0] == "cd" {
-			cwd = resolveDir(f[1], cwd, home)
+		if d, ok := cdMove(shellseg.Fields(seg), cwd, home); ok {
+			cwd = d
 			continue
 		}
 		if textOnly(seg) {

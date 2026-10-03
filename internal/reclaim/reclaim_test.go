@@ -264,16 +264,22 @@ func TestDryRunDeletesNothing(t *testing.T) {
 	}
 }
 
+// Fixtures are the real simctl/xcodebuild JSON shapes (Xcode 26.5): a runtime
+// is matched to its devices by runtimeIdentifier, never rebuilt from
+// platformIdentifier (com.apple.platform.iphonesimulator, not "iOS").
 func TestUnusedRuntimes(t *testing.T) {
 	runtimes := []byte(`{
-	  "A": {"identifier":"A","version":"18.2","platformIdentifier":"iOS","sizeBytes":8000000000},
-	  "B": {"identifier":"B","version":"17.5","platformIdentifier":"iOS","sizeBytes":7000000000},
-	  "C": {"identifier":"C","version":"11.2","platformIdentifier":"watchOS","sizeBytes":3000000000}}`)
+	  "A": {"identifier":"A","version":"18.6","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-6","sizeBytes":7600000000},
+	  "B": {"identifier":"B","version":"17.5","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-5","sizeBytes":7000000000},
+	  "C": {"identifier":"C","version":"11.2","platformIdentifier":"com.apple.platform.watchsimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.watchOS-11-2","sizeBytes":3000000000},
+	  "D": {"identifier":"D","version":"26.5","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":8500000000},
+	  "E": {"identifier":"E","version":"26.5","platformIdentifier":"com.apple.platform.iphonesimulator","sizeBytes":8500000000}}`)
 	devices := []byte(`{"devices":{
-	  "com.apple.CoreSimulator.SimRuntime.iOS-18-2":[{"isAvailable":true}],
+	  "com.apple.CoreSimulator.SimRuntime.iOS-18-6":[{"isAvailable":true}],
 	  "com.apple.CoreSimulator.SimRuntime.iOS-17-5":[],
 	  "com.apple.CoreSimulator.SimRuntime.watchOS-11-2":[]}}`)
-	unused, err := UnusedRuntimes(runtimes, devices)
+	sdks := []byte(`[{"platform":"iphonesimulator","sdkVersion":"26.5"},{"platform":"macosx","sdkVersion":"26.5"}]`)
+	unused, err := UnusedRuntimes(runtimes, devices, sdks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,8 +287,12 @@ func TestUnusedRuntimes(t *testing.T) {
 	for _, rt := range unused {
 		got[rt.Identifier] = true
 	}
-	if got["A"] || !got["B"] || !got["C"] {
+	// A has a device, D is Xcode's own simulator SDK, E cannot be matched: all stay.
+	if got["A"] || !got["B"] || !got["C"] || got["D"] || got["E"] {
 		t.Fatalf("unused = %v", got)
+	}
+	if _, err := UnusedRuntimes(runtimes, devices, []byte("xcodebuild: error")); err == nil {
+		t.Fatal("an unreadable SDK list must refuse, never delete")
 	}
 }
 
@@ -910,5 +920,97 @@ func TestParseLsofCwds(t *testing.T) {
 	got := parseLsofCwds([]byte("p123\nfcwd\nn/w/app\np456\nfcwd\nn/w/other dir\n"))
 	if len(got) != 2 || got[0] != (BunProcess{PID: 123, Cwd: "/w/app"}) || got[1] != (BunProcess{PID: 456, Cwd: "/w/other dir"}) {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func age(t *testing.T, path string, d time.Duration) {
+	t.Helper()
+	when := time.Now().Add(-d)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Temp leftovers go by the entry's own age and name: an old trace and an old
+// bun extract go; a recent trace, a recent extract and a foreign dotfile stay.
+func TestTempLeftoversRemoveOnlyOldMatches(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, "T")
+	write(t, filepath.Join(tmp, "instrumentsOLD.ktrace"), 100, 13*time.Hour)
+	write(t, filepath.Join(tmp, "instrumentsNEW.ktrace"), 1000, time.Hour)
+	write(t, filepath.Join(tmp, ".fdfd7cd7-0000001B.react-icons/index.js"), 10, 0)
+	age(t, filepath.Join(tmp, ".fdfd7cd7-0000001B.react-icons"), 25*time.Hour)
+	write(t, filepath.Join(tmp, ".fdfa7bff-0000000A.zod/index.js"), 1000, 0)
+	write(t, filepath.Join(tmp, ".DS_Store"), 1000, 90*24*time.Hour)
+	env := newFakeEnv(t, root, 1<<30)
+	env.TempDir = tmp + "/"
+	rep, err := Run(context.Background(), env.Env, Options{Only: []string{"tmp-instruments", "tmp-bun"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rep.Results {
+		if want := map[string]int64{"tmp-instruments": 100, "tmp-bun": 10}[r.ID]; r.Bytes != want || r.Status != StatusDone {
+			t.Fatalf("%s: %d bytes, %s %s", r.ID, r.Bytes, r.Status, r.Error)
+		}
+	}
+	left, _ := os.ReadDir(tmp)
+	var names []string
+	for _, e := range left {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != ".DS_Store,.fdfa7bff-0000000A.zod,instrumentsNEW.ktrace" {
+		t.Fatalf("left behind: %v", names)
+	}
+	// An unreadable temp root is a failed step, never an empty one.
+	if err := os.Chmod(tmp, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmp, 0o755) })
+	rep, _ = Run(context.Background(), env.Env, Options{Only: []string{"tmp-bun"}}, nil)
+	if rep.Results[0].Status != StatusFailed {
+		t.Fatalf("unreadable temp root must fail the step: %+v", rep.Results[0])
+	}
+}
+
+// A clone created before the oldest running process of its app is orphaned;
+// one created after it may be that process's own and stays. No ps, no delete.
+func TestBrowserClonesKeepWhatARunningBrowserMayOwn(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, "T")
+	clones := filepath.Join(root, "X", "com.google.Chrome.code_sign_clone")
+	for name, d := range map[string]time.Duration{"code_sign_clone.old": 5 * time.Hour, "code_sign_clone.live": 2 * time.Hour} {
+		write(t, filepath.Join(clones, name, "Google Chrome.app.bundle", "Contents", "bin"), 7, 0)
+		age(t, filepath.Join(clones, name), d)
+	}
+	// A symlinked clone parent must never carry the delete outside the temp root.
+	outside := filepath.Join(root, "outside")
+	write(t, filepath.Join(outside, "code_sign_clone.evil", "Foo.app.bundle", "sentinel"), 1, 0)
+	age(t, filepath.Join(outside, "code_sign_clone.evil"), 5*time.Hour)
+	if err := os.Symlink(outside, filepath.Join(root, "X", "com.example.code_sign_clone")); err != nil {
+		t.Fatal(err)
+	}
+	env := newFakeEnv(t, root, 1<<30)
+	env.TempDir = tmp + "/"
+	env.Exec = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		return []byte("  02:30:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n  1-00:00:00 /usr/sbin/cfprefsd agent\n"), nil
+	}
+	rep, err := Run(context.Background(), env.Env, Options{Only: []string{"tmp-browser-clones"}}, nil)
+	if err != nil || rep.Results[0].Bytes != 7 {
+		t.Fatalf("want only the old clone (7 bytes): %+v %v", rep.Results, err)
+	}
+	if _, err := os.Stat(filepath.Join(clones, "code_sign_clone.live")); err != nil {
+		t.Fatal("the clone a running Chrome may own must stay")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "code_sign_clone.evil", "Foo.app.bundle", "sentinel")); err != nil {
+		t.Fatal("a clone behind a symlinked parent must stay")
+	}
+	env.Exec = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("no ps") }
+	age(t, filepath.Join(clones, "code_sign_clone.live"), 5*time.Hour)
+	rep, _ = Run(context.Background(), env.Env, Options{Only: []string{"tmp-browser-clones"}}, nil)
+	if rep.Results[0].Status != StatusSkipped {
+		t.Fatalf("without ps the step must skip: %+v", rep.Results[0])
+	}
+	if d, ok := parseEtime("2-03:04:05"); !ok || d != 51*time.Hour+4*time.Minute+5*time.Second {
+		t.Fatalf("parseEtime: %v %v", d, ok)
 	}
 }

@@ -33,6 +33,10 @@ Hard guards — STOP immediately:
 - `onDefaultBranch` → "On the default branch — nothing to merge here." Never tell the
   user to switch this checkout to a feature branch.
 - `raw.state !== "OPEN"` → already merged/closed.
+- an unmet `before:` item in the body's `Blockers & risks` (`pr-body.md`) — a PR that
+  must land first, a deploy prerequisite → STOP naming it. `merge-precheck` cannot read
+  the body: verify each item (`gh pr view <N> --repo <owner>/<repo> --json state` for a
+  linked PR — its own repo, not this one) before every merge, `--auto` included.
 
 ## Drive to green (bounded loop, max 6 iterations)
 

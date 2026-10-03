@@ -25,6 +25,9 @@ memo show <ref> --json                # look up: the row plus its linked notes (
 memo find <words>... [--all] --json   # search the ledger, superseded rows marked
 memo render --check --json            # local drift check: exit 2 when MEMORY.md on disk drifted from the ledger
 memo ensure --json                    # SessionStart: render MEMORY.md only when missing or stale; in a TEAM home MEMORY.md and usage.jsonl are gitignored (only LEDGER.md + notes/ are shared), CI runs memorylint check there; a team MEMORY.md git still tracks is left as committed and SURFACE_TRACKED names its fix (run it in a worktree, never a main checkout)
+memo renumber [--base <ref>] --json   # merging the base into a branch that also added team rows: LEDGER.md conflicts;
+                                      # this settles it (base ids win, the branch's rows and the citations it wrote move);
+                                      # --dry-run previews from any state; memorylint L009 flags an id that names two rows
 memo migrate <home> > rows.md         # converting a v2 home: edit the template, then memo import rows.md --home <home>
 ```
 
@@ -41,7 +44,8 @@ investigate around it.
    narrative behind it goes to `notes/<slug>.md` and the row links it.
 2. Never edit `LEDGER.md`, `MEMORY.md` or `usage.jsonl` by hand (Edit, Write,
    heredoc, `sed -i`): the PreToolUse hook refuses and names the verb. A
-   wrong row is superseded, never corrected in place.
+   wrong row is superseded, never corrected in place, and a `LEDGER.md`
+   merge conflict is settled by `memo renumber`, never by picking a side.
 3. A detail note is written only when the narrative is real (a runbook, a
    reproduction, a decision trail); otherwise the row is the whole memory.
 4. Cite `#NN` (personal) or `#tNN` (team) only for a row that actually changed

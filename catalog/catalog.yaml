@@ -91,6 +91,18 @@ items:
     description: Android frame metrics from `dumpsys gfxinfo framestats` dumps and Perfetto traces - cadence, present intervals, per-gesture first-input and release frames, per-frame UI/RenderThread work, texture uploads, ART pauses, FrameTimeline jank.
     applet: framestats
 
+  - id: perflab
+    kind: applet
+    status: experimental
+    description: Device frames on physical phones for Expo / React Native apps - a machine-global ledger of phones with one lease holder each, a native build index keyed by a portable Expo fingerprint, JS bundle variants packed without native rebuilds, measured scenario runs through the project's adapter, Perfetto and xctrace probes, and every number re-derived from kept evidence (hitch ratio, display-rate fps, present gaps, RenderThread draw) with compare and budget gates.
+    applet: perflab
+
+  - id: expo-device-perf
+    kind: skill
+    status: experimental
+    description: Thin wrapper skill for perflab - the measured-perf loop on physical iPhones and Android phones (lease, doctor, build once, bundle variants, alternate runs, compare), which instrument answers which question, the budgets, the React Native render-cost rules with their evidence, and the hard laws (perflab verbs only on a leased phone).
+    source: skills/expo-device-perf
+
   - id: shrt
     kind: applet
     status: experimental
@@ -193,6 +205,18 @@ items:
     description: Find and redact secrets leaked into agent conversation history — Claude Code sessions with their subagents, workflow journals, persisted tool results and task output, Codex rollouts, prompt history. Reports file · line · detector · masked shape, never a value; --apply overwrites each span in place with a same-length [REDACTED:<detector>] so JSONL stays valid, cursors hold and a live session keeps appending. --known-env / --known-dotenv add exact values no pattern would catch.
     applet: redact
 
+  - id: journeys
+    kind: applet
+    status: experimental
+    description: Validate human journey libraries, compose reading lists, report explicit coverage and preserve immutable observation attempts with typed startup adapters.
+    applet: journeys
+
+  - id: journey-campaign
+    kind: skill
+    status: experimental
+    description: Sustained real-device user-journey testing and session handoff with explicit coverage, actor bindings and independent evidence.
+    source: skills/journey-campaign
+
   - id: tsgate
     kind: applet
     status: experimental
@@ -238,13 +262,25 @@ items:
   - id: push-back
     kind: skill
     status: experimental
-    description: Verify a claim against code, docs and project rules before acting on it; prm composes it for every review verdict.
+    description: Verify a claim against code, docs and project rules before acting on it; project gates come from <repo>/.claude/push-back.md.
     source: skills/push-back
+
+  - id: receiving-code-review
+    kind: skill
+    status: experimental
+    description: Work incoming review findings — pasted text, a findings file or a PR — through push-back verification, a RED test per finding, the fix and the record; prm delegates its rounds here.
+    source: skills/receiving-code-review
+
+  - id: check-prs
+    kind: skill
+    status: experimental
+    description: Manual-only PR triage — per PR the full link, validity against work landed since, danger, priority and a keep/salvage/close verdict, with a code/test/config/rest diff split; PRs held by a live Claude or Codex session are listed, never judged.
+    source: skills/check-prs
 
   - id: gitkit
     kind: applet
     status: experimental
-    description: Deterministic git/PR layer the prm, push-all and sync skills execute — PR selectors, review triage, merge gates, worktrees, path classification.
+    description: Deterministic git/PR layer the prm, push-all, sync and check-prs skills execute — PR selectors, review triage, merge gates, worktrees, path classification, the PR census.
     applet: gitkit
 
   - id: cli-craft
@@ -256,7 +292,7 @@ items:
   - id: codex-sidekick
     kind: skill
     status: experimental
-    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to a persistent Codex thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
+    description: Route manual and verification work (usertests, UI verification, computer use, app mapping, e2e writing and runs) from a Claude Code session to Codex — the native `codex` subagent inside a `cc` session, else a persistent thread through `switcheroo codex run` — brief templates per mode, the run/resume loop, exit-code handling, browser etiquette, commit duties and the Opus fallback.
     source: skills/codex-sidekick
 
   - id: memo-ledger
@@ -480,10 +516,14 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
+      - check-prs
       - merge-assist
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - press
       - press-pdf
@@ -518,6 +558,8 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
+      - check-prs
       - merge-assist
 
   - id: henderson
@@ -541,10 +583,14 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
+      - check-prs
 
   - id: everything
     description: Every package currently published by Výbava.
     items:
+      - journeys
+      - journey-campaign
       - node
       - bun
       - helium
@@ -590,6 +636,8 @@ groups:
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - ingressgen
       - reconcile
@@ -604,6 +652,8 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
+      - check-prs
       - press
       - press-pdf
       - press-logo

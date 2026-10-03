@@ -31,7 +31,7 @@ around it.
 <3–6 numbered laws: the constraints the CLI cannot enforce itself —
 state-authority, isolation, what never to bypass or delete.>
 
-Per-project notes: memory/INDEX.md.
+Per-project notes: `memo find <tool>` (the memo ledger).
 ```
 
 Command stub (`commands/<tool>.md`), when the skill dir can't register

@@ -2,11 +2,12 @@ package uiloop
 
 // stage.go owns the pass state the vitrinka review-loop reads back between
 // its stages: `state` (compact counts and the next stage), `batches` (the
-// reviewer batches, persisted), `merge-review` (the backlog draft) and
-// `lanes` (the fix lanes by ownership, in lanes.go). The workflow's agents
-// relay these envelopes; they never enumerate screens, raw files or backlog
-// items themselves, because a large list handed through an agent's return
-// value gets dropped or summarized (pwf-ui pass 1).
+// reviewer batches, persisted), `merge-review` (the backlog draft), `lanes`
+// (the fix lanes by ownership, in lanes.go) and `checkpoints` (the fix
+// checkpoints that count). The workflow's agents relay these envelopes; they
+// never enumerate screens, raw files, backlog items or checkpoints themselves,
+// because a large list handed through an agent's return value gets dropped or
+// summarized (pwf-ui pass 1).
 
 import (
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DefaultBatchSize is the screens a reviewer judges in one batch.
@@ -40,7 +42,9 @@ type BatchesFile struct {
 	Batches []Batch `json:"batches"`
 }
 
-// Checkpoint is one fix item's <pass>/fix/<key>.json.
+// Checkpoint is one fix item's <pass>/fix/<key>.json. A key with "/" is a
+// subdirectory; readers take the item from Key, else from that path
+// (loadCheckpoints).
 type Checkpoint struct {
 	Basis       string            `json:"basis"`
 	FileDigests map[string]string `json:"fileDigests,omitempty"`
@@ -50,7 +54,11 @@ type Checkpoint struct {
 	Status      string            `json:"status"` // done | skipped | blocked
 	Commit      string            `json:"commit,omitempty"`
 	Screens     []string          `json:"screens,omitempty"`
-	Note        string            `json:"note,omitempty"`
+	// I18n is the strings the fix needs ({key, <locale>: text}), passed
+	// through verbatim: its shape is the settle step's, never a reason to
+	// refuse the checkpoint.
+	I18n json.RawMessage `json:"i18n,omitempty"`
+	Note string          `json:"note,omitempty"`
 }
 
 // Finishes reports whether the checkpoint closes its item for this round.
@@ -121,7 +129,7 @@ type PreviousBacklog struct {
 	Open int    `json:"open"`
 }
 
-// CheckpointCounts summarizes <pass>/fix/*.json.
+// CheckpointCounts summarizes the pass's checkpoints (loadCheckpoints).
 type CheckpointCounts struct {
 	Total    int            `json:"total"`
 	ByStatus map[string]int `json:"byStatus"`
@@ -266,7 +274,10 @@ func (t *Tool) loadBatches(pass int, records []Record, size int) (BatchesFile, b
 	return BatchesFile{V: 1, Pass: pass, Size: size, Batches: ComputeBatches(passScreens(records), t.Config.Areas, size)}, false, nil
 }
 
-// rawBatchIDs lists the batch ids that have a review/raw/<id>.json.
+// rawBatchIDs lists the batch ids whose review/raw/<id>.json completes the
+// batch. With provenance (capture.json) that means the current basis, the
+// file's own batch id, screensRead inside the batch and covering every batch
+// screen with an ok shot.
 func (t *Tool) rawBatchIDs(pass int, knownBasis ...string) (map[string]bool, error) {
 	return t.rawBatchEvidence(pass, false, knownBasis...)
 }
@@ -288,7 +299,12 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	// shot names the screens with at least one ok record. A batch also holds
 	// screens the pass could not shoot (unreachable, recipe-failed, error);
 	// a reviewer can only list those as unreviewed, so they never hold a
-	// batch open.
+	// batch open. A shot screen must be in screensRead. An unreviewed entry
+	// never blocks: it is a capture or recipe defect the reviewer could not
+	// judge from the shots, and re-reviewing the same shots cannot change it.
+	// merge-review still keeps such a screen (a screen-level entry, or shot
+	// entries naming every ok shot it has) out of reviewed and lists it as
+	// unreviewed.
 	shot := map[string]bool{}
 	if strict {
 		basis, err = t.cachedReviewBasis(pass, knownBasis)
@@ -335,7 +351,7 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 					}
 				}
 			}
-			if !valid || (!partial && slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return shot[unreviewedOf(entry)] })) {
+			if !valid {
 				continue
 			}
 		}
@@ -344,15 +360,70 @@ func (t *Tool) rawBatchEvidence(pass int, partial bool, knownBasis ...string) (m
 	return ids, nil
 }
 
-// loadCheckpoints reads every <pass>/fix/*.json except lanes.json. A file
-// that does not decode (cut off mid-write) is skipped with a warning.
+// archivedRound is a <pass>/fix/r<N>/ directory: an earlier fix round's
+// checkpoints, moved aside when a later round rewrote their items. It never counts.
+var archivedRound = regexp.MustCompile(`^r[0-9]+$`)
+
+// checkpointFile is one candidate checkpoint: its slash-separated path under
+// <pass>/fix/ and when it was last written.
+type checkpointFile struct {
+	rel     string
+	modTime time.Time
+}
+
+// checkpointFiles walks <pass>/fix/ for checkpoint files. Writers name a
+// checkpoint after its backlog key, so a key with "/" lands in a
+// subdirectory; the walk descends into those, never into a top-level r<N>/
+// round archive, and leaves out lanes.json and recovery.json.
+func checkpointFiles(dir string) ([]checkpointFile, error) {
+	var out []checkpointFile
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if p == dir && errors.Is(err, fs.ErrNotExist) {
+				return fs.SkipAll
+			}
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if archivedRound.MatchString(rel) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".json") || rel == lanesFile || rel == "recovery.json" {
+			return nil
+		}
+		info, err := d.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // renamed away mid-walk
+		}
+		if err != nil {
+			return err
+		}
+		out = append(out, checkpointFile{rel, info.ModTime()})
+		return nil
+	})
+	return out, err
+}
+
+// loadCheckpoints reads the pass's checkpoint files (checkpointFiles), one
+// per item: the item is the file's `key`, else its path under fix/ without
+// .json. A file that does not decode (cut off mid-write) or has neither key
+// nor status is skipped with a warning; in a pass with provenance a stale
+// file (validCheckpoint) is not admitted. Only then are duplicates resolved:
+// of two admitted files that claim one key, one counts (supersedes) and the
+// other is warned, so a stale file can never shadow a current one.
 func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []runxDiagnostic, error) {
-	paths, err := filepath.Glob(filepath.Join(t.passAbs(pass), "fix", "*.json"))
+	dir := filepath.Join(t.passAbs(pass), "fix")
+	files, err := checkpointFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	var out []Checkpoint
-	var diags []runxDiagnostic
 	var marker captureEvidence
 	strict, err := readJSON(filepath.Join(t.passAbs(pass), "capture.json"), &marker)
 	if err != nil {
@@ -365,15 +436,23 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 			return nil, nil, err
 		}
 	}
-	for _, p := range paths {
-		if filepath.Base(p) == lanesFile || filepath.Base(p) == "recovery.json" {
-			continue
-		}
+	type admitted struct {
+		file checkpointFile
+		cp   Checkpoint
+	}
+	var diags []runxDiagnostic
+	var keys []string
+	counts := map[string]admitted{}
+	shadowed := map[string][]string{}
+	for _, f := range files {
 		var c Checkpoint
-		if _, err := readJSON(p, &c); err != nil || c.Key == "" {
-			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+filepath.Base(p)+" is not a checkpoint ({key, status})",
+		if _, err := readJSON(filepath.Join(dir, filepath.FromSlash(f.rel)), &c); err != nil || (c.Key == "" && c.Status == "") {
+			diags = append(diags, warn(DiagCheckpointInvalid, t.PassDir(pass)+"/fix/"+f.rel+" is not a checkpoint ({key, status})",
 				"rewrite it, or delete it so its item is fixed again"))
 			continue
+		}
+		if c.Key == "" {
+			c.Key = strings.TrimSuffix(f.rel, ".json")
 		}
 		if strict {
 			valid, err := t.validCheckpoint(c, basis)
@@ -384,9 +463,71 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 				continue
 			}
 		}
-		out = append(out, c)
+		prev, ok := counts[c.Key]
+		switch {
+		case !ok:
+			keys = append(keys, c.Key)
+		case supersedes(f, prev.file, c.Key):
+			shadowed[c.Key] = append(shadowed[c.Key], prev.file.rel)
+		default:
+			shadowed[c.Key] = append(shadowed[c.Key], f.rel)
+			continue
+		}
+		counts[c.Key] = admitted{f, c}
+	}
+	out := make([]Checkpoint, 0, len(keys))
+	for _, key := range keys {
+		won := counts[key]
+		for _, rel := range shadowed[key] {
+			diags = append(diags, warn(DiagCheckpointInvalid, fmt.Sprintf("%s/fix/%s and fix/%s both checkpoint %q; fix/%s counts", t.PassDir(pass), rel, won.file.rel, key, won.file.rel),
+				"delete fix/"+rel+", or move it into a fix/r<N>/ round archive"))
+		}
+		out = append(out, won.cp)
 	}
 	return out, diags, nil
+}
+
+// supersedes reports whether checkpoint file a counts over b, both admitted
+// for key: the writers' own path fix/<key>.json first, then the newer write,
+// then the lower path so the choice never depends on walk order.
+func supersedes(a, b checkpointFile, key string) bool {
+	canonical := key + ".json"
+	if (a.rel == canonical) != (b.rel == canonical) {
+		return a.rel == canonical
+	}
+	if !a.modTime.Equal(b.modTime) {
+		return a.modTime.After(b.modTime)
+	}
+	return a.rel < b.rel
+}
+
+// CheckpointsData is `ui-loop checkpoints`: the pass's checkpoints exactly as
+// state and lanes count them (loadCheckpoints), one per item. A workflow reads
+// a round's changed screens and i18n strings here, never by globbing
+// fix/*.json, which misses a slash key's subdirectory and admits stale files.
+type CheckpointsData struct {
+	V           int          `json:"v"`
+	Pass        int          `json:"pass"`
+	PassDir     string       `json:"passDir"`
+	Checkpoints []Checkpoint `json:"checkpoints"`
+}
+
+// CheckpointsOptions are `checkpoints`' flags.
+type CheckpointsOptions struct {
+	Pass int
+}
+
+// Checkpoints lists the checkpoints that count for the pass: `ui-loop checkpoints`.
+func (t *Tool) Checkpoints(o CheckpointsOptions) (Result, error) {
+	pass, err := t.resolveShotPass(o.Pass)
+	if err != nil {
+		return Result{}, err
+	}
+	cps, diags, err := t.loadCheckpoints(pass)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Data: CheckpointsData{V: 1, Pass: pass, PassDir: t.PassDir(pass), Checkpoints: cps}, Diagnostics: diags}, nil
 }
 
 // previousBacklog finds the newest pass before `pass` that has a backlog.
@@ -547,7 +688,8 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	var err error
 	var hashes map[string]string
-	data.ReviewBasis, hashes, err = t.reviewEvidence(pass)
+	var evidenceDiags []runxDiagnostic
+	data.ReviewBasis, hashes, evidenceDiags, err = t.reviewEvidence(pass)
 	if err != nil {
 		return Result{}, err
 	}
@@ -643,6 +785,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	diags = append(evidenceDiags, diags...)
 	data.Checkpoints.Total = len(checkpoints)
 	for _, cp := range checkpoints {
 		data.Checkpoints.ByStatus[cp.Status]++
@@ -902,29 +1045,38 @@ func BacklogKey(screen, title string) string {
 	return strings.TrimRight(k, "-")
 }
 
-// unreviewedScreen reads a reviewer's unreviewed entry: a screen id, maybe
-// followed by a parenthesised why. An entry naming one shot (<id>@<viewport>)
-// is not a screen-level skip: the screen was judged at its other shots.
-// unreviewedOf is the screen an unreviewed entry is about, a shot-level
-// entry ("<screen>@<viewport>.<theme> (why)") included.
-func unreviewedOf(entry string) string {
-	id := strings.TrimSpace(entry)
-	if i := strings.IndexAny(id, " (\t"); i >= 0 {
-		id = id[:i]
+// unreviewedScreens reads a reviewer's unreviewed entries into the screens
+// they take out of reviewed. An entry is a screen id or one shot
+// (<id>@<viewport>.<theme>, or <id>@<viewport> for every theme), maybe
+// followed by a parenthesised why. A screen-level entry skips its screen.
+// Shot entries skip it only when they name every ok shot it has (okShots:
+// screen id to its ok shot keys); otherwise it was judged at its other shots.
+func unreviewedScreens(entries []string, okShots map[string][]string) map[string]bool {
+	skipped, named := map[string]bool{}, map[string][]string{}
+	for _, e := range entries {
+		id := strings.TrimSpace(e)
+		if i := strings.IndexAny(id, " (\t"); i >= 0 {
+			id = id[:i]
+		}
+		screen, shot, isShot := strings.Cut(id, "@")
+		switch {
+		case screen == "":
+		case isShot:
+			named[screen] = append(named[screen], shot)
+		default:
+			skipped[screen] = true
+		}
 	}
-	screen, _, _ := strings.Cut(id, "@")
-	return screen
-}
-
-func unreviewedScreen(entry string) string {
-	id := strings.TrimSpace(entry)
-	if i := strings.IndexAny(id, " (\t"); i >= 0 {
-		id = id[:i]
+	for screen, shots := range named {
+		judgedElsewhere := slices.ContainsFunc(okShots[screen], func(key string) bool {
+			_, vt, _ := strings.Cut(key, "@")
+			return !slices.ContainsFunc(shots, func(s string) bool { return vt == s || strings.HasPrefix(vt, s+".") })
+		})
+		if !judgedElsewhere {
+			skipped[screen] = true
+		}
 	}
-	if strings.Contains(id, "@") {
-		return ""
-	}
-	return id
+	return skipped
 }
 
 func union(a, b []string) []string {
@@ -938,19 +1090,24 @@ func union(a, b []string) []string {
 }
 
 // MergeReview folds the raw batches and the previous backlog into the draft.
-func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch) (Backlog, []string, []ReviewProblem, []string) {
+// okShots maps a screen id to its ok shot keys (<id>@<viewport>.<theme>).
+func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch, okShots map[string][]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
 	put := func(f Finding) {
 		order = append(order, f.Key)
 		items[f.Key] = &f
 	}
+	skips := make([]map[string]bool, len(raws))
+	for i, r := range raws {
+		skips[i] = unreviewedScreens(r.Unreviewed, okShots)
+	}
 	verdicts := map[string]string{}
-	for _, r := range raws {
+	for i, r := range raws {
 		for _, a := range r.Acceptance {
 			if r.Basis != "" && previous != nil {
 				read := slices.ContainsFunc(previous.Findings, func(f Finding) bool {
-					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !slices.ContainsFunc(r.Unreviewed, func(entry string) bool { return unreviewedScreen(entry) == f.Screen })
+					return f.Key == a.Key && slices.Contains(r.ScreensRead, f.Screen) && !skips[i][f.Screen]
 				})
 				if !read {
 					continue
@@ -1040,7 +1197,7 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 		byID[bt.ID] = bt.Screens
 	}
 	judged, skipped := map[string]bool{}, map[string]bool{}
-	for _, r := range raws {
+	for i, r := range raws {
 		ids, known := byID[r.Batch]
 		if !known {
 			for _, msg := range r.Findings {
@@ -1059,10 +1216,8 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches []Batch)
 			}
 			judged[id] = true
 		}
-		for _, e := range r.Unreviewed {
-			if id := unreviewedScreen(e); id != "" {
-				skipped[id] = true
-			}
+		for id := range skips[i] {
+			skipped[id] = true
 		}
 	}
 	b.Reviewed = []string{}
@@ -1152,7 +1307,13 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches.Batches)
+	okShots := map[string][]string{}
+	for _, r := range records {
+		if r.Status == "ok" {
+			okShots[r.ID] = append(okShots[r.ID], r.Key())
+		}
+	}
+	backlog, unjudged, problems, unreviewed := MergeReview(pass, previous, raws, batches.Batches, okShots)
 	file := t.PassDir(pass) + "/review/backlog.draft.json"
 	if err := writeJSON(filepath.Join(t.reviewDir(pass), "backlog.draft.json"), backlog); err != nil {
 		return Result{}, err

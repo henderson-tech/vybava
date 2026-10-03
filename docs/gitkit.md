@@ -1,9 +1,9 @@
 # gitkit — the git family's deterministic layer
 
-The `prm`, `push-all` and `sync` skills never embed git/GitHub logic in prose.
-They call `vybava gitkit <script> [args]`: PR selector parsing, review-thread
-triage, merge preconditions, worktree resolution, path classification and
-DB-url safety.
+The `prm`, `push-all`, `sync` and `check-prs` skills never embed git/GitHub
+logic in prose. They call `vybava gitkit <script> [args]`: PR selector parsing,
+review-thread triage, merge preconditions, worktree resolution, path
+classification, DB-url safety and the PR census.
 
 ```sh
 vybava gitkit --json                 # list verbs
@@ -12,6 +12,7 @@ vybava gitkit resolve-fetch 42 --repo "$PWD"
 vybava gitkit pr-events 42 --every-seconds 60 --repo "$PWD"   # under Monitor
 vybava gitkit pr-extensions --stage ensure-pr --repo "$PWD"   # the repo's prm extensions
 vybava gitkit admin-labels 42 --repo "$PWD"                   # prm --admin: skip labels + cancel live runs
+vybava gitkit pr-census --base devlp --since 7d --repo "$PWD" # /check-prs: facts per PR
 ```
 
 ## Contract
@@ -72,6 +73,7 @@ go test ./internal/gitkit/...
 | `worktree` · `reporoot` · `listprs` · `beforereview` | path, listing and hook helpers |
 | `prextensions` | extensions come only from `origin/<default>` (never a PR branch, an uncommitted edit, an untracked draft or an unpushed commit), `--stage` filtering, `.local` switch-off, every malformed file and symlink refused, strict argv (`GITKIT_BAD_ARGS`, real `--help`) |
 | `native` | `execFile`'s Node failure modes, `Number()` parsing |
+| `prcensus` | the four-bucket split and its config globs, numstat renames and binaries, selector → search query, merge facts on a real repo (clean, conflicting, already landed), what names a PR in a tool call, live-session reading (the caller and a recycled pid skipped, a tool result never counted), Codex rollouts, argv refusals |
 
 Mutating `github-io` subcommands are tested on argv construction only; never
 run them against GitHub from a test. Fixtures use `acme/app`-style
@@ -135,3 +137,48 @@ label added after the push cannot reach the runs that push queued.
 reports `gates.ciWaived: true` with `ciOk` held — the cancelled runs are
 expected — while every other gate stays as it was. Born in Go, the verb
 validates its argv (`GITKIT_BAD_ARGS`-style usage error, exit 1).
+
+## pr-census — the facts /check-prs judges from
+
+```sh
+vybava gitkit pr-census [--repo <path>] [--base <branch>] [--since <N>d|<YYYY-MM-DD>]
+                        [--author <login>|@me] [--state open|merged|closed|all] [--no-fetch] [<pr>...]
+```
+
+Lists PRs by GitHub search (capped at 200, said in `notes`) or by number,
+fetches each base's remote-tracking ref and every `refs/pull/<N>/head`, then
+emits one row per PR. It writes nothing else. Top level: `repo`, `query`,
+`prodRefs` (`PROD_BRANCHES`, else the default branch), `fetched`, `prs`,
+`notes`. Per PR, in wire order: identity and dates, `refs` (vt- ids, `#N` in
+the title, closing keywords), `size` (GitHub's count), `split`, `touches`,
+`drift`, `merge`, `ci`, `review`, `local`, `activity`, `notes`.
+
+- **`split`** — `code` / `test` / `config` / `rest`, each `{files, additions,
+  deletions}`, from `git diff --numstat -z -M <merge-base> <head>`. First match
+  wins, in the order rest → test → config → code; the rules and the
+  `PR_CENSUS_*_PATHS` / `GENERATED_PATHS` widening are in `prcensus_split.go`.
+  `touches` names the sensitive areas: migration, ci, iac, deps, deploy, locale.
+- **`merge`** — `git merge-tree --write-tree` against the base (git ≥ 2.38):
+  `clean`, `conflicts`, up to 20 `conflictFiles`. `emptyMerge`: the merge
+  result is the base's own tree, so the content already landed under other
+  commits. `patchOnBase`: `git cherry` finds an equivalent of every commit on
+  the base. `drift` and `merge` are null for a PR that is no longer open.
+- **`local`** — the worktree holding the head branch: dirty and unpushed
+  counts, the newest uncommitted file's mtime.
+- **`activity`** — `active` when a holder is found, else `idle`:
+  - a live Claude Code session (`~/.claude/sessions/<pid>.json`, the pid's
+    start matched against `procStart` so a recycled pid never counts) that
+    runs inside the worktree, or made at least 3 tool calls on the PR in the
+    last 24 h — its lead transcript's and subagents' tails;
+  - a Codex rollout written in the last 2 h with at least 3 such calls;
+  - else uncommitted edits in the worktree younger than an hour.
+
+  A tool call works on a PR when it runs inside the worktree, names the
+  worktree path (absolute, relative to its directory, `~`-relative — never a
+  sibling like `fix-2` for `fix`), links `<slug>/pull/<N>`, or drives it from
+  the repository with `gh pr checks|merge|edit|comment|review|ready|checkout|
+  close|reopen <N>` (not with `-R <other repo>`). Reading — `gh pr view`,
+  `diff`, `list` — is not working on it. Only tool-call inputs count, never
+  output: `git worktree list` names every worktree. The session running the
+  census (`CLAUDE_CODE_SESSION_ID`) is never a holder. A head branch checked
+  out in the main clone matches on PR references only.

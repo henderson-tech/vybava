@@ -67,6 +67,8 @@ SessionEnd    swarm-teardown              the same, also for this session's own
                                           swarm, plus ≤8 `ps` up the ancestry
               browser-teardown            an onyx lookup (1.5 s) and stop (3 s)
               reap                        one `ps -axo`; kills as weather --reap does
+              device-lease-release        reads perflab's lease files; releases this
+                                          session's leases (a 3 s lock wait each)
               redact-session              one secret scan of the session's files
                                           (~1 s per 25 MB, 4 workers) and a
                                           same-length overwrite of what it finds
@@ -97,6 +99,7 @@ SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
 SessionEnd            claude-guards reap
+SessionEnd            claude-guards device-lease-release  # release this session's perflab device leases
 SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
@@ -160,7 +163,13 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
-                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1) ·
+                  a raw adb / devicectl / xctrace / go-ios / Appium command,
+                  or a NAME=value assignment, naming a phone perflab has
+                  leased (holder included), a bare adb device command or
+                  adb kill-server while an Android phone is leased; use
+                  `perflab device shell <id> --lease <t> -- …` (no escape;
+                  docs/perflab.md "claude-guards")
 memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   destination, rm) to a memo home's LEDGER.md, MEMORY.md or
                   usage.jsonl — memo's own RefuseHandWrite, run here so memo's
@@ -403,7 +412,7 @@ peaked at 680.
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or
 `-p wk-<slug>` (both worktree layouts), or a `wt-`/`wk-` prefixed worktree
-directory as cwd. A bare `down -v` inside a worktree stays blocked: compose
+directory the call provably runs in (the cwd, or a literal `cd … &&` chain). A bare `down -v` inside a worktree stays blocked: compose
 resolves the project from that tree's `.env`, and a copied `.env` is exactly
 how one worktree's teardown dropped another stack's volumes. Script-driven
 teardown (`bun run worktree:cleanup … --remove`) never trips any of this — the
@@ -529,6 +538,21 @@ arguments are data.
 `env`, so assignment prefixes are stripped before a rule reads the first token.
 They are stripped only from the front: `env FOO=bar make build` runs `env` as a
 runner and keeps its assignment.
+
+**Where a command runs is read from the command, not from the hook's cwd
+alone.** Claude Code resets the shell's cwd between calls, so a session parked
+in its checkout reaches another tree only by `cd <dir> && …` or `git -C <dir>`.
+`runDirs` (`rundir.go`) lists the same segments with the directory each one
+PROVABLY runs in, and every directory carve-out — a branch switch in a
+worktree, a `down -v` on a `wt-` stack — judges that directory. Fail-closed: a
+segment's directory is known only through a literal `cd`/`-C` target whose
+success is guaranteed by `&&` all the way to the segment, outside any subshell
+or substitution that closed before it, not a pipeline element (`echo | cd x` runs
+in its own subshell), with no `pushd`/`popd` and no remote runner in between; anything else (`$W`, `cd x;`, `cd x ||`) is judged at the
+cwd, exactly as before. The gap ran both ways: the git-switch denial
+recommended `cd .worktrees/<name>` and then blocked it, and from a worktree
+cwd `cd ../.. && git checkout` switched the primary clone unseen.
+
 
 ## Context tiers and diagnosis
 

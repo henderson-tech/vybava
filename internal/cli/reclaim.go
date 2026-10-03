@@ -80,6 +80,11 @@ unclassified — those are surfaced as by-hand notes at the end.`,
 				},
 				Stderr: func(s string) { fmt.Fprintln(rt.stderr, s) },
 			}
+			if goruntime.GOOS == "darwin" {
+				if out, err := exec.Command("getconf", "DARWIN_USER_TEMP_DIR").Output(); err == nil {
+					env.TempDir = strings.TrimSpace(string(out))
+				}
+			}
 			opts := reclaim.Options{MaxTier: reclaim.Tier(tier), DryRun: dryRun, Only: only, Skip: skip, KeepDays: keepDays}
 			if until != "" {
 				n, err := reclaim.ParseHuman(until)

@@ -86,14 +86,22 @@ const (
 	// raw file; the draft covers only the reviewed ones (warning) — finish
 	// the review stage first.
 	DiagReviewIncomplete = "REVIEW_INCOMPLETE"
-	// DiagCheckpointInvalid: a <pass>/fix/*.json is not a checkpoint (it does
-	// not decode or has no key) and is skipped, so its item counts as not
-	// finished (warning) — rewrite it or delete it.
+	// DiagCheckpointInvalid: a <pass>/fix/**/*.json is not a checkpoint (it
+	// does not decode, or has neither key nor status) and is skipped, so its
+	// item counts as not finished; or two admitted files checkpoint one key
+	// and the one not at fix/<key>.json (else the older) is skipped
+	// (warning) — rewrite, delete or archive the file.
 	DiagCheckpointInvalid = "CHECKPOINT_INVALID"
 	// DiagForeignItems: lanes found open items that name no file inside the
 	// repo (an absolute path into another repo); no lane owns them (warning)
 	// — checkpoint them blocked with where the fix lands, or repair their files.
 	DiagForeignItems = "FOREIGN_ITEMS"
+	// DiagCaptureRevisionMissing: a pass's capture.json names a revision this
+	// clone does not have (gc'd after its branch went, or the pass was copied
+	// from another clone), so its manifest basis is read from the working tree
+	// and a rig change since capture stales the pass (warning) — fetch that
+	// revision, or capture a new pass.
+	DiagCaptureRevisionMissing = "CAPTURE_REVISION_MISSING"
 )
 
 func diag(code, detail, fix string) runx.DiagError {

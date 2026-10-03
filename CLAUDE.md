@@ -31,6 +31,17 @@ in `docs/`; lessons in `.claude/memory/MEMORY.md`.
 
 ## Commands
 
+`internal/journeys` owns the reusable human journey document engine, frozen
+plans, adapter protocol, private append-only journals and reviewed publication
+projections/checkpoints. `verification.go` owns read-only adapter probes with
+sealed-plan/request bindings and immutable private outcome receipts; these
+never automatically promote a journey verdict. Its multicall applet
+is `journeys`; product-specific seed/device/runtime adapters stay in consumer
+repos. Contract and recovery commands: `docs/journeys.md`.
+`skills/journey-campaign/` carries the real-device campaign and handoff workflow;
+changing run IDs, device handles and product-specific recipes stay in consumer
+checkpoints/docs, not the reusable skill.
+
 ```sh
 go test ./...  &&  go vet ./...
 go run ./cmd/vybava catalog list
@@ -83,7 +94,10 @@ double-billing. `rollout.go` owns parsing and the mtime prefilter; `live.go` own
 `internal/transcripts` owns reading agent logs: the incremental cursor (offset, size,
 mtime, prefix digest; never a partial last record), Claude transcript and Codex
 rollout decoding, the projects-tree walk and git-root resolution. operator and
-codexusage read through it; never add a fourth parser. `internal/tokentime`
+codexusage read through it; never add a fourth parser. Its `sessions.go` is the
+one reader of live Claude sessions (`~/.claude/sessions/<pid>.json`, the
+procStart match, the project slug, transcript lookup) — claude-guards, readeff
+and gitkit pr-census use it. `internal/tokentime`
 builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract
@@ -116,6 +130,11 @@ commands in 18 of 25 rules and let a bare `FOO=1` prefix disarm 9 — hard bans
 included. Quoting asymmetry is load-bearing: single quotes suppress everything,
 double quotes suppress control operators but NOT `$(…)`/backticks. Findings and
 the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md`.
+`claudeguards/rundir.go` (`runDirs`) is the ONE answer to WHERE a segment runs:
+the directory a literal `cd … &&` chain or `git -C` provably reaches, fail-closed
+(unproven = the hook cwd); a directory carve-out judges that, never the hook cwd
+alone, and `cdTarget`/`cdMove` are the one `cd` parser — never re-derive either.
+
 
 `internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules
 are load-bearing and documented in `docs/plugin-gc.md`: the active version

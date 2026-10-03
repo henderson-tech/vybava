@@ -65,8 +65,8 @@ func pluginInstallMatch(cmd, cwd, home string) (manager, target string) {
 			continue
 		}
 		word := shellseg.CommandWord(seg)
-		if word == "cd" && len(fields) > 1 {
-			here = resolveDir(unquote(fields[1]), here, home)
+		if d, ok := cdMove(shellseg.Fields(seg), here, home); ok {
+			here = d
 			continue
 		}
 		if !packageManagers[word] {
