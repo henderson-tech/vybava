@@ -89,7 +89,7 @@ None listed → skip silently. A failing extension STOPs the round and the loop.
    2026-08-30 on devulinka-infra#236: 8 of 11 open threads were already in `seen`
    with zero replies on GitHub, across four prior rounds. The fetch is the source of
    truth — if it says a thread is unresolved, re-work it whatever `seen` claims.
-4. **Resolve each new finding** per `verdicts.md` (verify with the `push-back` skill),
+4. **Resolve each new finding** through the `receiving-code-review` skill (verify, RED, fix), delivered per `verdicts.md`,
    delivered by `resolvable`:
    - `true` → `reply` into the thread, then `resolve-thread`.
    - `false` (review summary / conversation) → ONE batched quoting PR comment for the

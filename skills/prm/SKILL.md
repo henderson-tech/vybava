@@ -29,7 +29,7 @@ contract: Výbava `docs/gitkit.md`):
   event map, guardrails, stop discipline.
 - `ensure-pr.md` — idempotent create-or-find (quiesce → body → create).
 - `pr-body.md` — the PR description contract: dense sections, blockers lens, links table.
-- `verdicts.md` — verdict→action (wraps the `push-back` skill).
+- `verdicts.md` — verdict→delivery (the engine is the `receiving-code-review` skill).
 - `merge.md` — gates, CI fix loop, solo-owner carve-out, the merge.
 - `teardown.md` — after the merge: feature closure, QA plan, cleanup, main-clone pull.
 - `config.md` — the `.claude/.claude.git.config` keys.

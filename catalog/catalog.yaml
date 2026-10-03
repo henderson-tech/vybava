@@ -250,8 +250,14 @@ items:
   - id: push-back
     kind: skill
     status: experimental
-    description: Verify a claim against code, docs and project rules before acting on it; prm composes it for every review verdict.
+    description: Verify a claim against code, docs and project rules before acting on it; project gates come from <repo>/.claude/push-back.md.
     source: skills/push-back
+
+  - id: receiving-code-review
+    kind: skill
+    status: experimental
+    description: Work incoming review findings — pasted text, a findings file or a PR — through push-back verification, a RED test per finding, the fix and the record; prm delegates its rounds here.
+    source: skills/receiving-code-review
 
   - id: gitkit
     kind: applet
@@ -492,6 +498,7 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
       - merge-assist
       - fontfreeze
       - perfrig
@@ -530,6 +537,7 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
       - merge-assist
 
   - id: henderson
@@ -553,6 +561,7 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
 
   - id: everything
     description: Every package currently published by Výbava.
@@ -618,6 +627,7 @@ groups:
       - push-all
       - sync
       - push-back
+      - receiving-code-review
       - press
       - press-pdf
       - press-logo
