@@ -268,6 +268,8 @@ func (t *Tool) takeLease(pass int, name string, r leaseReq) (Lease, *heldLease, 
 				return Lease{}, nil, err
 			}
 			l.StartedAt, l.TTL = cur.StartedAt, (now.Sub(started) + r.ttl).Round(time.Second).String()
+			// One rename replaces it: a reader never finds a held lease gone.
+			return l, nil, writeJSON(file, l)
 		}
 		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return Lease{}, nil, err
