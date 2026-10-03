@@ -59,7 +59,7 @@ const (
 const schema = `
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0, beats TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, cursor TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', tail INTEGER NOT NULL DEFAULT 0, beats TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '', focus TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, root TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS roots(cwd TEXT PRIMARY KEY, root TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buckets(
@@ -107,14 +107,17 @@ CREATE TABLE IF NOT EXISTS limit_points(
 	windows TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS limit_points_by_ts ON limit_points(ts);
-PRAGMA user_version=5;
+-- The focus re-attribution's staging (see settleFocus): empty once settled.
+CREATE TABLE IF NOT EXISTS focus_beats(minute INTEGER NOT NULL, project INTEGER NOT NULL, PRIMARY KEY(minute, project)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS focus_found(id INTEGER NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(id, day)) WITHOUT ROWID;
+PRAGMA user_version=6;
 `
 
 // schemaVersion is the user_version the schema above ends on.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // readableSchema is the oldest schema the rollup and status queries run on
-// unchanged — schema 3 only added an index, schemas 4 and 5 a table and a
+// unchanged — schema 3 only added an index, schemas 4 to 6 tables and a
 // column each that they never read — so a store an index pass has not
 // migrated yet is still served. A migration that changes a table they read
 // raises it.
@@ -150,6 +153,8 @@ var migrations = map[int]column{
 	3: {"files", "beats", "TEXT NOT NULL DEFAULT ''"},
 	// v4 → v5: each rollout's limit-points backlog ('' = read before points existed).
 	4: {"files", "points", "TEXT NOT NULL DEFAULT ''"},
+	// v5 → v6: each file's focus debt ('' = read before AI minutes followed the focus).
+	5: {"files", "focus", "TEXT NOT NULL DEFAULT ''"},
 }
 
 type column struct{ table, name, decl string }
@@ -250,6 +255,13 @@ func (s *Store) prepare() error {
 		}
 		if _, err := s.db.Exec(schema); err != nil {
 			return fmt.Errorf("init %s: %w", path, err)
+		}
+		if version == 0 {
+			// Nothing was read under an older rule: no history to re-attribute.
+			// A pass killed before this line only re-attributes what it read.
+			if _, err := s.db.Exec("INSERT OR REPLACE INTO meta(key, value) VALUES('focus_rule', ?)", focusRule); err != nil {
+				return fmt.Errorf("init %s: %w", path, err)
+			}
 		}
 	}
 	s.version = schemaVersion

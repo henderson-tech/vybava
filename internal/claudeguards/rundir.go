@@ -53,6 +53,26 @@ func runDirs(cmd, cwd string) []runSeg {
 	return w.scan(nil, cmd, cwd, true, 0)
 }
 
+// RunSeg is one command a string runs and where: Dir is the directory a
+// literal cd or git -C provably moved it to when Known, the starting
+// directory otherwise.
+type RunSeg struct {
+	Text, Dir string
+	Known     bool
+}
+
+// RunDirs is runDirs for callers outside the guards — tokentime files an
+// agent's minutes under the repository its writing commands ran in — so
+// "where does this run" keeps one answer.
+func RunDirs(cmd, cwd string) []RunSeg {
+	segs := runDirs(cmd, cwd)
+	out := make([]RunSeg, len(segs))
+	for i, s := range segs {
+		out[i] = RunSeg{Text: s.text, Dir: s.dir, Known: s.known}
+	}
+	return out
+}
+
 // dirWalk is one runDirs pass. remote marks the payload of a remote runner,
 // where nothing on this machine is known.
 type dirWalk struct {

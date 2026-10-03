@@ -392,7 +392,8 @@ func TestProjectSelectsByTheRollupsName(t *testing.T) {
 
 // A name whose basename no root carries is answered from the root list
 // alone: suggesting the closest never sums a bucket, even when lifetime
-// tokens are what name the namesakes it suggests.
+// tokens are what name the namesakes it suggests. Telling a root with tokens
+// from one only a focus beat reached seeks one bucket per root, no more.
 func TestAMissSuggestsWithoutSummingBuckets(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	big, small := filepath.Join(base, "b", "lib"), filepath.Join(base, "a", "lib")
@@ -412,7 +413,7 @@ func TestAMissSuggestsWithoutSummingBuckets(t *testing.T) {
 		t.Fatalf("--project lbi = %v; want ErrUnknownProject suggesting lib", err)
 	}
 	for _, plan := range q.plans {
-		if strings.Contains(plan, "buckets") {
+		if strings.Contains(strings.ReplaceAll(plan, "SEARCH b EXISTS USING COVERING INDEX buckets_by_project (project=?)", ""), "buckets") {
 			t.Errorf("a miss planned a bucket read: %q", plan)
 		}
 	}

@@ -106,9 +106,13 @@ func (f fixture) index(t *testing.T, s *Store) IndexReport {
 
 var prague, _ = time.LoadLocation("Europe/Prague")
 
+// dropFocus leaves a store as the schema 5 binary did: no focus debts, no
+// staging, no settled re-attribution.
+const dropFocus = "DROP TABLE focus_beats; DROP TABLE focus_found; ALTER TABLE files DROP COLUMN focus; DELETE FROM meta WHERE key = 'focus_rule'; "
+
 // dropPoints leaves a store as the schema 4 binary did: no limit points, no
-// points backlog column.
-const dropPoints = "DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; "
+// points backlog column, nothing later.
+const dropPoints = dropFocus + "DROP TABLE limit_points; ALTER TABLE files DROP COLUMN points; "
 
 // dropBeats leaves a store as the schema 3 binary did: no beats, no backlog
 // column, nothing later.
@@ -498,6 +502,7 @@ func TestOnlyAPassHoldingTheLockCreatesOrMigratesTheStore(t *testing.T) {
 		ddl      string
 		readable bool
 	}{
+		{5, dropFocus + "PRAGMA user_version=5", true},
 		{4, dropPoints + "PRAGMA user_version=4", true},
 		{3, dropBeats + "PRAGMA user_version=3", true},
 		{2, dropBeats + "DROP INDEX buckets_by_project; PRAGMA user_version=2", true},

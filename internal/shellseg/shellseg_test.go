@@ -27,6 +27,9 @@ func TestSegmentsQuoting(t *testing.T) {
 			nil, []string{"git stash was the cause"}},
 		{"single quotes suppress control operators",
 			`echo 'a && b || c'`, nil, []string{"b", "c"}},
+		{"a descriptor redirect is not a background job",
+			`git status 2>&1 && make &>/tmp/log; cat <&3`,
+			[]string{"git status 2>&1", "make &>/tmp/log", "cat <&3"}, []string{"1", "git status 2>", ">/tmp/log"}},
 
 		// Command substitution still expands inside double quotes, so it must
 		// keep splitting there — this is what PR #60 closed.

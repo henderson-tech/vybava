@@ -81,6 +81,8 @@ func Split(cmd string) []Segment {
 			sep = "||"
 		case strings.HasPrefix(cmd[i:], "&&"):
 			sep = "&&"
+		case c == '&' && (i > 0 && (cmd[i-1] == '>' || cmd[i-1] == '<') || i+1 < len(cmd) && cmd[i+1] == '>'):
+			// `2>&1`, `<&3`, `&>log`: a redirection, not a background job.
 		case c == ';' || c == '&' || c == '|' || c == '\n':
 			sep = string(c)
 		}

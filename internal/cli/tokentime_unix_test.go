@@ -109,8 +109,8 @@ func TestTokentimeRollupServesTheStoreWhileTheIndexIsLocked(t *testing.T) {
 	if env, _ = run("rollup", "--days", "1", "--hours", "1"); env["ok"] != true {
 		t.Fatalf("rollup with the lock free = %v", env)
 	}
-	if v := schema(""); v != 5 {
-		t.Fatalf("schema after a rollup with the lock free = %d, want 5", v)
+	if v := schema(""); v != 6 {
+		t.Fatalf("schema after a rollup with the lock free = %d, want 6", v)
 	}
 }
 

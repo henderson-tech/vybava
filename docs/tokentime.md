@@ -219,6 +219,35 @@ them into hours: your attention and agent time, combined per client.
   counts a message's repeated blocks once and copied fork history not at all,
   and a copy keeping its record's time and cwd lands on the original's minute.
 
+**Where an AI minute goes: the repository the agent wrote in.** Agents reach
+sibling repositories by absolute path while every record keeps the cwd the
+session started in, so each transcript (main, subagent, workflow agent,
+rollout) keeps a *focus*: the record cwd's repository until a write lands in
+another one. A write is an Edit/Write/MultiEdit/NotebookEdit of a file; a
+Bash segment a `cd <dir>` (in a `( … )` too), `git -C <dir>` or
+`--cwd <dir>` moved off the cwd — where it runs is claude-guards' `RunDirs`,
+relative directories against the record cwd — unless the segment only
+inspects (`ls cat head tail less rg grep find fd wc jq stat file tree du pwd
+which echo printf true awk`, `sed -n`, git `log show status diff blame
+rev-parse ls-files grep fetch`, `branch --list`, `remote -v`, `config --get`;
+an output redirect to a file still writes); an MCP tool's `cwd` (onyx
+`run_command`, its argv judged the same way); a Codex `exec_command`/`shell`
+`workdir` (same rule on its command) and the files an `apply_patch` adds,
+updates, deletes or moves to. Reads (Read, Glob, Grep, WebFetch) never move
+it, and only tool inputs are parsed, never message text. A write outside every
+repository (`/tmp`) or into the agents' own state (`~/.claude` — plans,
+memory, handoffs — and `~/.codex`) moves nothing. A person's prompt, or a
+record cwd in another repository, sets the focus back to the cwd's.
+
+A response's minute goes to every repository its own tool calls wrote in, else
+to the focus. A Claude message's tool calls arrive in later records under the
+same id, so its minute waits — in the file's saved state, across passes —
+until the next message or prompt starts, or the message is 10 minutes old.
+Human minutes, tokens, the rollup and `project` keep the record cwd: a
+repository only focus minutes reached is a `beats` project but never a token
+project (`project` answers `UNKNOWN_PROJECT`), and it never changes how the
+token projects fold or are named.
+
 Beats are stored per minute × project × kind and kept forever, like
 buckets, so they outlive transcript cleanup. A project is the rollup's:
 worktrees fold into their repository, moved checkouts into their live
@@ -255,6 +284,24 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   that read covered, and a backlog that finds the file replaced reads the
   new content from byte 0 and ends where that content does. `index --json` reports what is left as
   `beatsPendingBytes`.
+- **The focus re-read.** A store indexed before AI minutes followed the
+  focus (schema 5 or older) filed them by cwd. Every file on disk owes a
+  re-read of the bytes read before (`files.focus`), paid like the backlog
+  above — after it, before the points backlog, newest files first, charging
+  nothing — into staging tables (`focus_beats`, `focus_found`); while it
+  runs, every pass stages the minutes it records too. Beats keep no
+  provenance, so a staged day replaces a stored one only when it can be
+  vouched for: every response charged on that UTC day (its permanent `seen`
+  identity) was found again, on that day, by a read that staged its minute.
+  Then no deleted transcript holds a minute of that day the re-read lacks, and
+  the day's AI minutes are swapped for the staged ones in the commit that
+  re-reads the last file (meta `focus_rule`). A day a deleted transcript
+  answered in keeps every AI minute it had, by cwd; beats never shrink with a
+  transcript. Until the swap the re-read counts in `beatsPendingBytes`, so
+  beats coverage stays incomplete. A transcript replaced or re-read while it
+  owes extends its debt as the backlog's does; one that shrinks or vanishes
+  leaves its responses unfound and their days as they were. One unbudgeted
+  `tokentime index` pays it in a single pass.
 - **Migrations** add one column each, and only when it is missing: a pass
   killed between a migration and the version bump leaves the column behind,
   and the next pass finishes the migration rather than failing on it.

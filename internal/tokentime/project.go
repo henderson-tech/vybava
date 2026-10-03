@@ -336,6 +336,9 @@ func byRoot(q querier, root string) (projectSet, int64, error) {
 	}
 	key := nameKey(root)
 	ps, err := namesakes(q, func(k string) bool { return k == key })
+	if err == nil && !ps.charged[ps.of(stored)] {
+		err = fmt.Errorf("%w: %s has no tokens", ErrUnknownProject, root) // only a focus beat reached it
+	}
 	return ps, ps.of(stored), err
 }
 
@@ -352,6 +355,7 @@ func byName(q querier, name string) (projectSet, int64, error) {
 	var exact, folded []int64
 	for id, n := range ps.names {
 		switch {
+		case !ps.charged[id]: // no token project: only a focus beat reached it
 		case n == name:
 			exact = append(exact, id)
 		case strings.EqualFold(n, name):
@@ -366,7 +370,13 @@ func byName(q querier, name string) (projectSet, int64, error) {
 	case 1:
 		return ps, matches[0], nil
 	case 0:
-		near, err := suggestions(q, name, ps.names)
+		charged := map[int64]string{}
+		for id, n := range ps.names {
+			if ps.charged[id] {
+				charged[id] = n
+			}
+		}
+		near, err := suggestions(q, name, charged)
 		if err != nil {
 			return projectSet{}, 0, err
 		}
@@ -403,7 +413,7 @@ func (e nameError) Is(target error) bool { return target == ErrUnknownProject }
 // and the names already derived for the missed name's own basename, where a
 // wrong parent ("x/lib") finds its qualified siblings ("a/lib").
 func suggestions(q querier, name string, namesakes map[int64]string) ([]string, error) {
-	rs, err := q.Query("SELECT root FROM projects")
+	rs, err := q.Query("SELECT root FROM projects p WHERE EXISTS (SELECT 1 FROM buckets b WHERE b.project = p.id)")
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +534,7 @@ func namesakes(q querier, same func(key string) bool) (projectSet, error) {
 		if err := sums.Scan(&id, &tokens); err != nil {
 			return projectSet{}, err
 		}
-		group[at[id]].tokens = tokens
+		group[at[id]].tokens, group[at[id]].charged = tokens, true
 	}
 	if err := sums.Err(); err != nil {
 		return projectSet{}, err

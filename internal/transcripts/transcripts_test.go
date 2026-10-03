@@ -165,6 +165,25 @@ func TestGitRootFoldsWorktreesAndSubmodules(t *testing.T) {
 			t.Errorf("GitRoot(%s) = %s, %v; want %s, %v", c.cwd, got, exact, c.want, c.exact)
 		}
 	}
+	// A path an agent wrote to: a new file in a repository has one, scratch
+	// space none. On a case-insensitive volume a mis-cased path is the same
+	// repository, spelled as the disk spells it.
+	if got, ok := RepoRoot(filepath.Join(repo, "src", "new.go")); got != repo || !ok {
+		t.Errorf("RepoRoot(a new file) = %s, %v; want %s", got, ok, repo)
+	}
+	if got, ok := RepoRoot(filepath.Join(base, "plain", "x.txt")); ok {
+		t.Errorf("RepoRoot(scratch) = %s, want none", got)
+	}
+	if upper := filepath.Join(base, "WORK", "APP"); exists(upper) {
+		if got := OnDiskCase(upper); got != repo {
+			t.Errorf("OnDiskCase(%s) = %s, want %s", upper, got, repo)
+		}
+	}
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func TestClaudeCacheWritesSplitByTTL(t *testing.T) {
