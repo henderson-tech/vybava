@@ -394,7 +394,7 @@ peaked at 680.
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or
 `-p wk-<slug>` (both worktree layouts), or a `wt-`/`wk-` prefixed worktree
-directory as cwd. A bare `down -v` inside a worktree stays blocked: compose
+directory the call provably runs in (the cwd, or a literal `cd … &&` chain). A bare `down -v` inside a worktree stays blocked: compose
 resolves the project from that tree's `.env`, and a copied `.env` is exactly
 how one worktree's teardown dropped another stack's volumes. Script-driven
 teardown (`bun run worktree:cleanup … --remove`) never trips any of this — the
@@ -494,6 +494,21 @@ arguments are data.
 `env`, so assignment prefixes are stripped before a rule reads the first token.
 They are stripped only from the front: `env FOO=bar make build` runs `env` as a
 runner and keeps its assignment.
+
+**Where a command runs is read from the command, not from the hook's cwd
+alone.** Claude Code resets the shell's cwd between calls, so a session parked
+in its checkout reaches another tree only by `cd <dir> && …` or `git -C <dir>`.
+`runDirs` (`rundir.go`) lists the same segments with the directory each one
+PROVABLY runs in, and every directory carve-out — a branch switch in a
+worktree, a `down -v` on a `wt-` stack — judges that directory. Fail-closed: a
+segment's directory is known only through a literal `cd`/`-C` target whose
+success is guaranteed by `&&` all the way to the segment, outside any subshell
+or substitution that closed before it, not a pipeline element (`echo | cd x` runs
+in its own subshell), with no `pushd`/`popd` and no remote runner in between; anything else (`$W`, `cd x;`, `cd x ||`) is judged at the
+cwd, exactly as before. The gap ran both ways: the git-switch denial
+recommended `cd .worktrees/<name>` and then blocked it, and from a worktree
+cwd `cd ../.. && git checkout` switched the primary clone unseen.
+
 
 ## Context tiers and diagnosis
 
