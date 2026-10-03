@@ -69,11 +69,15 @@ func (m Metrics) Scalars() map[Metric]float64 {
 		out[MetricWorstAppHitch] = m.IOS.WorstAppHitchMs
 		out[MetricHitchCount] = float64(m.IOS.HitchCount)
 	}
-	if m.Display != nil && m.Display.Frames > 0 {
-		out[MetricAnimatingFpsP10] = m.Display.AnimatingFpsP10
-		out[MetricAnimatingFpsMedian] = m.Display.AnimatingFpsMedian
-		out[MetricJankyPct] = m.Display.JankyPct
-		out[MetricFpsP10] = m.Display.FpsP10
+	if d := m.Display; d != nil && d.Frames > 0 {
+		out[MetricFpsP10] = d.FpsP10
+		// The animating readings and the janky share come from the animating
+		// bins only: without one they are unread, not zero.
+		if d.AnimatingBins > 0 {
+			out[MetricAnimatingFpsP10] = d.AnimatingFpsP10
+			out[MetricAnimatingFpsMedian] = d.AnimatingFpsMedian
+			out[MetricJankyPct] = d.JankyPct
+		}
 	}
 	if p := m.Present; p != nil {
 		// Present readings without FrameTimeline are unread, never zero samples.

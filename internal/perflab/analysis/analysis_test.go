@@ -635,3 +635,27 @@ func TestCompareMatchesRenderThreadDrawOnSharedClocks(t *testing.T) {
 		}
 	}
 }
+
+// A trace whose presents never formed an animating bin (sparse rest ticks,
+// a short capture) has no animating reading: its zeros are neither compare
+// samples nor budget checks, while the whole-window fps stays a reading.
+func TestAnimatingReadingsNeedAnAnimatingBin(t *testing.T) {
+	m := Metrics{Kind: KindPerfetto, Display: &framestats.DisplayMetrics{RefreshHz: 120, Frames: 14, FpsP10: 0.5}}
+	s := m.Scalars()
+	for _, k := range []Metric{MetricAnimatingFpsP10, MetricAnimatingFpsMedian, MetricJankyPct} {
+		if v, ok := s[k]; ok {
+			t.Errorf("%s = %v from no animating bin", k, v)
+		}
+	}
+	if _, ok := s[MetricFpsP10]; !ok {
+		t.Error("the whole-window fps is still a reading")
+	}
+	b := Budget{AndroidAnimatingFpsP10MinShare: ptrF(0.75), AndroidJankyPctMax: ptrF(20)}
+	if checks := checkBudget(b, m, 120); len(checks) != 0 {
+		t.Errorf("no animating bin, yet checks %+v", checks)
+	}
+	m.Display.AnimatingBins, m.Display.AnimatingFpsP10, m.Display.JankyPct = 4, 110, 5
+	if _, ok := m.Scalars()[MetricAnimatingFpsP10]; !ok || len(checkBudget(b, m, 120)) != 2 {
+		t.Errorf("animating bins are a reading: %+v", checkBudget(b, m, 120))
+	}
+}

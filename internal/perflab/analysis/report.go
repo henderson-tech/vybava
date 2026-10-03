@@ -356,13 +356,15 @@ func checkBudget(b Budget, m Metrics, refreshHz float64) []Check {
 		atMost("iosRestMainMsPerSMax", b.IOSRestMainMsPerSMax, *m.IOSRestMainMsPerS, true)
 	}
 	if d := m.Display; d != nil && d.Frames > 0 {
-		if b.AndroidAnimatingFpsP10MinShare != nil && d.RefreshHz > 0 {
+		// The animating share and the janky share read the animating bins
+		// only: without one there is no reading to check (Metrics.Scalars).
+		if b.AndroidAnimatingFpsP10MinShare != nil && d.RefreshHz > 0 && d.AnimatingBins > 0 {
 			limit := *b.AndroidAnimatingFpsP10MinShare
 			share := d.AnimatingFpsP10 / d.RefreshHz
 			add("androidAnimatingFpsP10MinShare", share, limit, share >= limit, true,
 				fmt.Sprintf("%.1f of %.0f Hz", d.AnimatingFpsP10, d.RefreshHz))
 		}
-		atMost("androidJankyPctMax", b.AndroidJankyPctMax, d.JankyPct, true)
+		atMost("androidJankyPctMax", b.AndroidJankyPctMax, d.JankyPct, d.AnimatingBins > 0)
 		if b.AndroidFpsP10Min != nil {
 			gating := d.RefreshHz <= 60.5
 			note := ""
