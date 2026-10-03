@@ -77,15 +77,29 @@ func TestStateCountsAPassAndNamesTheNextStage(t *testing.T) {
 }
 
 // The workflow gates on contract and quotes the lint the shots were taken
-// with, so both travel even before the first pass, defaults filled.
+// with, so both travel even before the first pass, defaults filled; a pass
+// reports its run.json's lint, not a config changed since.
 func TestStateCarriesTheContractAndTheEffectiveLint(t *testing.T) {
-	res, err := newTool(t, testConfig()).State(StateOptions{})
-	if err != nil {
-		t.Fatal(err)
+	tool := newTool(t, testConfig())
+	lint := func() StateLint {
+		t.Helper()
+		res, err := tool.State(StateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := res.Data.(StateData)
+		if s.Contract != StateContract || s.Vybava != "1.2.3" {
+			t.Errorf("contract %d, vybava %q", s.Contract, s.Vybava)
+		}
+		return s.Config.Lint
 	}
-	s := res.Data.(StateData)
-	if s.Contract != StateContract || s.Vybava != "1.2.3" || s.Config.Lint != (StateLint{Grid: 4, TouchTarget: 44}) {
-		t.Errorf("contract %d, vybava %q, lint %+v", s.Contract, s.Vybava, s.Config.Lint)
+	if l := lint(); l != (StateLint{Grid: 4, TouchTarget: 44}) {
+		t.Errorf("no pass: the config's lint, defaults filled, got %+v", l)
+	}
+	stagePass(t, tool)
+	writeFile(t, filepath.Join(tool.passAbs(1), "run.json"), `{"lint":{"grid":4,"touchTarget":40}}`)
+	if l := lint(); l != (StateLint{Grid: 4, TouchTarget: 40}) {
+		t.Errorf("pass 1 was linted at 40, got %+v", l)
 	}
 }
 

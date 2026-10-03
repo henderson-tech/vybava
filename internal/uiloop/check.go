@@ -120,8 +120,10 @@ func (t *Tool) specLintDrift() ([]runxDiagnostic, error) {
 		if strings.Contains(text, strings.Join(strings.Fields(r.Line), " ")) {
 			continue
 		}
-		out = append(out, warn(DiagSpecLintDrift, fmt.Sprintf("%s does not state uiLoop.%s %d: missing %q", t.Config.Spec, r.Knob, r.Value, r.Line),
-			fmt.Sprintf("between passes (a spec edit stales the current pass's reviews), add `- %s` to %s, or set uiLoop.%s to the value the spec states", r.Line, t.Config.Spec, r.Knob)))
+		// The spec may state the value in its own words, so the detail claims
+		// only the missing line, and the knob is the fix only for another value.
+		out = append(out, warn(DiagSpecLintDrift, fmt.Sprintf("%s does not carry the line init writes for uiLoop.%s %d: %q", t.Config.Spec, r.Knob, r.Value, r.Line),
+			fmt.Sprintf("between passes (a spec edit stales the current pass's reviews), add `- %s` to %s; if the spec means another value, set uiLoop.%s to it instead", r.Line, t.Config.Spec, r.Knob)))
 	}
 	return out, nil
 }

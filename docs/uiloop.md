@@ -267,14 +267,14 @@ The fields follow these rules:
   "checks": [{ "id": "apps", "status": "fail", "detail": "portal http://10.8.0.10:21782 ($UI_LOOP_PORTAL_URL): answers 200 with the Vite error overlay", "fix": "fix the build error …" }] }
 ```
 
-Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` is false iff a check fails; the envelope then carries the failing checks' diagnostics as errors and exits 2. A check the `--for` stage does not need warns instead of failing. Without `--for`, every stage needs every check.
+Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` is false iff a check fails; the envelope then carries the failing checks' diagnostics as errors and exits 2. Like `check`'s, `next` lists only the fixes of what fails, never a warning's. A check the `--for` stage does not need warns instead of failing. Without `--for`, every stage needs every check.
 
 | Id | What it checks | Fails for |
 |---|---|---|
-| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. | every stage |
+| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. | `capture`, `verify`, which run the harness (warns for `review`, `fix`) |
 | `contract` | Always `ok`; the detail names `StateContract`, so a workflow can compare. | — |
 | `apps` | Each app's base URL, resolved like the capture's (the app's `env` var when it is set here), answers 2xx/3xx within 5 s and is no dev-server error page: the Vite overlay or error page, `Cannot GET`, an Angular CLI/esbuild compile error (`✘ [ERROR]`) or `Failed to compile`. A redirect is an answer and is not followed (`APP_UNREACHABLE`). | `capture`, `verify` (warns for `review`, `fix`) |
-| `pass` | The newest pass has shots. A shot-less one warns: the next `run` reuses it, never skips it, and `state` reads it as the latest. Its fix is `run --resume --pass N`, or deleting it when it is a stray `--print` and an earlier pass is the one to carry on. No pass at all is `ok` for `capture` and without `--for`, since `run` starts pass-1 (`PASS_MISSING`). | `review`, `fix`, `verify`, when no pass holds shots |
+| `pass` | The newest pass has shots. A shot-less one warns: the next `run` reuses it, never skips it, and `state` reads it as the latest. Its fix is what `state` chains: `run --resume --pass N` while the source still matches the revision in its `capture.json` (a resume from a moved HEAD is refused), else a plain `run`, which reuses it; or deleting it when it is a stray `--print` and an earlier pass is the one to carry on. No pass at all is `ok` for `capture` and without `--for`, since `run` starts pass-1 (`PASS_MISSING`). | `review`, `fix`, `verify`, when no pass holds shots |
 | `workspace` | Always `skip`: the Devbox workspace and its hold are not in the config yet. | — |
 | `signin` | Always `skip`: per-persona sign-in is not probed yet. | — |
 
@@ -302,7 +302,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 ```
 
 - `vybava` is this binary's version as `vybava --version` prints it (`dev` for a source build). `contract` is `StateContract` (`stage.go`): it is bumped whenever a field a workflow reads is added or changes format, digests included, and the review-loop refuses a lower one (`UILOOP_STATE_CONTRACT`). A `state` without it predates the contract: `brew upgrade --cask vybava`.
-- `config.lint` is the lint the capture applies, `grid` and `touchTarget` with the defaults (4, 44) filled, so a reviewer brief quotes the values the shots were linted with.
+- `config.lint` is the lint the pass was captured with (its `run.json`), else the config's before the first pass: `grid` and `touchTarget` with the defaults (4, 44) filled, so a reviewer brief quotes the values the shot records were measured with, even after `vybava.config.ts` changed.
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
 - `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
 - `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).

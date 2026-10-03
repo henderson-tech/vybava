@@ -111,8 +111,8 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "Preflight a stage: check's findings, the state contract, app reachability and the newest pass — each with its fix",
 		Long: "doctor runs every check a review-loop stage depends on and reports each as\n" +
 			"ok, warn, fail or skip with a fix. ok is false (exit 2) iff a check fails; a\n" +
-			"check the --for stage does not need (app reachability for review or fix)\n" +
-			"warns instead of failing.",
+			"check the --for stage does not need (check's harness and manifest, app\n" +
+			"reachability: review and fix run neither) warns instead of failing.",
 		Args: cobra.NoArgs,
 		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
 			return t.Doctor(context.Background(), uiloop.DoctorOptions{For: stage})

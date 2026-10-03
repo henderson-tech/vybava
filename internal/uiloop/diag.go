@@ -21,8 +21,8 @@ const (
 	// DiagSpecLintDrift: the spec (uiLoop.spec) no longer holds a line init
 	// writes for a lint knob, rendered with the config's current value
 	// ("Touch targets are at least 40×40px …"), so reviewers judge against
-	// one value while the lint measures another (warning on check) — restore
-	// the line, or set the knob to the value the spec states.
+	// one value while the lint measures another (warning on check) — add the
+	// line, or set the knob when the spec means another value.
 	DiagSpecLintDrift = "SPEC_LINT_DRIFT"
 	// DiagManifestInvalid: check.ts found manifest problems; the detail lists them.
 	DiagManifestInvalid = "MANIFEST_INVALID"

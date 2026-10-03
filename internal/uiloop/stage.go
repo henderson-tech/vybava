@@ -92,8 +92,9 @@ type StateConfig struct {
 	Lint        StateLint `json:"lint"`
 }
 
-// StateLint is the lint the capture applies, defaults filled, so a reviewer
-// brief quotes the values the shots were linted with, not the spec's.
+// StateLint is the lint the pass's shots were linted with (its run.json, which
+// the config does not stale), else the config's, defaults filled, so a
+// reviewer brief quotes the values the shot records measured, not the spec's.
 type StateLint struct {
 	Grid        int `json:"grid"`
 	TouchTarget int `json:"touchTarget"`
@@ -722,6 +723,16 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	if _, err := os.Stat(t.passAbs(pass)); err != nil {
 		return Result{}, diag(DiagPassMissing, data.PassDir+" does not exist", "omit --pass for the latest pass")
+	}
+	var run struct {
+		Lint StateLint `json:"lint"`
+	}
+	ran, err := readJSON(filepath.Join(t.passAbs(pass), "run.json"), &run)
+	if err != nil {
+		return Result{}, err
+	}
+	if ran {
+		data.Config.Lint = run.Lint
 	}
 	records, err := LoadRecords(t.passAbs(pass))
 	if err != nil {

@@ -58,7 +58,8 @@ type DoctorOptions struct {
 const appProbeTimeout = 5 * time.Second
 
 // Doctor runs every check. A failing check the --for stage does not need
-// (app reachability for review or fix) warns instead.
+// (check's harness and manifest, app reachability: review and fix run
+// neither) warns instead.
 func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 	if o.For != "" && !slices.Contains(DoctorStages, o.For) {
 		return Result{}, diag(DiagSelectionInvalid, fmt.Sprintf("--for %q is not one of %s", o.For, strings.Join(DoctorStages, ", ")), "vybava ui-loop doctor --for capture --json")
@@ -72,7 +73,7 @@ func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 		return Result{}, err
 	}
 	data := DoctorData{OK: true, Vybava: t.Version, Contract: StateContract, Checks: []DoctorCheck{
-		check,
+		neededBy(check, o.For, "capture", "verify"),
 		{ID: "contract", Status: DoctorOK, Detail: fmt.Sprintf("ui-loop state contract %d (vybava %s)", StateContract, t.Version),
 			Fix: "brew upgrade --cask vybava"},
 		neededBy(t.doctorApps(ctx, o.For), o.For, "capture", "verify"),
@@ -87,7 +88,8 @@ func (t *Tool) Doctor(ctx context.Context, o DoctorOptions) (Result, error) {
 		data.OK = data.OK && c.Status != DoctorFail
 		res.Diagnostics = append(res.Diagnostics, c.diags...)
 		for _, d := range c.diags {
-			if d.Fix != "" && d.Severity != "info" && !slices.Contains(res.Next, d.Fix) {
+			// Like check's, next carries what blocks the stage, never a warning's fix.
+			if d.Fix != "" && d.Severity == "error" && !slices.Contains(res.Next, d.Fix) {
 				res.Next = append(res.Next, d.Fix)
 			}
 		}
@@ -232,7 +234,8 @@ func probeApp(ctx context.Context, client *http.Client, url string) (problem str
 
 // doctorPass reads the newest pass. A shot-less one warns whatever the
 // stage: `run` reuses it rather than skipping it (ResolvePass), and `state`
-// reads it as the latest pass. No pass with shots at all fails the stages
+// reads it as the latest pass; it resumes only from an unchanged source. No
+// pass with shots at all fails the stages
 // that judge one (review, fix, verify); capture starts one.
 func (t *Tool) doctorPass(stage string) (DoctorCheck, error) {
 	row := DoctorCheck{ID: "pass", Status: DoctorOK}
@@ -262,7 +265,21 @@ func (t *Tool) doctorPass(stage string) (DoctorCheck, error) {
 	}
 	row.Status = DoctorWarn
 	row.Detail = fmt.Sprintf("%s holds no shots yet (a --print whose command never ran, or a capture killed before its first shot): the next run reuses it, never skips it, and state reads it as the latest pass", dir)
-	row.Fix = fmt.Sprintf("vybava ui-loop run --resume --pass %d", last)
+	// The fix is state's next: --resume only while the source still matches
+	// the revision capture.json recorded (captureProvenance refuses it
+	// otherwise); else a plain run, which reuses the pass.
+	row.Fix = "vybava ui-loop run"
+	var marker captureEvidence
+	if _, err := readJSON(filepath.Join(t.passAbs(last), "capture.json"), &marker); err != nil {
+		return row, err
+	}
+	resume, err := t.sourceUnchanged(marker.HeadSHA)
+	if err != nil {
+		return row, err
+	}
+	if resume {
+		row.Fix = fmt.Sprintf("vybava ui-loop run --resume --pass %d", last)
+	}
 	prev := 0
 	for _, p := range passes[:len(passes)-1] {
 		if t.hasShots(p) {
