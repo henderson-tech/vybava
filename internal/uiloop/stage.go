@@ -1325,14 +1325,19 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 		}
 	}
 	// Under the lease mutex, against the file as it is now: a split or a
-	// block written since the read above is kept.
+	// block written since the read above is kept, and the stalls of a batch
+	// the plan redrew go with it.
 	err = t.underLeases(pass, func() error {
 		var now BatchesFile
 		if _, err := readJSON(file, &now); err != nil {
 			return err
 		}
-		all = all.keepSplits(now)
-		return writeJSON(file, all)
+		var redrawn []string
+		all, redrawn = all.keepSplits(now)
+		if err := writeJSON(file, all); err != nil {
+			return err
+		}
+		return t.clearStalls(pass, redrawn)
 	})
 	if err != nil {
 		return Result{}, err
@@ -1517,8 +1522,8 @@ func union(a, b []string) []string {
 // batches carries from the previous pass take that pass's items on them
 // as they stood, with carriedFrom, and count as reviewed; a carried screen
 // retaken since (carriesNow) takes nothing and is unreviewed. A blocked
-// batch's screens no raw read or listed are unreviewed as
-// "<id> (stalled: <reason>)".
+// batch's screens no raw read or listed are unreviewed, as
+// "<id> (stalled: <reason>)" when they have an ok shot.
 func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesFile, okShots map[string][]string, digests map[string]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
@@ -1703,13 +1708,17 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 		}
 	}
 	// A screen of a blocked batch that no raw judged, and no reviewer listed
-	// unreviewed with a why of its own, stalled.
+	// unreviewed with a why of its own, stalled; one without an ok shot is
+	// unreviewed by its capture, not the stall, so it keeps its plain id.
 	stalled := map[string]string{}
 	for _, bt := range batches.leaves() {
 		for _, id := range bt.Screens {
 			listed := slices.ContainsFunc(skips, func(s map[string]bool) bool { return s[id] })
 			if bt.Blocked && !judged[id] && !listed {
-				skipped[id], stalled[id] = true, bt.BlockedReason
+				skipped[id] = true
+				if len(okShots[id]) > 0 {
+					stalled[id] = bt.BlockedReason
+				}
 			}
 		}
 	}

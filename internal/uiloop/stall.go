@@ -89,9 +89,11 @@ func (b Batch) part(id string, screens []string) Batch {
 // planned again with its prior screens keeps its block and its parts, which
 // follow it with their screens frozen and the plan's digests. A batch whose
 // screens moved (a carry gained or lost re-chunks its area) is a new batch,
-// neither split nor blocked; the raws of its old parts still count screen by
-// screen.
-func (f BatchesFile) keepSplits(prior BatchesFile) BatchesFile {
+// neither split nor blocked, because it holds screens the old one did not;
+// the raws of its old parts still count screen by screen. redrawn are the
+// prior batches f no longer holds with their screens (such a batch and its
+// old parts): their stalls were another batch's (clearStalls).
+func (f BatchesFile) keepSplits(prior BatchesFile) (_ BatchesFile, redrawn []string) {
 	byID := map[string]Batch{}
 	for _, b := range prior.Batches {
 		byID[b.ID] = b
@@ -116,7 +118,12 @@ func (f BatchesFile) keepSplits(prior BatchesFile) BatchesFile {
 		}
 	}
 	f.Batches = out
-	return f
+	for _, b := range prior.Batches {
+		if i := f.index(b.ID); i < 0 || !slices.Equal(f.Batches[i].Screens, b.Screens) {
+			redrawn = append(redrawn, b.ID)
+		}
+	}
+	return f, redrawn
 }
 
 // settle judges the split batches by their parts: a part is complete when
@@ -185,10 +192,17 @@ func (t *Tool) noBatch(pass int, flag, id string) error {
 // editBatches rewrites review/batches.json through edit under the pass's
 // lease mutex, which Batches writes a re-plan under too, so a split or a
 // block never races a re-plan that would drop it. edit reports whether it
-// changed the file; a refusal is its error.
-func (t *Tool) editBatches(pass int, edit func(*BatchesFile) (bool, error)) error {
+// changed the file; a refusal is its error. A pass without batches.json is
+// refused before the mutex is taken: --flag has no batch to act on yet.
+func (t *Tool) editBatches(pass int, flag string, edit func(*BatchesFile) (bool, error)) error {
+	file := filepath.Join(t.reviewDir(pass), "batches.json")
+	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+		return diag(DiagPassMissing, t.PassDir(pass)+"/review/batches.json does not exist: no batch is planned yet",
+			fmt.Sprintf("vybava ui-loop batches --pass %d --json (plans them), then --%s <id>", pass, flag))
+	} else if err != nil {
+		return err
+	}
 	return t.underLeases(pass, func() error {
-		file := filepath.Join(t.reviewDir(pass), "batches.json")
 		var f BatchesFile
 		if _, err := readJSON(file, &f); err != nil {
 			return err
@@ -210,6 +224,23 @@ func (t *Tool) dropClaim(pass int, id string) error {
 	return nil
 }
 
+// attemptsFile is review/attempts/<id>.json, batch id's stalls.
+func (t *Tool) attemptsFile(pass int, id string) string {
+	return filepath.Join(t.reviewDir(pass), "attempts", id+".json")
+}
+
+// clearStalls removes the stalls of the batches a re-plan redrew
+// (keepSplits); the caller holds the lease mutex. A batch planned under such
+// an id since holds other screens, so its stalls count from one.
+func (t *Tool) clearStalls(pass int, ids []string) error {
+	for _, id := range ids {
+		if err := os.Remove(t.attemptsFile(pass, id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // splitBatch is `batches --split`: it halves o.Split (Batch.halves), records
 // the parts on it in batches.json and releases its claim. A batch already
 // split answers its parts unchanged; one screen cannot split, and a blocked
@@ -218,7 +249,7 @@ func (t *Tool) dropClaim(pass int, id string) error {
 func (t *Tool) splitBatch(pass int, o BatchesOptions) (Result, error) {
 	var file BatchesFile
 	var parts []Batch
-	err := t.editBatches(pass, func(f *BatchesFile) (bool, error) {
+	err := t.editBatches(pass, "split", func(f *BatchesFile) (bool, error) {
 		file = *f
 		i := f.index(o.Split)
 		if i < 0 {
@@ -282,24 +313,29 @@ func (t *Tool) splitBatch(pass int, o BatchesOptions) (Result, error) {
 }
 
 // stallBatch is `batches --stall`: it counts one reviewer stall of o.Stall
-// in review/attempts/<id>.json.
+// in review/attempts/<id>.json. Only a batch a reviewer takes stalls: a split
+// batch is reviewed through its parts and a blocked one by nobody.
 func (t *Tool) stallBatch(pass int, o BatchesOptions) (Result, error) {
-	var f BatchesFile
-	if _, err := readJSON(filepath.Join(t.reviewDir(pass), "batches.json"), &f); err != nil {
-		return Result{}, err
-	}
-	if f.index(o.Stall) < 0 {
-		return Result{}, t.noBatch(pass, "stall", o.Stall)
-	}
 	var a Attempts
-	err := t.underLeases(pass, func() error {
-		file := filepath.Join(t.reviewDir(pass), "attempts", o.Stall+".json")
+	err := t.editBatches(pass, "stall", func(f *BatchesFile) (bool, error) {
+		i := f.index(o.Stall)
+		switch {
+		case i < 0:
+			return false, t.noBatch(pass, "stall", o.Stall)
+		case len(f.Batches[i].Parts) > 0:
+			return false, diag(DiagSelectionInvalid, fmt.Sprintf("batch %s is split into %s: stall the part the reviewer took", o.Stall, strings.Join(f.Batches[i].Parts, ", ")),
+				fmt.Sprintf("vybava ui-loop batches --pass %d --stall %s --json", pass, f.Batches[i].Parts[0]))
+		case f.Batches[i].Blocked:
+			return false, diag(DiagSelectionInvalid, fmt.Sprintf("batch %s is blocked (%s): no reviewer takes it, so it never stalls", o.Stall, f.Batches[i].BlockedReason),
+				fmt.Sprintf("vybava ui-loop state --pass %d --json", pass))
+		}
+		file := t.attemptsFile(pass, o.Stall)
 		if _, err := readJSON(file, &a); err != nil {
-			return err
+			return false, err
 		}
 		a.Stalls++
 		a.At = append(a.At, t.Now().UTC().Format(time.RFC3339))
-		return writeJSON(file, a)
+		return false, writeJSON(file, a)
 	})
 	if err != nil {
 		return Result{}, err
@@ -310,7 +346,7 @@ func (t *Tool) stallBatch(pass int, o BatchesOptions) (Result, error) {
 // blockBatch is `batches --block`: it takes o.Block out of the review for
 // o.Reason and releases its claim. A split batch is blocked through its parts.
 func (t *Tool) blockBatch(pass int, o BatchesOptions) (Result, error) {
-	err := t.editBatches(pass, func(f *BatchesFile) (bool, error) {
+	err := t.editBatches(pass, "block", func(f *BatchesFile) (bool, error) {
 		i := f.index(o.Block)
 		if i < 0 {
 			return false, t.noBatch(pass, "block", o.Block)

@@ -2,7 +2,9 @@ package uiloop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -144,6 +146,11 @@ func TestAPartIsClaimableAndASplitReleasesTheBatchClaim(t *testing.T) {
 	if s.Claimed == nil || !slices.Equal(batchIDs(*s.Claimed), []string{"tasks-1.1"}) {
 		t.Errorf("run-b claims a part: %+v", s.Claimed)
 	}
+	// A left judged before the split still names the split batch: the claim
+	// reads batches.json as it is under the mutex.
+	if ids, err := tool.claimBatches(1, []string{"tasks-1", "tasks-1.2"}, 2, "run-c", DefaultClaimTTL); err != nil || !slices.Equal(ids, []string{"tasks-1.2"}) {
+		t.Errorf("a claim from a stale left: %v %v", ids, err)
+	}
 	if c := batchesOf(t, tool, BatchesOptions{Claim: 2, Owner: "run-c"}).Claimed; !slices.Equal(batchIDs(*c), []string{"tasks-1.2"}) {
 		t.Errorf("run-c claims the other part: %+v", *c)
 	}
@@ -204,16 +211,31 @@ func TestABlockedPartsScreensAreUnreviewedAndTheReviewSynthesizes(t *testing.T) 
 	if _, err := readJSON(filepath.Join(tool.reviewDir(1), "batches.json"), &f); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, u := MergeReview(1, nil, []rawReview{raw}, f, nil, map[string]string{}); !slices.Equal(u, []string{"s3 (stalled: reviewer stalled twice)", "s4"}) {
+	okShots := map[string][]string{"s3": {"s3@phone.light"}, "s4": {"s4@phone.light"}}
+	if _, _, _, u := MergeReview(1, nil, []rawReview{raw}, f, okShots, map[string]string{}); !slices.Equal(u, []string{"s3 (stalled: reviewer stalled twice)", "s4"}) {
 		t.Errorf("unreviewed beside a reviewer's own entry: %v", u)
+	}
+	// Nor is a screen without an ok shot: its capture failed, not the reviewer.
+	delete(okShots, "s4")
+	if _, _, _, u := MergeReview(1, nil, nil, f, okShots, map[string]string{}); !slices.Equal(u, []string{"s3 (stalled: reviewer stalled twice)", "s4"}) {
+		t.Errorf("unreviewed with an unshot screen: %v", u)
 	}
 }
 
 // --stall counts a batch's stalls in review/attempts/<id>.json, with when,
-// and state shows the count; an unknown batch or two actions are refused.
+// and state shows the count; an unknown, split or blocked batch or two
+// actions are refused, and a pass with no batches.json before any lease.
 func TestAStallIsCountedAndShownInState(t *testing.T) {
 	tool := newTool(t, testConfig())
 	stallPass(t, tool)
+	for _, o := range []BatchesOptions{{Stall: "tasks-1"}, {Split: "tasks-1"}} {
+		if _, err := tool.Batches(o); diagCode(err) != DiagPassMissing {
+			t.Errorf("%+v before any plan: %v", o, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tool.passAbs(1), "locks")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refusal took the lease mutex: %v", err)
+	}
 	batchesOf(t, tool, BatchesOptions{})
 	now := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
 	tool.Now = func() time.Time { return now }
@@ -236,7 +258,11 @@ func TestAStallIsCountedAndShownInState(t *testing.T) {
 	if r := res.Data.(StateData).Review; !reflect.DeepEqual(r.Stalls, map[string]int{"tasks-1": 2}) {
 		t.Errorf("state.review.stalls: %v", r.Stalls)
 	}
-	for _, o := range []BatchesOptions{{Stall: "tasks-9"}, {Stall: "tasks-1", Split: "tasks-1"}, {Stall: "tasks-1", Claim: 1, Owner: "run-a"}} {
+	splitOf(t, tool, BatchesOptions{Split: "tasks-1"})
+	if _, err := tool.Batches(BatchesOptions{Block: "tasks-1.2", Reason: "reviewer stalled twice"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []BatchesOptions{{Stall: "tasks-9"}, {Stall: "tasks-1"}, {Stall: "tasks-1.2"}, {Stall: "tasks-1.1", Split: "tasks-1.1"}, {Stall: "tasks-1.1", Claim: 1, Owner: "run-a"}} {
 		if _, err := tool.Batches(o); diagCode(err) != DiagSelectionInvalid {
 			t.Errorf("stall %+v: %v", o, err)
 		}
@@ -259,5 +285,25 @@ func TestABlockedBatchLeavesTheCarryOn(t *testing.T) {
 	writeFile(t, filepath.Join(tool.reviewDir(1), "basis.json"), `{"basis":"`+basis+`"}`)
 	if b := batchesOf(t, tool, BatchesOptions{Pass: 2}); !slices.Equal(b.Carried, []Carried{{Screen: "tasks", From: 1}}) {
 		t.Errorf("pass 2 after a blocked pass-1 batch: %+v", b)
+	}
+}
+
+// A re-plan that moves a blocked batch's screens (a retake loses a carry and
+// re-chunks the area) draws a new batch: it holds a screen nobody reviewed,
+// so it is left again, unblocked, and its stalls count from one.
+func TestARePlanThatMovesABlockedBatchsScreensDrawsANewBatch(t *testing.T) {
+	tool := carryPasses(t)
+	batchesOf(t, tool, BatchesOptions{Pass: 2})
+	for _, o := range []BatchesOptions{{Pass: 2, Stall: "tasks-1"}, {Pass: 2, Stall: "tasks-1"}, {Pass: 2, Block: "tasks-1", Reason: "reviewer stalled twice"}} {
+		if _, err := tool.Batches(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePNG(t, filepath.Join(tool.passAbs(2), "shots", "tasks", "phone.light.png"), 10, 10, 50)
+	if b := batchesOf(t, tool, BatchesOptions{Pass: 2}); !slices.Equal(b.Left, []string{"tasks-1"}) || b.Batches[0].Blocked || !slices.Equal(b.Batches[0].Screens, []string{"task-detail", "tasks"}) {
+		t.Errorf("batches after the re-chunk: %+v", b)
+	}
+	if res, err := tool.Batches(BatchesOptions{Pass: 2, Stall: "tasks-1"}); err != nil || res.Data != (StallData{Batch: "tasks-1", Stalls: 1}) {
+		t.Errorf("the new batch's first stall: %+v %v", res.Data, err)
 	}
 }

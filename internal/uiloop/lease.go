@@ -376,7 +376,9 @@ func (t *Tool) holdLease(pass int, name string, r leaseReq) (release func(err *e
 // claimBatches claims up to n of the left batch ids for owner, in order, as
 // batch-<id> owner leases: the ones owner already holds first (renewed),
 // then unclaimed or stale-claimed ones; another owner's live claim is
-// skipped. Under one mutex, so two claims never share a batch.
+// skipped. Under one mutex, so two claims never share a batch, and against
+// batches.json as it is under it: a batch split or blocked since left was
+// judged (stall.go) is no reviewer's to take.
 func (t *Tool) claimBatches(pass int, left []string, n int, owner string, ttl time.Duration) ([]string, error) {
 	r := leaseReq{owner: owner, ttl: ttl}
 	host, err := leaseHost()
@@ -386,8 +388,15 @@ func (t *Tool) claimBatches(pass int, left []string, n int, owner string, ttl ti
 	me := Lease{Owner: owner, Host: host}
 	claimed := []string{}
 	err = t.underLeases(pass, func() error {
+		var f BatchesFile
+		if _, err := readJSON(filepath.Join(t.reviewDir(pass), "batches.json"), &f); err != nil {
+			return err
+		}
 		var mine, free []string
 		for _, id := range left {
+			if i := f.index(id); i < 0 || len(f.Batches[i].Parts) > 0 || f.Batches[i].Blocked {
+				continue
+			}
 			cur, err := t.readLease(pass, batchLease(id))
 			if err != nil {
 				return err
