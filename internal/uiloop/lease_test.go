@@ -4,7 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -90,5 +92,78 @@ func TestAStaleLeaseIsReplaced(t *testing.T) {
 		if err := tool.releaseLease(1, leaseCapture, got); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Two claims at once never share a batch, a complete batch is never
+// claimed, and an owner claiming again gets its own claims back.
+func TestTwoClaimsTakeDisjointBatches(t *testing.T) {
+	tool := newTool(t, testConfig())
+	dir := stagePass(t, tool)
+	writeFile(t, filepath.Join(dir, "review", "raw", "tasks-1.json"), `{"batch":"tasks-1","area":"tasks"}`)
+	claim := func(owner string, n int) BatchesData {
+		res, err := tool.Batches(BatchesOptions{Size: 1, Claim: n, Owner: owner})
+		if err != nil {
+			t.Error(err)
+			return BatchesData{}
+		}
+		return res.Data.(BatchesData)
+	}
+	ids := func(b BatchesData) []string {
+		var out []string
+		for _, c := range *b.Claimed {
+			out = append(out, c.ID)
+		}
+		return out
+	}
+	var a, b BatchesData
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); a = claim("run-a", 2) }()
+	go func() { defer wg.Done(); b = claim("run-b", 2) }()
+	wg.Wait()
+	if t.Failed() {
+		t.FailNow()
+	}
+	both := append(ids(a), ids(b)...)
+	slices.Sort(both)
+	if !slices.Equal(both, []string{"admin-1", "tasks-2"}) || len(a.Batches) != 3 || !slices.Equal(a.Left, []string{"tasks-2", "admin-1"}) {
+		t.Fatalf("disjoint claims of the left batches: a %v, b %v, batches %d, left %v", ids(a), ids(b), len(a.Batches), a.Left)
+	}
+	if again := claim("run-a", 2); !slices.Equal(ids(again), ids(a)) {
+		t.Errorf("run-a claims again: %v, held %v", ids(again), ids(a))
+	}
+	if res, err := tool.Batches(BatchesOptions{}); err != nil || res.Data.(BatchesData).Claimed != nil {
+		t.Errorf("without --claim nothing is claimed: %v", err)
+	}
+	if _, err := tool.Batches(BatchesOptions{Claim: 2}); diagCode(err) != DiagSelectionInvalid {
+		t.Errorf("--claim needs --owner: %v", err)
+	}
+}
+
+// Of N identical review runs one synthesizes: the synth lease an owner's
+// merge-review takes outlives the command, so another owner (or a
+// merge-review without one) is refused until it runs out.
+func TestMergeReviewRefusesWhileAnotherOwnerHoldsSynth(t *testing.T) {
+	tool := newTool(t, testConfig())
+	writePass(t, tool, 1, []shot{{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1}})
+	writeFile(t, filepath.Join(tool.passAbs(1), "review", "raw", "tasks-1.json"), `{"batch":"tasks-1","area":"tasks","findings":[]}`)
+	now := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+	tool.Now = func() time.Time { return now }
+	if _, err := tool.MergeReview(MergeReviewOptions{Owner: "run-a"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []string{"run-b", ""} {
+		_, err := tool.MergeReview(MergeReviewOptions{Owner: owner})
+		if diagCode(err) != DiagLeaseHeld || !strings.Contains(err.Error(), "held by run-a since 2026-10-03T09:00:00Z") {
+			t.Errorf("owner %q while run-a synthesizes: %v", owner, err)
+		}
+	}
+	if _, err := tool.MergeReview(MergeReviewOptions{Owner: "run-a"}); err != nil {
+		t.Errorf("run-a merges again: %v", err)
+	}
+	now = now.Add(2 * time.Hour)
+	if _, err := tool.MergeReview(MergeReviewOptions{Owner: "run-b"}); err != nil {
+		t.Errorf("run-a's synth ran out: %v", err)
 	}
 }

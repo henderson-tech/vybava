@@ -1180,6 +1180,11 @@ type BatchesOptions struct {
 	Pass  int
 	Size  int // 0: the persisted size, else DefaultBatchSize
 	Areas []string
+	// Claim > 0 claims up to Claim left batches for Owner (a run id) as
+	// batch-<id> leases held for TTL (0: DefaultClaimTTL); 0 claims nothing.
+	Claim int
+	Owner string
+	TTL   time.Duration
 }
 
 // BatchesData is `ui-loop batches`.
@@ -1196,6 +1201,10 @@ type BatchesData struct {
 	// pass's review (planCarry), sorted by screen, {screen, from} only (the
 	// digest stays in batches.json); only --areas when given.
 	Carried []Carried `json:"carried"`
+	// Claimed (--claim only, else absent) are the left batches claimed for
+	// --owner (the ones it already held first, then unclaimed or
+	// stale-claimed ones), in batch order. A reviewer takes only these.
+	Claimed *[]Batch `json:"claimed,omitempty"`
 }
 
 // Batches plans the review batches and persists them to review/batches.json.
@@ -1219,6 +1228,10 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 		if !slices.Contains(t.Config.Areas, a) {
 			return Result{}, diag(DiagSelectionInvalid, "--areas names "+a+", which uiLoop.areas does not list", "vybava ui-loop batches")
 		}
+	}
+	if o.Claim < 0 || o.Claim > 0 && o.Owner == "" {
+		return Result{}, diag(DiagSelectionInvalid, fmt.Sprintf("--claim %d needs a positive count and --owner (the run the claims are for)", o.Claim),
+			"vybava ui-loop batches --claim 4 --owner <run id> --json")
 	}
 	file := filepath.Join(t.reviewDir(pass), "batches.json")
 	var prior BatchesFile
@@ -1284,6 +1297,24 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 		} else {
 			data.Left = append(data.Left, b.ID)
 		}
+	}
+	// Only a left batch is claimable: one complete by its raws' per-screen
+	// digests needs no reviewer, whoever claimed it.
+	if o.Claim > 0 {
+		if o.TTL <= 0 {
+			o.TTL = DefaultClaimTTL
+		}
+		ids, err := t.claimBatches(pass, data.Left, o.Claim, o.Owner, o.TTL)
+		if err != nil {
+			return Result{}, err
+		}
+		claimed := []Batch{}
+		for _, b := range data.Batches {
+			if slices.Contains(ids, b.ID) {
+				claimed = append(claimed, b)
+			}
+		}
+		data.Claimed = &claimed
 	}
 	return Result{Data: data}, nil
 }
@@ -1619,14 +1650,39 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 }
 
 // MergeReviewOptions are `merge-review`'s flags.
-type MergeReviewOptions struct{ Pass int }
+type MergeReviewOptions struct {
+	Pass int
+	// Owner (a run id) holds the synth lease past this verb, for the
+	// synthesis that follows, until TTL (0: DefaultLeaseTTL); without it the
+	// lease is this process's and is released on exit.
+	Owner string
+	TTL   time.Duration
+}
 
 // MergeReview writes review/backlog.draft.json from the raw batches and the
-// previous pass's backlog: `ui-loop merge-review`.
-func (t *Tool) MergeReview(o MergeReviewOptions) (Result, error) {
+// previous pass's backlog: `ui-loop merge-review`. It takes the pass's synth
+// lease first, so of N identical review runs only one synthesizes.
+func (t *Tool) MergeReview(o MergeReviewOptions) (_ Result, err error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
 		return Result{}, err
+	}
+	if o.TTL <= 0 {
+		o.TTL = DefaultLeaseTTL
+	}
+	req := leaseReq{owner: o.Owner, ttl: o.TTL}
+	if o.Owner == "" {
+		req = processLease("", "merge-review", o.TTL)
+	}
+	lease, held, err := t.acquireLease(pass, leaseSynth, req)
+	if err != nil {
+		return Result{}, err
+	}
+	if held != nil {
+		return Result{}, leaseHeld(pass, held)
+	}
+	if req.pid != 0 {
+		defer t.dropLease(pass, leaseSynth, lease, &err)
 	}
 	records, err := LoadRecords(t.passAbs(pass))
 	if err != nil {

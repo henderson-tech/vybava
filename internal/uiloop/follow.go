@@ -23,6 +23,10 @@ type FollowOptions struct {
 	Interval  time.Duration
 	UntilIdle time.Duration
 	Retries   int
+	// Owner and TTL are the publish lease's, as Publish takes it; follow
+	// renews it every tick, so TTL bounds only a follow that stopped ticking.
+	Owner string
+	TTL   time.Duration
 }
 
 // DoneFile is <passDir>/done.json, written by the harness teardown when a
@@ -117,8 +121,9 @@ func finalRecords(passDir string, records []Record, run RunFile, done bool) []Re
 // Publish — and sleeps. Each adopted shot rides vitrinka's detached per-file
 // push onto its area's board at once; the tick then pushes every area set
 // that gained files, the backstop that records its URL and status. It stops once the run's done.json
-// has arrived and no new shot has for --until-idle.
-func (t *Tool) Follow(ctx context.Context, o FollowOptions) (Result, error) {
+// has arrived and no new shot has for --until-idle. It holds the pass's
+// publish lease throughout, renewed every tick.
+func (t *Tool) Follow(ctx context.Context, o FollowOptions) (_ Result, err error) {
 	pass, err := t.ResolvePass(o.Pass, true)
 	if err != nil {
 		return Result{}, err
@@ -151,7 +156,21 @@ func (t *Tool) Follow(ctx context.Context, o FollowOptions) (Result, error) {
 	if o.UntilIdle <= 0 {
 		o.UntilIdle = 10 * time.Minute
 	}
-	fetch := []string{"rsync", "-a", "--exclude=/.auth/", "--exclude=/playwright/", "--exclude=/publish/", "--exclude=/run.json", "--exclude=*.tmp-*", from, passDir + "/"}
+	if o.TTL <= 0 {
+		o.TTL = DefaultLeaseTTL
+	}
+	req := processLease(o.Owner, "publish --follow", o.TTL)
+	lease, held, err := t.acquireLease(pass, leasePublish, req)
+	if err != nil {
+		return Result{}, err
+	}
+	if held != nil {
+		return Result{}, leaseHeld(pass, held)
+	}
+	defer func() { t.dropLease(pass, leasePublish, lease, &err) }()
+	// The leases are this Mac's: the box only holds a synced copy, which a
+	// fetch would bring back over the live ones.
+	fetch := []string{"rsync", "-a", "--exclude=/.auth/", "--exclude=/playwright/", "--exclude=/publish/", "--exclude=/run.json", "--exclude=/locks/", "--exclude=*.tmp-*", from, passDir + "/"}
 
 	data := FollowData{Pass: pass, From: from}
 	var last Result
@@ -161,6 +180,15 @@ func (t *Tool) Follow(ctx context.Context, o FollowOptions) (Result, error) {
 	fails := 0
 	for {
 		data.Ticks++
+		// A follow outlives any fixed ttl: each tick renews the lease, and one
+		// replaced after the Mac slept past it is the new publisher's.
+		if data.Ticks > 1 {
+			if lease, held, err = t.acquireLease(pass, leasePublish, req); err != nil {
+				return Result{}, err
+			} else if held != nil {
+				return Result{}, leaseHeld(pass, held)
+			}
+		}
 		out, err := t.Exec(ctx, Cmd{Dir: t.Root, Args: fetch, Timeout: 15 * time.Minute})
 		if err != nil {
 			return Result{}, err

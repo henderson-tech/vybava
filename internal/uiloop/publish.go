@@ -26,6 +26,10 @@ type PublishOptions struct {
 	// Force re-pushes sets the index already records as pushed.
 	Force  bool
 	DryRun bool
+	// Owner names this publisher in the pass's publish lease, which it holds
+	// until it exits; TTL bounds it (0: DefaultLeaseTTL).
+	Owner string
+	TTL   time.Duration
 }
 
 // PublishedSet is one set's outcome, kept in <passDir>/publish/index.json.
@@ -380,8 +384,9 @@ func (p *publisher) publishSet(s Set) PublishedSet {
 }
 
 // Publish adopts the pass's split plan into vitrinka sets under
-// <out>/sets, one per area across passes, and pushes them one by one.
-func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
+// <out>/sets, one per area across passes, and pushes them one by one,
+// holding the pass's publish lease until it returns.
+func (t *Tool) Publish(ctx context.Context, o PublishOptions) (_ Result, err error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
 		return Result{}, err
@@ -393,6 +398,17 @@ func (t *Tool) Publish(ctx context.Context, o PublishOptions) (Result, error) {
 	if _, err := os.Stat(passDir); err != nil {
 		return Result{}, diag(DiagPassMissing, t.PassDir(pass)+" does not exist", "vybava ui-loop run")
 	}
+	if o.TTL <= 0 {
+		o.TTL = DefaultLeaseTTL
+	}
+	lease, held, err := t.acquireLease(pass, leasePublish, processLease(o.Owner, "publish", o.TTL))
+	if err != nil {
+		return Result{}, err
+	}
+	if held != nil {
+		return Result{}, leaseHeld(pass, held)
+	}
+	defer t.dropLease(pass, leasePublish, lease, &err)
 	records, err := LoadRecords(passDir)
 	if err != nil {
 		return Result{}, err
