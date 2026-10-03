@@ -659,3 +659,17 @@ func TestAnimatingReadingsNeedAnAnimatingBin(t *testing.T) {
 		t.Errorf("animating bins are a reading: %+v", checkBudget(b, m, 120))
 	}
 }
+
+// A step with no measured bin (a group no tap matched) is no fps sample:
+// its zero never lines up against the other side's reading.
+func TestCompareStepsSkipsAStepWithNoBins(t *testing.T) {
+	withSteps := func(steps ...framestats.StepRate) sample {
+		return sample{metrics: Metrics{AndroidSteps: steps}}
+	}
+	ga := []sample{withSteps(framestats.StepRate{Label: "menu", Bins: 3, FpsP10: 100}, framestats.StepRate{Label: "modes", Bins: 2, FpsP10: 90})}
+	gb := []sample{withSteps(framestats.StepRate{Label: "menu", Bins: 0}, framestats.StepRate{Label: "modes", Bins: 2, FpsP10: 95})}
+	steps := compareSteps("calendar-view-switch-smooth", ga, gb)
+	if len(steps) != 1 || steps[0].Step != "modes" || steps[0].A != 90 || steps[0].B != 95 {
+		t.Errorf("steps = %+v, want only modes 90 -> 95", steps)
+	}
+}

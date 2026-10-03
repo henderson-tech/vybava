@@ -448,7 +448,11 @@ func compareSteps(scenario string, ga, gb []sample) []StepCompare {
 				add(st.Label, "hitchMs", st.HitchMs, side)
 			}
 			for _, st := range append(append([]framestats.StepRate{}, s.metrics.AndroidGroups...), s.metrics.AndroidSteps...) {
-				add(st.Label, "fpsP10", st.FpsP10, side)
+				// A step with no measured bin (a group no tap matched) has
+				// no fps: its 0 is unread, never a sample.
+				if st.Bins > 0 {
+					add(st.Label, "fpsP10", st.FpsP10, side)
+				}
 			}
 		}
 	}
