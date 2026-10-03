@@ -3,6 +3,7 @@ package tokentime
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -30,14 +31,21 @@ type Beats struct {
 	From     string        `json:"from"`
 	To       string        `json:"to"`
 	Timezone string        `json:"timezone"`
+	AIBridge int           `json:"aiBridge,omitempty"` // BeatsOptions.Bridge; absent: ai is the minutes as recorded
 	Coverage Coverage      `json:"coverage"`
 	Projects []BeatProject `json:"projects"`
 }
+
+// BeatsBridgeCap is the longest bridge, in minutes.
+const BeatsBridgeCap = 240
 
 // BeatsOptions select an inclusive range of local days.
 type BeatsOptions struct {
 	Range    Range // from ParseBeatsRange
 	Location *time.Location
+	// Bridge, 1..BeatsBridgeCap minutes, fills each session's gaps up to it
+	// (see bridgeAI); 0 reports the AI minutes as recorded.
+	Bridge int
 }
 
 // ParseBeatsRange reads an inclusive range of local days, at most
@@ -61,6 +69,9 @@ func (s *Store) Beats(opts BeatsOptions) (Beats, error) {
 	if r.bucket == "" {
 		return Beats{}, fmt.Errorf("%w: build the range with ParseBeatsRange", ErrBadRange)
 	}
+	if opts.Bridge < 0 || opts.Bridge > BeatsBridgeCap {
+		return Beats{}, fmt.Errorf("%w: a bridge is 1..%d minutes, not %d", ErrBadRange, BeatsBridgeCap, opts.Bridge)
+	}
 	loc := opts.Location
 	if loc == nil {
 		loc = time.Local
@@ -79,8 +90,11 @@ func (s *Store) Beats(opts BeatsOptions) (Beats, error) {
 	}
 	since := dayStart(r.from.Year(), r.from.Month(), r.from.Day(), loc).Unix() / 60
 	until := dayStart(r.to.Year(), r.to.Month(), r.to.Day()+1, loc).Unix() / 60
+	// A gap across the range's edge is bridged too: AI minutes up to a
+	// bridge beyond it on either side are read, and the runs clipped.
+	margin := int64(opts.Bridge)
 
-	rows, err := tx.Query("SELECT minute, project, kind FROM beats WHERE minute >= ? AND minute < ?", since, until)
+	rows, err := tx.Query("SELECT minute, project, kind FROM beats WHERE minute >= ? AND minute < ?", since-margin, until+margin)
 	if err != nil {
 		return Beats{}, err
 	}
@@ -91,6 +105,9 @@ func (s *Store) Beats(opts BeatsOptions) (Beats, error) {
 		var kind int
 		if err := rows.Scan(&minute, &project, &kind); err != nil {
 			return Beats{}, err
+		}
+		if kind == beatHuman && (minute < since || minute >= until) {
+			continue
 		}
 		canon := ps.of(project)
 		m := minutes[canon]
@@ -106,9 +123,26 @@ func (s *Store) Beats(opts BeatsOptions) (Beats, error) {
 		return Beats{}, err
 	}
 
-	out := Beats{From: r.from.Format(time.DateOnly), To: r.to.Format(time.DateOnly), Timezone: ZoneName(loc), Projects: []BeatProject{}}
+	out := Beats{From: r.from.Format(time.DateOnly), To: r.to.Format(time.DateOnly), Timezone: ZoneName(loc), AIBridge: opts.Bridge, Projects: []BeatProject{}}
+	ai := map[int64][]BeatRun{}
+	if opts.Bridge > 0 {
+		if ai, err = bridgeAI(tx, s.version >= fileBeatsSchema, ps, minutes, since, until, margin); err != nil {
+			return Beats{}, err
+		}
+	} else {
+		for canon, m := range minutes {
+			ai[canon] = runs(m[beatAI])
+		}
+	}
 	for canon, m := range minutes {
-		out.Projects = append(out.Projects, BeatProject{Name: ps.names[canon], Root: ps.roots[canon], Human: runs(m[beatHuman]), AI: runs(m[beatAI])})
+		p := BeatProject{Name: ps.names[canon], Root: ps.roots[canon], Human: runs(m[beatHuman]), AI: ai[canon]}
+		if p.AI == nil {
+			p.AI = []BeatRun{}
+		}
+		if len(p.Human) == 0 && len(p.AI) == 0 {
+			continue // only AI minutes a bridge beyond the range
+		}
+		out.Projects = append(out.Projects, p)
 	}
 	sort.Slice(out.Projects, func(i, j int) bool { return out.Projects[i].Root < out.Projects[j].Root })
 
@@ -131,6 +165,132 @@ func runs(minutes []int64) []BeatRun {
 			out[n-1][1]++
 		default:
 			out = append(out, BeatRun{m, 1})
+		}
+	}
+	return out
+}
+
+// minuteSpan is a half-open run of minutes, [start, end).
+type minuteSpan = [2]int64
+
+// rootMinute is an AI minute under one canonical project.
+type rootMinute struct{ minute, canon int64 }
+
+// bridgeAI bridges each session on one timeline, like your own attention:
+// a file's AI minutes in time order, a gap of up to n minutes to its next one
+// is filled and credited to the root of the earlier minute, and a session
+// holds one root a minute (see bridgeSession). Files' runs are then unioned
+// per project: parallel sessions add up, two in one project count once. An
+// AI minute of beats no file claims (a day before file_beats, or one the
+// focus re-read could not swap: filed by cwd) is bridged per project
+// instead, gaps of up to n merged. minutes holds the AI minutes from since-n
+// to until+n; the runs are clipped to [since, until).
+func bridgeAI(q querier, perFile bool, ps projectSet, minutes map[int64]*[2][]int64, since, until, n int64) (map[int64][]BeatRun, error) {
+	claimed := map[rootMinute]bool{} // every AI minute of beats; true once a file answered in it
+	for canon, m := range minutes {
+		for _, minute := range m[beatAI] {
+			claimed[rootMinute{minute, canon}] = false
+		}
+	}
+	spans := map[int64][]minuteSpan{} // canonical project → spans, unsorted
+	if perFile {
+		rows, err := q.Query("SELECT file, minute, project FROM file_beats WHERE minute >= ? AND minute < ?", since-n, until+n)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		files := map[int64][]rootMinute{}
+		for rows.Next() {
+			var file, minute, project int64
+			if err := rows.Scan(&file, &minute, &project); err != nil {
+				return nil, err
+			}
+			k := rootMinute{minute, ps.of(project)}
+			if _, ok := claimed[k]; ok {
+				claimed[k] = true
+				files[file] = append(files[file], k)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			bridgeSession(f, n, ps, spans)
+		}
+	}
+	legacy := map[int64][]int64{}
+	for k, ok := range claimed {
+		if !ok {
+			legacy[k.canon] = append(legacy[k.canon], k.minute)
+		}
+	}
+	for canon, ms := range legacy {
+		sort.Slice(ms, func(i, j int) bool { return ms[i] < ms[j] })
+		for i, a := range ms {
+			end := a + 1
+			if i+1 < len(ms) && ms[i+1]-a <= n {
+				end = ms[i+1]
+			}
+			spans[canon] = append(spans[canon], minuteSpan{a, end})
+		}
+	}
+	out := make(map[int64][]BeatRun, len(spans))
+	for canon, sp := range spans {
+		out[canon] = spanRuns(sp, since, until)
+	}
+	return out, nil
+}
+
+// bridgeSession adds one file's spans: each AI minute, with the gap to its
+// next minute when that is at most n minutes later, under one root. A minute
+// the session answered in under several goes to the one its next minute
+// shares (where it went on), else the one the minute before went to, else
+// the first by root.
+func bridgeSession(f []rootMinute, n int64, ps projectSet, spans map[int64][]minuteSpan) {
+	sort.Slice(f, func(i, j int) bool {
+		return f[i].minute < f[j].minute || f[i].minute == f[j].minute && ps.roots[f[i].canon] < ps.roots[f[j].canon]
+	})
+	var last int64 // the root the minute before went to; ids start at 1
+	for i := 0; i < len(f); {
+		a, j := f[i].minute, i
+		for j < len(f) && f[j].minute == a {
+			j++
+		}
+		k := j
+		for k < len(f) && f[k].minute == f[j].minute {
+			k++
+		}
+		here, next := f[i:j], f[j:k]
+		to := f[i].canon
+		if s := slices.IndexFunc(here, func(h rootMinute) bool {
+			return slices.ContainsFunc(next, func(x rootMinute) bool { return x.canon == h.canon })
+		}); s >= 0 {
+			to = here[s].canon
+		} else if slices.Contains(here, rootMinute{a, last}) {
+			to = last
+		}
+		end := a + 1
+		if len(next) > 0 && next[0].minute-a <= n {
+			end = next[0].minute
+		}
+		spans[to] = append(spans[to], minuteSpan{a, end})
+		last, i = to, j
+	}
+}
+
+// spanRuns unions spans, clipped to [since, until), into runs, oldest first.
+func spanRuns(spans []minuteSpan, since, until int64) []BeatRun {
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	out := []BeatRun{}
+	for _, s := range spans {
+		lo, hi := max(s[0], since), min(s[1], until)
+		if lo >= hi {
+			continue
+		}
+		if n := len(out); n > 0 && lo <= out[n-1][0]+out[n-1][1] {
+			out[n-1][1] = max(out[n-1][1], hi-out[n-1][0])
+		} else {
+			out = append(out, BeatRun{lo, hi - lo})
 		}
 	}
 	return out

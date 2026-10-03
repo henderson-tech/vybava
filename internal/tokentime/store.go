@@ -107,8 +107,11 @@ CREATE TABLE IF NOT EXISTS limit_points(
 	windows TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS limit_points_by_ts ON limit_points(ts);
+-- Each file's own AI minutes (file: fileKey of its path), kept forever like
+-- beats: beats --bridge bridges every session on its own timeline.
+CREATE TABLE IF NOT EXISTS file_beats(minute INTEGER NOT NULL, file INTEGER NOT NULL, project INTEGER NOT NULL, PRIMARY KEY(minute, file, project)) WITHOUT ROWID;
 -- The focus re-attribution's staging (see settleFocus): empty once settled.
-CREATE TABLE IF NOT EXISTS focus_beats(minute INTEGER NOT NULL, project INTEGER NOT NULL, PRIMARY KEY(minute, project)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS focus_beats(minute INTEGER NOT NULL, project INTEGER NOT NULL, file INTEGER NOT NULL, PRIMARY KEY(minute, project, file)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS focus_found(id INTEGER NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(id, day)) WITHOUT ROWID;
 PRAGMA user_version=6;
 `
@@ -125,11 +128,13 @@ const readableSchema = 2
 
 // projectSchema is the oldest schema the project verb reads: the first with
 // buckets_by_project. beatsSchema is the first that records beats,
-// limitsSchema the first that records limit points.
+// limitsSchema the first that records limit points, fileBeatsSchema the
+// first that records each file's own AI minutes.
 const (
-	projectSchema = 3
-	beatsSchema   = 4
-	limitsSchema  = 5
+	projectSchema   = 3
+	beatsSchema     = 4
+	limitsSchema    = 5
+	fileBeatsSchema = 6
 )
 
 // migrations bring an older schema up to date, keyed by the version they

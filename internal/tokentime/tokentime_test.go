@@ -107,8 +107,8 @@ func (f fixture) index(t *testing.T, s *Store) IndexReport {
 var prague, _ = time.LoadLocation("Europe/Prague")
 
 // dropFocus leaves a store as the schema 5 binary did: no focus debts, no
-// staging, no settled re-attribution.
-const dropFocus = "DROP TABLE focus_beats; DROP TABLE focus_found; ALTER TABLE files DROP COLUMN focus; DELETE FROM meta WHERE key = 'focus_rule'; "
+// staging, no file_beats, no settled re-attribution.
+const dropFocus = "DROP TABLE file_beats; DROP TABLE focus_beats; DROP TABLE focus_found; ALTER TABLE files DROP COLUMN focus; DELETE FROM meta WHERE key = 'focus_rule'; "
 
 // dropPoints leaves a store as the schema 4 binary did: no limit points, no
 // points backlog column, nothing later.

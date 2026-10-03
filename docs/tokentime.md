@@ -12,6 +12,7 @@ tokentime rollup --json --days 14 --hours 48 --no-index
 cd <repo> && tokentime project --from 2026-09-01 --to 2026-09-24 --json   # this repository
 tokentime project --project FixIt --from 2026-09-01 --to 2026-09-24 --json  # any project, by its rollup name
 tokentime beats --from 2026-09-01 --to 2026-09-30 --json   # minutes you prompted / agents answered, per project
+tokentime beats --from 2026-09-01 --to 2026-09-30 --bridge 30 --json   # + each agent session's silences up to 30 min filled
 tokentime limits --since 1790550000000 --json   # Codex rate-limit readings, one per response
 tokentime status --json            # cursors, buckets, pending bytes, db size
 tokentime prices --json            # the price table and its override file
@@ -195,7 +196,7 @@ pass is running — `rollup` or `index` is what brings the store up to date.
 ## Beats — the minutes you and your agents were at work
 
 ```sh
-tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD --json
+tokentime beats --from YYYY-MM-DD --to YYYY-MM-DD [--bridge N] --json
 ```
 
 Tokens say how much work went where; beats say *when*, at minute
@@ -265,10 +266,32 @@ projects are sorted by root, and a project with no beat in the range is
 left out. `from`/`to` are inclusive local days, at most 92 of them;
 `timezone` names the zone they were read in.
 
+**`--bridge N`** (1..240 minutes) bridges each agent session — one
+transcript or rollout — on one timeline, the way the timesheet bridges your
+own attention: walking a file's AI minutes in time order, a gap to its next
+one at most N minutes later is filled and credited to the root of the
+earlier minute, and a session holds one root a minute — a minute it answered
+in under several goes to the one its next minute shares (where it went on),
+else to the one the minute before went to, else to the first by root. One
+session alternating app → lib → app gives lib its stretch and app only its
+own, where bridging each project apart would fill app across lib's stretch
+too. The runs are then unioned per project: parallel sessions add up, two in
+one project count once. The `ai` runs are these and `aiBridge` is N; `human`
+is never bridged, and without the flag there is no `aiBridge` and `ai` is the
+minutes as recorded. Minutes up to N beyond the
+range on either side are read, so a gap across its edge is filled up to it.
+Each file's AI minutes are kept for this (`file_beats`: minute × file ×
+project, the file keyed by its path), forever like beats, so a deleted
+transcript keeps its timeline. An AI minute no file claims — on a day the
+focus re-read below could not swap, still by cwd, or in a store older than
+schema 6 — is bridged per project instead: its project's minutes, gaps of up
+to N merged.
+
 - **Read-only**, like `project`: no index pass, no lock, `mode=ro`; a
   store never indexed is `NO_STORE`, one without beats (schema 3 or older)
   `STALE_SCHEMA` until one `tokentime index` migrates it. A bad or missing
-  day, or a range past 92 days, is `BAD_FLAG` before the store is opened.
+  day, a range past 92 days, or a `--bridge` outside 1..240, is `BAD_FLAG`
+  before the store is opened.
 - **Coverage.** `coverage.from` is the first local day whose beats are
   complete: the day after the oldest Claude transcript still on disk when
   beats began (sessions that ended before it were deleted unread), never
@@ -303,9 +326,10 @@ left out. `from`/`to` are inclusive local days, at most 92 of them;
   identity) was found again, on that day, by a read that staged its minute.
   Then no deleted transcript holds a minute of that day the re-read lacks, and
   the day's AI minutes are swapped for the staged ones in the commit that
-  re-reads the last file (meta `focus_rule`). A day a deleted transcript
-  answered in keeps every AI minute it had, by cwd; beats never shrink with a
-  transcript. Until the swap the re-read counts in `beatsPendingBytes`, so
+  re-reads the last file (meta `focus_rule`), each file's own (`file_beats`)
+  with them. A day a deleted transcript answered in keeps every AI minute it
+  had, by cwd, and no file's: `--bridge` bridges it per project. Beats never
+  shrink with a transcript. Until the swap the re-read counts in `beatsPendingBytes`, so
   beats coverage stays incomplete. While it runs, a response a token read
   finds already seen — a transcript replaced or re-read, a rollout archived
   before its re-read — is staged and found like its original (it still adds

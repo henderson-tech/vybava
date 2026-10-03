@@ -187,6 +187,7 @@ func TestTheFocusBackfillReattributesHistoryAndKeepsDeletedTranscripts(t *testin
 				t.Fatalf("lib on 22.09 under the focus rule = %v, want 09:40", lib)
 			}
 			rollup, _ := json.Marshal(rollupOf(t, s, 3, 3))
+			perFile := fileBeatsOf(t, s)
 
 			toLegacy(t, s, f, r)
 			legacy := beatsOf(t, s, "2026-09-22", "2026-09-23").Projects
@@ -243,6 +244,15 @@ func TestTheFocusBackfillReattributesHistoryAndKeepsDeletedTranscripts(t *testin
 			}
 			if app := beatsOn(beatsOf(t, s, "2026-09-22", "2026-09-22"), f.repo, true); deleted && !slices.Contains(app, s6) {
 				t.Fatalf("app AI on 22.09 after the backfill = %v, want the deleted s6's 09:30 kept", app)
+			}
+			// Each file's own minutes come back with the swap; a day kept has
+			// none: its cwd minutes belong to no file's timeline.
+			wantFiles := perFile
+			if deleted {
+				wantFiles = slices.DeleteFunc(slices.Clone(perFile), func(fm fileMinute) bool { return fm.minute/1440 == at("2026-09-22T00:00:00Z")/1440 })
+			}
+			if got := fileBeatsOf(t, s); !reflect.DeepEqual(got, wantFiles) {
+				t.Fatalf("file_beats after the backfill =\n%v\nwant\n%v", got, wantFiles)
 			}
 			var staged int
 			if err := s.db.QueryRow("SELECT (SELECT COUNT(*) FROM focus_beats) + (SELECT COUNT(*) FROM focus_found)").Scan(&staged); err != nil || staged != 0 {
@@ -490,4 +500,26 @@ func TestWritingCommandsNameTheirDirectoryReadsDoNot(t *testing.T) {
 			t.Errorf("mcp %s writes in %v, want %v", input, got, want)
 		}
 	}
+}
+
+// fileBeatsOf lists every file_beats row, oldest first.
+func fileBeatsOf(t *testing.T, s *Store) []fileMinute {
+	t.Helper()
+	rows, err := s.db.Query("SELECT f.minute, f.file, p.root FROM file_beats f JOIN projects p ON p.id = f.project ORDER BY f.minute, f.file, p.root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := []fileMinute{}
+	for rows.Next() {
+		var fm fileMinute
+		if err := rows.Scan(&fm.minute, &fm.file, &fm.root); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, fm)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

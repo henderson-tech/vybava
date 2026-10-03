@@ -1,10 +1,12 @@
 package tokentime
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -413,5 +415,87 @@ func TestACopiedResponseAddsNoAIMinute(t *testing.T) {
 				t.Fatalf("tools AI = %v: the copy of msg_B added a minute", p.AI)
 			}
 		}
+	}
+}
+
+func bridgedOf(t *testing.T, s *Store, from, to string, bridge int) Beats {
+	t.Helper()
+	r, err := ParseBeatsRange(from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Beats(BeatsOptions{Range: r, Location: prague, Bridge: bridge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// --bridge fills a session's silences on its own timeline, credited to the
+// root it was in: one session alternating app → lib → app holds one root a
+// minute — its switch, answered in both, goes to lib, where it went on —
+// where bridging per project would fill app across lib's stretch too.
+// Parallel sessions in one project union. A file's minutes outlive it, and
+// an AI minute no file claims (a day the focus re-read could not swap) is
+// bridged per project, as before.
+func TestABridgeFillsEachSessionsSilencesOnItsOwnTimeline(t *testing.T) {
+	f := newFixture(t)
+	lib := filepath.Join(f.base, "work", "lib")
+	mkdir(t, filepath.Join(lib, ".git"))
+	text := func(s, ts, id string) string { return claudeLine(s, f.repo, ts, id, "claude-opus-5-5", 1, 1, 0, 0, 0) }
+	edit := func(s, ts, id, file string) string {
+		return claudeTool(s, f.repo, ts, id, "Edit", map[string]any{"file_path": file})
+	}
+	dir := filepath.Join(f.claude, "-work-app")
+	interleaved := filepath.Join(dir, "s7.jsonl")
+	put(t, interleaved, lines(
+		text("s7", "2026-09-25T10:00:00Z", "b7a"), text("s7", "2026-09-25T10:10:00Z", "b7b"), text("s7", "2026-09-25T10:19:00Z", "b7c"),
+		edit("s7", "2026-09-25T10:20:00Z", "b7d", filepath.Join(f.repo, "z.go")), edit("s7", "2026-09-25T10:20:30Z", "b7d", filepath.Join(lib, "x.go")),
+		text("s7", "2026-09-25T10:30:00Z", "b7e"), text("s7", "2026-09-25T10:39:00Z", "b7f"),
+		edit("s7", "2026-09-25T10:40:00Z", "b7g", filepath.Join(f.repo, "y.go")), text("s7", "2026-09-25T10:50:00Z", "b7h"), text("s7", "2026-09-25T10:59:00Z", "b7i"),
+	))
+	put(t, filepath.Join(dir, "s8.jsonl"), lines(
+		text("s8", "2026-09-26T10:00:00Z", "b8a"), text("s8", "2026-09-26T10:10:00Z", "b8b"), text("s8", "2026-09-26T10:20:00Z", "b8c")))
+	put(t, filepath.Join(dir, "s9.jsonl"), lines(
+		text("s9", "2026-09-26T10:05:00Z", "b9a"), text("s9", "2026-09-26T10:15:00Z", "b9b"), text("s9", "2026-09-26T10:25:00Z", "b9c")))
+	// 23:50 and 00:10 in Prague: a silence across the range's edge.
+	put(t, filepath.Join(dir, "s10.jsonl"), lines(
+		text("s10", "2026-09-26T21:50:00Z", "b10a"), text("s10", "2026-09-26T22:10:00Z", "b10b")))
+	s := f.open(t)
+	f.index(t, s)
+
+	want := []BeatProject{
+		{Name: "app", Root: f.repo, Human: []BeatRun{},
+			AI: []BeatRun{{at("2026-09-25T10:00:00Z"), 20}, {at("2026-09-25T10:40:00Z"), 20}, {at("2026-09-26T10:00:00Z"), 26}, {at("2026-09-26T21:50:00Z"), 21}}},
+		{Name: "lib", Root: lib, Human: []BeatRun{}, AI: []BeatRun{{at("2026-09-25T10:20:00Z"), 20}}},
+	}
+	got := bridgedOf(t, s, "2026-09-25", "2026-09-27", 30)
+	if !reflect.DeepEqual(got.Projects, want) || got.AIBridge != 30 {
+		t.Fatalf("bridged by 30 =\n%+v (aiBridge %d)\nwant\n%+v", got.Projects, got.AIBridge, want)
+	}
+	if edge := beatsOn(bridgedOf(t, s, "2026-09-27", "2026-09-27", 30), f.repo, true); !reflect.DeepEqual(edge, []BeatRun{{at("2026-09-26T22:00:00Z"), 11}}) {
+		t.Fatalf("app on 27.09 alone = %v, want s10's silence from midnight to 00:10 and its minute", edge)
+	}
+	plain := beatsOf(t, s, "2026-09-25", "2026-09-27")
+	if raw, _ := json.Marshal(plain); plain.AIBridge != 0 || bytes.Contains(raw, []byte("aiBridge")) || len(beatsOn(plain, f.repo, true)) != 14 ||
+		!slices.Contains(beatsOn(plain, f.repo, true), BeatRun{at("2026-09-25T10:19:00Z"), 2}) {
+		t.Fatalf("beats without a bridge = %s; want the minutes as recorded (the switch under app too), no aiBridge", raw)
+	}
+
+	if err := os.Remove(interleaved); err != nil {
+		t.Fatal(err)
+	}
+	f.index(t, s)
+	if got := bridgedOf(t, s, "2026-09-25", "2026-09-27", 30); !reflect.DeepEqual(got.Projects, want) {
+		t.Fatalf("bridged after s7 was deleted =\n%+v\nwant\n%+v", got.Projects, want)
+	}
+
+	if _, err := s.db.Exec("DELETE FROM file_beats WHERE minute / 1440 = ?", at("2026-09-25T00:00:00Z")/1440); err != nil {
+		t.Fatal(err)
+	}
+	legacy := bridgedOf(t, s, "2026-09-25", "2026-09-25", 30)
+	if app, l := beatsOn(legacy, f.repo, true), beatsOn(legacy, lib, true); !reflect.DeepEqual(app, []BeatRun{{at("2026-09-25T10:00:00Z"), 60}}) ||
+		!reflect.DeepEqual(l, []BeatRun{{at("2026-09-25T10:20:00Z"), 20}}) {
+		t.Fatalf("a day no file claims, bridged per project: app %v, lib %v; want 10:00-11:00 and 10:20-10:40", app, l)
 	}
 }

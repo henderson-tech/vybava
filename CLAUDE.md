@@ -107,7 +107,10 @@ accounts. Beats (per-minute human/ai presence) and Codex limit points backfill
 through their own backlog reads (`files.beats`, `files.points`) that never charge. AI beats
 follow the repository an agent WROTE in (`focus.go`), not the record cwd; tokens never do,
 and a rule change re-reads history through `files.focus` and swaps only days every charged
-response of which is still on disk. Rules: `docs/tokentime.md`.
+response of which is still on disk. Every AI minute goes through `aiBeat`, which mirrors it
+into `file_beats` under the file being read (`ix.source`): `beats --bridge` bridges each
+session from it, and an AI minute no file claims falls back to per-project bridging.
+Rules: `docs/tokentime.md`.
 
 `internal/readeff` measures agent navigation from the same transcripts,
 stateless: it scans on demand and keeps only counts and paths, never command

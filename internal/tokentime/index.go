@@ -302,7 +302,7 @@ type indexer struct {
 	// (meta focus_rule unset). Every AI minute then also lands in staged and
 	// its response in found, until settleFocus swaps them in.
 	staging bool
-	staged  map[stageKey]struct{}
+	staged  map[fileMinute]struct{}
 	found   map[foundKey]struct{}
 	// focusDebts are the focus debts moved this pass, by path (files.focus).
 	focusDebts map[string]string
@@ -313,6 +313,11 @@ type indexer struct {
 	// sideDirs hold the agents' own state and Options.SideDirs, where a write
 	// is no project's own work.
 	sideDirs []string
+
+	// fileBeats are the AI minutes of beats again, by the file that answered
+	// in them (file_beats); source is the file being read.
+	fileBeats map[fileMinute]struct{}
+	source    int64
 }
 
 // Index reads everything written since the last pass into the buckets.
@@ -588,12 +593,13 @@ func (ix *indexer) reset() {
 	ix.buckets = map[bucketKey]*bucketVal{}
 	ix.spans = map[spanKey]*span{}
 	ix.beats = map[beatKey]struct{}{}
+	ix.fileBeats = map[fileMinute]struct{}{}
 	ix.points = map[int64]limitPoint{}
 	ix.newSeen = map[int64]seenRow{}
 	ix.files = map[string]fileRow{}
 	ix.debts = map[string]string{}
 	ix.newRoots = map[string]string{}
-	ix.staged = map[stageKey]struct{}{}
+	ix.staged = map[fileMinute]struct{}{}
 	ix.found = map[foundKey]struct{}{}
 	ix.focusDebts = map[string]string{}
 	ix.dirty = 0
@@ -602,6 +608,7 @@ func (ix *indexer) reset() {
 // file reads one transcript or rollout until it is caught up, the pass budget
 // runs out or the pass is stopped. A long file commits between sweeps.
 func (ix *indexer) file(t target, row fileRow, known bool, budget int64) error {
+	ix.source = fileKey(t.path)
 	cur := row.cur
 	var cs codexState
 	if row.state != "" {
@@ -1166,6 +1173,7 @@ func (ix *indexer) pointsBacklog(targets []target, known map[string]fileRow, bud
 //
 // lost reports a backlog that ended short of Until because its file did.
 func (ix *indexer) catchUp(t target, row *fileRow, lag beatsLag, budget int64, mode readMode) (_ beatsLag, lost bool, _ error) {
+	ix.source = fileKey(t.path)
 	var cs codexState
 	if lag.State != nil {
 		cs = *lag.State
@@ -1291,6 +1299,23 @@ func (ix *indexer) commit(tx *sql.Tx) error {
 			project, err := ix.id(tx, "projects", "root", bk.root, ix.projects)
 			if err == nil {
 				_, err = stmt.Exec(bk.minute, project, bk.kind)
+			}
+			if err != nil {
+				stmt.Close()
+				return fail(err)
+			}
+		}
+		stmt.Close()
+	}
+	if len(ix.fileBeats) > 0 {
+		stmt, err := tx.Prepare("INSERT OR IGNORE INTO file_beats(minute, file, project) VALUES(?, ?, ?)")
+		if err != nil {
+			return fail(err)
+		}
+		for fm := range ix.fileBeats {
+			project, err := ix.id(tx, "projects", "root", fm.root, ix.projects)
+			if err == nil {
+				_, err = stmt.Exec(fm.minute, fm.file, project)
 			}
 			if err != nil {
 				stmt.Close()

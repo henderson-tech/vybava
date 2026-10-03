@@ -428,15 +428,23 @@ func (ix *indexer) copyFound(ts time.Time, roots []string, key int64) {
 	ix.aiBeat(ts, roots, key, readFocus)
 }
 
-type stageKey struct {
+// fileMinute is an AI minute of one file under one root: a file_beats row,
+// or a staged one (focus_beats).
+type fileMinute struct {
 	minute int64
+	file   int64
 	root   string
 }
 
+// fileKey names a transcript or rollout in file_beats: its path's identity,
+// kept after the file is deleted, like its minutes.
+func fileKey(path string) int64 { return identity("file", path) }
+
 type foundKey struct{ id, day int64 }
 
-// aiBeat records a response's minute under roots. While older history is
-// being re-attributed (ix.staging) it also stages the minute and marks the
+// aiBeat records a response's minute under roots, in beats and as the
+// minute of the file being read (ix.source). While older history is being
+// re-attributed (ix.staging) it also stages the minute and marks the
 // response found on its day; the re-read itself (readFocus) only stages.
 func (ix *indexer) aiBeat(ts time.Time, roots []string, key int64, mode readMode) {
 	if ts.IsZero() {
@@ -444,11 +452,13 @@ func (ix *indexer) aiBeat(ts time.Time, roots []string, key int64, mode readMode
 	}
 	minute := ts.Unix() / 60
 	for _, root := range roots {
+		fm := fileMinute{minute: minute, file: ix.source, root: root}
 		if mode != readFocus {
 			ix.beats[beatKey{minute: minute, root: root, kind: beatAI}] = struct{}{}
+			ix.fileBeats[fm] = struct{}{}
 		}
 		if ix.staging {
-			ix.staged[stageKey{minute: minute, root: root}] = struct{}{}
+			ix.staged[fm] = struct{}{}
 		}
 	}
 	if ix.staging {
@@ -472,6 +482,7 @@ func (ix *indexer) settle(t target, row fileRow) {
 	if json.Unmarshal([]byte(row.state), &cs) != nil || !ix.whole(cs.Focus.Msg) {
 		return
 	}
+	ix.source = fileKey(t.path)
 	ix.flushMsg(&cs.Focus, readTokens)
 	raw, _ := json.Marshal(cs)
 	row.state = string(raw)
@@ -567,6 +578,7 @@ func (ix *indexer) pendingFound(targets []target, known map[string]fileRow) {
 			continue
 		}
 		m := cs.Focus.Msg
+		ix.source = fileKey(t.path)
 		switch key := identity("claude", m.ID); {
 		case m.Beat:
 			ix.found[foundKey{id: key, day: m.At / 86400}] = struct{}{}
@@ -580,7 +592,7 @@ func (ix *indexer) pendingFound(targets []target, known map[string]fileRow) {
 // transaction and, on the pass that re-read the last file, settles.
 func (ix *indexer) commitStaged(tx *sql.Tx) error {
 	if len(ix.staged) > 0 {
-		stmt, err := tx.Prepare("INSERT OR IGNORE INTO focus_beats(minute, project) VALUES(?, ?)")
+		stmt, err := tx.Prepare("INSERT OR IGNORE INTO focus_beats(minute, project, file) VALUES(?, ?, ?)")
 		if err != nil {
 			return err
 		}
@@ -588,7 +600,7 @@ func (ix *indexer) commitStaged(tx *sql.Tx) error {
 		for k := range ix.staged {
 			project, err := ix.id(tx, "projects", "root", k.root, ix.projects)
 			if err == nil {
-				_, err = stmt.Exec(k.minute, project)
+				_, err = stmt.Exec(k.minute, project, k.file)
 			}
 			if err != nil {
 				return err
@@ -619,6 +631,9 @@ func (ix *indexer) commitStaged(tx *sql.Tx) error {
 // found again, on that same day, by a read that staged its minute — then no
 // deleted transcript holds a minute of that day the re-read lacks. Every
 // other day keeps the minutes it had: beats never shrink with a transcript.
+// Each file's own minutes (file_beats) swap with them, and a day kept drops
+// the re-read's: its cwd minutes belong to no file's timeline, so `beats
+// --bridge` bridges them per project.
 func settleFocus(tx *sql.Tx) error {
 	for _, q := range []string{
 		`CREATE TEMP TABLE focus_safe AS SELECT DISTINCT day FROM seen EXCEPT
@@ -626,6 +641,9 @@ func settleFocus(tx *sql.Tx) error {
 		`DELETE FROM beats WHERE kind = 1 AND minute / 1440 IN (SELECT day FROM focus_safe)`,
 		`INSERT OR IGNORE INTO beats(minute, project, kind)
 			SELECT minute, project, 1 FROM focus_beats WHERE minute / 1440 IN (SELECT day FROM focus_safe)`,
+		`DELETE FROM file_beats WHERE minute / 1440 IN (SELECT day FROM focus_safe)`,
+		`INSERT OR IGNORE INTO file_beats(minute, file, project)
+			SELECT minute, file, project FROM focus_beats WHERE minute / 1440 IN (SELECT day FROM focus_safe)`,
 		`DROP TABLE focus_safe`,
 		`DELETE FROM focus_beats`,
 		`DELETE FROM focus_found`,

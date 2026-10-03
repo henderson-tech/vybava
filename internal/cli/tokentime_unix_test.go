@@ -315,9 +315,10 @@ func TestTokentimeProjectNeverCreatesAStore(t *testing.T) {
 	}
 }
 
-// `beats` reads like `project`: a missing day or a range past a quarter is
-// BAD_FLAG and a store never indexed NO_STORE — exit 2, no data, no state
-// directory made — and an indexed store answers while a pass holds the lock.
+// `beats` reads like `project`: a missing day, a range past a quarter or a
+// --bridge outside 1..240 is BAD_FLAG and a store never indexed NO_STORE —
+// exit 2, no data, no state directory made — and an indexed store answers
+// while a pass holds the lock, with aiBridge only under --bridge.
 func TestTokentimeBeatsReadsUnderTheLockAndRefusesBadRanges(t *testing.T) {
 	base, _ := filepath.EvalSymlinks(t.TempDir())
 	state, claude := filepath.Join(base, "state"), filepath.Join(base, "claude")
@@ -336,12 +337,18 @@ func TestTokentimeBeatsReadsUnderTheLockAndRefusesBadRanges(t *testing.T) {
 		}
 		return env, err
 	}
-	for _, c := range []struct{ from, to, code string }{
-		{"2026-09-24", "", diagBadFlag},
-		{"2026-01-01", "2026-04-03", diagBadFlag}, // 93 days
-		{"2026-01-01", "2026-04-02", diagNoStore}, // 92 days
+	for _, c := range []struct{ from, to, bridge, code string }{
+		{"2026-09-24", "", "", diagBadFlag},
+		{"2026-01-01", "2026-04-03", "", diagBadFlag}, // 93 days
+		{"2026-01-01", "2026-04-02", "", diagNoStore}, // 92 days
+		{"2026-09-24", "2026-09-24", "0", diagBadFlag},
+		{"2026-09-24", "2026-09-24", "241", diagBadFlag},
 	} {
-		env, err := run("beats", "--from", c.from, "--to", c.to)
+		args := []string{"beats", "--from", c.from, "--to", c.to}
+		if c.bridge != "" {
+			args = append(args, "--bridge", c.bridge)
+		}
+		env, err := run(args...)
 		var exit runx.ExitCoder
 		if !errors.As(err, &exit) || exit.ExitCode() != 2 || env["data"] != nil || !strings.Contains(fmt.Sprint(env["diagnostics"]), c.code) {
 			t.Fatalf("beats %s..%s = %v, %v; want exit 2, no data and %s", c.from, c.to, env, err, c.code)
@@ -376,8 +383,13 @@ func TestTokentimeBeatsReadsUnderTheLockAndRefusesBadRanges(t *testing.T) {
 	env, err := run("beats", "--from", "2026-09-23", "--to", "2026-09-23")
 	want := fmt.Sprintf(`[{"ai":[[29836081,1]],"human":[[29836080,1]],"name":"app","root":%q}]`, repo) // 12:01 and 12:00 UTC
 	data, _ := env["data"].(map[string]any)
-	if got, _ := json.Marshal(data["projects"]); err != nil || string(got) != want {
-		t.Fatalf("beats under a held lock = %v, %v; want %s", env, err, want)
+	if got, _ := json.Marshal(data["projects"]); err != nil || string(got) != want || data["aiBridge"] != nil {
+		t.Fatalf("beats under a held lock = %v, %v; want %s and no aiBridge", env, err, want)
+	}
+	env, err = run("beats", "--from", "2026-09-23", "--to", "2026-09-23", "--bridge", "30")
+	data, _ = env["data"].(map[string]any)
+	if got, _ := json.Marshal(data["projects"]); err != nil || string(got) != want || data["aiBridge"] != float64(30) {
+		t.Fatalf("beats --bridge 30 = %v, %v; want %s and aiBridge 30", env, err, want)
 	}
 }
 
