@@ -227,6 +227,19 @@ func TestPRTargetNamesReadsShellSegments(t *testing.T) {
 	}
 }
 
+// PR #167 review: #42 must not match a link to #420 or #421.
+func TestPRTargetNamesWholeNumberInLinks(t *testing.T) {
+	target := prTarget{number: 42, slug: "acme/app"}
+	for _, text := range []string{"open https://github.com/acme/app/pull/420", "gh api repos/acme/app/pulls/421/comments"} {
+		if target.names(touch{cwd: "/tmp", text: text}) {
+			t.Errorf("%q named #42", text)
+		}
+	}
+	if !target.names(touch{cwd: "/tmp", text: "gh api repos/acme/app/pulls/42/comments"}) {
+		t.Error("repos/acme/app/pulls/42 did not name #42")
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).

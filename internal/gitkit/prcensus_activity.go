@@ -97,6 +97,22 @@ func mentionsDir(text, dir string) bool {
 	return false
 }
 
+// mentionsNumber reports text holding ref (a link ending in a PR number)
+// not followed by another digit, so pull/42 never matches pull/420.
+func mentionsNumber(text, ref string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], ref)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(ref)
+		if end == len(text) || text[end] < '0' || text[end] > '9' {
+			return true
+		}
+		i = end
+	}
+}
+
 // namesWorktree reports a tool call naming the worktree: absolute, relative
 // to the call's directory, or ~-relative.
 func namesWorktree(tc touch, worktree, home string) bool {
@@ -155,7 +171,7 @@ func (t prTarget) names(tc touch) bool {
 		return true
 	}
 	n := strconv.Itoa(t.number)
-	if strings.Contains(tc.text, t.slug+"/pull/"+n) || strings.Contains(tc.text, "repos/"+t.slug+"/pulls/"+n) {
+	if mentionsNumber(tc.text, t.slug+"/pull/"+n) || mentionsNumber(tc.text, "repos/"+t.slug+"/pulls/"+n) {
 		return true
 	}
 	inRepo := false
