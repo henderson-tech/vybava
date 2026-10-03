@@ -114,6 +114,21 @@ const (
 	// its drift cannot be weighed, so state routes a reshoot (warning) —
 	// fetch that revision, or capture a new pass.
 	DiagCaptureRevisionMissing = "CAPTURE_REVISION_MISSING"
+	// DiagCaptureRunning: `run` found another run's live capture lease (any
+	// pass under <out>): one capture runs at a time — wait for it, following
+	// `state`, which reports `capture` and routes `wait` meanwhile. doctor
+	// reports it as a warning.
+	DiagCaptureRunning = "CAPTURE_RUNNING"
+	// DiagLeaseHeld: merge-review's synth or publish's publish lease (or a
+	// follow's renewal of it) is held by another owner; the detail names the
+	// holder and since when — leave the stage to that holder, or remove the
+	// lease file once it is gone.
+	DiagLeaseHeld = "LEASE_HELD"
+	// DiagLeaseStale: doctor found a process lease its holder never released
+	// (a crash: its pid is gone, its ttl ran out, or its run finished) or a
+	// lease file that does not decode; the next taker replaces it anyway
+	// (warning) — remove it.
+	DiagLeaseStale = "LEASE_STALE"
 )
 
 func diag(code, detail, fix string) runx.DiagError {
