@@ -130,6 +130,11 @@ commands in 18 of 25 rules and let a bare `FOO=1` prefix disarm 9 — hard bans
 included. Quoting asymmetry is load-bearing: single quotes suppress everything,
 double quotes suppress control operators but NOT `$(…)`/backticks. Findings and
 the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md`.
+`claudeguards/rundir.go` (`runDirs`) is the ONE answer to WHERE a segment runs:
+the directory a literal `cd … &&` chain or `git -C` provably reaches, fail-closed
+(unproven = the hook cwd); a directory carve-out judges that, never the hook cwd
+alone, and `cdTarget`/`cdMove` are the one `cd` parser — never re-derive either.
+
 
 `internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules
 are load-bearing and documented in `docs/plugin-gc.md`: the active version

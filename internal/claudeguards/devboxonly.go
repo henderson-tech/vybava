@@ -127,26 +127,6 @@ func (w *devboxWalk) scan(cmd, dir string, possible []string, certain bool, dept
 	}
 }
 
-// cdTarget is the directory a `cd` names: its operand after the builtin's
-// options (-L, -P, -e, -@) and an optional `--`, or ~ when it has none. ok is
-// false when fields are not a cd.
-func cdTarget(fields []string) (target string, ok bool) {
-	if len(fields) == 0 || fields[0] != "cd" {
-		return "", false
-	}
-	args := fields[1:]
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' && strings.Trim(args[0][1:], "LPe@") == "" {
-		args = args[1:]
-	}
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		return "~", true
-	}
-	return args[0], true
-}
-
 // maxDevboxCandidates bounds the directories one command is judged in.
 const maxDevboxCandidates = 32
 

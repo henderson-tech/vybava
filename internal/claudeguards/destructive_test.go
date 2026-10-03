@@ -61,6 +61,18 @@ func TestDestructiveMatch(t *testing.T) {
 		{"checkout chained", "bun install && git switch main", mainClone, "git-switch"},
 		{"checkout with global flags", "git -C . --no-pager checkout x", mainClone, "git-switch"},
 
+		// --- the directory a switch PROVABLY runs in (runDirs), not the hook cwd ---
+		{"cd into worktree then checkout", "cd " + mainClone + "/.worktrees/h && git fetch -q origin x && git checkout -q --detach origin/x", mainClone, ""},
+		{"relative cd into worktree then checkout", "cd .worktrees/h && git checkout -q main", mainClone, ""},
+		{"cd ; checkout is not proven", "cd .worktrees/h; git checkout main", mainClone, "git-switch"},
+		{"cd || checkout is not proven", "cd .worktrees/h || git checkout main", mainClone, "git-switch"},
+		{"-C literal worktree", "git -C " + mainClone + "/.worktrees/h checkout -q --detach origin/x", mainClone, ""},
+		{"-C variable is not proven", "W=" + mainClone + "/.worktrees/h; git -C $W checkout -q main", mainClone, "git-switch"},
+		{"subshell cd closed before checkout", "(cd .worktrees/h && bun test); git checkout main", mainClone, "git-switch"},
+		{"cd out of a worktree into the clone", "cd ../.. && git checkout main", mainClone + "/.worktrees/f", "git-switch"},
+		{"restore dot in cd-reached worktree ok", "cd .worktrees/h && git restore .", mainClone, ""},
+		{"runner payload in cd-reached worktree ok", "cd .worktrees/h && bash -c 'git checkout main'", mainClone, ""},
+
 		// --- restore . / checkout . ---
 		{"restore dot", "git restore .", mainClone, "git-switch"}, // reSwitch never sees restore; ensure restore-dot fires
 		{"restore dot flags", "git restore --staged --worktree .", mainClone, "git-restore-dot"},
@@ -80,6 +92,8 @@ func TestDestructiveMatch(t *testing.T) {
 		{"wk carve-out -p glued", "docker compose -pwk-foo down -v", mainClone, ""},
 		{"stray wt- arg does not disarm", "docker compose -f wt-compose.yml down -v", mainClone, "compose-down-volumes"},
 		{"bare down -v in unprefixed worktree", "docker compose down -v", "/x/.worktrees/feat", "compose-down-volumes"},
+		{"wt carve-out via cd", "cd /x/.worktrees/wt-foo && docker compose down -v", "/x", ""},
+		{"cd out of a wt carve-out", "cd /x && docker compose down -v", "/x/.worktrees/wt-foo", "compose-down-volumes"},
 
 		// --- keychain secret value dumps ---
 		{"find-generic -w", "security find-generic-password -s vitrinka -a https://vitrinka.ai -w", mainClone, "keychain-secret-dump"},
