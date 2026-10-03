@@ -26,7 +26,15 @@ MERGE_METHOD_BY_HEAD=promote/*:merge
 # Production branches: claude-guards prod-merge blocks an agent's gh pr merge, gh api
 # merge/ref write and git push landing on any of them (escape CLAUDE_ALLOW_PROD_MERGE=1,
 # only on the user's go for that merge). Read from the MAIN clone. Unset → none.
+# gitkit pr-census reports them as prodRefs (unset → the default branch), where
+# /check-prs checks a P0 bug is live.
 PROD_BRANCHES=canary release master
+
+# gitkit pr-census's diff split: globs widening the rest / test / config buckets
+# (comma or space separated, matched lowercased). GENERATED_PATHS already counts as rest.
+PR_CENSUS_REST_PATHS=apps/*/src/assets/i18n/**
+PR_CENSUS_TEST_PATHS=apps/*/src/testing/**
+PR_CENSUS_CONFIG_PATHS=tools/release/**
 
 # Runs INSTEAD of the generic worktree-remove + branch -d after a successful merge.
 # Tokens substituted by gitkit merge-precheck: {slug} {branch} {worktree} {pr}

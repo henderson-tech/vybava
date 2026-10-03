@@ -259,10 +259,16 @@ items:
     description: Work incoming review findings — pasted text, a findings file or a PR — through push-back verification, a RED test per finding, the fix and the record; prm delegates its rounds here.
     source: skills/receiving-code-review
 
+  - id: check-prs
+    kind: skill
+    status: experimental
+    description: Manual-only PR triage — per PR the full link, validity against work landed since, danger, priority and a keep/salvage/close verdict, with a code/test/config/rest diff split; PRs held by a live Claude or Codex session are listed, never judged.
+    source: skills/check-prs
+
   - id: gitkit
     kind: applet
     status: experimental
-    description: Deterministic git/PR layer the prm, push-all and sync skills execute — PR selectors, review triage, merge gates, worktrees, path classification.
+    description: Deterministic git/PR layer the prm, push-all, sync and check-prs skills execute — PR selectors, review triage, merge gates, worktrees, path classification, the PR census.
     applet: gitkit
 
   - id: cli-craft
@@ -499,6 +505,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - merge-assist
       - fontfreeze
       - perfrig
@@ -538,6 +545,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - merge-assist
 
   - id: henderson
@@ -562,6 +570,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
 
   - id: everything
     description: Every package currently published by Výbava.
@@ -628,6 +637,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - press
       - press-pdf
       - press-logo

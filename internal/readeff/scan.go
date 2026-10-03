@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -145,11 +144,8 @@ func keep(opts Options, path string, s Session) (Session, bool) {
 
 func trimExt(name string) string { return name[:len(name)-len(filepath.Ext(name))] }
 
-var slugUnsafe = regexp.MustCompile(`[^A-Za-z0-9]`)
-
-// claudeSlug is the projects-directory name Claude Code gives a launch
-// directory: every character but a letter or digit becomes "-".
-func claudeSlug(dir string) string { return slugUnsafe.ReplaceAllString(dir, "-") }
+// claudeSlug is the projects-directory name Claude Code gives a launch directory.
+func claudeSlug(dir string) string { return transcripts.ClaudeSlug(dir) }
 
 // projectSlug is the projects-directory a transcript sits in, and the name
 // under it: the session's file or its subagents directory.
