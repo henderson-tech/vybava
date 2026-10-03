@@ -474,7 +474,8 @@ that only synced queues no buffer), so zero presents read as zero frames.
   probe A/B needs: one record per dir) compare dir against dir. A variant
   label from `runs.jsonl` reads its newest run dir's records of that variant
   only, so `compare before after` over one alternating run splits it; a side
-  is dirs or one label, and two sides reading the same evidence are `USAGE`.
+  is distinct dirs or one label; a dir named twice in a side, or two sides
+  reading the same evidence (by path identity: `./`, symlinks), are `USAGE`.
 - `rtDrawMatchedClockMs` (Android, compare only): each run's RenderThread
   draw per frame over the (CPU, clock) points every compared run drew at
   with 20+ frames, weighted by the frames pooled over all runs; the row's

@@ -540,6 +540,12 @@ func TestCompareLabelsOfOneAlternatingRunDir(t *testing.T) {
 			t.Errorf("%s against %s is a self-comparison: %v", runDir, b, err)
 		}
 	}
+	// One dir counted twice is one measurement, never two samples.
+	for _, a := range []string{"before,before", runDir + "," + link} {
+		if _, err := tool.Compare(context.Background(), []string{a, "layer"}, CompareOptions{}); CodeOf(err) != DiagUsage {
+			t.Errorf("side %s repeats its evidence: %v", a, err)
+		}
+	}
 }
 
 // report --gate and a confounded compare fail with their data kept: the

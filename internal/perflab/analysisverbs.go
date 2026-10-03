@@ -188,6 +188,13 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 					return Result{}, diag(DiagUsage, fmt.Sprintf("side %q mixes variant labels, or a label and run dirs: a side is run dirs or one variant label", arg),
 						"perflab compare <labelA> <labelB> --json, or perflab compare <dirA>[,<dirA2>] <dirB>[,<dirB2>] --json")
 				}
+				// One dir counted twice is one measurement: it would pass the
+				// noise rule's minimum samples with no repeat behind it.
+				id := runDirIdentity(dir)
+				if slices.Contains(sideDirs, id) {
+					return Result{}, diag(DiagUsage, fmt.Sprintf("side %q names run dir %s twice: one dir is one measurement", arg, dir),
+						"perflab compare <dirA>,<dirA2> <dirB>,<dirB2> --json with distinct run dirs")
+				}
 				ra, d, err := t.analyzeRunDir(ctx, dir, opts)
 				if err != nil {
 					return Result{}, err
@@ -201,8 +208,7 @@ func (t *Tool) Compare(ctx context.Context, args []string, o CompareOptions) (Re
 				}
 				side.Variant = label
 				side.Runs = append(side.Runs, ra)
-				id := runDirIdentity(dir)
-				if !slices.Contains(sideDirs, id) && !slices.ContainsFunc(dirs, func(d string) bool { return runDirIdentity(d) == id }) {
+				if !slices.ContainsFunc(dirs, func(d string) bool { return runDirIdentity(d) == id }) {
 					dirs = append(dirs, dir)
 				}
 				sideDirs = append(sideDirs, id)
