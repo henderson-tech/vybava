@@ -171,7 +171,9 @@ func (t *Tool) ResolvePass(n int, latest bool) (int, error) {
 		return last, nil
 	}
 	// A pass that holds no shots yet (a --print whose command never ran, or
-	// one killed before its first shot) is reused, never skipped.
+	// one killed before its first shot) is reused, never skipped. Run has
+	// already refused a live capture lease, so this one's is absent or stale;
+	// a run that opened it a moment ago holds it, and Run's acquire collides.
 	if !t.hasShots(last) {
 		return last, nil
 	}
@@ -235,8 +237,9 @@ func (t *Tool) CaptureCommand(passDir string) string {
 		passDir, strings.TrimSpace(t.Config.Runner), t.Config.Dir)
 }
 
-// Run writes the pass's run.json and runs (or prints) the capture.
-func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
+// Run writes the pass's run.json and runs (or prints) the capture, holding
+// the pass's capture lease throughout and releasing it on the way out.
+func (t *Tool) Run(ctx context.Context, o RunOptions) (_ Result, err error) {
 	if err := t.validateSelection(o.Selection); err != nil {
 		return Result{}, err
 	}
@@ -252,6 +255,13 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	} else if !ok {
 		return Result{}, diag(DiagProjectMissing, t.Config.Dir+"/project.ts does not exist", "vybava ui-loop init")
 	}
+	// One capture at a time, whichever pass it shoots: a second run used to
+	// open pass N+1 beside it, and every stage then routed to that one.
+	if running, held, err := t.liveCapture(); err != nil {
+		return Result{}, err
+	} else if held != nil {
+		return Result{}, captureRunning(running, held)
+	}
 	pass, err := t.ResolvePass(o.Pass, o.Selection.Resume)
 	if err != nil {
 		return Result{}, err
@@ -262,6 +272,18 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 			return Result{}, diag(DiagPassMissing, passDir+" does not exist — nothing to resume", "drop --resume")
 		}
 	}
+	// The lease ends with this run's done.json, so it is taken for the
+	// createdAt run.json is about to record. A run that resolved the same
+	// pass a moment earlier wins the exclusive create.
+	created := t.Now().UTC().Format("2006-01-02T15:04:05Z")
+	lease, held, err := t.acquireLease(pass, leaseCapture, leaseReq{owner: "ui-loop run", pid: os.Getpid(), ttl: captureLeaseTTL, run: created})
+	if err != nil {
+		return Result{}, err
+	}
+	if held != nil {
+		return Result{}, captureRunning(pass, held)
+	}
+	defer t.dropLease(pass, leaseCapture, lease, &err)
 	if o.Workers <= 0 {
 		o.Workers = 2
 	}
@@ -298,7 +320,7 @@ func (t *Tool) Run(ctx context.Context, o RunOptions) (Result, error) {
 	}
 	run := RunFile{
 		V: RunVersion, Pass: pass, PassDir: passDir, Dir: c.Dir, AppMap: c.AppMap, Vybava: t.Version,
-		CreatedAt: t.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		CreatedAt: created,
 		Clock:     clock,
 		Areas:     c.Areas, Apps: apps, Viewports: c.ResolvedViewports(), Selection: sel,
 		Lint:      RunLint{Grid: c.Lint.Grid, TouchTarget: c.Lint.TouchTarget, Off: off, Ramp: ramp, Allow: allow},

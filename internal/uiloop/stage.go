@@ -87,13 +87,16 @@ func (c Checkpoint) Finishes() bool {
 
 // NextStage is where a pass stands (nextStage); the vitrinka workflow runs it verbatim.
 type NextStage struct {
-	Stage  string `json:"stage"` // capture | review | fix | verify | done
+	Stage  string `json:"stage"` // capture | review | fix | verify | done | wait
 	Resume bool   `json:"resume"`
 	Reason string `json:"reason"`
 	// Only is the screens a verify, or a capture that reshoots the pass,
 	// shoots, sorted; empty is a full reshoot (Reason says why). nil on
 	// every other stage.
 	Only []string `json:"only"`
+	// Parallel is how many identical review runs to launch (reviewParallel);
+	// on review only.
+	Parallel int `json:"parallel,omitempty"`
 }
 
 // StateContract is the shape of `state`'s data the vitrinka workflow reads
@@ -103,7 +106,31 @@ type NextStage struct {
 // next.only and config.source/primitives. 3: review.carried and
 // review.carriedFrom, backlog.carried (byStatus without carried items),
 // batches v2 (per-screen digests, carried) and raws judged screen by screen.
-const StateContract = 3
+// 4: pass leases — capture, pending, next.stage wait, next.parallel and
+// batches' claimed.
+const StateContract = 4
+
+// reviewParallel is how many identical review runs the left batches keep
+// busy: one per reviewersPerRun batches, at most maxReviewRuns, and at
+// least the one run that synthesizes once no batch is left.
+func reviewParallel(left int) int {
+	return max(1, min(maxReviewRuns, (left+reviewersPerRun-1)/reviewersPerRun))
+}
+
+const (
+	// reviewersPerRun is the review-loop's reviewers in one run (UILOOP_MAX_REVIEWERS).
+	reviewersPerRun = 4
+	maxReviewRuns   = 3
+)
+
+// CaptureState is the capture a `run` holds a live lease for, the newest
+// pass first; all zero while none runs.
+type CaptureState struct {
+	Running bool   `json:"running"`
+	Pass    int    `json:"pass"`
+	Since   string `json:"since"`
+	Owner   string `json:"owner"`
+}
 
 // StateConfig is the part of the section the workflow's briefs need.
 type StateConfig struct {
@@ -222,6 +249,8 @@ type StateData struct {
 	CheckpointAPINotes []string         `json:"checkpointApiNotes"`
 	Pass               int              `json:"pass"`
 	PassDir            string           `json:"passDir"`
+	Capture            CaptureState     `json:"capture"`
+	Pending            *int             `json:"pending"` // a newer pass with no shots and no live capture; Pass is the newest with shots
 	Config             StateConfig      `json:"config"`
 	Shots              int              `json:"shots"`
 	Screens            int              `json:"screens"`
@@ -764,14 +793,35 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	sort.Strings(cfg.Apps)
 	data := StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
 		Review: StateReview{Done: []string{}, Left: []string{}, ReviewedAreas: []string{}}, Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
+	running, capture, err := t.liveCapture()
+	if err != nil {
+		return Result{}, err
+	}
+	if capture != nil {
+		data.Capture = CaptureState{Running: true, Pass: running, Since: capture.StartedAt, Owner: capture.Owner}
+	}
+	// The default is the newest pass with shots, as resolveShotPass picks it:
+	// a newer, shot-less one is a capture still starting (Capture) or one
+	// that never shot (Pending, which the next run reuses), and routing to
+	// it sent every concurrent run to the one pass.
 	pass := o.Pass
 	if pass == 0 {
 		passes, err := t.Passes()
 		if err != nil {
 			return Result{}, err
 		}
-		if len(passes) > 0 {
-			pass = passes[len(passes)-1]
+		for i := len(passes) - 1; i >= 0 && pass == 0; i-- {
+			if t.hasShots(passes[i]) {
+				pass = passes[i]
+			}
+		}
+		if n := len(passes); n > 0 {
+			switch newest := passes[n-1]; {
+			case pass == 0:
+				pass = newest
+			case newest != pass && newest != data.Capture.Pass:
+				data.Pending = &newest
+			}
 		}
 	}
 	if pass == 0 {
@@ -786,7 +836,6 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if head.Code == 0 {
 		data.HeadSHA = strings.TrimSpace(head.Stdout)
 	}
-	var err error
 	var hashes map[string]string
 	var evidenceDiags []runxDiagnostic
 	data.ReviewBasis, hashes, evidenceDiags, err = t.reviewEvidence(pass)
@@ -957,6 +1006,9 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		data.CheckpointAPINotes = append(data.CheckpointAPINotes, cp.APIChanges...)
 	}
 	data.Next = nextStage(pass, records, data.Published, areas, data.Review.ReviewedAreas, backlog != nil, findings, checkpoints, drift.App, unjudged, primitives, o.Cap)
+	if data.Next.Stage == "review" {
+		data.Next.Parallel = reviewParallel(len(data.Review.Left))
+	}
 	if _, err := readJSON(filepath.Join(t.passAbs(pass), "fix", "recovery.json"), &data.Recovery); err != nil {
 		return Result{}, err
 	}
@@ -979,6 +1031,11 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 		case !resumable && data.Shots > 0:
 			data.Next = NextStage{Stage: "capture", Only: []string{}, Reason: fmt.Sprintf("pass %d has shots that are not published, and its tree changed since capture, so it cannot resume: reshoot", pass)}
 		}
+	}
+	// A running capture moves the pass under every stage, so nothing runs
+	// beside it: the stages wait for it, whichever pass it shoots.
+	if c := data.Capture; c.Running {
+		data.Next = NextStage{Stage: "wait", Reason: fmt.Sprintf("pass %d capture running since %s (%s)", c.Pass, c.Since, c.Owner)}
 	}
 	return Result{Data: data, Diagnostics: diags}, nil
 }

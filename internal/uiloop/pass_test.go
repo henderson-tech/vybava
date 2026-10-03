@@ -651,9 +651,23 @@ func TestRunPrintWritesRunFileAndReusesAnUnshotPass(t *testing.T) {
 		run.Clock != "2026-10-03T09:30:00Z" {
 		t.Errorf("run.json: %s", b)
 	}
+	// While another run captures, a run refuses instead of opening pass 2 beside it.
+	other, _, err := tool.acquireLease(1, leaseCapture, leaseReq{owner: "another run", pid: os.Getpid(), ttl: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Run(context.Background(), opts); diagCode(err) != DiagCaptureRunning {
+		t.Errorf("a second capture: %v", err)
+	}
+	if err := tool.releaseLease(1, leaseCapture, other); err != nil {
+		t.Fatal(err)
+	}
 	// Nothing was shot into pass 1, so the next run reuses it; a shot moves the next run on.
 	if res, _ := tool.Run(context.Background(), opts); res.Data.(*RunData).Pass != 1 {
 		t.Error("an unshot pass is reused")
+	}
+	if _, err := os.Stat(tool.leaseFile(1, leaseCapture)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("run releases its capture lease on exit: %v", err)
 	}
 	writePass(t, tool, 1, []shot{{order: 0, id: "tasks", area: "tasks", vp: "phone", theme: "dark", status: "ok", bytes: 1}})
 	now = now.Add(48 * time.Hour)
