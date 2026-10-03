@@ -77,6 +77,13 @@ func TestProcessKill(t *testing.T) {
 		"timeout -s KILL 5 pkill -f x":         "process:pattern-kill",
 		"pgrep -f x | xargs -I {} kill {}":     "process:pattern-kill",
 		"kill 777; kill 777 $(pgrep -f codex)": "process:pattern-kill",
+		"timeout -- 5 pkill -f codex":          "process:pattern-kill",
+		"gtimeout -- 5 pkill -f codex":         "process:pattern-kill",
+		"timeout -- 5 kill 60209":              "process:session-kill",
+		"sudo FOO=1 pkill -f codex":            "process:pattern-kill",
+		"sudo FOO=1 kill 60209":                "process:session-kill",
+		"sudo -u x -- FOO=1 kill 60209":        "process:session-kill",
+		"env - pkill -f codex":                 "process:pattern-kill",
 		// Allowed: own work, probes, unknown or ordinary PIDs, read-only listings.
 		"kill $!":                         "",
 		`kill "$!" 2>/dev/null`:           "",

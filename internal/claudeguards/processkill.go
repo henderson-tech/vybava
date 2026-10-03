@@ -97,24 +97,29 @@ func killInvocation(seg string) (word string, args []string, viaXargs bool) {
 }
 
 // launcherChild is the index of the command a launcher runs: the first word
-// past its options and their values, env's NAME=value words and timeout's
-// duration. Only that word is the child; `sudo printf '%s\n' pkill` runs
-// printf, and `xargs docker kill` runs docker.
+// past its options and their values, env's and sudo's NAME=value words and
+// timeout's duration. `--` ends the options only: the assignments and the
+// duration after it are still consumed (`timeout -- 5 pkill`, `sudo -- FOO=1
+// kill`). Only that word is the child; `sudo printf '%s\n' pkill` runs printf,
+// and `xargs docker kill` runs docker.
 func launcherChild(w string, valueFlags map[string]bool, toks []string, j int) int {
 	positional := 0
 	if w == "timeout" || w == "gtimeout" {
 		positional = 1 // the duration
 	}
+	assigns := w == "env" || w == "sudo"
+	optsDone := false
 	for ; j < len(toks); j++ {
 		t := toks[j]
 		switch {
-		case t == "--":
-			return j + 1
-		case len(t) > 1 && t[0] == '-':
+		case !optsDone && t == "--":
+			optsDone = true
+		case !optsDone && w == "env" && t == "-": // env's `-` is -i
+		case !optsDone && len(t) > 1 && t[0] == '-':
 			if valueFlags[t] {
 				j++
 			}
-		case w == "env" && shellseg.AssignPrefix.MatchString(t):
+		case assigns && shellseg.AssignPrefix.MatchString(t):
 		case positional > 0:
 			positional--
 		default:
