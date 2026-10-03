@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,9 +135,22 @@ func namesWorktree(tc touch, worktree, home string) bool {
 	return false
 }
 
-// workingVerbs drive a PR; view, diff and list only read it.
-var workingVerbs = map[string]bool{"checkout": true, "checks": true, "comment": true, "edit": true, "merge": true,
-	"ready": true, "review": true, "close": true, "reopen": true}
+// workingVerbs are the gh pr verbs that drive a PR (view, diff and list only
+// read it), each with the flags that take a value — that value is never the
+// PR selector. -R/--repo is read separately.
+var workingVerbs = map[string][]string{
+	"checkout": {"-b", "--branch"},
+	"checks":   {"-i", "--interval", "--json", "-q", "--jq", "-t", "--template"},
+	"comment":  {"-b", "--body", "-F", "--body-file"},
+	"edit": {"-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-m", "--milestone",
+		"--add-label", "--remove-label", "--add-reviewer", "--remove-reviewer", "--add-assignee",
+		"--remove-assignee", "--add-project", "--remove-project"},
+	"merge":  {"-t", "--subject", "-b", "--body", "-F", "--body-file", "-A", "--author-email", "--match-head-commit"},
+	"ready":  {},
+	"review": {"-b", "--body", "-F", "--body-file"},
+	"close":  {"-c", "--comment"},
+	"reopen": {"-c", "--comment"},
+}
 
 // drivesPR reports a `gh pr <working verb> <n>` segment in text whose own
 // -R/--repo, if any, is this repository. Segmentation is internal/shellseg's:
@@ -145,7 +159,11 @@ var workingVerbs = map[string]bool{"checkout": true, "checks": true, "comment": 
 func drivesPR(text string, n int, slug string) bool {
 	for _, seg := range shellseg.Segments(text) {
 		f := shellseg.Fields(seg)
-		if len(f) < 4 || f[0] != "gh" || f[1] != "pr" || !workingVerbs[f[2]] {
+		if len(f) < 4 || f[0] != "gh" || f[1] != "pr" {
+			continue
+		}
+		valueFlags, working := workingVerbs[f[2]]
+		if !working {
 			continue
 		}
 		number, repo := 0, ""
@@ -158,6 +176,9 @@ func drivesPR(text string, n int, slug string) bool {
 				repo = strings.TrimPrefix(a, "--repo=")
 			case strings.HasPrefix(a, "-R") && len(a) > 2:
 				repo = a[2:]
+			case slices.Contains(valueFlags, a):
+				i++ // its value
+			case strings.HasPrefix(a, "-"):
 			case number == 0:
 				number, _ = strconv.Atoi(strings.TrimPrefix(a, "#"))
 			}

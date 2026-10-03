@@ -254,6 +254,18 @@ func TestPRTargetNamesSiblingRelativePath(t *testing.T) {
 	}
 }
 
+// PR #167 review: a flag's value is not the PR selector.
+func TestPRTargetNamesSkipsFlagValues(t *testing.T) {
+	nine := prTarget{number: 9, slug: "acme/app", repoDirs: []string{"/w/app"}}
+	if !nine.names(touch{cwd: "/w/app", text: "gh pr checks --interval 42 9 --watch"}) {
+		t.Error("gh pr checks --interval 42 9 did not name #9")
+	}
+	fortyTwo := prTarget{number: 42, slug: "acme/app", repoDirs: []string{"/w/app"}}
+	if fortyTwo.names(touch{cwd: "/w/app", text: "gh pr comment --body '42' 9"}) {
+		t.Error("a --body value named #42")
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).
