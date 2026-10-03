@@ -4,7 +4,7 @@ Opt-in: runs ONLY when the human passed `--audit` alongside `--auto` — its cos
 whole read-only subagent re-reading the full diff, so it is reserved for large diffs,
 foreign authors, and machine-authored PRs rather than implied by every auto-merge.
 When armed, it does the reading the deleted human merge prompt used to. It is NOT
-`verdicts.md`'s Blast-radius gate (which audits only the fixes we wrote): it audits
+the `receiving-code-review` skill's Blast-radius gate (`references/red-test.md`) (which audits only the fixes we wrote): it audits
 **the entire PR diff against its base**, including everything nobody commented on.
 Primary consumers are machine-authored PRs (eve peacemaker), whose design makes the
 GitHub merge the only human control point — a weak audit here is a hole straight to
