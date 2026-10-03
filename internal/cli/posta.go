@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -41,34 +40,11 @@ Mint one address per run with ` + "`posta address`" + `. A freshly minted addres
 never received mail, so a run cannot be satisfied by a previous run's message,
 and two agents running the same journey never read each other's links.
 
-The vault suppresses the whole of a child's stdout whenever it injects a secret,
-so pass --out to send the result to a file and read that file afterwards:
+The vault suppresses the whole of a child's output whenever it injects a secret,
+so pass --out to send the result — or {"error": ...} on failure — to a file and
+read that file afterwards:
 
   onyx run_command ... -- posta wait --to <addr> --json --out /tmp/mail.json`),
-	}
-	// --out is not a convenience: `onyx run_command` redacts a child's entire
-	// stdout once it injects a credential, so a file is the only way the caller
-	// gets the message back. Bound here so every subcommand inherits it.
-	var outPath string
-	var outFile *os.File
-	cmd.PersistentFlags().StringVar(&outPath, "out", "", "write the result to this file instead of stdout")
-	cmd.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
-		if outPath == "" {
-			return nil
-		}
-		file, err := os.Create(outPath)
-		if err != nil {
-			return err
-		}
-		outFile = file
-		rt.stdout = file
-		return nil
-	}
-	cmd.PersistentPostRunE = func(_ *cobra.Command, _ []string) error {
-		if outFile == nil {
-			return nil
-		}
-		return outFile.Close()
 	}
 	cmd.AddCommand(
 		rt.postaAddressCommand(),
@@ -80,6 +56,9 @@ so pass --out to send the result to a file and read that file afterwards:
 		rt.postaPurgeCommand(),
 		rt.postaDoctorCommand(),
 	)
+	// --out is not a convenience: the vault redacts the whole output once it
+	// injects a credential, so the file is the only way back.
+	rt.bindOutFlag(cmd)
 	return cmd
 }
 

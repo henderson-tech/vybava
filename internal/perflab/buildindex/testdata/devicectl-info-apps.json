@@ -1,0 +1,47 @@
+{
+  "info" : {
+    "arguments" : [
+      "devicectl",
+      "device",
+      "info",
+      "apps",
+      "--device",
+      "F8C49F38-CB34-5B6D-9D34-07F194198EEA",
+      "--bundle-id",
+      "app.fixit.client",
+      "--json-output",
+      "apps.json",
+      "--quiet"
+    ],
+    "commandType" : "devicectl.device.info.apps",
+    "environment" : {
+      "TERM" : "xterm-256color"
+    },
+    "jsonVersion" : 3,
+    "outcome" : "success",
+    "version" : "518.31"
+  },
+  "result" : {
+    "apps" : [
+      {
+        "appClip" : false,
+        "builtByDeveloper" : true,
+        "bundleIdentifier" : "app.fixit.client",
+        "bundleVersion" : "1",
+        "defaultApp" : false,
+        "hidden" : false,
+        "internalApp" : false,
+        "name" : "FixIt",
+        "removable" : true,
+        "url" : "file:///private/var/containers/Bundle/Application/C14C9CBE-C888-45A3-958B-19423EDC51AD/app.fixit.client.app/",
+        "version" : "2.6.0"
+      }
+    ],
+    "defaultAppsIncluded" : false,
+    "deviceIdentifier" : "F8C49F38-CB34-5B6D-9D34-07F194198EEA",
+    "hiddenAppsIncluded" : false,
+    "internalAppsIncluded" : false,
+    "matchingBundleIdentifier" : "app.fixit.client",
+    "removableAppsIncluded" : true
+  }
+}

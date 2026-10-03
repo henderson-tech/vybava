@@ -105,6 +105,21 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	}
 	checkCmd.Flags().BoolVar(&noTS, "no-ts", false, "skip the manifest and app-map parts (they run the repo's tsRunner)")
 
+	var stage string
+	doctorCmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Preflight a stage: check's findings, the state contract, app reachability and the newest pass — each with its fix",
+		Long: "doctor runs every check a review-loop stage depends on and reports each as\n" +
+			"ok, warn, fail or skip with a fix. ok is false (exit 2) iff a check fails; a\n" +
+			"check the --for stage does not need (check's harness and manifest, app\n" +
+			"reachability: review and fix run neither) warns instead of failing.",
+		Args: cobra.NoArgs,
+		RunE: run(func(t *uiloop.Tool) (uiloop.Result, error) {
+			return t.Doctor(context.Background(), uiloop.DoctorOptions{For: stage})
+		}),
+	}
+	doctorCmd.Flags().StringVar(&stage, "for", "", "the stage to preflight: capture, review, fix or verify (default: every stage)")
+
 	mapCmd := &cobra.Command{
 		Use:   "map",
 		Short: "Render the app map (uiLoop.appMap) from the screen manifest",
@@ -244,11 +259,12 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		Short: "A pass's state as counts (shots, screens, published, review batches, backlog, checkpoints) and the next stage",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
-			return t.State(uiloop.StateOptions{Pass: pass, Cap: stageCap})
+			return t.State(uiloop.StateOptions{Pass: pass, Cap: stageCap, Primitives: uiloop.SplitList(primitives)})
 		}),
 	}
 	stateCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest)")
 	stateCmd.Flags().IntVar(&stageCap, "cap", 6, "the pass cap the next stage respects")
+	stateCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated; default: uiLoop.primitives)")
 
 	batchesCmd := &cobra.Command{
 		Use:   "batches",
@@ -281,7 +297,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		}),
 	}
 	lanesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
-	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated)")
+	lanesCmd.Flags().StringVar(&primitives, "primitives", "", "directory prefixes that hold shared primitives (comma-separated; default: uiLoop.primitives)")
 	lanesCmd.Flags().IntVar(&maxLanes, "max", 4, "lanes per phase")
 
 	checkpointsCmd := &cobra.Command{
@@ -300,6 +316,6 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 		c.PreRun = func(cmd *cobra.Command, _ []string) { passGiven = cmd.Flags().Changed("pass") }
 	}
 
-	command.AddCommand(initCmd, syncCmd, checkCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd)
+	command.AddCommand(initCmd, syncCmd, checkCmd, doctorCmd, mapCmd, runCmd, splitCmd, publishCmd, scoreboardCmd, stateCmd, batchesCmd, mergeCmd, lanesCmd, checkpointsCmd)
 	return command
 }

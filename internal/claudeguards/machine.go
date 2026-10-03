@@ -296,6 +296,9 @@ func parseVMStat(out string) (freeGB, compressorGB float64, err error) {
 // report must never brick a session start. With reap (the SessionStart hook form) the same
 // table then feeds the orphan sweep: one `ps` per session start, not two.
 func Weather(text, reap bool, w, stderr io.Writer) error {
+	if reap {
+		defer reapDeviceLeases(stderr)
+	}
 	table := machineProcTable()
 	if table == nil {
 		return nil

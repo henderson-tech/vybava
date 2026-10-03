@@ -1,0 +1,38 @@
+    mCurrentSurface=null
+    mPhysicalDisplayId=4633128672291735937
+    mDisplayModeSpecs={baseModeId=3 allowGroupSwitching=false primaryRefreshRateRange=[120 120] appRequestRefreshRateRange=[120 120]}
+    mDisplayModeSpecsInvalid=false
+    mActiveModeId=3
+    mActiveColorMode=0
+    mDefaultModeId=1
+    mUserPreferredModeId=-1
+    mState=ON
+    mBrightnessState=0.16078432
+    mBacklightAdapter=BacklightAdapter [useSurfaceControl=false (force_anyway? false), backlight=com.android.server.lights.LightsService$LightImpl@2d89fdf]
+    mAllmSupported=false
+    mAllmRequested=false
+    mGameContentTypeSupported=false
+    mGameContentTypeRequested=false
+    mStaticDisplayInfo=StaticDisplayInfo{isInternal=true, density=4.0, secure=true, deviceProductInfo=DeviceProductInfo{name=samsung lcd  , manufacturerPnpId=SAM, productId=0, modelYear=null, manufactureDate=ManufactureDate{week=16, year=2020}, connectionToSinkType=0}, installOrientation=0}
+    mSfDisplayModes=
+      DisplayMode{id=0, width=1440, height=3200, xDpi=571.5, yDpi=564.444, refreshRate=60.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=17666666, group=1440}
+      DisplayMode{id=1, width=1440, height=3200, xDpi=571.5, yDpi=564.444, refreshRate=48.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=21833333, group=1440}
+      DisplayMode{id=2, width=1080, height=2400, xDpi=428.625, yDpi=423.333, refreshRate=120.00001, appVsyncOffsetNanos=0, presentationDeadlineNanos=9333333, group=1080}
+      DisplayMode{id=3, width=1080, height=2400, xDpi=428.625, yDpi=423.333, refreshRate=96.00001, appVsyncOffsetNanos=0, presentationDeadlineNanos=11416666, group=1080}
+      DisplayMode{id=4, width=1080, height=2400, xDpi=428.625, yDpi=423.333, refreshRate=60.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=17666666, group=1080}
+      DisplayMode{id=5, width=1080, height=2400, xDpi=428.625, yDpi=423.333, refreshRate=48.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=21833333, group=1080}
+      DisplayMode{id=6, width=720, height=1600, xDpi=285.75, yDpi=282.222, refreshRate=120.00001, appVsyncOffsetNanos=0, presentationDeadlineNanos=9333333, group=720}
+      DisplayMode{id=7, width=720, height=1600, xDpi=285.75, yDpi=282.222, refreshRate=96.00001, appVsyncOffsetNanos=0, presentationDeadlineNanos=11416666, group=720}
+      DisplayMode{id=8, width=720, height=1600, xDpi=285.75, yDpi=282.222, refreshRate=60.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=17666666, group=720}
+      DisplayMode{id=9, width=720, height=1600, xDpi=285.75, yDpi=282.222, refreshRate=48.000004, appVsyncOffsetNanos=0, presentationDeadlineNanos=21833333, group=720}
+    mActiveSfDisplayMode=DisplayMode{id=2, width=1080, height=2400, xDpi=428.625, yDpi=423.333, refreshRate=120.00001, appVsyncOffsetNanos=0, presentationDeadlineNanos=9333333, group=1080}
+    mSupportedModes=
+      DisplayModeRecord{mMode={id=1, width=1440, height=3200, fps=60.000004, alternativeRefreshRates=[48.000004]}}
+      DisplayModeRecord{mMode={id=2, width=1440, height=3200, fps=48.000004, alternativeRefreshRates=[60.000004]}}
+      DisplayModeRecord{mMode={id=3, width=1080, height=2400, fps=120.00001, alternativeRefreshRates=[48.000004, 60.000004, 96.00001]}}
+      DisplayModeRecord{mMode={id=4, width=1080, height=2400, fps=96.00001, alternativeRefreshRates=[48.000004, 60.000004, 120.00001]}}
+      DisplayModeRecord{mMode={id=5, width=1080, height=2400, fps=60.000004, alternativeRefreshRates=[48.000004, 96.00001, 120.00001]}}
+      DisplayModeRecord{mMode={id=6, width=1080, height=2400, fps=48.000004, alternativeRefreshRates=[60.000004, 96.00001, 120.00001]}}
+      DisplayModeRecord{mMode={id=7, width=720, height=1600, fps=120.00001, alternativeRefreshRates=[48.000004, 60.000004, 96.00001]}}
+      DisplayModeRecord{mMode={id=8, width=720, height=1600, fps=96.00001, alternativeRefreshRates=[48.000004, 60.000004, 120.00001]}}
+      DisplayModeRecord{mMode={id=9, width=720, height=1600, fps=60.000004, alternativeRefreshRates=[48.000004, 96.00001, 120.00001]}}

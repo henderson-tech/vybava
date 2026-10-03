@@ -39,6 +39,7 @@ var native = map[string]Verb{
 	"pr-events":      runPREvents,
 	"pr-extensions":  runPRExtensions,
 	"admin-labels":   runAdminLabels,
+	"pr-census":      runPRCensus,
 }
 
 // Native returns the in-process implementation of a verb, if it has one.

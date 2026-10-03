@@ -13,4 +13,7 @@ apps:
 
 scripts:
   test: go test -race ./...
-  verify: go vet ./... && go test -race ./... && go build -trimpath ./cmd/vybava
+  # Every mod through the engine's own checks (docs/mods.md); plugin test
+  # needs the hooks switch set for its own process.
+  mods: 'for m in mods/*/; do claude plugin validate --strict "$m" && CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$m" || exit 1; done'
+  verify: 'go vet ./... && go test -race ./... && go build -trimpath ./cmd/vybava && for m in mods/*/; do claude plugin validate --strict "$m" && CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$m" || exit 1; done'

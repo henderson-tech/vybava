@@ -3,8 +3,6 @@ package claudeguards
 import (
 	"regexp"
 	"strings"
-
-	"github.com/henderson-tech/vybava/internal/shellseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,7 +45,7 @@ var (
 // is routine — but only when the command is provably aimed at one. Both
 // worktree layouts are in daily use (`wt-<slug>` and `wk-<slug>`), and the
 // trustworthy evidence is the project the call NAMES (-p / --project-name) or a
-// worktree directory carrying the prefix. Matching "wt-" anywhere in the string
+// worktree directory the segment provably runs in. Matching "wt-" anywhere in the string
 // (the pre-2026-09-15 rule) let an unrelated argument — a filename, a comment —
 // disarm a data-loss guard.
 var (
@@ -55,18 +53,20 @@ var (
 	reWorktreePath    = regexp.MustCompile(`(^|/)w[tk]-`)
 )
 
-func worktreeStack(seg, cwd string) bool {
-	return reWorktreeProject.MatchString(seg) || reWorktreePath.MatchString(cwd)
+func worktreeStack(seg, dir string) bool {
+	return reWorktreeProject.MatchString(seg) || reWorktreePath.MatchString(dir)
 }
 
 // Directories where branch switching is fine: worktrees (both the custom
 // /wk:* layout and Claude Code's native isolation layout) and throwaway clones.
-func exemptDir(cwd string) bool {
-	if strings.Contains(cwd, "/.worktrees/") || strings.Contains(cwd, "/.claude/worktrees/") {
+// dir is where the segment PROVABLY runs (runDirs), never the hook's cwd alone:
+// a session parked in its checkout reaches a worktree only by cd or git -C.
+func exemptDir(dir string) bool {
+	if strings.Contains(dir, "/.worktrees/") || strings.Contains(dir, "/.claude/worktrees/") {
 		return true
 	}
 	for _, p := range []string{"/tmp/", "/private/tmp/", "/var/folders/"} {
-		if strings.HasPrefix(cwd, p) {
+		if strings.HasPrefix(dir, p) {
 			return true
 		}
 	}
@@ -74,10 +74,11 @@ func exemptDir(cwd string) bool {
 }
 
 // destructiveRule is one table entry: fire() decides on a single segment
-// (with cwd for directory carve-outs); msg is the reason Claude sees.
+// (with the directory it provably runs in, for directory carve-outs); msg is
+// the reason Claude sees.
 type destructiveRule struct {
 	name string
-	fire func(seg, cwd string) bool
+	fire func(seg, dir string) bool
 	msg  string
 }
 
@@ -105,8 +106,8 @@ Do this instead:
 	},
 	{
 		name: "git-switch",
-		fire: func(s, cwd string) bool {
-			return !exemptDir(cwd) && reSwitch.MatchString(s)
+		fire: func(s, dir string) bool {
+			return !exemptDir(dir) && reSwitch.MatchString(s)
 		},
 		msg: `git checkout / git switch is banned in the user's primary checkout.
 
@@ -115,15 +116,20 @@ bound to this branch, and IDE state. Switching under them silently mutates it.
 
 Use a worktree instead (creation is user-gated — ask first):
   git worktree add .worktrees/<name> -b <branch>
-  cd .worktrees/<name>
+  cd .worktrees/<name> && git checkout <branch>
 
-Inspecting another ref needs no checkout: git show <ref>:<file>, git log -p.
-This guard does not fire inside .worktrees/, .claude/worktrees/, /tmp, or /private/tmp.`,
+The guard judges where the switch PROVABLY runs. Inside .worktrees/,
+.claude/worktrees/, /tmp or /private/tmp it does not fire — whether that is the
+session's cwd, a literal "cd <path> && …" chain or a literal "git -C <path>".
+A variable ($W), a "cd …;" or "cd … ||" chain, or a cd inside a subshell that
+closed before the switch cannot be proven, so spell the path out.
+
+Inspecting another ref needs no checkout: git show <ref>:<file>, git log -p.`,
 	},
 	{
 		name: "git-restore-dot",
-		fire: func(s, cwd string) bool {
-			return !exemptDir(cwd) && reRestoreDot.MatchString(s)
+		fire: func(s, dir string) bool {
+			return !exemptDir(dir) && reRestoreDot.MatchString(s)
 		},
 		msg: `git checkout . / git restore . destroys uncommitted work in the
 user's shared working tree — including other sessions' in-flight edits.
@@ -132,13 +138,13 @@ Revert only what YOU changed, by explicit path, or leave it alone.`,
 	},
 	{
 		name: "compose-down-volumes",
-		fire: func(s, cwd string) bool {
+		fire: func(s, dir string) bool {
 			if !reComposeDown.MatchString(s) || !reVolumesFlag.MatchString(s) {
 				return false
 			}
 			// Carve-out: a wt-/wk- worktree stack, named by the command or by
 			// the worktree directory the call runs in.
-			return !worktreeStack(s, cwd)
+			return !worktreeStack(s, dir)
 		},
 		msg: `docker compose down -v DESTROYS VOLUMES — all database data, permanently.
 
@@ -228,12 +234,12 @@ func destructiveMatch(cmd, cwd string) *destructiveRule {
 		!strings.Contains(cmd, "docker") && !strings.Contains(cmd, "security") {
 		return nil
 	}
-	for _, seg := range shellseg.Segments(cmd) {
-		if textOnly(seg) {
+	for _, rs := range runDirs(cmd, cwd) {
+		if textOnly(rs.text) {
 			continue
 		}
 		for i := range destructiveRules {
-			if destructiveRules[i].fire(seg, cwd) {
+			if destructiveRules[i].fire(rs.text, rs.dir) {
 				return &destructiveRules[i]
 			}
 		}

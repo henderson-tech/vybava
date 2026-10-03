@@ -1,0 +1,19 @@
+{
+  "v": 3,
+  "ok": false,
+  "verb": "url",
+  "data": {
+    "box": "a"
+  },
+  "diagnostics": [
+    {
+      "code": "WS_NOT_RUNNING",
+      "severity": "error",
+      "detail": "fixit-work-marketplace-ui-vt-4229 holds no runtime lease (parked or stopped), so it has no address; devbox up leases one, normally the one it last ran on",
+      "fix": "devbox up fixit-work-marketplace-ui-vt-4229 --box a"
+    }
+  ],
+  "next": [
+    "devbox up fixit-work-marketplace-ui-vt-4229 --box a"
+  ]
+}

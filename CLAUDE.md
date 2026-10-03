@@ -94,7 +94,10 @@ double-billing. `rollout.go` owns parsing and the mtime prefilter; `live.go` own
 `internal/transcripts` owns reading agent logs: the incremental cursor (offset, size,
 mtime, prefix digest; never a partial last record), Claude transcript and Codex
 rollout decoding, the projects-tree walk and git-root resolution. operator and
-codexusage read through it; never add a fourth parser. `internal/tokentime`
+codexusage read through it; never add a fourth parser. Its `sessions.go` is the
+one reader of live Claude sessions (`~/.claude/sessions/<pid>.json`, the
+procStart match, the project slug, transcript lookup) — claude-guards, readeff
+and gitkit pr-census use it. `internal/tokentime`
 builds on it: buckets are permanent (transcripts are deleted, totals must not
 shrink), every response is counted once through the `seen` identities committed
 in the same transaction as buckets and cursors, and the rollup JSON is a contract
@@ -127,6 +130,11 @@ commands in 18 of 25 rules and let a bare `FOO=1` prefix disarm 9 — hard bans
 included. Quoting asymmetry is load-bearing: single quotes suppress everything,
 double quotes suppress control operators but NOT `$(…)`/backticks. Findings and
 the settled "do not re-litigate" list: `docs/decisions/0004-guard-field-audit.md`.
+`claudeguards/rundir.go` (`runDirs`) is the ONE answer to WHERE a segment runs:
+the directory a literal `cd … &&` chain or `git -C` provably reaches, fail-closed
+(unproven = the hook cwd); a directory carve-out judges that, never the hook cwd
+alone, and `cdTarget`/`cdMove` are the one `cd` parser — never re-derive either.
+
 
 `internal/plugingc` garbage-collects the Claude Code plugin cache. Three rules
 are load-bearing and documented in `docs/plugin-gc.md`: the active version
@@ -168,7 +176,7 @@ differs between Claude and Codex. `init` never overwrites run.json, a ledger or
 a copied script. `slot` and `uniq-shots.sh` are workarounds with named retirement
 conditions (`docs/readiness.md`).
 
-`internal/uiloop` is the `ui-loop` applet: it embeds the TypeScript/Playwright polish-loop harness (`internal/uiloop/harness/`) and syncs it verbatim into each repo's `<dir>/vendor` with a sha256 stamp; `check` fails on drift, so a harness change is made HERE and synced, never edited in a repo. The capture reads only `<pass>/run.json`, never the vybava binary, so it runs in a Devbox container that has just the repo. Run.json, the shot record and done.json are a Go↔TS contract (`run.go`/`record.go`/`follow.go` ↔ `run.ts`/`capture.ts`/`teardown.ts`): bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change. `BUILTIN_VIEWPORTS` and `LINT_RULES` are mirrored in Go and held equal by a test. The harness must keep the GPU launch flags and type-check under TS 5.3 strict in CJS and ESM packages. There is no skill: the vitrinka map / review-loop workflows drive the CLI. Rules: `docs/uiloop.md`.
+`internal/uiloop` is the `ui-loop` applet: it embeds the TypeScript/Playwright polish-loop harness (`internal/uiloop/harness/`) and syncs it verbatim into each repo's `<dir>/vendor` with a sha256 stamp; `check` fails on drift, so a harness change is made HERE and synced, never edited in a repo. The capture reads only `<pass>/run.json`, never the vybava binary, so it runs in a Devbox container that has just the repo. Run.json, the shot record and done.json are a Go↔TS contract (`run.go`/`record.go`/`follow.go` ↔ `run.ts`/`capture.ts`/`teardown.ts`): bump `RUN_VERSION`/`RECORD_VERSION` on a breaking change. `state`'s data is a contract with the vitrinka review-loop: bump `StateContract` (`stage.go`) whenever a field a workflow reads is added or changes format, digests included. Its `next` (`nextStage`, with the verify selection in `next.only`) is the only router — the workflow runs it verbatim, so a routing change is a contract change. `BUILTIN_VIEWPORTS` and `LINT_RULES` are mirrored in Go and held equal by a test. The harness must keep the GPU launch flags and type-check under TS 5.3 strict in CJS and ESM packages. There is no skill: the vitrinka map / review-loop workflows drive the CLI. Rules: `docs/uiloop.md`.
 
 `internal/toolsetup` owns catalog `tool` items: probes are live (never Výbava
 state), install goes through the product's own channel, and credentials never
@@ -228,3 +236,20 @@ the applet never edits app code and its one network call is a GET of a
 configured lane URL. `run.json` carries `RunVersion`: bump it on a breaking
 change of `RunFile` or `Cell`, and a pass written by another version answers
 `run-version` (fix: `run init --force`), never a silent re-read.
+
+`mods/<id>` are Claude Code mods (catalog kind `mod`, `docs/mods.md`): one
+plugin of function hooks per capability, installed into `~/.claude/skills/<id>`
+by one atomic exchange (every live 2.1.287+ session hot-reloads that folder, so
+a half-copied module must never be visible). A mod is wiring and UI only: it
+calls `vybava <applet> … --json` and renders; domain logic stays in Go. Mods
+fail open and never run in Codex, so a hard ban never moves into one, and no
+mod answers or rewrites a `tool.call` (they run above claude-guards). No mod
+spawns a process from a background timer (fleet-pane refreshes only while its
+pane is open): one producer writes, ~45 sessions read (`watch serve`
+publishes the fleet summary). `fleet schema --ts`
+is a Go→TS contract copied into `mods/*/types/fleet.gen.d.ts`, held by a drift
+test; `.claude-plugin/types/` is engine-written and gitignored. Applets:
+`docs/fleet.md`, `docs/watch.md`. `fleet schema --swift`/`--example` are
+the same contract for Fleet.app (claude-switcheroo `apps/fleet`), held by its
+`test.sh`. `internal/cmux` is the one cmux socket client (`docs/cmux.md`):
+fleet acts only through it, resolving a surface by live pid per action.

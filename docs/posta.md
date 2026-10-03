@@ -38,7 +38,9 @@ wrong mailbox.
 **`--out` is not optional in that context.** `onyx run_command` redacts a
 child's entire stdout the moment it injects a credential, so a caller that does
 not pass `--out` gets an empty string back and no message. Write the result to a
-file and read the file.
+file and read the file; a failed command leaves `{"error": …, "output": …}`
+there instead, `output` holding what it had written first (doctor's report).
+The file is created owner-only (0600), its directory on demand.
 
 Gmail needs an app password from <https://myaccount.google.com/apppasswords>,
 which in turn needs 2-Step Verification enabled on the account. Passkeys can stay

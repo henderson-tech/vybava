@@ -62,10 +62,12 @@ func TestConfigRejectsUnknownKeysAndReportsEveryProblem(t *testing.T) {
 	bad.Apps = map[string]App{"portal": {BaseURL: "ftp://x", Env: "lower", Viewports: []string{"watch"}, Themes: []string{"sepia"}}}
 	bad.Lint.Off = []string{"no-such-rule"}
 	bad.Lint.Allow = map[string][]string{"grid": {"ui-button", " "}, "truncated": {".x"}, "nope": {".y"}, "contrast": {}}
+	bad.Source, bad.Primitives = []string{"apps", ""}, []string{"/abs/ui-lib"}
 	problems := strings.Join(bad.Validate(), "\n")
 	for _, want := range []string{"dir \"../elsewhere\"", "not kebab-case", "listed twice", "not an http(s) URL", "not an env var",
 		"unknown viewport \"watch\"", "\"sepia\" is not light or dark", "unknown rule \"no-such-rule\"",
-		"lint.allow.grid holds an empty selector", "\"truncated\" is informational already", "lint.allow: unknown rule \"nope\"", "lint.allow.contrast must list at least one selector"} {
+		"lint.allow.grid holds an empty selector", "\"truncated\" is informational already", "lint.allow: unknown rule \"nope\"", "lint.allow.contrast must list at least one selector",
+		"source holds an empty pathspec", "primitives \"/abs/ui-lib\" must be repo-relative"} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("Validate misses %q in:\n%s", want, problems)
 		}
@@ -151,6 +153,19 @@ func TestSyncWritesStampAndCheckSeesEveryDriftKind(t *testing.T) {
 	if s, _ := readStamp(vendor); s.Vybava != "1.2.3" {
 		t.Errorf("an unchanged harness must not rewrite the stamp, got %s", s.Vybava)
 	}
+	// So check names the stamp's release (syncedBy, omitted when empty) only
+	// when it explains a drift.
+	syncedBy := func() string {
+		t.Helper()
+		res, err := tool.Check(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Data.(*CheckData).Vendor.Synced
+	}
+	if s := syncedBy(); s != "" {
+		t.Errorf("a clean vendor reports no syncedBy, got %q", s)
+	}
 
 	must := func(err error) {
 		t.Helper()
@@ -190,6 +205,9 @@ func TestSyncWritesStampAndCheckSeesEveryDriftKind(t *testing.T) {
 	}
 	if !slices.Contains(codes, DiagVendorDrift) || !slices.Contains(codes, DiagVendorEdited) || !slices.Contains(codes, DiagProjectMissing) {
 		t.Errorf("check diagnostics %v", codes)
+	}
+	if s := syncedBy(); s != "1.2.3" {
+		t.Errorf("a drifted vendor names the release that synced it, got %q", s)
 	}
 
 	if _, err := tool.Sync(false); diagCode(err) != DiagVendorEdited {
@@ -237,5 +255,43 @@ func TestInitNeverImportsAnExampleItDidNotCreate(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(screens, "example.ts")); err == nil {
 		t.Error("no example.ts beside existing screens")
+	}
+}
+
+// The spec states the lint the reviewers judge by; check warns once a line
+// init writes for a knob is gone (here: the config moved touchTarget to 40).
+func TestCheckWarnsWhenTheSpecNoLongerStatesALintValue(t *testing.T) {
+	cfg := testConfig()
+	cfg.Spec = "docs/ui-spec.md"
+	tool := newTool(t, cfg)
+	if _, err := tool.Init(); err != nil {
+		t.Fatal(err)
+	}
+	drift := func() []runxDiagnostic {
+		t.Helper()
+		res, err := tool.Check(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []runxDiagnostic
+		for _, d := range res.Diagnostics {
+			if d.Code == DiagSpecLintDrift {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	if d := drift(); len(d) != 0 {
+		t.Fatalf("the scaffolded spec states both values: %+v", d)
+	}
+	tool.Config.Lint.TouchTarget = 40
+	d := drift()
+	if len(d) != 1 || d[0].Severity != "warning" || !strings.Contains(d[0].Detail, "uiLoop.lint.touchTarget 40") ||
+		!strings.Contains(d[0].Detail, "Touch targets are at least 40×40px on coarse pointers.") {
+		t.Fatalf("a spec without the touch-target line warns naming it and the value: %+v", d)
+	}
+	writeFile(t, filepath.Join(tool.Root, "docs/ui-spec.md"), "# Spec\n\n- Touch targets are at least 40×40px\n  on coarse pointers.\n- Spacing, control heights and icon sizes sit on the 4px grid.\n")
+	if d := drift(); len(d) != 0 {
+		t.Errorf("a spec holding both lines (one rewrapped) is silent: %+v", d)
 	}
 }

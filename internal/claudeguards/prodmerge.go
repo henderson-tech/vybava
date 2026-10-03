@@ -94,10 +94,8 @@ func guardProdMerge(in *HookInput) *Denial {
 			if len(f) == 0 {
 				continue
 			}
-			if shellseg.CommandWord(seg) == "cd" {
-				if len(f) > 1 {
-					dir = resolveDir(f[1], dir, home)
-				}
+			if d, ok := cdMove(f, dir, home); ok {
+				dir = d
 				continue
 			}
 			if escaped {

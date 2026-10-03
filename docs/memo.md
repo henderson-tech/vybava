@@ -136,6 +136,7 @@ memo touch <ref>                          # explicit use, weight 2
 memo render [--check]                     # write MEMORY.md; --check exits 2 on drift (compares the file on disk)
 memo ensure                               # write MEMORY.md only when missing or older than LEDGER.md / usage.jsonl
 memo import <file>                        # id-less rows, ids assigned in order; all-or-nothing
+memo renumber [--base <ref>] [--dry-run]  # settle a team ledger a merge conflicts in (see Merging a branch)
 memo migrate <home>                       # v2 notes -> import template (helper, not the judgment)
 memo homes [register <alias> <path>]
 memo vault [--path ~/Memory]              # Obsidian vault of <alias> -> <home> symlinks
@@ -186,6 +187,61 @@ the first session renders it. `memo render --check` keeps comparing the
 file on disk, so it still works locally in a team home whose `MEMORY.md` is
 gitignored; in CI, where the file is absent, it would only report drift,
 so CI runs `memorylint check` for team homes and nothing else.
+
+## Merging a branch
+
+A team ledger is append-only per branch, so two branches that both ran
+`memo add` after their fork give the same `#tNN` to two different facts
+(2026-10-02: ten ids of a long-lived FixIt branch named other facts on
+main). Their appends always conflict in `LEDGER.md` when one merges
+the other; picking a side drops rows, keeping both repeats ids.
+`memo renumber` is the resolution:
+
+```text
+git merge origin/main                     # LEDGER.md conflicts
+memo renumber --json                      # base = the merge in progress
+git add -- <the paths next names>         # explicit list, from the envelope
+memorylint check <home> --base origin/main
+```
+
+- **The base's ids win.** The settled `LEDGER.md` is the base's file
+  verbatim, then every row only the branch has, in branch order, numbered
+  from the base's newest + 1. A branch row the base already carries (same
+  type, topic, sentence and links, under any id) folds into the base's id.
+  A row identical to the base's row of the same id is shared and untouched.
+- **Citations follow their row.** Supersede/retire markers, `[[LEDGER#^tN]]`
+  links, `#tN`, `^tN` and `<alias>#tN` move in the branch's rows and on every
+  line the branch wrote anywhere in the repo: a line of a file that differs
+  from the base (or is untracked) and that the base's copy of the file does
+  not hold verbatim. A line the base holds keeps the base's meaning, so
+  main's `#t335` stays main's in a file both sides edited. Another home's
+  alias, a `#tN` glued to a word, `#`, `&` or `/`, files over 4 MB and
+  binaries are left alone; commit messages cannot be rewritten.
+- **Local usage moves too.** The home's `usage.jsonl` (gitignored, this
+  checkout's citations) credited the branch's rows, so its events move to
+  the new ids; `MEMORY.md` is rendered after.
+- **All or nothing.** Every edit is computed, and `usage.jsonl` read as
+  strictly as the render reads it, before a file is written; each file is
+  replaced through a temp file only that write created, and a write that
+  fails restores the files written before it. A half-applied move map,
+  re-run, would move a citation twice. The `MEMORY.md` render comes after
+  the settle: its failure is a `RENDER_DRIFT` warning naming `memo render`.
+- **The staging list is exact.** `next` names `git add` of the settled
+  ledger, the files whose citations moved and the home's `.gitignore` when
+  the render wrote it. A file that still holds its own conflict has its
+  citations moved but is never in that list (`unmerged`): adding it would
+  mark the conflict resolved with its markers inside.
+- **Base**: `--base <ref>`, else the merge in progress (`MERGE_HEAD`), else
+  the pull request's base (`origin/$GITHUB_BASE_REF`), `origin/HEAD` or
+  `origin/main`. Without `--dry-run` it refuses `BASE_NOT_MERGED` on a
+  branch that neither merges the base now nor has merged it (it would copy
+  the base's rows in and the merge would still conflict); `--dry-run`
+  previews the moves from any state. A personal home is refused (`USAGE`):
+  one writer, never merged.
+- Both sides superseding or retiring the same row is a judgment memo cannot
+  make: `TARGET_DOUBLY_CLOSED` (warning) names it and memorylint L003 keeps
+  failing until one closer supersedes the other.
+- Idempotent: on a settled ledger it moves nothing and writes nothing.
 
 ## Homes, aliases, registry
 
@@ -283,9 +339,12 @@ exactly as before.
 | L006 | error | `MEMORY.md` differs from `memo render` output; in a TEAM home a missing `MEMORY.md` is clean (it is a local projection) |
 | L007 | warning | a `notes/` file is linked from no row |
 | L008 | warning | a team home's `MEMORY.md` or `usage.jsonl` exists and is not gitignored (`git check-ignore`); fix: add both to `<home>/.gitignore`, which `memo render --home <home>` writes; a TRACKED file names its untracking instead (`SURFACE_TRACKED`'s fix), and a tracked `MEMORY.md` skips the L006 drift check |
+| L009 | error | a team row's id names a different row in the base's copy of the ledger (`check --base <ref>`, default `auto`: `origin/$GITHUB_BASE_REF`, `origin/HEAD` or `origin/main`, skipped quietly when none resolves; `none` turns it off); a NAMED base that does not resolve is an L009 error too, never a skip; fix: `memo renumber` while merging that base |
 
 CI for a team home runs `memorylint check <repo>/.claude/memory` and nothing
-else (since 2026-09-21): `memo render --check` needs the machine-local
+else (since 2026-09-21); to hold ids to the pull request's base it fetches
+that ref first (a shallow checkout carries no `origin/main`) and passes
+`--base origin/<base>`: `memo render --check` needs the machine-local
 `MEMORY.md`, which a checkout does not carry.
 
 In ledger mode `notes/<slug>.md` names are plain kebab-case (M002 is not
@@ -325,4 +384,7 @@ Closed enum; every failure carries the exact `fix` and it lands in `next`.
 | `HOOK_REFUSED` | 2 | PreToolUse would rewrite a ledger file by hand |
 | `SNAPSHOT_TEAM_OWNED` | 0 | snapshot/log/restore in a team home |
 | `SNAPSHOT_CLEAN` | 0 | nothing to snapshot |
+| `BASE_UNRESOLVED` | 2 | `renumber`: the base ref does not resolve, none was given and none exists, or the home is outside git; fix fetches it or names `--base` |
+| `BASE_NOT_MERGED` | 2 | `renumber` without `--dry-run` on a branch that neither merges the base now nor has merged it; nothing is written; fix is the merge, then the same renumber |
+| `TARGET_DOUBLY_CLOSED` | 0 | warning, `renumber` settled a ledger in which both sides superseded or retired the same row; one closer must supersede the other |
 | `INFRA_ERROR` | 1 | unstructured I/O failure |

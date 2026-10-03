@@ -38,6 +38,8 @@ prod-merge        a `gh pr merge`, a writing `gh api` or a `git push`: one
                   when that repo sets PROD_BRANCHES, one `gh pr view` / `gh api`
                   (≤8 s) for the PR's base, plus a git fork for --repo/origin
                   or a bare push's current branch
+process kill      one `ps -A` (~0.1 s) when a local kill names a literal PID
+                  or process group; pattern kills are decided from the text
 machine caps      one `ps -axo` (~0.45 s) when a local segment boots a
                   simulator or starts a dev server (a `dev:*` script counts
                   when its package.json body is one)
@@ -65,6 +67,8 @@ SessionEnd    swarm-teardown              the same, also for this session's own
                                           swarm, plus ≤8 `ps` up the ancestry
               browser-teardown            an onyx lookup (1.5 s) and stop (3 s)
               reap                        one `ps -axo`; kills as weather --reap does
+              device-lease-release        reads perflab's lease files; releases this
+                                          session's leases (a 3 s lock wait each)
               redact-session              one secret scan of the session's files
                                           (~1 s per 25 MB, 4 workers) and a
                                           same-length overwrite of what it finds
@@ -95,6 +99,7 @@ SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
 SessionEnd            claude-guards reap
+SessionEnd            claude-guards device-lease-release  # release this session's perflab device leases
 SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
@@ -158,7 +163,13 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
-                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1) ·
+                  a raw adb / devicectl / xctrace / go-ios / Appium command,
+                  or a NAME=value assignment, naming a phone perflab has
+                  leased (holder included), a bare adb device command or
+                  adb kill-server while an Android phone is leased; use
+                  `perflab device shell <id> --lease <t> -- …` (no escape;
+                  docs/perflab.md "claude-guards")
 memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   destination, rm) to a memo home's LEDGER.md, MEMORY.md or
                   usage.jsonl — memo's own RefuseHandWrite, run here so memo's
@@ -166,6 +177,13 @@ memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   verb that owns the file
 e2e:*             raw simctl screenshots and raw .e2e PNG reads
 plugincache:*     bun/npm/pnpm/yarn installs targeting ~/.claude/plugins/
+process:*         pkill / killall / fuser -k, and kill or xargs kill fed by a
+                  ps/pgrep/pidof/lsof listing in the same command
+                  (pattern-kill) · kill of a literal PID or -PGID that is a
+                  claude/codex session, its switcheroo or cmux launcher, or an
+                  ancestor of one, outside the calling session's own tree
+                  (session-kill); kill -0, kill -l, kill $!, kill %N pass
+                  (no escape)
 commit-secrets    key files, secret-shaped lines, private infra strings in a public repo
                   (the block quotes each line only up to its first secret or assignment)
 prod-merge:*      landing on a production branch the repo names in
@@ -394,7 +412,7 @@ peaked at 680.
 `compose down -v` carves out worktree stacks — their databases are disposable
 by construction — but only when the call NAMES one: `-p wt-<slug>` or
 `-p wk-<slug>` (both worktree layouts), or a `wt-`/`wk-` prefixed worktree
-directory as cwd. A bare `down -v` inside a worktree stays blocked: compose
+directory the call provably runs in (the cwd, or a literal `cd … &&` chain). A bare `down -v` inside a worktree stays blocked: compose
 resolves the project from that tree's `.env`, and a copied `.env` is exactly
 how one worktree's teardown dropped another stack's volumes. Script-driven
 teardown (`bun run worktree:cleanup … --remove`) never trips any of this — the
@@ -416,6 +434,32 @@ command, and on an explicit `--cwd` / `--prefix` / `--dir` / `-C` pointing
 inside it. Reads, `ls`, and `bun run` / `npm run` inside the cache stay
 allowed — sessions legitimately load skill files from there. Reclaiming what
 already accumulated is `plugin-gc` (`docs/plugin-gc.md`).
+
+The `process:*` rules are incident-born (2026-10-01). Every Claude Code
+session on this Mac runs as `bun … switcheroo start …` and every Codex sidekick
+as `switcheroo codex run …` over `codex …`, so a session stopping its own
+sidekick and Appium run with `pids=$(ps -axo pid,command | grep -E
+'switcheroo|codex exec|…' | grep -v grep | awk '{print $1}'); kill -INT
+${=pids}` sent SIGINT to 57 processes: the user's other sessions, their Codex
+runs and itself. `process:pattern-kill` reads the command alone. It refuses
+`pkill` and `killall` with any pattern, `fuser -k`, and a `kill` (also behind
+`sudo`, `timeout`, `xargs`) whose PIDs arrive through a substitution, a
+variable, `xargs` or a loop in a command that also runs `ps`, `pgrep`,
+`pidof`, `lsof` or `fuser` (`lsof -ti:<port> | xargs kill` included: proving
+the port's owner would mean running the listing in the hook). Signal 0, `kill
+-l`, `killall -l`, a read-only `ps | grep` and `ssh`/`devbox run` payloads
+pass. `process:session-kill` resolves every literal operand of a remaining
+`kill` against one `ps -A -o pid,ppid,pgid,args` read: a PID, or every member
+of a `-PGID` group, that is a claude or codex process, a switcheroo launcher,
+a `cmux-*-wrapper`, or an ancestor of one of those is refused unless it
+descends from the nearest session above the hook, so a session still stops
+its own Codex sidekick or Appium by PID. `kill -1` (every process) is refused
+without a read; `kill $!`, `kill %N`, a PID the table does not hold and a
+failed `ps` pass. Neither rule has an escape: the sanctioned path is TaskStop
+for a background task, `kill $!` / `kill %N` for what the command started,
+or a listing, a look and a literal-PID kill, and another session's process is
+the user's to stop. A container payload (`docker exec c sh -c 'pkill …'`) is
+read as local, as the machine rules read it.
 
 The `context:*` family exists because the bypass-permissions harness text
 tells Claude to prefer Bash over Read, Edit and Write. Measured on one epic
@@ -494,6 +538,21 @@ arguments are data.
 `env`, so assignment prefixes are stripped before a rule reads the first token.
 They are stripped only from the front: `env FOO=bar make build` runs `env` as a
 runner and keeps its assignment.
+
+**Where a command runs is read from the command, not from the hook's cwd
+alone.** Claude Code resets the shell's cwd between calls, so a session parked
+in its checkout reaches another tree only by `cd <dir> && …` or `git -C <dir>`.
+`runDirs` (`rundir.go`) lists the same segments with the directory each one
+PROVABLY runs in, and every directory carve-out — a branch switch in a
+worktree, a `down -v` on a `wt-` stack — judges that directory. Fail-closed: a
+segment's directory is known only through a literal `cd`/`-C` target whose
+success is guaranteed by `&&` all the way to the segment, outside any subshell
+or substitution that closed before it, not a pipeline element (`echo | cd x` runs
+in its own subshell), with no `pushd`/`popd` and no remote runner in between; anything else (`$W`, `cd x;`, `cd x ||`) is judged at the
+cwd, exactly as before. The gap ran both ways: the git-switch denial
+recommended `cd .worktrees/<name>` and then blocked it, and from a worktree
+cwd `cd ../.. && git checkout` switched the primary clone unseen.
+
 
 ## Context tiers and diagnosis
 

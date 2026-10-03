@@ -91,6 +91,18 @@ items:
     description: Android frame metrics from `dumpsys gfxinfo framestats` dumps and Perfetto traces - cadence, present intervals, per-gesture first-input and release frames, per-frame UI/RenderThread work, texture uploads, ART pauses, FrameTimeline jank.
     applet: framestats
 
+  - id: perflab
+    kind: applet
+    status: experimental
+    description: Device frames on physical phones for Expo / React Native apps - a machine-global ledger of phones with one lease holder each, a native build index keyed by a portable Expo fingerprint, JS bundle variants packed without native rebuilds, measured scenario runs through the project's adapter, Perfetto and xctrace probes, and every number re-derived from kept evidence (hitch ratio, display-rate fps, present gaps, RenderThread draw) with compare and budget gates.
+    applet: perflab
+
+  - id: expo-device-perf
+    kind: skill
+    status: experimental
+    description: Thin wrapper skill for perflab - the measured-perf loop on physical iPhones and Android phones (lease, doctor, build once, bundle variants, alternate runs, compare), which instrument answers which question, the budgets, the React Native render-cost rules with their evidence, and the hard laws (perflab verbs only on a leased phone).
+    source: skills/expo-device-perf
+
   - id: shrt
     kind: applet
     status: experimental
@@ -187,6 +199,18 @@ items:
     description: Mac load sampler with owner attribution - append load, memory and the heaviest processes to a TSV every interval, each tagged with project, directory and the claude/codex session that spawned it; report integrates the file into offenders, per-project and per-session totals and a spike ledger (text, Markdown, JSON).
     applet: macwatch
 
+  - id: fleet
+    kind: applet
+    status: experimental
+    description: Every Claude session on the Mac from the engine's session registry - waiting-on-you first, grouped by project, dead only when proven (pid gone or recycled) - plus read-only Codex rows, a per-session job ledger for lazarus and the resume lines of sessions that died while busy.
+    applet: fleet
+
+  - id: watch
+    kind: applet
+    status: experimental
+    description: One machine-wide poller (LaunchAgent vybava.watchd) for PR checks, Eve, merges, devbox, vitrinka and deployik - each target probed once however many sessions subscribe - with a long-poll socket for the wake mod and a blocking `watch until` for Monitor and Codex.
+    applet: watch
+
   - id: plugin-gc
     kind: applet
     status: experimental
@@ -271,10 +295,16 @@ items:
     description: Work incoming review findings — pasted text, a findings file or a PR — through push-back verification, a RED test per finding, the fix and the record; prm delegates its rounds here.
     source: skills/receiving-code-review
 
+  - id: check-prs
+    kind: skill
+    status: experimental
+    description: Manual-only PR triage — per PR the full link, validity against work landed since, danger, priority and a keep/salvage/close verdict, with a code/test/config/rest diff split; PRs held by a live Claude or Codex session are listed, never judged.
+    source: skills/check-prs
+
   - id: gitkit
     kind: applet
     status: experimental
-    description: Deterministic git/PR layer the prm, push-all and sync skills execute — PR selectors, review triage, merge gates, worktrees, path classification.
+    description: Deterministic git/PR layer the prm, push-all, sync and check-prs skills execute — PR selectors, review triage, merge gates, worktrees, path classification, the PR census.
     applet: gitkit
 
   - id: cli-craft
@@ -348,6 +378,30 @@ items:
     status: experimental
     description: Client and prospect emails as one Outlook-paste HTML per project — inline-styled house markup, project fact sheet, browser-verified links.
     source: skills/press-email
+
+  - id: peek
+    kind: mod
+    status: experimental
+    description: Claude Code mod — the spinner says what the turn is waiting on and for how long, with foreground agents and background tasks counted; a turn past 30 minutes ends with its time and token breakdown.
+    source: mods/peek
+
+  - id: lazarus
+    kind: mod
+    status: experimental
+    description: Claude Code mod — records the background workflows, shells, monitors and agents a session starts; after a crash or restart one key resumes what died, a usage-limit stall continues by itself at the reset, and /park says whether a restart is safe.
+    source: mods/lazarus
+
+  - id: fleet-pane
+    kind: mod
+    status: experimental
+    description: Claude Code mod — /fleet opens a pane of every Claude session on the Mac (waiting on you first, dead ones with their resume line, Codex read-only) with reply and copy-resume keys, and a quiet status line counts the sessions waiting on you.
+    source: mods/fleet-pane
+
+  - id: wake
+    kind: mod
+    status: experimental
+    description: Claude Code mod — a wake_when tool lets an agent end its turn and be woken when a PR, Eve, devbox, vitrinka or deployik condition holds, through the shared watch daemon instead of its own sleep loop; transitions toast and offer /prm.
+    source: mods/wake
 
   # Tools: external apps and CLIs installed through their product's own
   # published channel and probed live (internal/toolsetup, docs/setup-team.md).
@@ -446,6 +500,14 @@ items:
       install: {pultik: "switcheroo-cli-darwin-{arch}"}
       setup: [[switcheroo, shell, install], [switcheroo, setup]]
 
+  - id: fleet-app
+    kind: tool
+    status: experimental
+    description: Fleet — Dock app listing every cmux-hosted Claude and Codex session waiting-first; answer a dialog, reply or focus in place (⌃⌥Space). Reads the snapshot `vybava watch serve` publishes.
+    tool:
+      probe: {app: Fleet.app}
+      install: {pultik: fleet}
+
   - id: pultik
     kind: tool
     status: experimental
@@ -503,6 +565,8 @@ groups:
       - ui-loop
       - reclaim
       - macwatch
+      - fleet
+      - watch
       - plugin-gc
       - handoffs
       - plaud-cli
@@ -513,10 +577,13 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - merge-assist
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - press
       - press-pdf
@@ -526,6 +593,10 @@ groups:
       - ingressgen
       - cli-craft
       - codex-sidekick
+      - peek
+      - lazarus
+      - fleet-pane
+      - wake
 
   - id: press-family
     description: Document production — the press CLI plus the PDF, logo, and offer skills that drive it.
@@ -552,6 +623,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - merge-assist
 
   - id: henderson
@@ -576,6 +648,17 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
+
+  - id: claude-mods
+    description: The Claude Code mods (peek, lazarus, fleet-pane, wake) plus the fleet and watch applets they call, so `watch until` is on PATH for Monitor and Codex; `vybava watch agent install` starts the shared daemon.
+    items:
+      - peek
+      - lazarus
+      - fleet-pane
+      - wake
+      - fleet
+      - watch
 
   - id: everything
     description: Every package currently published by Výbava.
@@ -593,6 +676,7 @@ groups:
       - vitrinka-app
       - switcheroo-bar
       - switcheroo-cli
+      - fleet-app
       - pultik
       - devbox
       - worktime
@@ -629,11 +713,15 @@ groups:
       - fontfreeze
       - perfrig
       - framestats
+      - perflab
+      - expo-device-perf
       - shrt
       - ingressgen
       - reconcile
       - reclaim
       - macwatch
+      - fleet
+      - watch
       - plugin-gc
       - handoffs
       - plaud-cli
@@ -644,6 +732,7 @@ groups:
       - sync
       - push-back
       - receiving-code-review
+      - check-prs
       - press
       - press-pdf
       - press-logo
@@ -651,3 +740,7 @@ groups:
       - press-email
       - cli-craft
       - codex-sidekick
+      - peek
+      - lazarus
+      - fleet-pane
+      - wake

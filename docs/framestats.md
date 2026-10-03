@@ -94,7 +94,9 @@ The closed enum lives in `internal/framestats/diag.go`: `USAGE`,
 `FILE_UNREADABLE`, `NOT_FRAMESTATS`, `MISSING_COLUMNS`, `MALFORMED_ROWS`,
 `NO_FRAMES`, `NOT_A_PERFETTO_TRACE`, `TRACE_INCOMPLETE`,
 `PACKAGE_NOT_IN_TRACE`, `NO_APP_FRAMES`, `NO_RENDER_THREAD`, `NO_VSYNC_IDS`,
-`NO_FRAME_TIMELINE`.
+`NO_FRAME_TIMELINE`, `COMPACT_SCHED` (Android 16's traced writes compact
+sched bundles by default; the RenderThread's CPU and clock placement needs
+full `sched_switch` events: record with `compact_sched { enabled: false }`).
 
 ## Origin
 
