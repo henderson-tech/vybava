@@ -59,9 +59,10 @@ not configurable.
 `--json` prints the API payload verbatim (`files`, `file`, `note`) or a stable
 `{file_id, block, available_blocks, total, segments|text}` for `transcript`.
 `--out <file>` sends that result to a file instead — or `{"error": …}` when
-the command fails. It is required under `onyx run_command`, which redacts the
-whole output of a call it injects the token into (the helper is shared with
-posta: `internal/cli/outflag.go`).
+the command fails (plus `output`, whatever it had written first). The file is
+owner-only (0600) and its directory is created on demand. It is required under
+`onyx run_command`, which redacts the whole output of a call it injects the
+token into (the helper is shared with posta: `internal/cli/outflag.go`).
 The MCP's transcript pagination (`next_cursor`) was local slicing of one
 document; the CLI returns the whole block in one call.
 
