@@ -52,12 +52,14 @@ type Activity struct {
 	Holders []Holder `json:"holders"`
 }
 
-// touch is one tool call's footprint: when, the directory it ran in, and
-// the text naming paths or PRs (a command line, a file path, a patch).
+// touch is one tool call's footprint: when, the directory it ran in, the
+// shell command it ran (text) and the whole paths it named (a file tool's
+// input, a patch's file headers).
 type touch struct {
-	at   time.Time
-	cwd  string
-	text string
+	at    time.Time
+	cwd   string
+	text  string
+	paths []string
 }
 
 // agentLog is one session's recent tool calls.
@@ -96,19 +98,24 @@ func mentionsNumber(text, ref string) bool {
 	}
 }
 
-// pathBreak splits a tool call's text into candidate path tokens: whitespace,
-// quotes, shell operators and the `=` of --flag=value.
-func pathBreak(r rune) bool {
-	return strings.ContainsRune(" \t\r\n\"'`=;&|()<>,", r)
-}
-
-// namesWorktree reports a tool call naming a path inside the worktree. Each
-// token is resolved as the shell would — absolute, ~/, or relative to the
-// call's directory (./x, ../x, .worktrees/x) — and compared as a path, so
-// ../fix-2 and ../../fix never name ../fix. A bare word without a slash is
-// not read as a path.
+// namesWorktree reports a tool call naming a path inside the worktree: one
+// of its whole paths, or a word of its command (internal/shellseg, so a
+// quoted path with spaces stays one word; --flag=value yields value). Each
+// is resolved as the shell would — absolute, ~/, or relative to the call's
+// directory (./x, ../x, .worktrees/x) — and compared as a path, so ../fix-2
+// and ../../fix never name ../fix. A bare word without a slash is not read
+// as a path.
 func namesWorktree(tc touch, worktree, home string) bool {
-	for _, tok := range strings.FieldsFunc(tc.text, pathBreak) {
+	candidates := append([]string{}, tc.paths...)
+	for _, seg := range shellseg.Segments(tc.text) {
+		for _, word := range shellseg.Fields(seg) {
+			if strings.HasPrefix(word, "-") {
+				_, word, _ = strings.Cut(word, "=")
+			}
+			candidates = append(candidates, word)
+		}
+	}
+	for _, tok := range candidates {
 		switch {
 		case strings.HasPrefix(tok, "~/") && home != "":
 			tok = filepath.Join(home, tok[2:])
@@ -272,8 +279,13 @@ func claudeTouches(path string, tail int64, since time.Time) []touch {
 			if json.Unmarshal(use.Input, &in) != nil {
 				continue
 			}
-			text := strings.Join([]string{in.Command, in.FilePath, in.Path, in.NotebookPath}, "\n")
-			out = append(out, touch{at: rec.Timestamp, cwd: rec.Cwd, text: text})
+			tc := touch{at: rec.Timestamp, cwd: rec.Cwd, text: in.Command}
+			for _, p := range []string{in.FilePath, in.Path, in.NotebookPath} {
+				if p != "" {
+					tc.paths = append(tc.paths, p)
+				}
+			}
+			out = append(out, tc)
 		}
 	}
 	return out
@@ -374,7 +386,7 @@ func codexLogs(home string, since time.Time) []agentLog {
 				log.touches = append(log.touches, touch{at: at, cwd: cwd, text: c.Cmd})
 			}
 			for _, p := range patches {
-				log.touches = append(log.touches, touch{at: at, cwd: log.cwd, text: p})
+				log.touches = append(log.touches, touch{at: at, cwd: log.cwd, paths: patchFiles(p)})
 			}
 		}
 		if len(log.touches) > 0 {
@@ -384,6 +396,18 @@ func codexLogs(home string, since time.Time) []agentLog {
 		logs = append(logs, log)
 	}
 	return logs
+}
+
+var patchFileHeader = regexp.MustCompile(`(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$`)
+
+// patchFiles lists the files an apply_patch body names in its headers; the
+// body itself is code, never read for paths.
+func patchFiles(patch string) []string {
+	var out []string
+	for _, m := range patchFileHeader.FindAllStringSubmatch(patch, -1) {
+		out = append(out, strings.TrimSpace(m[1]+m[2]))
+	}
+	return out
 }
 
 // readHead returns a file's first line, nil when unreadable or longer than 1 MiB.

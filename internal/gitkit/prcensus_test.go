@@ -274,6 +274,24 @@ func TestPRTargetNamesDotSlashPath(t *testing.T) {
 	}
 }
 
+// PR #167 review: a path with a space stays one path — quoted in a command,
+// whole in a file tool's input.
+func TestClaudeTouchesKeepPathsWithSpaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	use := func(name, input string) string {
+		return `{"type":"assistant","timestamp":"2026-10-03T10:00:00Z","cwd":"/w/my app","message":{"content":[{"type":"tool_use","id":"t","name":"` + name + `","input":` + input + `}]}}`
+	}
+	writeFile(t, path, strings.Join([]string{
+		use("Bash", `{"command":"git -C '/w/my app/.worktrees/fix' status"}`),
+		use("Edit", `{"file_path":"/w/my app/.worktrees/fix/a.go"}`),
+		use("Read", `{"file_path":"/w/my app/.worktrees/fix/b.go"}`),
+	}, "\n")+"\n")
+	logs := []agentLog{{holder: Holder{Kind: "claude"}, touches: claudeTouches(path, leadTail, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))}}
+	if got := holdersOf(prTarget{number: 7, slug: "acme/app", worktree: "/w/my app/.worktrees/fix"}, logs); len(got) != 1 || got[0].Evidence != "3 tool calls" {
+		t.Fatalf("holders = %+v", got)
+	}
+}
+
 // A number that is no PR makes gh exit 1 beside the other aliases' data:
 // the census keeps the found PRs and notes the miss (2026-10-03: one bad
 // number failed the whole run).
