@@ -330,6 +330,10 @@ type powerState struct {
 	screenOffMs int64
 }
 
+// wakefulnessNames are PowerManagerInternal's WAKEFULNESS_* numbers, as a
+// power group prints them.
+var wakefulnessNames = map[string]string{"0": "Asleep", "1": "Awake", "2": "Dreaming", "3": "Dozing"}
+
 // parsePower reads `dumpsys power`: wakefulness, mStayOn (true while
 // `svc power stayon` holds) and the screen-off timeout.
 func parsePower(out string) powerState {
@@ -341,7 +345,15 @@ func parsePower(out string) powerState {
 		}
 		switch key {
 		case "mWakefulness":
-			p.wakefulness = value
+			// Android 16 prints a second, per-power-group mWakefulness as a
+			// number (a Galaxy A16: "Awake", later "1"); a name wins.
+			if name, ok := wakefulnessNames[value]; ok {
+				if p.wakefulness == "" {
+					p.wakefulness = name
+				}
+			} else {
+				p.wakefulness = value
+			}
 		case "mStayOn":
 			p.stayOn = value == "true"
 		case "mScreenOffTimeoutSetting":

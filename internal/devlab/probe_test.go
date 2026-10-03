@@ -21,6 +21,17 @@ func TestReadersOnRecordedOutput(t *testing.T) {
 	if p := parsePower(fixture(t, "dumpsys-power.txt")); p.wakefulness != "Awake" || !p.stayOn || p.screenOffMs != 1800000 {
 		t.Errorf("power %+v", p)
 	}
+	// Android 16 (Galaxy A16) adds a per-power-group mWakefulness as a number
+	// after the named one: an awake phone once read "screen is 1" (locked).
+	for _, c := range []struct{ out, want string }{
+		{"  mWakefulness=Awake\n  mStayOn=true\nmWakefulness=1\n", "Awake"},
+		{"mWakefulness=0\n", "Asleep"},
+		{"  mWakefulness=Dozing\nmWakefulness=3\n", "Dozing"},
+	} {
+		if got := parsePower(c.out).wakefulness; got != c.want {
+			t.Errorf("parsePower(%q).wakefulness = %q, want %q", c.out, got, c.want)
+		}
+	}
 	if kg, focus := parseWindow(fixture(t, "dumpsys-window.txt")); kg == nil || *kg || focus != "android" {
 		t.Errorf("window keyguard=%v focus=%q", kg, focus)
 	}
