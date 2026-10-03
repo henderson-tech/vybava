@@ -258,13 +258,15 @@ func (t *Tool) Probe(ctx context.Context, o ProbeOptions) (Result, error) {
 	diags = append(diags, ad...)
 	diags = append(diags, gestureMovedNothing(o.Kind, ra, h.ID)...)
 	data := map[string]any{"runDir": runDir, "device": h.ID, "kind": o.Kind, "package": pkg, "gestures": gestures, "runs": ra.Records}
-	if budget := probeBudget(o.Kind, string(h.Device.Platform)); budget != nil {
-		if b, err := analysis.ParseBudget(scenario, budget); err == nil {
-			if rep, rd, err := analysis.Report([]analysis.RunAnalysis{ra}, analysis.ReportOptions{Budgets: map[string]analysis.Budget{scenario: b}}); err == nil {
-				data["verdict"] = rep.Rows
-				data["boardRows"] = rep.BoardRows
-				diags = append(diags, rd...)
-			}
+	if probeBudget(o.Kind, string(h.Device.Platform)) != nil {
+		// The verdict report gives: the kind's default under the adapter's
+		// row for this probe (its keys and exemptions), never the default alone.
+		budgets, exemptions, bd := t.adapterBudgets(ctx, string(h.Device.Platform))
+		diags = append(diags, bd...)
+		if rep, rd, err := analysis.Report([]analysis.RunAnalysis{ra}, analysis.ReportOptions{Budgets: budgets, Exemptions: exemptions}); err == nil {
+			data["verdict"] = rep.Rows
+			data["boardRows"] = rep.BoardRows
+			diags = append(diags, rd...)
 		}
 	}
 	if err := t.appendLedger(runDir, h.ID, []RunVariant{{Label: rec.Build.Variant}}, []string{scenario}); err != nil {

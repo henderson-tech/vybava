@@ -236,15 +236,18 @@ func quoteAll(args []string) []string {
 
 // ScenarioRow is one row the adapter's scenarios command prints.
 type ScenarioRow struct {
-	Name       string              `json:"name"`
-	WindowMs   int                 `json:"windowMs"`
-	Platforms  []string            `json:"platforms,omitempty"`
-	Budget     json.RawMessage     `json:"budget,omitempty"`
-	StepCycle  []string            `json:"stepCycle,omitempty"`
-	StepGroups map[string][]string `json:"stepGroups,omitempty"`
-	World      string              `json:"world,omitempty"`
-	Account    string              `json:"account,omitempty"`
-	Route      string              `json:"route,omitempty"`
+	Name      string          `json:"name"`
+	WindowMs  int             `json:"windowMs"`
+	Platforms []string        `json:"platforms,omitempty"`
+	Budget    json.RawMessage `json:"budget,omitempty"`
+	// Exempt names a deliberate cost the budget waives (analysis.Exemption):
+	// measured and shown in every report, never gating.
+	Exempt     []analysis.Exemption `json:"exempt,omitempty"`
+	StepCycle  []string             `json:"stepCycle,omitempty"`
+	StepGroups map[string][]string  `json:"stepGroups,omitempty"`
+	World      string               `json:"world,omitempty"`
+	Account    string               `json:"account,omitempty"`
+	Route      string               `json:"route,omitempty"`
 }
 
 // Scenarios runs the adapter's scenarios command and decodes its rows
@@ -287,8 +290,42 @@ func parseScenarioRows(out, fix string) ([]ScenarioRow, error) {
 				return nil, diag(DiagConfigInvalid, err.Error(), fix)
 			}
 		}
+		if err := analysis.ValidateExemptions(r.Name, r.Exempt); err != nil {
+			return nil, diag(DiagConfigInvalid, err.Error(), fix)
+		}
 	}
 	return rows, nil
+}
+
+// adapterBudgets are the adapter rows' budgets and exemptions by scenario
+// (report and probe judge with them; a probe row overlays the probe
+// default). An adapter that cannot answer leaves the defaults, with a
+// warning.
+func (t *Tool) adapterBudgets(ctx context.Context, platform string) (map[string]analysis.Budget, map[string][]analysis.Exemption, []runx.Diagnostic) {
+	budgets, exemptions := map[string]analysis.Budget{}, map[string][]analysis.Exemption{}
+	if t.Config == nil {
+		return budgets, exemptions, nil
+	}
+	var diags []runx.Diagnostic
+	rows, err := t.Scenarios(ctx, platform)
+	if err != nil {
+		code := CodeOf(err)
+		if code == "" {
+			code = DiagAdapterCommandFailed
+		}
+		diags = append(diags, warn(code, "budgets unavailable: "+err.Error(), adapterFix))
+	}
+	for _, r := range rows {
+		if len(r.Budget) > 0 {
+			if b, err := analysis.ParseBudget(r.Name, r.Budget); err == nil {
+				budgets[r.Name] = b
+			}
+		}
+		if len(r.Exempt) > 0 {
+			exemptions[r.Name] = r.Exempt
+		}
+	}
+	return budgets, exemptions, diags
 }
 
 // ReportOptions are the report flags.
@@ -326,25 +363,9 @@ func (t *Tool) Report(ctx context.Context, dirs []string, o ReportOptions) (Resu
 		runs = append(runs, ra)
 		diags = append(diags, d...)
 	}
-	budgets := map[string]analysis.Budget{}
-	if t.Config != nil {
-		rows, err := t.Scenarios(ctx, "")
-		if err != nil {
-			code := CodeOf(err)
-			if code == "" {
-				code = DiagAdapterCommandFailed
-			}
-			diags = append(diags, warn(code, "budgets unavailable: "+err.Error(), adapterFix))
-		}
-		for _, r := range rows {
-			if len(r.Budget) > 0 {
-				if b, err := analysis.ParseBudget(r.Name, r.Budget); err == nil {
-					budgets[r.Name] = b
-				}
-			}
-		}
-	}
-	data, d, err := analysis.Report(runs, analysis.ReportOptions{Budgets: budgets, Gate: o.Gate})
+	budgets, exemptions, bd := t.adapterBudgets(ctx, "")
+	diags = append(diags, bd...)
+	data, d, err := analysis.Report(runs, analysis.ReportOptions{Budgets: budgets, Exemptions: exemptions, Gate: o.Gate})
 	if err != nil {
 		return Result{}, err
 	}

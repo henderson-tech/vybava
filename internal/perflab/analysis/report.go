@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -32,6 +33,12 @@ type Budget struct {
 	// run at rest, and the longest ambient run.
 	AndroidRestFramesMax *float64 `json:"androidRestFramesMax,omitempty"`
 	AndroidRestRunMsMax  *float64 `json:"androidRestRunMsMax,omitempty"`
+	// AndroidRestTicksMax: a screen showing a live value (a 1 Hz countdown)
+	// may present one short burst per change. With it set, the rest bursts
+	// that read as ticks (framestats.TickBurstMaxMs) are counted against it
+	// and androidRestFramesMax judges only the rest frames outside them, so
+	// a loop or a leak beside the value still fails.
+	AndroidRestTicksMax *float64 `json:"androidRestTicksMax,omitempty"`
 	// AndroidDragRtDrawMsMax: RenderThread draw per frame (average).
 	AndroidDragRtDrawMsMax *float64 `json:"androidDragRtDrawMsMax,omitempty"`
 	// AndroidFlingTwoVsyncGapsMax: two-vsync present gaps per fling script.
@@ -63,7 +70,46 @@ func ParseBudget(scenario string, raw json.RawMessage) (Budget, error) {
 	return b, nil
 }
 
-// Check is one budget key applied to one measured value.
+// budgetKeys is the closed budget vocabulary: Budget's JSON keys.
+var budgetKeys = func() map[string]bool {
+	keys := map[string]bool{}
+	ty := reflect.TypeOf(Budget{})
+	for i := 0; i < ty.NumField(); i++ {
+		keys[strings.Split(ty.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	return keys
+}()
+
+// Exemption waives budget keys of one scenario for a named, deliberate
+// cost the product keeps (a loop on purpose, such as a live-search radar):
+// the checks are still measured and shown, marked exempt with the name and
+// reason, and never fail the row or the gate. An adapter scenario row
+// carries it under "exempt".
+type Exemption struct {
+	Name   string   `json:"name"`
+	Reason string   `json:"reason"`
+	Keys   []string `json:"keys"`
+}
+
+// ValidateExemptions refuses an exemption without a name, a reason or keys,
+// or naming a key outside the budget vocabulary (CONFIG_INVALID).
+func ValidateExemptions(scenario string, exemptions []Exemption) error {
+	fix := "perflab adapter check --json (an exemption is {name, reason, keys: [budget keys]})"
+	for i, e := range exemptions {
+		if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Reason) == "" || len(e.Keys) == 0 {
+			return diag(DiagConfigInvalid, fmt.Sprintf("scenario %s exemption %d needs a name, a reason and keys", scenario, i), fix)
+		}
+		for _, k := range e.Keys {
+			if !budgetKeys[k] {
+				return diag(DiagConfigInvalid, fmt.Sprintf("scenario %s exemption %s names %q, no budget key", scenario, e.Name, k), fix)
+			}
+		}
+	}
+	return nil
+}
+
+// Check is one budget key applied to one measured value. Exempt names the
+// exemption ("<name>: <reason>") that took the check out of the verdict.
 type Check struct {
 	Key    string  `json:"key"`
 	Value  float64 `json:"value"`
@@ -71,14 +117,17 @@ type Check struct {
 	Pass   bool    `json:"pass"`
 	Gating bool    `json:"gating"`
 	Note   string  `json:"note,omitempty"`
+	Exempt string  `json:"exempt,omitempty"`
 }
 
 // RowVerdict is a report row's outcome.
 type RowVerdict string
 
 const (
-	RowPass       RowVerdict = "pass"
-	RowFail       RowVerdict = "fail"
+	RowPass RowVerdict = "pass"
+	RowFail RowVerdict = "fail"
+	// RowExempt: only exempt checks are over budget (Exemption).
+	RowExempt     RowVerdict = "exempt"
 	RowUnbudgeted RowVerdict = "unbudgeted"
 	RowFailed     RowVerdict = "not-measured"
 )
@@ -104,8 +153,11 @@ type ReportRow struct {
 // another scenario fills the columns its budget names. The verdict is the
 // worst of the screen's rows.
 type BoardRow struct {
-	Screen      string   `json:"screen"`
-	RestFrames  *int     `json:"restFrames"`
+	Screen     string `json:"screen"`
+	RestFrames *int   `json:"restFrames"`
+	// RestTicks: the rest bursts read as a live value's ticks, set when the
+	// rest budget allows them (androidRestTicksMax).
+	RestTicks   *int     `json:"restTicks,omitempty"`
 	DragDrawMs  *float64 `json:"dragDrawMs"`
 	DragFpsP10  *float64 `json:"dragFpsP10"`
 	FlingGaps   *int     `json:"flingGaps"`
@@ -121,8 +173,11 @@ type ReportData struct {
 
 // ReportOptions tunes Report.
 type ReportOptions struct {
-	// Budgets maps a scenario to its budget.
+	// Budgets maps a scenario to its budget. A probe scenario's row
+	// overlays the probe default (ProbeBudget): the keys it sets win.
 	Budgets map[string]Budget
+	// Exemptions maps a scenario to its named exemptions.
+	Exemptions map[string][]Exemption
 	// Gate fails (exit 2) on any failing row (OVER_BUDGET) or when nothing
 	// was measured (NOTHING_MEASURED).
 	Gate bool
@@ -170,19 +225,33 @@ func probeScreen(scenario string) (kind, screen string, ok bool) {
 	return m[1], screen, true
 }
 
-// budgetFor is the adapter's scenario budget, else a probe's default.
+// budgetFor is the adapter's scenario budget; a probe scenario's budget is
+// its kind's default (ProbeBudget) with the adapter row's keys over it, so
+// a row adding androidRestTicksMax keeps the rest frame limit.
 func budgetFor(scenario string, platform Platform, budgets map[string]Budget) Budget {
-	if b, ok := budgets[scenario]; ok {
-		return b
+	row, hasRow := budgets[scenario]
+	kind, _, probe := probeScreen(scenario)
+	if !probe {
+		return row
 	}
-	if kind, _, ok := probeScreen(scenario); ok {
-		if raw := ProbeBudget(kind, platform); raw != nil {
-			if b, err := ParseBudget(scenario, raw); err == nil {
-				return b
-			}
+	var b Budget
+	if raw := ProbeBudget(kind, platform); raw != nil {
+		b, _ = ParseBudget(scenario, raw)
+	}
+	if hasRow {
+		overlayBudget(&b, row)
+	}
+	return b
+}
+
+// overlayBudget sets every key over sets onto b.
+func overlayBudget(b *Budget, over Budget) {
+	dst, src := reflect.ValueOf(b).Elem(), reflect.ValueOf(over)
+	for i := 0; i < src.NumField(); i++ {
+		if f := src.Field(i); !f.IsNil() {
+			dst.Field(i).Set(f)
 		}
 	}
-	return Budget{}
 }
 
 // Report takes the newest record per scenario x device across the run
@@ -216,7 +285,8 @@ func Report(runs []RunAnalysis, opts ReportOptions) (ReportData, []runx.Diagnost
 					refresh = rec.Metrics.Present.RefreshHz
 				}
 				row.RefreshHz = refresh
-				row.Checks = checkBudget(budgetFor(rec.Scenario, ra.Provenance.Platform, opts.Budgets), *rec.Metrics, refresh)
+				row.Checks = exempt(checkBudget(budgetFor(rec.Scenario, ra.Provenance.Platform, opts.Budgets), *rec.Metrics, refresh),
+					opts.Exemptions[rec.Scenario])
 				row.Verdict = verdictOf(row.Checks)
 			}
 			newest[k] = row
@@ -306,7 +376,18 @@ func checkBudget(b Budget, m Metrics, refreshHz float64) []Check {
 		// Without FrameTimeline the present readings are unread, not zero: no
 		// check, so a trace missing the evidence never passes these budgets.
 		if p.FrameTimeline {
-			atMost("androidRestFramesMax", b.AndroidRestFramesMax, float64(p.RestFrames), true)
+			if b.AndroidRestTicksMax != nil {
+				// A live value's ticks are allowed; the frames outside them are not.
+				if b.AndroidRestFramesMax != nil {
+					outside := float64(p.RestFrames - p.RestTickFrames)
+					add("androidRestFramesMax", outside, *b.AndroidRestFramesMax, outside <= *b.AndroidRestFramesMax, true,
+						fmt.Sprintf("outside ticks; %d of %d rest frames in %d ticks", p.RestTickFrames, p.RestFrames, p.RestTicks))
+				}
+				add("androidRestTicksMax", float64(p.RestTicks), *b.AndroidRestTicksMax, float64(p.RestTicks) <= *b.AndroidRestTicksMax, true,
+					fmt.Sprintf("one every %.0f ms", p.RestTickIntervalMs))
+			} else {
+				atMost("androidRestFramesMax", b.AndroidRestFramesMax, float64(p.RestFrames), true)
+			}
 			atMost("androidRestRunMsMax", b.AndroidRestRunMsMax, p.RestRunMs, true)
 			atMost("androidFlingTwoVsyncGapsMax", b.AndroidFlingTwoVsyncGapsMax, float64(p.PresentGaps.TwoVsync), true)
 		}
@@ -320,9 +401,29 @@ func checkBudget(b Budget, m Metrics, refreshHz float64) []Check {
 	return out
 }
 
+// exempt takes the checks an exemption names out of the verdict: still
+// measured and shown, never gating.
+func exempt(checks []Check, exemptions []Exemption) []Check {
+	for i := range checks {
+		for _, e := range exemptions {
+			for _, k := range e.Keys {
+				if checks[i].Key == k && checks[i].Gating {
+					checks[i].Gating = false
+					checks[i].Exempt = e.Name + ": " + e.Reason
+				}
+			}
+		}
+	}
+	return checks
+}
+
 func verdictOf(checks []Check) RowVerdict {
-	gating := 0
+	gating, exempted, exemptOver := 0, false, false
 	for _, c := range checks {
+		if c.Exempt != "" {
+			exempted = true
+			exemptOver = exemptOver || !c.Pass
+		}
 		if !c.Gating {
 			continue
 		}
@@ -331,14 +432,17 @@ func verdictOf(checks []Check) RowVerdict {
 			return RowFail
 		}
 	}
-	if gating == 0 {
+	switch {
+	case exemptOver:
+		return RowExempt
+	case gating == 0 && !exempted:
 		return RowUnbudgeted
 	}
 	return RowPass
 }
 
 // verdictRank orders verdicts worst first for a screen's merged row.
-var verdictRank = map[RowVerdict]int{RowFail: 0, RowPass: 1, RowUnbudgeted: 2, RowFailed: 3}
+var verdictRank = map[RowVerdict]int{RowFail: 0, RowExempt: 1, RowPass: 2, RowUnbudgeted: 3, RowFailed: 4}
 
 // boardRows merges the report rows into one board row per screen x device
 // (BoardRow), in the rows' order.
@@ -395,6 +499,12 @@ func fillBoardRow(br *BoardRow, r ReportRow, kind string) {
 		if p != nil && p.FrameTimeline {
 			v := p.RestFrames
 			br.RestFrames = &v
+			for _, c := range r.Checks {
+				if c.Key == "androidRestTicksMax" {
+					ticks := p.RestTicks
+					br.RestTicks = &ticks
+				}
+			}
 		}
 	case "drag":
 		if p != nil && p.RTDrawMs.Avg != nil {
@@ -411,19 +521,28 @@ func fillBoardRow(br *BoardRow, r ReportRow, kind string) {
 	}
 }
 
-// Markdown renders the report as one table plus the failing checks.
+// Markdown renders the report as one table, then every exemption in force,
+// so an exempt row is never a silent pass.
 func (d ReportData) Markdown() string {
 	var b strings.Builder
+	var exemptions []string
 	b.WriteString("| Scenario | Device | Variant | Recorded | Verdict | Checks |\n|---|---|---|---|---|---|\n")
 	for _, r := range d.Rows {
 		var checks []string
 		for _, c := range r.Checks {
 			mark := "ok"
 			switch {
+			case c.Exempt != "" && !c.Pass:
+				mark = "EXEMPT"
+			case c.Exempt != "":
+				mark = "ok (exempt)"
 			case !c.Gating:
 				mark = "info"
 			case !c.Pass:
 				mark = "OVER"
+			}
+			if c.Exempt != "" {
+				exemptions = append(exemptions, fmt.Sprintf("- %s on %s: %s %g / %g, %s", r.Scenario, r.Device, c.Key, c.Value, c.Limit, c.Exempt))
 			}
 			checks = append(checks, fmt.Sprintf("%s %g / %g %s", c.Key, c.Value, c.Limit, mark))
 		}
@@ -435,6 +554,9 @@ func (d ReportData) Markdown() string {
 			cell = "-"
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", r.Scenario, r.Device, r.Variant, r.RecordedAt, r.Verdict, strings.ReplaceAll(cell, "|", "/"))
+	}
+	if len(exemptions) > 0 {
+		b.WriteString("\nExemptions (measured, never gating):\n\n" + strings.Join(exemptions, "\n") + "\n")
 	}
 	return b.String()
 }

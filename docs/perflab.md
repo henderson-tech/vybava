@@ -94,7 +94,7 @@ every number.
 | `app launch\|link\|reset --device --lease [--account --route --world]` | Start the app; deliver the adapter's sign-in link; run the adapter's world reset. |
 | `run <scenario>... --device --lease --variant [label=]<id>... [--alternate] [--repeat N] [--resume <runDir>] [--no-analyze] [--max 90m]` | The measured runner (below). |
 | `probe rest\|drag\|fling\|custom --device --lease [--package] [--seconds 20] [--label] [--tap x,y\|none] [--gesture-file]` | Quick device-only measurement (below). |
-| `analyze <path>... [--marks] [--wdio-log --step-cycle] [--tap-lag] [--window a-b --classify\|--stacks] [--sql <preset>] [--reread]` | Every number from evidence. |
+| `analyze <path>... [--marks] [--wdio-log --step-cycle] [--tap-lag] [--window a-b --classify\|--stacks] [--sql <preset>] [--package] [--reread]` | Every number from evidence. A `.pftrace` inside a run dir takes its app and period from the run's record (a stray one needs `--package`); `--sql` over a run dir runs on each record's trace. |
 | `compare <runDir> [<runDir>] [--threshold 0.15] [--min-runs 2] [--allow-confound <field>]` | B against A under the noise rule; a side may be several run dirs joined by commas (a probe A/B: `a1,a2 b1,b2`). |
 | `report [<runDir>...] [--gate] [--md f]` | The newest result per scenario x device against the budgets. |
 | `hazards [<dir>] [--gate --baseline f] [--write-baseline f]` | Static render-cost sweep (no device). |
@@ -311,7 +311,10 @@ are `CONFIG_INVALID`):
 ```json
 [{"name": "calendar-view-switch-smooth", "windowMs": 105000, "platforms": ["ios", "android"],
   "budget": {"iosHitchRatioMsPerSMax": 5, "androidAnimatingFpsP10MinShare": 0.75},
-  "stepCycle": ["menu", "multi", "menu", "team"], "stepGroups": {"modes": ["multi", "team"]}}]
+  "stepCycle": ["menu", "multi", "menu", "team"], "stepGroups": {"modes": ["multi", "team"]}},
+ {"name": "probe-rest-search-journey", "windowMs": 20000, "platforms": ["android"],
+  "exempt": [{"name": "live-search-radar", "reason": "the search shows it is alive",
+              "keys": ["androidRestFramesMax", "androidRestRunMsMax"]}]}]
 ```
 
 The runner contract:
@@ -431,11 +434,29 @@ that only synced queues no buffer), so zero presents read as zero frames.
   `androidJankyPctMax`, `androidRestFramesMax`, `androidRestRunMsMax`,
   `androidDragRtDrawMsMax`, `androidFlingTwoVsyncGapsMax`, `slopeMax`,
   `androidFpsP10Min` (60-capped: reported, never gates a 120 Hz phone),
-  `iosRestMainMsPerSMax` (an iOS rest probe's main-thread ms per second).
+  `iosRestMainMsPerSMax` (an iOS rest probe's main-thread ms per second),
+  `androidRestTicksMax` (a live value at rest, below).
   Probe defaults (`analysis.ProbeBudget`, applied by `probe` and by `report`
-  to a `probe-<kind>-<label>` row no adapter row names): rest 0 frames /
-  6000 ms, drag 4 ms and animating p10 0.75 x refresh, fling animating p10
-  0.75 x refresh, iOS 5 ms/s, an iOS rest 50 ms/s of main thread.
+  to every `probe-<kind>-<label>` record): rest 0 frames / 6000 ms, drag
+  4 ms and animating p10 0.75 x refresh, fling animating p10 0.75 x
+  refresh, iOS 5 ms/s, an iOS rest 50 ms/s of main thread. An adapter row
+  named `probe-<kind>-<label>` overlays its kind's default (the keys it sets
+  win) and carries its exemptions; `probe`'s own verdict uses it too.
+- Live values at rest: the rest frames split into bursts between rest gaps;
+  a burst spanning at most `framestats.TickBurstMaxMs` (400 ms) is a tick, a
+  value changing (a countdown, a clock), read as `restTicks`,
+  `restTickFrames` and `restTickIntervalMs` (median start to start). With
+  `androidRestTicksMax` set, `androidRestFramesMax` judges only the frames
+  outside ticks and the tick count is capped, so a loop or a fast blink
+  beside the value still fails. The last burst is judged by its span so far.
+- Exemptions: a scenario row's `"exempt": [{"name", "reason", "keys": [budget
+  keys]}]` waives those keys for a deliberate cost the product keeps (a
+  live-search radar): each check is still measured and shown with its
+  name and reason (`EXEMPT` in the Markdown, `exempt` on the check), the
+  row's verdict is `exempt` when only exempt checks are over, `--gate`
+  never fails on it, and the Markdown lists every exemption under the
+  table. A key outside the vocabulary, or a missing name or reason, is
+  `CONFIG_INVALID`.
 - Board rows (`data.boardRows`, 4740's table): one per screen x device. A
   probed screen merges its probes, each column from its own kind (rest
   frames from `rest`, draw ms and fps p10 from `drag`, two-vsync gaps and

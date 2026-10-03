@@ -437,6 +437,87 @@ func TestReportJudgesProbesAndMergesAScreensBoardRow(t *testing.T) {
 	}
 }
 
+// FixIt's decisions for vt-4740: a live value at rest is one burst per
+// change (androidRestTicksMax), and the live-search radar keeps animating
+// under a named exemption. A probe row overlays the probe default, so the
+// rest frame limit still judges what lies outside the ticks; an exemption
+// shows in the row, its check and the Markdown, never as a silent pass.
+func TestReportJudgesTicksAndExemptionsOnProbeRows(t *testing.T) {
+	at := time.Date(2026, 10, 3, 1, 50, 0, 0, time.UTC)
+	rest := func(scenario string, p framestats.PresentMetrics) RecordResult {
+		p.FrameTimeline = true
+		at = at.Add(time.Minute)
+		return RecordResult{Scenario: scenario, Variant: "after", RecordedAt: at, Metrics: &Metrics{Kind: KindPerfetto, Present: &p}}
+	}
+	countdown := framestats.PresentMetrics{RestFrames: 14, RestRunMs: 2895, RestTicks: 14, RestTickFrames: 14, RestTickIntervalMs: 1000}
+	countdownBesideALoop := framestats.PresentMetrics{RestFrames: 914, RestRunMs: 7500, RestTicks: 14, RestTickFrames: 14, RestTickIntervalMs: 1000}
+	blink := framestats.PresentMetrics{RestFrames: 160, RestRunMs: 2900, RestTicks: 160, RestTickFrames: 160, RestTickIntervalMs: 100}
+	radar := framestats.PresentMetrics{RestFrames: 1923, RestRunMs: 2162}
+	ra := RunAnalysis{RunDir: "sweep", Provenance: Provenance{Device: "s20", Platform: PlatformAndroid, RefreshHz: 120}, Records: []RecordResult{
+		rest("probe-rest-dispatch-home", countdown),
+		rest("probe-rest-dispatch-loop", countdownBesideALoop),
+		rest("probe-rest-dispatch-blink", blink),
+		rest("probe-rest-dispatch-untagged", countdown),
+		rest("probe-rest-search-journey", radar),
+		rest("probe-rest-search-unexempt", radar),
+	}}
+	ticks, _ := ParseBudget("ticks", json.RawMessage(`{"androidRestTicksMax":22}`))
+	radarExemption := []Exemption{{Name: "live-search-radar", Reason: "the search shows it is alive", Keys: []string{"androidRestFramesMax", "androidRestRunMsMax"}}}
+	data, _, err := Report([]RunAnalysis{ra}, ReportOptions{
+		Budgets:    map[string]Budget{"probe-rest-dispatch-home": ticks, "probe-rest-dispatch-loop": ticks, "probe-rest-dispatch-blink": ticks},
+		Exemptions: map[string][]Exemption{"probe-rest-search-journey": radarExemption},
+		Gate:       true,
+	})
+	if code(err) != DiagOverBudget {
+		t.Fatalf("gate = %v, want OVER_BUDGET from the loop, the blink and the untagged rows only", err)
+	}
+	if strings.Contains(err.Error(), "search-journey") || strings.Contains(err.Error(), "dispatch-home") {
+		t.Errorf("an exempt or ticking row failed the gate: %v", err)
+	}
+	rows := map[string]ReportRow{}
+	for _, r := range data.Rows {
+		rows[r.Scenario] = r
+	}
+	for scenario, want := range map[string]RowVerdict{
+		"probe-rest-dispatch-home":     RowPass,   // 14 ticks <= 22, 0 frames outside them
+		"probe-rest-dispatch-loop":     RowFail,   // 900 frames outside the ticks
+		"probe-rest-dispatch-blink":    RowFail,   // 160 ticks > 22
+		"probe-rest-dispatch-untagged": RowFail,   // no ticks allowance: 14 rest frames > 0
+		"probe-rest-search-journey":    RowExempt, // over, under its named exemption
+		"probe-rest-search-unexempt":   RowFail,
+	} {
+		if got := rows[scenario].Verdict; got != want {
+			t.Errorf("%s: verdict %s, want %s (checks %+v)", scenario, got, want, rows[scenario].Checks)
+		}
+	}
+	var frames Check
+	for _, c := range rows["probe-rest-search-journey"].Checks {
+		if c.Key == "androidRestFramesMax" {
+			frames = c
+		}
+	}
+	if frames.Pass || frames.Gating || frames.Value != 1923 || !strings.HasPrefix(frames.Exempt, "live-search-radar: ") {
+		t.Errorf("the radar's frame check = %+v, want measured, over, exempt by name", frames)
+	}
+	md := data.Markdown()
+	if !strings.Contains(md, "1923 / 0 EXEMPT") || !strings.Contains(md, "Exemptions (measured, never gating)") ||
+		!strings.Contains(md, "probe-rest-search-journey on s20: androidRestFramesMax 1923 / 0, live-search-radar: the search shows it is alive") {
+		t.Errorf("the Markdown hides the exemption:\n%s", md)
+	}
+	for _, b := range data.BoardRows {
+		switch b.Screen {
+		case "dispatch-home on s20":
+			if b.RestTicks == nil || *b.RestTicks != 14 || b.Verdict != "pass" {
+				t.Errorf("the countdown's board row = %+v, want 14 ticks, pass", b)
+			}
+		case "search-journey on s20":
+			if b.Verdict != "exempt" || b.RestTicks != nil {
+				t.Errorf("the radar's board row = %+v, want exempt", b)
+			}
+		}
+	}
+}
+
 // An iOS rest probe is judged on the main thread's work at rest: FixIt's
 // iPhone 11 read 0 hitches both ways, but 3.3 s of main thread per 20 s
 // with a looping comet and 0.42 s once it rested.

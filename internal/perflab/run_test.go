@@ -274,12 +274,20 @@ func TestScenarioRows(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].WindowMs != 105000 {
 		t.Fatalf("rows = %+v, %v", rows, err)
 	}
+	rows, err = parseScenarioRows(`[{"name":"probe-rest-search-journey","windowMs":20000,
+	  "exempt":[{"name":"live-search-radar","reason":"the search keeps its radar","keys":["androidRestFramesMax","androidRestRunMsMax"]}]}]`, "fix")
+	if err != nil || len(rows[0].Exempt) != 1 || rows[0].Exempt[0].Name != "live-search-radar" {
+		t.Fatalf("an exemption row = %+v, %v", rows, err)
+	}
 	for _, bad := range []string{
 		`[{"name":"a","windowMs":1,"budget":{"iosHitchRatioMax":5}}]`,
 		`[{"name":"a","windowMs":1,"window":2}]`,
 		`[{"name":"a","windowMs":0}]`,
 		`[{"name":"a","windowMs":1},{"name":"a","windowMs":2}]`,
 		`not json`,
+		`[{"name":"a","windowMs":1,"exempt":[{"name":"radar","keys":["androidRestFramesMax"]}]}]`,
+		`[{"name":"a","windowMs":1,"exempt":[{"name":"radar","reason":"kept","keys":[]}]}]`,
+		`[{"name":"a","windowMs":1,"exempt":[{"name":"radar","reason":"kept","keys":["restFrames"]}]}]`,
 	} {
 		if _, err := parseScenarioRows(bad, "fix"); CodeOf(err) != DiagConfigInvalid {
 			t.Errorf("%s: want CONFIG_INVALID, got %v", bad, err)

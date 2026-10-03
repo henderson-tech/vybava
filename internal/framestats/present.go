@@ -99,12 +99,21 @@ type PresentMetrics struct {
 	SpanMs Ms  `json:"spanMs"`
 	// RestFrames are presents after the first rest gap (the opening run
 	// settled); RestRunMs is the longest run of presents with no rest gap.
-	RestFrames    int           `json:"restFrames"`
-	RestRunMs     float64       `json:"restRunMs"`
-	PresentGaps   PresentGaps   `json:"presentGaps"`
-	RTDrawMs      DurationStats `json:"rtDrawMs"`
-	MainDoFrameMs DurationStats `json:"mainDoFrameMs"`
-	Drops         Drops         `json:"drops"`
+	RestFrames int     `json:"restFrames"`
+	RestRunMs  float64 `json:"restRunMs"`
+	// RestTicks are the rest bursts after the opening run that read as a
+	// live value changing (a countdown, a clock): each spans at most
+	// TickBurstMaxMs. RestTickFrames are their presents; RestTickIntervalMs
+	// is the median start-to-start interval (0 below two ticks). The rest
+	// frames outside ticks (RestFrames - RestTickFrames) are a loop or a
+	// leak; a budget with androidRestTicksMax judges those and the count.
+	RestTicks          int           `json:"restTicks"`
+	RestTickFrames     int           `json:"restTickFrames"`
+	RestTickIntervalMs float64       `json:"restTickIntervalMs"`
+	PresentGaps        PresentGaps   `json:"presentGaps"`
+	RTDrawMs           DurationStats `json:"rtDrawMs"`
+	MainDoFrameMs      DurationStats `json:"mainDoFrameMs"`
+	Drops              Drops         `json:"drops"`
 	// MainEglSwapsPerFrame: main-thread eglSwapBuffers slices per doFrame;
 	// above zero at rest a Skia/GL canvas keeps redrawing.
 	MainEglSwapsPerFrame float64     `json:"mainEglSwapsPerFrame"`
@@ -222,7 +231,9 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 	m.RefreshHz = round1(1000 / period)
 	m.PresentGaps = bucketGaps(gaps, period)
 	times := presentTimes(presents, func(p present) int64 { return p.at })
-	m.RestFrames, m.RestRunMs = restReading(times, nsToMs(t.endNs()))
+	rest := restReading(times, nsToMs(t.endNs()))
+	m.RestFrames, m.RestRunMs = rest.frames, rest.runMs
+	m.RestTicks, m.RestTickFrames, m.RestTickIntervalMs = rest.ticks, rest.tickFrames, rest.tickIntervalMs
 	if m.FrameTimeline && len(times) > 1 {
 		d := SummarizePresents(times, period)
 		m.display = &d
@@ -390,6 +401,17 @@ func presentTimes[T any](items []T, at func(T) int64) []float64 {
 	return out
 }
 
+// TickBurstMaxMs is the longest rest burst that still reads as one change
+// of a live value (a countdown digit, a clock): a value may animate its
+// change for this long. A longer burst is a loop, never a tick.
+const TickBurstMaxMs = 400.0
+
+// restRead is restReading's result.
+type restRead struct {
+	frames, ticks, tickFrames int
+	runMs, tickIntervalMs     float64
+}
+
 // restReading: the frames presented after the first gap longer than
 // RestGapMs (the opening run settled), and the longest run of presents
 // without such a gap, first to last present. A trace that never rests (one
@@ -397,28 +419,59 @@ func presentTimes[T any](items []T, at func(T) int64) []float64 {
 // counts every frame: the probe's lead-in already let the opening settle,
 // and reading 0 there made a screen drawing for all 20 s look better than
 // one resting after 3 s. A run that stopped before the end rested.
-func restReading(times []float64, endMs float64) (int, float64) {
+//
+// The rest frames split into bursts (runs between rest gaps); a burst
+// spanning at most TickBurstMaxMs is a tick, a live value changing. The
+// last burst is judged by its span so far: a loop that just started at the
+// trace's end would read as a tick, a countdown frame 30 ms before the end
+// must not read as a leak.
+func restReading(times []float64, endMs float64) restRead {
+	var r restRead
 	if len(times) == 0 {
-		return 0, 0
+		return r
 	}
-	restFrames, longest := 0, 0.0
 	settled := false
 	runStart := times[0]
+	burstStart, burstFrames := 0.0, 0
+	var tickStarts []float64
+	closeBurst := func(last float64) {
+		if burstFrames > 0 && last-burstStart <= TickBurstMaxMs {
+			r.ticks++
+			r.tickFrames += burstFrames
+			tickStarts = append(tickStarts, burstStart)
+		}
+	}
 	for i := 1; i < len(times); i++ {
 		if times[i]-times[i-1] > RestGapMs {
-			longest = math.Max(longest, times[i-1]-runStart)
+			r.runMs = math.Max(r.runMs, times[i-1]-runStart)
+			if settled {
+				closeBurst(times[i-1])
+			}
 			runStart = times[i]
 			settled = true
+			burstStart, burstFrames = times[i], 0
 		}
 		if settled {
-			restFrames++
+			r.frames++
+			burstFrames++
 		}
 	}
-	longest = math.Max(longest, times[len(times)-1]-runStart)
-	if !settled && len(times) > 1 && endMs-times[len(times)-1] <= RestGapMs {
-		restFrames = len(times)
+	last := times[len(times)-1]
+	r.runMs = round1(math.Max(r.runMs, last-runStart))
+	switch {
+	case settled:
+		closeBurst(last)
+	case len(times) > 1 && endMs-last <= RestGapMs:
+		r.frames = len(times)
 	}
-	return restFrames, round1(longest)
+	if len(tickStarts) > 1 {
+		intervals := make([]float64, 0, len(tickStarts)-1)
+		for i := 1; i < len(tickStarts); i++ {
+			intervals = append(intervals, tickStarts[i]-tickStarts[i-1])
+		}
+		r.tickIntervalMs = round1(percentile(intervals, 50))
+	}
+	return r
 }
 
 // renderThread is the app thread with the most DrawFrame(s) slices.

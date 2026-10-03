@@ -246,8 +246,61 @@ func TestRestReadingOfATraceThatNeverRests(t *testing.T) {
 		{"a lone present", []float64{40}, 20000, 0},
 		{"nothing", nil, 20000, 0},
 	} {
-		if got, _ := restReading(c.times, c.endMs); got != c.frames {
+		if got := restReading(c.times, c.endMs).frames; got != c.frames {
 			t.Errorf("%s: %d rest frames, want %d", c.name, got, c.frames)
+		}
+	}
+}
+
+// A live value changing at rest (a 1 Hz countdown) presents one short burst
+// per change: those bursts are ticks. A loop, a fast blink and a long
+// animation after the opening run stay outside them, so a leak still reads
+// as rest frames a budget fails.
+func TestRestReadingSplitsTicksFromLoops(t *testing.T) {
+	steady := func(n int, gap, from float64) []float64 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = from + float64(i)*gap
+		}
+		return out
+	}
+	opening := steady(348, 8.333, 0) // ~2.9 s settle, as the S20's dispatch home
+	join := func(parts ...[]float64) []float64 {
+		var out []float64
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	// A 1 Hz value animating each change over 250 ms (30 frames at 120 Hz).
+	rolling := func() []float64 {
+		var out []float64
+		for s := 0; s < 15; s++ {
+			out = append(out, steady(30, 8.333, 3900+float64(s)*1000)...)
+		}
+		return out
+	}()
+	for _, c := range []struct {
+		name                      string
+		times                     []float64
+		endMs                     float64
+		frames, ticks, tickFrames int
+		intervalMs                float64
+	}{
+		{"1 Hz single-frame countdown", join(opening, steady(15, 1000, 3900)), 20000, 15, 15, 15, 1000},
+		{"1 Hz countdown rolling its digit", join(opening, rolling), 20000, 450, 15, 450, 1000},
+		{"a loop after the opening run", join(opening, steady(1800, 8.333, 3900)), 20000, 1800, 0, 0, 0},
+		{"a 10 Hz blink is ticks a count budget fails", join(opening, steady(160, 100, 3900)), 20000, 160, 160, 160, 100},
+		{"a 600 ms animation is no tick", join(opening, steady(72, 8.333, 5000)), 20000, 72, 0, 0, 0},
+		{"a tick 30 ms before the end is still a tick", join(opening, steady(2, 1000, 17970)), 19000, 2, 2, 2, 1000},
+		{"a loop still running at the end is no tick", join(opening, steady(120, 8.333, 18000)), 19000, 120, 0, 0, 0},
+		{"one run then silence", opening, 20000, 0, 0, 0, 0},
+		{"loops all trace", steady(2396, 8.333, 0), 19970, 2396, 0, 0, 0},
+	} {
+		got := restReading(c.times, c.endMs)
+		if got.frames != c.frames || got.ticks != c.ticks || got.tickFrames != c.tickFrames || got.tickIntervalMs != c.intervalMs {
+			t.Errorf("%s: frames %d ticks %d tickFrames %d interval %v, want %d %d %d %v",
+				c.name, got.frames, got.ticks, got.tickFrames, got.tickIntervalMs, c.frames, c.ticks, c.tickFrames, c.intervalMs)
 		}
 	}
 }

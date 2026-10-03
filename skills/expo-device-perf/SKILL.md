@@ -67,12 +67,13 @@ Never judge 120 Hz Android by Flashlight FPS or gfxinfo "Janky frames".
 | `androidAnimatingFpsP10MinShare` | 0.75 x refresh (90 at 120 Hz) |
 | `androidJankyPctMax` | calibrated per scenario |
 | `androidRestFramesMax` / `androidRestRunMsMax` | 0 frames after the opening animation / one ambient run <= 6000 ms |
+| `androidRestTicksMax` | unset; a screen showing a live value (a 1 Hz countdown) sets it: one short burst per change, the frames outside ticks still judged |
 | `androidDragRtDrawMsMax` | 4 ms RenderThread draw per frame |
 | `androidFlingTwoVsyncGapsMax` | the baseline's count per 20 s script |
 | `slopeMax` | 1.05 (cycleN / cycle1) |
 | `iosRestMainMsPerSMax` | 50 ms/s main thread in an iOS `probe rest` (a smooth loop never hitches) |
 
-Scenario rows override with calibrated numbers. The 60-capped `androidFpsP10Min` is reported and never gates a 120 Hz phone.
+Scenario rows override with calibrated numbers; a row named `probe-<kind>-<screen>` overlays that probe's default. A loop the product keeps on purpose gets a named exemption on its row (`"exempt": [{name, reason, keys}]`): measured and listed in every report, never a silent pass. The 60-capped `androidFpsP10Min` is reported and never gates a 120 Hz phone.
 
 ## Hard laws
 
