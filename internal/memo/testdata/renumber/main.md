@@ -1,0 +1,44 @@
+---
+memo: 1
+alias: fixit-team
+kind: team
+---
+<!-- - #<id> <type>/<topic>[!] <sentence> [-> <link> ...] ^m<id>  (team ledger: #t<id> ... ^t<id>) -->
+- #t325 project/testing Fact 6aebc5bdb2. ^t325
+- #t326 project/mobile-a11y Fact 80e0c573de. ^t326
+- #t327 project/testing Fact 0881854f5b. ^t327
+- #t328 project/testing Fact 5b95d714f8. ^t328
+- #t329 project/android Fact 1968c983dc. ^t329
+- #t330 project/perf Fact ccdc654b1a. ^t330
+- #t331 project/ci Fact 37daa555dd. ^t331
+- #t332 project/release Fact 54351c9121. ^t332
+- #t333 project/appium Fact d436cc37fc. ^t333
+- #t334 project/appium Fact 6da54254cc. ^t334
+- #t335 project/devbox Fact c8688bbe9b. ^t335
+- #t336 project/devbox Fact 956b9c901e. ^t336
+- #t337 project/api-data Fact 96b6abca28. ^t337
+- #t338 project/git Fact df5e8f6b19. ^t338
+- #t339 project/appium supersedes #t334: Fact 367206f801. ^t339
+- #t340 project/chat-motion Fact 63ed6cf6db. ^t340
+- #t341 project/appium Fact e1681ad336. ^t341
+- #t342 project/mobile Fact 8019c04cc7. ^t342
+- #t343 project/rn-fabric Fact 23e692ce85. ^t343
+- #t344 project/openapi Fact a8be42e18a. ^t344
+- #t345 project/testing Fact 5d7792fdd8. ^t345
+- #t346 project/testing Fact ddff249fc2. ^t346
+- #t347 project/payments Fact cae6e05e87. ^t347
+- #t348 project/release Fact 62c99cd519. ^t348
+- #t349 project/migrations Fact c9cba0bada. ^t349
+- #t350 project/devbox Fact 659ab2b5f9. ^t350
+- #t351 project/payroll Fact 357f24dcc1. ^t351
+- #t352 project/devbox Fact af3d354337. ^t352
+- #t353 project/marketplace Fact 5ff77eb0bf. ^t353
+- #t354 project/release Fact d5412dc200. ^t354
+- #t355 project/git Fact 2286f7bcf6. ^t355
+- #t356 project/mobile Fact a3f8e34225. ^t356
+- #t357 project/marketplace Fact f070506133. ^t357
+- #t358 project/testing Fact c8b2375517. ^t358
+- #t359 project/mobile Fact 5b982781a5. ^t359
+- #t360 project/perf Fact fc50cfe234. ^t360
+- #t361 project/mobile Fact ff907e5947. ^t361
+- #t362 project/release Fact 13667d3928. ^t362

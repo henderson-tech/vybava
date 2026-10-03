@@ -217,7 +217,26 @@ func countMarkdown(scope string) (int, error) {
 	return files, err
 }
 
+// Options tune a check beyond the home's own files.
+type Options struct {
+	// Base is the ref a team ledger's ids are compared against (L009):
+	// memo.BaseAuto finds the branch's base and skips when none resolves,
+	// memo.BaseNone (or "") turns the comparison off, anything else is a ref
+	// that must resolve.
+	Base string
+}
+
+// Lint checks the homes without comparing ledger ids to a base branch: the
+// write hook and every other caller judge the files alone.
 func Lint(paths []string) (Report, error) {
+	return LintWith(paths, Options{Base: memo.BaseNone})
+}
+
+// LintWith is Lint plus the options `memorylint check` exposes.
+func LintWith(paths []string, opts Options) (Report, error) {
+	if opts.Base == "" {
+		opts.Base = memo.BaseNone
+	}
 	if len(paths) == 0 {
 		discovered, err := Discover("")
 		if err != nil {
@@ -248,6 +267,9 @@ func Lint(paths []string) (Report, error) {
 		findings, files, err := lint(root, config)
 		if err != nil {
 			return Report{}, err
+		}
+		if !IsHandoffHome(root) && memo.HasLedger(root) {
+			findings = append(findings, baseFindings(root, opts.Base)...)
 		}
 		if scope != "" {
 			findings = underScope(findings, scope)
@@ -759,6 +781,22 @@ func ceilingEntries(entries []entry, ledger bool) []entry {
 		}
 	}
 	return kept
+}
+
+// baseFindings is L009: the ledger's ids against the base branch's copy.
+func baseFindings(root, spec string) []Finding {
+	ref, d := memo.ResolveBase(root, spec)
+	if d != nil {
+		return []Finding{{Rule: memo.RuleIDCollision, Severity: SeverityError, Path: filepath.Join(root, memo.LedgerFile), Line: 1, Message: d.Detail + "; " + d.Fix}}
+	}
+	if ref == "" {
+		return nil
+	}
+	var out []Finding
+	for _, f := range memo.LintBase(root, ref) {
+		out = append(out, Finding{Rule: f.Rule, Severity: Severity(f.Severity), Path: f.Path, Line: f.Line, Message: f.Message})
+	}
+	return out
 }
 
 // ledgerFindings runs memo's ledger rules and maps them onto this report.

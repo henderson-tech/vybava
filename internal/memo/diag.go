@@ -92,6 +92,19 @@ const (
 	DiagSnapshotClean = "SNAPSHOT_CLEAN"
 	// DiagRowLong: warning, the sentence is over 160 characters.
 	DiagRowLong = "ROW_LONG"
+	// DiagBaseUnresolved: `memo renumber` (or `memorylint check --base`)
+	// names a base ref that does not resolve in the home's repository, or no
+	// default one exists. Fix: fetch it, or name the ref with --base.
+	DiagBaseUnresolved = "BASE_UNRESOLVED"
+	// DiagBaseNotMerged: `memo renumber` on a branch that neither merges the
+	// base right now nor has merged it: settling would copy the base's rows
+	// in and the merge would conflict again. Fix: merge the base first;
+	// --dry-run previews the moves from any state.
+	DiagBaseNotMerged = "BASE_NOT_MERGED"
+	// DiagTargetDoublyClosed: warning from `memo renumber`, two rows of the
+	// settled ledger close the same row (both branches superseded or retired
+	// it). Fix: one of them supersedes the other; memorylint L003 names it.
+	DiagTargetDoublyClosed = "TARGET_DOUBLY_CLOSED"
 )
 
 func errorDiag(code, detail, fix string) *Diag {
