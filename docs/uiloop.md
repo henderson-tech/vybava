@@ -24,6 +24,7 @@ It is framework-agnostic: it drives only Playwright and the DOM. It has been run
 ui-loop init        [--json]   scaffold <dir> (project.ts, screens/), the spec template and the out gitignore line; sync
 ui-loop sync        [--force]  write the embedded harness into <dir>/vendor + STAMP.json (version, sha256 per file)
 ui-loop check       [--no-ts]  vendor drift · project.ts · spec lint lines · manifest validation · app-map freshness, each reported separately
+ui-loop doctor      [--for capture|review|fix|verify]  preflight a stage: check · contract · apps · pass (· workspace · signin, skipped)
 ui-loop map                    render uiLoop.appMap from the manifest
 ui-loop run         [--app a,b] [--only id,area,prefix*] [--viewports v,…] [--themes light,dark]
                     [--destructive] [--resume] [--pass N] [--workers 2] [--build-wait 300]
@@ -256,6 +257,26 @@ The fields follow these rules:
   - `met`, `partly` or `not-met`: the verdict on a previous finding's `acceptance`, which reuses that finding's `key`.
 - **Required:** `title` and `acceptance`. Every finding that is not `met` also names the `files` a fix lane edits.
 - **`reviewed`** lists the screen ids a reviewer actually judged this pass, whether or not they found anything. It is the only thing that makes a screen clean: a screen with no open finding that is missing from `reviewed` is counted `unreviewed` per area and in the totals, and the markdown table shows the column. A backlog without `reviewed` (the format before v0.24.1) still scores every screen without an open finding as clean, with the unreviewed column shown as `—`, and `scoreboard` warns `REVIEWED_MISSING`. An empty list means nothing was judged.
+
+## Doctor: preflight a stage
+
+**`doctor [--for capture|review|fix|verify]`** runs every check a stage depends on and writes nothing:
+
+```json
+{ "ok": false, "vybava": "0.32.0", "contract": 1,
+  "checks": [{ "id": "apps", "status": "fail", "detail": "portal http://10.8.0.10:21782 ($UI_LOOP_PORTAL_URL): answers 200 with the Vite error overlay", "fix": "fix the build error …" }] }
+```
+
+Each check is `ok`, `warn`, `fail` or `skip`, with a `detail` and a `fix`. `ok` is false iff a check fails; the envelope then carries the failing checks' diagnostics as errors and exits 2. A check the `--for` stage does not need warns instead of failing. Without `--for`, every stage needs every check.
+
+| Id | What it checks | Fails for |
+|---|---|---|
+| `check` | `check`'s diagnostics, under their own codes (`SPEC_LINT_DRIFT` included): an error fails the row, a warning warns it. | every stage |
+| `contract` | Always `ok`; the detail names `StateContract`, so a workflow can compare. | — |
+| `apps` | Each app's base URL, resolved like the capture's (the app's `env` var when it is set here), answers 2xx/3xx within 5 s and is no dev-server error page: the Vite overlay or error page, `Cannot GET`, an Angular CLI/esbuild compile error (`✘ [ERROR]`) or `Failed to compile`. A redirect is an answer and is not followed (`APP_UNREACHABLE`). | `capture`, `verify` (warns for `review`, `fix`) |
+| `pass` | The newest pass has shots. A shot-less one warns: the next `run` reuses it, never skips it, and `state` reads it as the latest. Its fix is `run --resume --pass N`, or deleting it when it is a stray `--print` and an earlier pass is the one to carry on. No pass at all is `ok` for `capture` and without `--for`, since `run` starts pass-1 (`PASS_MISSING`). | `review`, `fix`, `verify`, when no pass holds shots |
+| `workspace` | Always `skip`: the Devbox workspace and its hold are not in the config yet. | — |
+| `signin` | Always `skip`: per-persona sign-in is not probed yet. | — |
 
 ## Stage verbs: what the review-loop reads back
 

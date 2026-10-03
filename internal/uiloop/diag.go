@@ -36,6 +36,11 @@ const (
 	DiagSelectionInvalid = "SELECTION_INVALID"
 	// DiagPassMissing: the pass directory (or its shots) does not exist.
 	DiagPassMissing = "PASS_MISSING"
+	// DiagAppUnreachable: doctor's GET of an app's base URL (its env var's
+	// value when set here) got no 2xx/3xx answer within a few seconds, or got
+	// a dev server's error page (Vite overlay, `Cannot GET`, a compile error)
+	// — start the dev server or fix its build, or point the env var at it.
+	DiagAppUnreachable = "APP_UNREACHABLE"
 	// DiagRunFailed: the capture command exited non-zero (harness errors;
 	// recipe failures are results, not this) — see its output.
 	DiagRunFailed = "RUN_FAILED"

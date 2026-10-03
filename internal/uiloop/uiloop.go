@@ -1,8 +1,9 @@
 // Package uiloop is the `ui-loop` applet: the deterministic layer of the UI
 // polish loop (map → capture + lint → review → fix → verify). It embeds the
 // TypeScript/Playwright harness (harness/) and syncs it into each repo's
-// <dir>/vendor with a stamp; `check` gates drift, `run` writes the pass's
-// run.json and runs (or prints) the repo's own Playwright against it, and
+// <dir>/vendor with a stamp; `check` gates drift, `doctor` preflights a
+// stage (doctor.go), `run` writes the pass's run.json and runs (or prints)
+// the repo's own Playwright against it, and
 // `split`, `publish` and `scoreboard` turn a pass directory into vitrinka sets
 // and a scoreboard; `state`, `batches`, `merge-review`, `lanes` and
 // `checkpoints` (stage.go, lanes.go) own every list the review-loop stages
