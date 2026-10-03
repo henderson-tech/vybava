@@ -104,6 +104,9 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 	if filepath.Base(invokedAs) == "polish-kit" {
 		return rt.polishKitApplet(), nil
 	}
+	if filepath.Base(invokedAs) == "perflab" {
+		return rt.perflabApplet(), nil
+	}
 	if filepath.Base(invokedAs) == "codexsync" {
 		return rt.codexsyncApplet(), nil
 	}
@@ -217,6 +220,7 @@ func (a App) Command(invokedAs string) (*cobra.Command, error) {
 		rt.hotfixCommand("hotfix"),
 		rt.blipCommand("blip"),
 		rt.polishKitCommand("polish-kit"),
+		rt.perflabCommand("perflab"),
 		rt.readinessCommand("readiness"),
 		rt.uiLoopCommand("ui-loop"),
 		rt.codexsyncCommand("codexsync"),

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- Synthetic: a run whose only hitch-like tables are stage siblings. -->
+<trace-toc>
+    <run number="1">
+        <info>
+            <target>
+                <device platform="iOS" model="iPhone 11" name="Lab iPhone" os-version="18.7.8 (22H352)" uuid="00008030-001E6D961122802E"/>
+                <process type="attached" name="FixIt" pid="8744"/>
+            </target>
+            <summary>
+                <start-date>2026-10-02T03:38:22.221+02:00</start-date>
+                <duration>30.0</duration>
+            </summary>
+        </info>
+        <data>
+            <table schema="hitches-frame-lifetimes"/>
+            <table schema="hitches-gpu"/>
+            <table schema="time-profile"/>
+        </data>
+    </run>
+</trace-toc>

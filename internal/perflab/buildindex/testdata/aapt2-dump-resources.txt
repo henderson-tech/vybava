@@ -1,0 +1,15 @@
+Binary APK
+Package name=app.fixit.client id=7f
+  type anim id=01 entryCount=79
+    resource 0x7f08009a drawable/assets_gradients_auroradarkposter
+      (mdpi) (file) res/bM.jpg
+    resource 0x7f0800b0 drawable/assets_gradients_noisetile
+      (mdpi) (file) res/RE.png type=PNG
+    resource 0x7f0800b1 drawable/assets_gradients_polardarkposter
+      (mdpi) (file) res/i1.jpg
+    resource 0x7f120000 raw/________bun_install_cache_links_expogooglefontsmaterialsymbols0437b36a6103c83aedbf_node_modules_expogooglefonts_materialsymbols_400regular_materialsymbols_400regular
+      () (file) res/dp.ttf
+    resource 0x7f0800d8 drawable/assets_images_headerplus
+      (mdpi) (file) res/VQ.png type=PNG
+      (xhdpi) (file) res/yG.png type=PNG
+      (xxhdpi) (file) res/MH1.png type=PNG

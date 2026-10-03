@@ -1,0 +1,174 @@
+{
+  "result": {
+    "devices": [
+      {
+        "identifier": "AD180DD3-C2CC-5999-AAD2-4D412CE3A969",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "Lab - iPad",
+          "osVersionNumber": "26.6",
+          "developerModeStatus": "enabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008103-001D045A3AA3001E",
+          "marketingName": "iPad Pro (11-inch) (3rd generation)",
+          "productType": "iPad13,4",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "55657883-7DF0-5900-B528-7E647BD21477",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "disconnected",
+          "transportType": "localNetwork"
+        },
+        "deviceProperties": {
+          "name": "Lab - iPhone",
+          "osVersionNumber": "26.6.2",
+          "developerModeStatus": "enabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008150-00116D4C1E40401C",
+          "marketingName": "iPhone Air",
+          "productType": "iPhone18,4",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "67844052-FECA-52CB-9E0D-51A1548DF7C5",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "Lab - iPhone",
+          "osVersionNumber": "26.0.1",
+          "developerModeStatus": "enabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008130-001645280421401C",
+          "marketingName": "iPhone 15 Pro",
+          "productType": "iPhone16,1",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "3CF6E2FC-6214-5090-ABB1-9FD36573C2B6",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "Owner - iPhone",
+          "osVersionNumber": "26.6",
+          "developerModeStatus": "enabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008120-0011582A0C50C01E",
+          "marketingName": "iPhone 14 Pro",
+          "productType": "iPhone15,2",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "F8C49F38-CB34-5B6D-9D34-07F194198EEA",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "disconnected",
+          "transportType": "wired"
+        },
+        "deviceProperties": {
+          "name": "Owner - iPhone",
+          "osVersionNumber": "18.7.8",
+          "developerModeStatus": "enabled",
+          "bootState": "booted"
+        },
+        "hardwareProperties": {
+          "udid": "00008030-001E6D961122802E",
+          "marketingName": "iPhone 11",
+          "productType": "iPhone12,1",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "31320D1C-30BB-5B4E-80AB-7FD4EDE78234",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "Owner - Apple Watch"
+        },
+        "hardwareProperties": {
+          "udid": "00008301-588AED463ADBC02E",
+          "productType": "Watch6,18",
+          "platform": "watchOS"
+        }
+      },
+      {
+        "identifier": "6B358B8C-1A39-5CA8-B0CC-9B3AF2C647B2",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "disconnected",
+          "transportType": "localNetwork"
+        },
+        "deviceProperties": {
+          "name": "Owner - Apple Watch",
+          "osVersionNumber": "26.2.1",
+          "developerModeStatus": "disabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008310-000C242E11EA601E",
+          "marketingName": "Apple Watch Ultra 2",
+          "productType": "Watch7,5",
+          "platform": "watchOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "2D8A9EC8-CE08-5A2C-95D2-0143DF25C115",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "Guest - iPhone",
+          "osVersionNumber": "26.6.1",
+          "developerModeStatus": "enabled"
+        },
+        "hardwareProperties": {
+          "udid": "00008150-001448D80CE2401C",
+          "marketingName": "iPhone 17 Pro",
+          "productType": "iPhone18,1",
+          "platform": "iOS",
+          "reality": "physical"
+        }
+      },
+      {
+        "identifier": "5D12A406-275A-54B3-96B1-A291C5525E58",
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "deviceProperties": {
+          "name": "iPad",
+          "osVersionNumber": "26.5"
+        },
+        "hardwareProperties": {
+          "udid": "00008132-000979990205001C",
+          "productType": "iPad16,3",
+          "platform": "iOS"
+        }
+      }
+    ]
+  }
+}

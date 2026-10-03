@@ -1,0 +1,179 @@
+{
+  "hash": "1785d4a53f9ce1b53c942fa9e248e90ab8794cc4",
+  "sources": [
+    {
+      "type": "file",
+      "filePath": "../../../../../../../../.bun/install/cache/links/@xmldom+xmldom@0.8.13-c5e384f7ca36d931/node_modules/@xmldom/xmldom/lib/conventions.js",
+      "reasons": [
+        "expoConfigPlugins"
+      ],
+      "hash": "ae62cc0ef6f454d529f9e2b538681237772b81f8",
+      "debugInfo": {
+        "path": "../../../../../../../../.bun/install/cache/links/@xmldom+xmldom@0.8.13-c5e384f7ca36d931/node_modules/@xmldom/xmldom/lib/conventions.js",
+        "hash": "ae62cc0ef6f454d529f9e2b538681237772b81f8"
+      }
+    },
+    {
+      "type": "file",
+      "filePath": "eas.json",
+      "reasons": [
+        "easBuild"
+      ],
+      "hash": "a34a9d951ec36e0a1cc61358d8092925fca4100a",
+      "debugInfo": {
+        "path": "eas.json",
+        "hash": "a34a9d951ec36e0a1cc61358d8092925fca4100a"
+      }
+    },
+    {
+      "type": "file",
+      "filePath": "plugins/with-profileable-android.js",
+      "reasons": [
+        "expoConfigPlugins"
+      ],
+      "hash": "798ce0ba5377a111d00128a8773f272b55bfdb51",
+      "debugInfo": {
+        "path": "plugins/with-profileable-android.js",
+        "hash": "798ce0ba5377a111d00128a8773f272b55bfdb51"
+      }
+    },
+    {
+      "type": "dir",
+      "filePath": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios",
+      "reasons": [
+        "expoAutolinkingIos"
+      ],
+      "hash": "16bf788ff7d2ceac19117015fc8bef9130963af2",
+      "debugInfo": {
+        "path": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios",
+        "children": [
+          {
+            "path": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios/EASClient",
+            "children": [
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios/EASClient/EASClientID.swift",
+                "hash": "126b5fa1ee84de1d134630bedd0924b98d67adc5"
+              },
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios/EASClient/EASClientModule.swift",
+                "hash": "ce504748dc6ff9cad5e996415049139750eafdf0"
+              }
+            ],
+            "hash": "6cf76ae5010c9e0fc37ffa3e97fe11b27d6db8e0"
+          },
+          {
+            "path": "../../../../../../../../.bun/install/cache/links/expo-eas-client@57.0.3-13acc92568f9068e/node_modules/expo-eas-client/ios/EASClient.podspec",
+            "hash": "31487d85e539d67ae305aad86e96c5c19b274e64"
+          }
+        ],
+        "hash": "16bf788ff7d2ceac19117015fc8bef9130963af2"
+      }
+    },
+    {
+      "type": "dir",
+      "filePath": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios",
+      "reasons": [
+        "expoAutolinkingIos"
+      ],
+      "hash": "22595f4395af251960540642f788c01a2da01d3f",
+      "debugInfo": {
+        "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios",
+        "children": [
+          {
+            "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/EXJSONUtils",
+            "children": [
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/EXJSONUtils/NSDictionary+EXJSONUtils.h",
+                "hash": "a8037de8a06a36ab66e2f4d9f2cb68d6c64ca246"
+              },
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/EXJSONUtils/NSDictionary+EXJSONUtils.m",
+                "hash": "3bd999ff5e98da44bd61bbc334f61936b1d4553f"
+              }
+            ],
+            "hash": "cf243a5ff224909c9eb60dda2c05b5d10e4083a9"
+          },
+          {
+            "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/EXJSONUtils.podspec",
+            "hash": "3b1f7d03e1d9b19b4e315e5ce8fc8df904e9b1e8"
+          },
+          {
+            "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/Tests",
+            "children": [
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/Tests/dummy.swift",
+                "hash": "d14576f3137e44f7ff781fd8a31921d38b6cf56b"
+              },
+              {
+                "path": "../../../../../../../../.bun/install/cache/links/expo-json-utils@57.0.1-413f09af9fd5a669/node_modules/expo-json-utils/ios/Tests/NSDictionary+EXJSONUtilsTest.m",
+                "hash": "a0f54740867712a1ce1efec78d8c40e6196a3d9f"
+              }
+            ],
+            "hash": "15d9093961eb0557d352c37d43f0ad67c8e61cb1"
+          }
+        ],
+        "hash": "22595f4395af251960540642f788c01a2da01d3f"
+      }
+    },
+    {
+      "type": "dir",
+      "filePath": "../../node_modules/.bun/@expo+ui@57.0.17+a2e4d77cfceb993c/node_modules/@expo/ui/ios",
+      "reasons": [
+        "expoAutolinkingIos"
+      ],
+      "hash": null
+    },
+    {
+      "type": "dir",
+      "filePath": "../../node_modules/.bun/expo-camera@57.0.4+a2e4d77cfceb993c/node_modules/expo-camera/ios",
+      "reasons": [
+        "expoAutolinkingIos"
+      ],
+      "hash": null
+    },
+    {
+      "type": "dir",
+      "filePath": "ios",
+      "reasons": [
+        "bareNativeDir"
+      ],
+      "hash": null
+    },
+    {
+      "type": "contents",
+      "id": "rncoreAutolinkingConfig:ios",
+      "contents": "{\"@react-native-async-storage/async-storage\":{\"root\":\"../../../../../../../../.bun/install/cache/links/@react-native-async-storage+async-storage@2.2.0+389f6dd398578448-c6425fc41b6f11c1/node_modules/@react-native-async-storage/async-storage\",\"name\":\"@react-native-async-storage/async-storage\",\"platforms\":{\"ios\":{\"podspecPath\":\"../../../../../../../../.bun/install/cache/links/@react-native-async-storage+async-storage@2.2.0+389f6dd398578448-c6425fc41b6f11c1/node_modules/@react-native-async-storage/async-storage/RNCAsyncStorage.podspec\",\"version\":\"2.2.0\",\"configurations\":[],\"scriptPhases\":[]}}},\"@react-native-community/netinfo\":{\"root\":\"../../../../../../../../.bun/install/cache/links/@react-native-community+netinfo@12.0.1+389f6dd398578448-b737f5444867b92c/node_modules/@react-native-community/netinfo\",\"name\":\"@react-native-community/netinfo\",\"platforms\":{\"ios\":{\"podspecPath\":\"../../../../../../../../.bun/install/cache/links/@react-native-community+netinfo@12.0.1+389f6dd398578448-b737f5444867b92c/node_modules/@react-native-community/netinfo/react-native-netinfo.podspec\",\"version\":\"12.0.1\",\"configurations\":[],\"scriptPhases\":[]}}}}",
+      "reasons": [
+        "rncoreAutolinkingIos"
+      ],
+      "hash": "aa97d553b26c48f97cbfce2da3f7564500d551ea",
+      "debugInfo": {
+        "hash": "aa97d553b26c48f97cbfce2da3f7564500d551ea"
+      }
+    },
+    {
+      "type": "contents",
+      "id": "package:react-native",
+      "contents": "{\"name\":\"react-native\",\"version\":\"0.86.3\"}",
+      "reasons": [
+        "package:react-native"
+      ],
+      "hash": "5daa7488a908db259123c42bef9940b1257840d2",
+      "debugInfo": {
+        "hash": "5daa7488a908db259123c42bef9940b1257840d2"
+      }
+    },
+    {
+      "type": "contents",
+      "id": "packageJson:scripts",
+      "contents": "{\"test\":\"bun test --isolate --path-ignore-patterns='lib/api/websocket/__tests__/socket-manager.test.ts' && bun test --isolate lib/api/websocket/__tests__/socket-manager.test.ts\",\"start\":\"expo start --port 19001\",\"ios\":\"expo run:ios --device '927932C2-9F5E-4CBB-BFA5-FBFC379F4F33'\"}",
+      "reasons": [
+        "packageJson:scripts"
+      ],
+      "hash": "16af89b15b9ad936bd9f4de77f8a2c56a25cfc8d",
+      "debugInfo": {
+        "hash": "16af89b15b9ad936bd9f4de77f8a2c56a25cfc8d"
+      }
+    }
+  ]
+}

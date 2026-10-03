@@ -1,0 +1,3 @@
+List of devices attached
+RF8N21PY1BF            device usb:32-3.3 product:x1seea model:SM_G980F device:x1s transport_id:9
+

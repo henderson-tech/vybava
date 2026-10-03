@@ -65,6 +65,8 @@ SessionEnd    swarm-teardown              the same, also for this session's own
                                           swarm, plus ≤8 `ps` up the ancestry
               browser-teardown            an onyx lookup (1.5 s) and stop (3 s)
               reap                        one `ps -axo`; kills as weather --reap does
+              device-lease-release        reads perflab's lease files; releases this
+                                          session's leases (a 3 s lock wait each)
               redact-session              one secret scan of the session's files
                                           (~1 s per 25 MB, 4 workers) and a
                                           same-length overwrite of what it finds
@@ -95,6 +97,7 @@ SessionStart          claude-guards swarm-teardown --dead-only
 SessionEnd            claude-guards swarm-teardown
 SessionEnd            claude-guards browser-teardown
 SessionEnd            claude-guards reap
+SessionEnd            claude-guards device-lease-release  # release this session's perflab device leases
 SessionEnd            claude-guards redact-session    # scrub secrets the guards missed from the ending session
 ```
 
@@ -158,7 +161,13 @@ machine:*         playwright test / vitest / jest started on this Mac with no
                   compose exec -T <svc> …'` (no escape; other containers pass) ·
                   a simulator boot past guards.simCap (default 2) or a
                   Metro/next/API dev server start past guards.devServerCap
-                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1)
+                  (default 3) (escape: CLAUDE_GUARDS_ALLOW_MACHINE_CAP=1) ·
+                  a raw adb / devicectl / xctrace / go-ios / Appium command,
+                  or a NAME=value assignment, naming a phone perflab has
+                  leased (holder included), a bare adb device command or
+                  adb kill-server while an Android phone is leased; use
+                  `perflab device shell <id> --lease <t> -- …` (no escape;
+                  docs/perflab.md "claude-guards")
 memo:*            a shell write (redirect, tee, sed -i/perl -i, cp/mv
                   destination, rm) to a memo home's LEDGER.md, MEMORY.md or
                   usage.jsonl — memo's own RefuseHandWrite, run here so memo's

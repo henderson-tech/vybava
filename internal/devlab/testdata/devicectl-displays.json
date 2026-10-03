@@ -1,0 +1,34 @@
+{
+  "result": {
+    "backlightState": "activeOn",
+    "displays": [
+      {
+        "bounds": [
+          [
+            0,
+            0
+          ],
+          [
+            828,
+            1792
+          ]
+        ],
+        "currentOrientation": "rot0",
+        "displayId": 1,
+        "name": "LCD",
+        "nativeOrientation": "rot0",
+        "nativeSize": [
+          828,
+          1792
+        ],
+        "pointScale": 2,
+        "primary": true
+      }
+    ],
+    "orientation": {
+      "currentDeviceNonFlatOrientation": "landscapeLeft",
+      "currentDeviceOrientation": "faceUp",
+      "currentDeviceOrientationLocked": false
+    }
+  }
+}

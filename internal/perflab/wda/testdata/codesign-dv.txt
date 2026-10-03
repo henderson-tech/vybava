@@ -1,0 +1,10 @@
+Executable=/private/tmp/calendar-perf/wda-dd/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner
+Identifier=app.fixit.WebDriverAgentRunner.xctrunner
+Format=app bundle with Mach-O universal (arm64)
+CodeDirectory v=20400 size=1132 flags=0x0(none) hashes=24+7 location=embedded
+Signature size=4789
+Signed Time=1. 10. 2026 at 20:25:26
+Info.plist entries=59
+TeamIdentifier=YJ77YV2PNA
+Sealed Resources version=2 rules=10 files=45
+Internal requirements count=1 size=204
