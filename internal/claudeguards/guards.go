@@ -1,6 +1,7 @@
 // Package claudeguards is the single-binary PreToolUse enforcement for the
 // hard bans in ~/.claude/CLAUDE.md: destructive git/docker calls, secret and
 // environment dumps, host-input automation, /e2e screenshot hygiene,
+// pattern kills and kills of agent sessions (`claude-guards list process`),
 // commit-time secret scanning, the machine-health rules (`claude-guards list
 // machine`) — and the context-budget rules that keep an agent from dumping
 // whole files or rewriting them through the shell. Every rule id is a row of
@@ -48,7 +49,8 @@ func deny(rule, msg, escapeHatch string) *Denial {
 // memo ledger rule stats a directory only for a write to a file named
 // LEDGER.md, MEMORY.md or usage.jsonl), guardHeavyWalk reads a bounded slice of the tree only for an uncapped
 // find/bfs, guardAppiumChurn is the first to load the repo config (memoized for the
-// rest), guardMachineCap may fork `ps -axo`, and guardBudget and
+// rest), guardProcessKill forks `ps -A` only for a kill naming a literal PID,
+// guardMachineCap may fork `ps -axo`, and guardBudget and
 // guardContextBash read the transcript and files. prod-merge and
 // commit-secrets run last because they fork git and may call gh (prod-merge
 // only for a merge or push command in a repo that declares PROD_BRANCHES).
@@ -69,6 +71,7 @@ func Bash(in *HookInput) *Denial {
 		guardDesktopUITests,
 		guardDevboxOnly,
 		guardDevboxWhenWorkspace,
+		guardProcessKill,
 		guardMachineCap,
 		guardBudget,
 		guardContextBash,
@@ -104,6 +107,7 @@ func Codex(in *HookInput) *Denial {
 		guardDesktopUITests,
 		guardDevboxOnly,
 		guardDevboxWhenWorkspace,
+		guardProcessKill,
 		guardMachineCap,
 		guardProdMerge,
 		guardCommitSecrets,

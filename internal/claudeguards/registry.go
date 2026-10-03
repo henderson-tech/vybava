@@ -77,6 +77,8 @@ var Rules = []Rule{
 	{"machine:test-worker-cap", "machine", eventBash, "playwright/vitest/jest on this Mac with no worker cap or one above guards.testWorkerCap", escapeWorkers},
 	{"memo:ledger-hand-write", "memo", eventBash, "a shell write (redirect, tee, sed -i, cp/mv, rm) to a memo home's LEDGER.md, MEMORY.md or usage.jsonl; use memo add/render/touch", escapeNone},
 	{"plugincache:package-install", "plugincache", eventBash, "a package install targeting ~/.claude/plugins/cache", escapeNone},
+	{"process:pattern-kill", "process", eventBash, "pkill/killall/fuser -k, or a kill/xargs kill whose PIDs a ps/pgrep/pidof/lsof listing in the same command picks", escapeNone},
+	{"process:session-kill", "process", eventBash, "a kill of a literal PID or group that is a claude/codex session, its switcheroo/cmux launcher or an ancestor of one, outside the calling session's own tree", escapeNone},
 	{"prod-merge:merge", "prod-merge", eventBash, "gh pr merge / gh api merge or ref write / git push landing on a branch the repo's PROD_BRANCHES names", escapeProdMerge},
 	{"secrets:env-dump", "secrets", eventBash, "env/printenv/export with no name-only projection", escapeDangerous},
 	{"secrets:inspect-config-env", "secrets", eventBash, "docker inspect templating .Config.Env", escapeDangerous},
