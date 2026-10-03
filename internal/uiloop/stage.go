@@ -447,10 +447,7 @@ func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, e
 	if err != nil {
 		return ev, err
 	}
-	records, err := LoadRecords(t.passAbs(pass))
-	if err != nil {
-		return ev, err
-	}
+	records := snap.records
 	if ev.digests, err = t.screenDigests(pass, records, snap.hashes); err != nil {
 		return ev, err
 	}
@@ -590,9 +587,7 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 		cp   Checkpoint
 	}
 	var diags []runxDiagnostic
-	var keys []string
-	counts := map[string]admitted{}
-	shadowed := map[string][]string{}
+	var read []admitted
 	for _, f := range files {
 		var c Checkpoint
 		if _, err := readJSON(filepath.Join(dir, filepath.FromSlash(f.rel)), &c); err != nil || (c.Key == "" && c.Status == "") {
@@ -603,8 +598,25 @@ func (t *Tool) loadCheckpoints(pass int, knownBasis ...string) ([]Checkpoint, []
 		if c.Key == "" {
 			c.Key = strings.TrimSuffix(f.rel, ".json")
 		}
+		read = append(read, admitted{f, c})
+	}
+	var facts commitFacts
+	if strict {
+		cps := make([]Checkpoint, len(read))
+		for i, r := range read {
+			cps[i] = r.cp
+		}
+		if facts, err = t.checkpointFacts(basis, cps); err != nil {
+			return nil, nil, err
+		}
+	}
+	var keys []string
+	counts := map[string]admitted{}
+	shadowed := map[string][]string{}
+	for _, r := range read {
+		f, c := r.file, r.cp
 		if strict {
-			valid, err := t.validCheckpoint(c, basis)
+			valid, err := t.validCheckpoint(c, basis, facts)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -941,7 +953,7 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	evidence, err := t.rawBatchEvidence(pass, passSnapshot{basis: data.ReviewBasis, hashes: hashes})
+	evidence, err := t.rawBatchEvidence(pass, passSnapshot{basis: data.ReviewBasis, hashes: hashes, records: records})
 	if err != nil {
 		return Result{}, err
 	}

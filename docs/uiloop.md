@@ -164,7 +164,7 @@ The capture must run next to the app, never on the Mac. The container needs the 
 
 1. **Check.** On the Mac, in the repo: `vybava ui-loop check`. Step 2's `run` writes run.json into the synced tree. `vybava ui-loop run --print --json` writes it too and shows the `devbox run -- '<cmd>'` line without running anything.
 2. **Run it in the workspace.** Use `vybava ui-loop run --wrap "devbox run --max-wait 45m -- {cmd}"`, which holds the capture lease until the capture ends. A printed line you run yourself runs without it (the lease ended with `--print`). Set the app's `env` var inside the command when the container reaches the app on another address.
-3. **Publish beside the capture.** Devbox sync is one-way (Mac → box), and the box has no vitrinka CLI or token, so on the Mac, next to the running capture, run `vybava ui-loop publish --follow`. Every `--interval` (30 s) it rsyncs the pass back from `--from` (default `publish.from` + `/<out>/pass-<n>/`, e.g. `devops:ws/<workspace>/<app-dir>/.ui-loop/pass-3/`, with `<workspace>` from `devbox url --json`). It never fetches `.auth/` (storage states), `playwright/`, `run.json` or `locks/` (the leases are the Mac's; the box holds only the copy Devbox synced there). It then adopts and pushes every shot that became final, one push per area set that gained files. Without `--pass` it follows the pass a running `run`'s capture lease names, else the newest. It stops once the run's `done.json` has arrived and no new shot has for `--until-idle` (10 min). It is idempotent through the ledgers and the index, so a re-run after a stop or a crash picks up where it left off. Without `done.json` (a capture killed before its teardown) it gives up after 3 × `--until-idle` with no new shot (`RUN_UNFINISHED`); finish with `run --resume` and follow again.
+3. **Publish beside the capture.** Devbox sync is one-way (Mac → box), and the box has no vitrinka CLI or token, so on the Mac, next to the running capture, run `vybava ui-loop publish --follow`. Every `--interval` (30 s) it rsyncs the pass back from `--from` (default `publish.from` + `/<out>/pass-<n>/`, e.g. `devops:ws/<workspace>/<app-dir>/.ui-loop/pass-3/`, with `<workspace>` from `devbox url --json`). It never fetches `.auth/` (storage states), `playwright/`, `run.json`, `locks/` or `.cache/` (the leases and the digest cache are the Mac's; the box holds only the copy Devbox synced there). It then adopts and pushes every shot that became final, one push per area set that gained files. Without `--pass` it follows the pass a running `run`'s capture lease names, else the newest. It stops once the run's `done.json` has arrived and no new shot has for `--until-idle` (10 min). It is idempotent through the ledgers and the index, so a re-run after a stop or a crash picks up where it left off. Without `done.json` (a capture killed before its teardown) it gives up after 3 × `--until-idle` with no new shot (`RUN_UNFINISHED`); finish with `run --resume` and follow again.
 4. **Score on the Mac:** `ui-loop scoreboard`. `split` and a plain `publish` still work on a pass fetched by hand (`rsync -a --exclude=/locks/ devops:ws/<workspace>/<app>/<out>/pass-<n>/ <out>/pass-<n>/`; never fetch `locks/`, whose box copy would bring back leases the Mac already released).
 
 A shot is **final** when its captures are on disk and the running capture will not rewrite it: it was taken by this run (`capturedAt` at or after run.json's `createdAt`, so keep the box's clock in sync), it has a status `--resume` keeps (`ok`, `unreachable`), or the run is done. A `--resume` re-run writes a new run.json, so the previous run's `done.json` no longer counts.
@@ -541,8 +541,23 @@ board acknowledged and both scoreboard files present. Interrupted publication
 must retry before a workflow can claim completion. Existing CLI-only passes
 retain their legacy stage semantics; verified workflows require these receipts.
 
-State computes capture hashes once per request and shares that snapshot with
-publication and review/checkpoint checks; no digest cache survives a request.
+State computes capture hashes and decodes the shot records once per request and
+shares that snapshot with publication and review/checkpoint checks. Across
+requests, `<pass>/.cache/digests.json` keeps each evidence file's SHA256 with its
+stamp (size, mtime, ctime, inode, device), so a later read stats the shots instead
+of reading them again: 2,467 shots (780 MB) went from 9–29 s per `state` to 0.6 s.
+An entry counts only while the whole stamp matches, so a retake, a rewrite that
+restores size and mtime, or an rsync over the file is hashed again; a file changed
+within the last 2 s is never cached, because a filesystem that stamps whole
+seconds could give its next write the same stamp. The cache is never evidence:
+nothing walks it into a basis, digest, publish or `done.json`, and `publish
+--follow` never fetches it. Concurrent requests write it through a temp file and a
+rename, so a lost race loses only entries. One that does not decode, has another
+version or cannot be written is a `DIGEST_CACHE` warning on `state` and a rebuild;
+deleting it is always safe. Checkpoints ask git about all their commits at once,
+never per checkpoint: ancestry (two calls), the untracked files, the working
+tree's changes and every commit's changes against HEAD are five git calls
+whatever the pass holds.
 Valid partial raw reviews still merge their findings, while unread screens and
 incomplete batches remain explicit. Scoreboard validates the same evidence for
 both the default backlog and an explicitly supplied backlog (with its adjacent

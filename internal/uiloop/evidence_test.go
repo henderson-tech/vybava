@@ -565,3 +565,67 @@ func TestStateWeighsDriftByTheConfiguredSourceAndPrimitives(t *testing.T) {
 		t.Errorf("--primitives did not override uiLoop.primitives: %v", s.Config.Primitives)
 	}
 }
+
+// checkpointFacts asks git about every checkpoint commit at once; each answer
+// must be merge-base's and sourceUnchanged's for that commit alone, also for
+// a working tree that undoes the commits since one (equal change sets).
+func TestCheckpointFactsAnswerAsGitDoesPerCommit(t *testing.T) {
+	tool := newTool(t, testConfig())
+	first := evidenceRepo(t, tool)
+	commit := func(file, body string) string {
+		t.Helper()
+		writeFile(t, filepath.Join(tool.Root, file), body)
+		for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", file}, {"rev-parse", "HEAD"}} {
+			if out, err := tool.git(args...); err != nil || out.Code != 0 {
+				t.Fatalf("git %v: %+v %v", args, out, err)
+			} else if args[0] == "rev-parse" {
+				return strings.TrimSpace(out.Stdout)
+			}
+		}
+		return ""
+	}
+	second := commit("app.ts", "changed\n")
+	rig := commit("tests/ui-loop/screens/tasks.ts", "recipe v1\n")
+	side, err := tool.git("commit-tree", rig+"^{tree}", "-m", "off HEAD's line")
+	if err != nil || side.Code != 0 {
+		t.Fatalf("commit-tree: %+v %v", side, err)
+	}
+	commits := []string{first, second, rig, strings.TrimSpace(side.Stdout), strings.Repeat("ab", 20)}
+	var cps []Checkpoint
+	for _, c := range commits {
+		cps = append(cps, Checkpoint{Basis: "b", Key: c, Status: "blocked", Commit: c})
+	}
+	for _, step := range []struct {
+		name, file, body string
+		unchanged        []string
+	}{
+		{"a clean tree (a rig commit is ignored)", "", "", []string{second, rig}},
+		{"an uncommitted app edit", "app.ts", "dirty\n", nil},
+		{"a tree that undoes the commits since the first", "app.ts", "original\n", []string{first}},
+		{"an untracked rig file", "tests/ui-loop/screens/admin.ts", "recipe\n", []string{first}},
+		{"an untracked app file", "new.ts", "app\n", nil},
+	} {
+		if step.file != "" {
+			writeFile(t, filepath.Join(tool.Root, step.file), step.body)
+		}
+		facts, err := tool.checkpointFacts("b", cps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range commits {
+			mb, err := tool.git("merge-base", "--is-ancestor", c, "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			unchanged := false
+			if mb.Code == 0 {
+				if unchanged, err = tool.sourceUnchanged(c, tool.Config.Dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if facts.ancestor[c] != (mb.Code == 0) || facts.unchanged[c] != unchanged || unchanged != slices.Contains(step.unchanged, c) {
+				t.Errorf("%s: %s ancestor %v unchanged %v; git per commit: ancestor %v unchanged %v", step.name, c[:7], facts.ancestor[c], facts.unchanged[c], mb.Code == 0, unchanged)
+			}
+		}
+	}
+}

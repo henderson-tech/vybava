@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"sync/atomic"
 )
 
 // RecordVersion is the shot record's version (harness/capture.ts RECORD_VERSION).
@@ -95,25 +97,33 @@ func LoadRecords(passDir string) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	var records []Record
-	for _, p := range paths {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return nil, err
-		}
-		var r Record
-		if err := json.Unmarshal(b, &r); err != nil {
-			var syntax *json.SyntaxError
-			if errors.As(err, &syntax) || errors.Is(err, io.ErrUnexpectedEOF) {
-				continue
+	// Opening a file is most of the read (2,000 records a pass, ~0.1 ms each
+	// on a busy Mac), so a few workers open them at once; the first error in
+	// path order still wins.
+	type read struct {
+		r   Record
+		ok  bool
+		err error
+	}
+	reads := make([]read, len(paths))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(8, len(paths)) {
+		wg.Go(func() {
+			for i := int(next.Add(1)) - 1; i < len(paths); i = int(next.Add(1)) - 1 {
+				reads[i].r, reads[i].ok, reads[i].err = readRecord(paths[i])
 			}
-			return nil, fmt.Errorf("%s: %w", p, err)
+		})
+	}
+	wg.Wait()
+	var records []Record
+	for _, rd := range reads {
+		if rd.err != nil {
+			return nil, rd.err
 		}
-		if r.V != RecordVersion {
-			return nil, fmt.Errorf("%s: record v%d, this vybava reads v%d — sync the harness and re-run the pass", p, r.V, RecordVersion)
+		if rd.ok {
+			records = append(records, rd.r)
 		}
-		r.Dir = filepath.ToSlash(filepath.Join("shots", filepath.Base(filepath.Dir(p))))
-		records = append(records, r)
 	}
 	sort.SliceStable(records, func(i, j int) bool {
 		a, b := records[i], records[j]
@@ -129,4 +139,24 @@ func LoadRecords(passDir string) ([]Record, error) {
 		return a.Theme < b.Theme
 	})
 	return records, nil
+}
+
+// readRecord decodes one record file; ok is false for one cut off mid-write.
+func readRecord(p string) (r Record, ok bool, err error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return r, false, err
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return r, false, nil
+		}
+		return r, false, fmt.Errorf("%s: %w", p, err)
+	}
+	if r.V != RecordVersion {
+		return r, false, fmt.Errorf("%s: record v%d, this vybava reads v%d — sync the harness and re-run the pass", p, r.V, RecordVersion)
+	}
+	r.Dir = filepath.ToSlash(filepath.Join("shots", filepath.Base(filepath.Dir(p))))
+	return r, true, nil
 }
