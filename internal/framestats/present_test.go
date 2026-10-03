@@ -28,7 +28,11 @@ func schedPacket(cpu int, switches [][3]float64, freqs [][3]float64) []byte {
 // drawings (one on cpu 4 at 1.8 GHz, one on cpu 6 with no clock), a main
 // thread eglSwapBuffers, a drawLayer, and SurfaceFlinger display frames of
 // which one of two was GPU composited.
-func presentTrace() []byte {
+func presentTrace() []byte { return presentTraceFor(appPid) }
+
+// presentTraceFor is presentTrace with the app's FrameTimeline surface
+// frames attributed to surfacePid (another process when it is not appPid).
+func presentTraceFor(surfacePid int) []byte {
 	const P = 8.333
 	main := []byte("TX - app.test/app.test.MainActivity$_4242#1")
 	popup := []byte("TX - PopupWindow:1$_4242#2")
@@ -39,7 +43,7 @@ func presentTrace() []byte {
 		id := int64(200 + i)
 		cookie := int64(10 + i)
 		parts = append(parts,
-			timelinePacket(at-20, tlActualSurface, pbVarint(1, cookie), pbVarint(2, id), pbVarint(4, appPid), pbBytes(5, main), pbVarint(6, 1)),
+			timelinePacket(at-20, tlActualSurface, pbVarint(1, cookie), pbVarint(2, id), pbVarint(4, int64(surfacePid)), pbBytes(5, main), pbVarint(6, 1)),
 			timelinePacket(at, tlFrameEnd, pbVarint(1, cookie)))
 		mainMs := 2.0
 		if i == 3 {
@@ -49,10 +53,10 @@ func presentTrace() []byte {
 		m = append(m, marker{at - 15, renderTi, "B|4242|DrawFrames " + itoa(id)}, marker{at - 12, renderTi, "E|4242"})
 	}
 	parts = append(parts,
-		timelinePacket(90, tlActualSurface, pbVarint(1, 50), pbVarint(2, 300), pbVarint(4, appPid), pbBytes(5, popup), pbVarint(6, 1)),
+		timelinePacket(90, tlActualSurface, pbVarint(1, 50), pbVarint(2, 300), pbVarint(4, int64(surfacePid)), pbBytes(5, popup), pbVarint(6, 1)),
 		timelinePacket(95, tlFrameEnd, pbVarint(1, 50)),
 		// A dropped main-window frame never presents.
-		timelinePacket(130, tlActualSurface, pbVarint(1, 51), pbVarint(2, 301), pbVarint(4, appPid), pbBytes(5, main), pbVarint(6, 4)),
+		timelinePacket(130, tlActualSurface, pbVarint(1, 51), pbVarint(2, 301), pbVarint(4, int64(surfacePid)), pbBytes(5, main), pbVarint(6, 4)),
 		timelinePacket(140, tlFrameEnd, pbVarint(1, 51)),
 		// SurfaceFlinger: the expected frame gives the period, one of two
 		// actual frames was GPU composited.
@@ -146,5 +150,24 @@ func TestReadPresentOnTheS20LabTraces(t *testing.T) {
 	}
 	if len(pm.LayerDraws) == 0 || !strings.Contains(pm.LayerDraws[0].Name, "PopupWindow") || len(pm.RTCpu) == 0 {
 		t.Errorf("layer draws %+v, rtCpu %d rows", pm.LayerDraws, len(pm.RTCpu))
+	}
+}
+
+// FrameTimeline packets of another process only are no evidence for the
+// app: its present readings stay unread (frameTimeline false), never a
+// passing zero.
+func TestReadPresentWithOnlyAnotherProcessesSurfaces(t *testing.T) {
+	// The app is pid 4242 (as `--pid` or process_tree names it); every
+	// surface frame in the trace belongs to pid 9999.
+	pm, diags, err := ReadPresent(presentTraceFor(9999), PresentOptions{Package: "app.test", PID: appPid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warned := false
+	for _, d := range diags {
+		warned = warned || d.Code == DiagNoFrameTimeline
+	}
+	if pm.FrameTimeline || pm.Frames != 0 || !warned {
+		t.Fatalf("frameTimeline=%v frames=%d diags=%+v", pm.FrameTimeline, pm.Frames, diags)
 	}
 }

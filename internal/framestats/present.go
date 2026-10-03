@@ -116,8 +116,9 @@ type PresentMetrics struct {
 	// GPUCompositionShare: SurfaceFlinger display frames composited on the
 	// GPU, nil without FrameTimeline display frames.
 	GPUCompositionShare Ms `json:"gpuCompositionShare"`
-	// FrameTimeline: the trace carries SurfaceFlinger FrameTimeline packets.
-	// Without them Frames, RestFrames, RestRunMs, PresentGaps and Drops are
+	// FrameTimeline: the trace carries FrameTimeline surface frames of the
+	// app's pid. Without them (no FrameTimeline at all, or only another
+	// process's) Frames, RestFrames, RestRunMs, PresentGaps and Drops are
 	// unread, not zero: a budget never passes on them (NO_FRAME_TIMELINE).
 	FrameTimeline bool `json:"frameTimeline"`
 }
@@ -174,7 +175,7 @@ func ReadPresent(raw []byte, opts PresentOptions) (PresentMetrics, []runx.Diagno
 			}
 		}
 	}
-	m.FrameTimeline = len(t.timeline) > 0
+	m.FrameTimeline = len(starts) > 0
 	if displayFrames > 0 {
 		m.GPUCompositionShare = ms(float64(gpuComposed) / float64(displayFrames))
 	}

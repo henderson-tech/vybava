@@ -396,8 +396,9 @@ with no gap over 60 ms; `rtDrawMs` is RenderThread `Drawing` per frame;
 `presentGaps.twoVsync` counts two-period gaps; drops are gaps over 1.4
 periods, blamed on main or RenderThread when either exceeded one period on
 that frame or the one before. Every present reading but `rtDrawMs` needs
-FrameTimeline (`present.frameTimeline`); without it they are unread, so the
-rest and fling budgets get no check and compare gets no sample.
+the app's own FrameTimeline surface frames (`present.frameTimeline`);
+without them (no FrameTimeline, or only another process's) they are unread,
+so the rest and fling budgets get no check and compare gets no sample.
 
 ## Analyze, compare, report
 
