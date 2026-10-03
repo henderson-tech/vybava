@@ -51,12 +51,12 @@ func (t *Tool) planBatches(pass int, records []Record, size int, snap passSnapsh
 // planCarry is the screens of pass that carry the review of pass-1, sorted.
 // Nothing carries unless pass-1 has a backlog (so merge-review folds it) that
 // is current (its basis.json matches) and lists reviewed, and every batch of
-// pass-1 is complete. A screen then carries when that backlog lists it in
-// reviewed and names it in no open item (any status but met), it has an ok
-// shot here, its manifest entry and the spec are as pass-1 recorded them
-// (screenEvidence: a verdict judged against other known issues or other rules
-// is not evidence here), and its ok shots here and there are the same
-// viewport × theme set whose PNGs (the viewport capture and the full
+// pass-1 is complete or blocked. A screen then carries when that backlog
+// lists it in reviewed and names it in no open item (any status but met), it
+// has an ok shot here, its manifest entry and the spec are as pass-1
+// recorded them (screenEvidence: a verdict judged against other known issues
+// or other rules is not evidence here), and its ok shots here and there are
+// the same viewport × theme set whose PNGs (the viewport capture and the full
 // companion) are byte-equal or differ in at most uiLoop.review.carryTolerance
 // of their pixels; a size change is a move.
 func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carried, error) {
@@ -86,7 +86,9 @@ func (t *Tool) planCarry(pass int, records []Record, snap passSnapshot) ([]Carri
 	if err != nil {
 		return nil, err
 	}
-	if slices.ContainsFunc(batches.Batches, func(b Batch) bool { return !done[b.ID] }) {
+	// A blocked batch finished its review too: its screens are unreviewed
+	// there, so they never carry.
+	if slices.ContainsFunc(batches.leaves(), func(b Batch) bool { return !done[b.ID] && !b.Blocked }) {
 		return carried, nil
 	}
 	open := map[string]bool{}

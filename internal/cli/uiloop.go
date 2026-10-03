@@ -251,8 +251,9 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	scoreboardCmd.Flags().BoolVar(&noDelta, "no-delta", false, "skip the delta")
 
 	var (
-		stageCap, batchSize, maxLanes int
-		primitives                    string
+		stageCap, batchSize, maxLanes     int
+		primitives                        string
+		splitID, stallID, blockID, reason string
 	)
 	withPass := func(verb func(*uiloop.Tool) (uiloop.Result, error)) func(*cobra.Command, []string) error {
 		return run(func(t *uiloop.Tool) (uiloop.Result, error) {
@@ -276,10 +277,11 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	batchesCmd := &cobra.Command{
 		Use:   "batches",
-		Short: "Plan the pass's review batches (per-screen digests; screens whose pixels did not move carry the previous review) and persist them to review/batches.json",
+		Short: "Plan the pass's review batches (per-screen digests; screens whose pixels did not move carry the previous review) and persist them to review/batches.json; --stall, --split and --block act on one batch a reviewer stalled on",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
-			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas), Claim: claim, Owner: owner, TTL: claimTTL})
+			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas), Claim: claim, Owner: owner, TTL: claimTTL,
+				Split: splitID, Stall: stallID, Block: blockID, Reason: reason})
 		}),
 	}
 	batchesCmd.Flags().IntVar(&pass, "pass", 0, "pass number (default: the latest with shots)")
@@ -288,6 +290,10 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 	batchesCmd.Flags().IntVar(&claim, "claim", 0, "claim up to N left batches for --owner (batch-<id> leases) and return them as claimed")
 	batchesCmd.Flags().StringVar(&owner, "owner", "", "the run the claims are for (required with --claim)")
 	batchesCmd.Flags().DurationVar(&claimTTL, "ttl", uiloop.DefaultClaimTTL, "how long a claim holds unless its owner claims it again")
+	batchesCmd.Flags().StringVar(&stallID, "stall", "", "count a reviewer stall of this batch in review/attempts/<id>.json")
+	batchesCmd.Flags().StringVar(&splitID, "split", "", "halve this batch into <id>.1 and <id>.2 and release its claim; with --claim, claim among its parts")
+	batchesCmd.Flags().StringVar(&blockID, "block", "", "take this batch out of the review (needs --reason); its unread screens are listed unreviewed")
+	batchesCmd.Flags().StringVar(&reason, "reason", "", "why --block blocks the batch (merge-review lists its screens as \"<id> (stalled: <reason>)\")")
 
 	mergeCmd := &cobra.Command{
 		Use:   "merge-review",

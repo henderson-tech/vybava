@@ -37,6 +37,15 @@ type Batch struct {
 	// Digests (v2) is each screen's screenDigests digest: a reviewer copies
 	// the ones of the screens it read into its raw file's screens.
 	Digests map[string]string `json:"digests,omitempty"`
+	// Parts (batches --split) name the halves the batch was split into
+	// after a stall; they follow it in batches.json, and it is reviewed only
+	// through them (stall.go).
+	Parts []string `json:"parts,omitempty"`
+	// Blocked (batches --block) takes the batch out of the review: it is
+	// never left or claimed again, and merge-review lists its unread screens
+	// as unreviewed, "<id> (stalled: <BlockedReason>)".
+	Blocked       bool   `json:"blocked,omitempty"`
+	BlockedReason string `json:"blockedReason,omitempty"`
 }
 
 // Carried is a screen no batch holds: its review comes from pass From
@@ -107,8 +116,10 @@ type NextStage struct {
 // review.carriedFrom, backlog.carried (byStatus without carried items),
 // batches v2 (per-screen digests, carried) and raws judged screen by screen.
 // 4: pass leases — capture, pending, next.stage wait, next.parallel and
-// batches' claimed.
-const StateContract = 4
+// batches' claimed. 5: split on stall — review.stalls and review.blocked,
+// batches' parts and blocked, and planned/done/left counting parts, never a
+// split batch.
+const StateContract = 5
 
 // reviewParallel is how many identical review runs the unclaimed left
 // batches keep busy: one per reviewersPerRun batches, at most
@@ -176,12 +187,19 @@ type StateSet struct {
 type StateReview struct {
 	// BatchesFile is true when review/batches.json exists; otherwise the
 	// batches are computed with DefaultBatchSize and not written.
-	BatchesFile   bool     `json:"batchesFile"`
-	Size          int      `json:"size"`
-	Planned       int      `json:"planned"`
-	Done          []string `json:"done"`
-	Left          []string `json:"left"`
-	ReviewedAreas []string `json:"reviewedAreas"`
+	BatchesFile bool `json:"batchesFile"`
+	Size        int  `json:"size"`
+	// Planned, Done and Left count the batches a reviewer takes: a split
+	// batch's parts, never the split batch. A blocked batch is neither done
+	// nor left: it is in Blocked.
+	Planned       int            `json:"planned"`
+	Done          []string       `json:"done"`
+	Left          []string       `json:"left"`
+	Blocked       []BlockedBatch `json:"blocked"`
+	ReviewedAreas []string       `json:"reviewedAreas"`
+	// Stalls counts each batch's reviewer stalls (batches --stall), the
+	// batches that had one only.
+	Stalls map[string]int `json:"stalls"`
 	// Carried counts the screens batches.json carries into this pass and
 	// CarriedFrom names the pass they came from (null when none carry). A
 	// carried screen retaken since is reopened (carriesNow): not counted, and
@@ -295,7 +313,8 @@ func passScreens(records []Record) []screen {
 // ComputeBatches is the deterministic reviewer batching: each area's screens
 // sorted by id, in chunks of size, areas in config order (the rest by name).
 // A batch id (<area>-<n>) is stable, so a resumed review skips the batches
-// whose raw file exists.
+// whose raw file exists. It counts screens, never image weight: a batch
+// that stalls its reviewer is split instead (stall.go).
 func ComputeBatches(screens []screen, areaOrder []string, size int) []Batch {
 	if size < 1 {
 		size = DefaultBatchSize
@@ -398,6 +417,8 @@ type rawEvidence struct {
 //     every screen in it with an ok shot was read by some v2 raw, whatever the
 //     raws are named, so split parts and a hand-merged raw complete their
 //     batch together. A batch without an ok shot needs a v2 raw naming it.
+//
+// Either way a split batch is complete exactly when its parts are (settle).
 func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, error) {
 	ev := rawEvidence{merged: map[string]bool{}, complete: map[string]bool{}}
 	paths, err := filepath.Glob(filepath.Join(t.reviewDir(pass), "raw", "*.json"))
@@ -414,6 +435,12 @@ func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, e
 			name := strings.TrimSuffix(filepath.Base(p), ".json")
 			ev.merged[name], ev.complete[name] = true, true
 		}
+		// Only a persisted batches.json can hold a split.
+		var batches BatchesFile
+		if _, err := readJSON(filepath.Join(t.reviewDir(pass), "batches.json"), &batches); err != nil {
+			return ev, err
+		}
+		batches.settle(ev.complete)
 		return ev, nil
 	}
 	snap, err := t.snapshot(pass, known)
@@ -478,6 +505,7 @@ func (t *Tool) rawBatchEvidence(pass int, known ...passSnapshot) (rawEvidence, e
 			ev.complete[b.ID] = true
 		}
 	}
+	batches.settle(ev.complete)
 	return ev, nil
 }
 
@@ -793,7 +821,8 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	}
 	sort.Strings(cfg.Apps)
 	data := StateData{Vybava: t.Version, Contract: StateContract, Config: cfg, Areas: []AreaCount{}, Unpublished: []string{}, Sets: []StateSet{}, Boards: []BoardRow{},
-		Review: StateReview{Done: []string{}, Left: []string{}, ReviewedAreas: []string{}}, Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
+		Review:      StateReview{Done: []string{}, Left: []string{}, Blocked: []BlockedBatch{}, ReviewedAreas: []string{}, Stalls: map[string]int{}},
+		Checkpoints: CheckpointCounts{ByStatus: map[string]int{}}}
 	running, capture, err := t.liveCapture()
 	if err != nil {
 		return Result{}, err
@@ -916,7 +945,11 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	data.Review.BatchesFile, data.Review.Size, data.Review.Planned = persisted, batches.Size, len(batches.Batches)
+	leaves := batches.leaves()
+	data.Review.BatchesFile, data.Review.Size, data.Review.Planned = persisted, batches.Size, len(leaves)
+	if data.Review.Stalls, err = t.stalls(pass); err != nil {
+		return Result{}, err
+	}
 	carried, reopened := carriesNow(batches.Carried, evidence.digests)
 	if data.Review.Carried = len(carried); data.Review.Carried > 0 {
 		data.Review.CarriedFrom = &carried[0].From
@@ -925,10 +958,15 @@ func (t *Tool) State(o StateOptions) (Result, error) {
 	for _, s := range screens {
 		areaLeft[s.area] = areaLeft[s.area] || slices.Contains(reopened, s.id)
 	}
-	for _, b := range batches.Batches {
-		if evidence.complete[b.ID] {
+	// A blocked batch holds no area open: its unread screens go to the
+	// backlog as unreviewed, so the synthesis comes.
+	for _, b := range leaves {
+		switch {
+		case evidence.complete[b.ID]:
 			data.Review.Done = append(data.Review.Done, b.ID)
-		} else {
+		case b.Blocked:
+			data.Review.Blocked = append(data.Review.Blocked, BlockedBatch{Batch: b.ID, Reason: b.BlockedReason})
+		default:
 			data.Review.Left = append(data.Review.Left, b.ID)
 			areaLeft[b.Area] = true
 		}
@@ -1182,6 +1220,11 @@ type BatchesOptions struct {
 	Claim int
 	Owner string
 	TTL   time.Duration
+	// Split, Stall and Block (at most one) act on that batch of the
+	// persisted batches.json instead of planning (stall.go): Split halves it
+	// (Claim then claims among its parts), Stall counts a reviewer stall of
+	// it and Block takes it out of the review for Reason.
+	Split, Stall, Block, Reason string
 }
 
 // BatchesData is `ui-loop batches`.
@@ -1191,7 +1234,10 @@ type BatchesData struct {
 	File    string   `json:"file"`
 	Size    int      `json:"size"`
 	Screens int      `json:"screens"` // screens across the batches returned
-	Batches []Batch  `json:"batches"` // only --areas when given
+	// Batches are the batches a reviewer takes, a split batch's parts in its
+	// place (batches.json keeps the split batch too); only --areas when
+	// given. Done and Left are of these, a blocked batch in neither.
+	Batches []Batch  `json:"batches"`
 	Done    []string `json:"done"`
 	Left    []string `json:"left"`
 	// Carried are the screens no batch holds because they carry an earlier
@@ -1208,7 +1254,8 @@ type BatchesData struct {
 // A review that started without v2 batches (a raw file exists and
 // batches.json is v1 or missing) keeps v1 batches, because a carry would
 // re-chunk the batches its v1 raws were judged against; any other is planned
-// v2 (planBatches), every run, so a retake since the last plan is seen.
+// v2 (planBatches), every run, so a retake since the last plan is seen;
+// either way the plan keeps the file's splits and blocks (keepSplits).
 func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	pass, err := t.resolveShotPass(o.Pass)
 	if err != nil {
@@ -1229,6 +1276,17 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 	if o.Claim < 0 || o.Claim > 0 && o.Owner == "" {
 		return Result{}, diag(DiagSelectionInvalid, fmt.Sprintf("--claim %d needs a positive count and --owner (the run the claims are for)", o.Claim),
 			"vybava ui-loop batches --claim 4 --owner <run id> --json")
+	}
+	if err := o.actionProblem(pass); err != nil {
+		return Result{}, err
+	}
+	switch {
+	case o.Split != "":
+		return t.splitBatch(pass, o)
+	case o.Stall != "":
+		return t.stallBatch(pass, o)
+	case o.Block != "":
+		return t.blockBatch(pass, o)
 	}
 	file := filepath.Join(t.reviewDir(pass), "batches.json")
 	var prior BatchesFile
@@ -1266,7 +1324,17 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 			return Result{}, err
 		}
 	}
-	if err := writeJSON(file, all); err != nil {
+	// Under the lease mutex, against the file as it is now: a split or a
+	// block written since the read above is kept.
+	err = t.underLeases(pass, func() error {
+		var now BatchesFile
+		if _, err := readJSON(file, &now); err != nil {
+			return err
+		}
+		all = all.keepSplits(now)
+		return writeJSON(file, all)
+	})
+	if err != nil {
 		return Result{}, err
 	}
 	// Done and left are judged against the batches just written.
@@ -1283,20 +1351,21 @@ func (t *Tool) Batches(o BatchesOptions) (Result, error) {
 			data.Carried = append(data.Carried, Carried{Screen: c.Screen, From: c.From})
 		}
 	}
-	for _, b := range all.Batches {
+	for _, b := range all.leaves() {
 		if len(o.Areas) > 0 && !slices.Contains(o.Areas, b.Area) {
 			continue
 		}
 		data.Batches = append(data.Batches, b)
 		data.Screens += len(b.Screens)
-		if raw[b.ID] {
+		switch {
+		case raw[b.ID]:
 			data.Done = append(data.Done, b.ID)
-		} else {
+		case !b.Blocked:
 			data.Left = append(data.Left, b.ID)
 		}
 	}
 	// Only a left batch is claimable: one complete by its raws' per-screen
-	// digests needs no reviewer, whoever claimed it.
+	// digests needs no reviewer, whoever claimed it, and a blocked one gets none.
 	if o.Claim > 0 {
 		if o.TTL <= 0 {
 			o.TTL = DefaultClaimTTL
@@ -1362,7 +1431,7 @@ type MergeReviewData struct {
 	File       string           `json:"file"`
 	Previous   *PreviousBacklog `json:"previous"`
 	Raw        int              `json:"raw"`
-	Left       []string         `json:"left"` // planned batches without a raw file
+	Left       []string         `json:"left"` // planned batches (parts, not a split batch) no raw completes, blocked ones aside
 	Findings   int              `json:"findings"`
 	Open       int              `json:"open"`
 	ByStatus   map[string]int   `json:"byStatus"` // carried items aside (BacklogCounts)
@@ -1447,7 +1516,8 @@ func union(a, b []string) []string {
 // findings and verdicts on any other screen are left out. The screens
 // batches carries from the previous pass take that pass's items on them
 // as they stood, with carriedFrom, and count as reviewed; a carried screen
-// retaken since (carriesNow) takes nothing and is unreviewed.
+// retaken since (carriesNow) takes nothing and is unreviewed. A blocked
+// batch's screens no raw read are unreviewed as "<id> (stalled: <reason>)".
 func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesFile, okShots map[string][]string, digests map[string]string) (Backlog, []string, []ReviewProblem, []string) {
 	var order []string
 	items := map[string]*Finding{}
@@ -1631,6 +1701,14 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 			}
 		}
 	}
+	stalled := map[string]string{}
+	for _, bt := range batches.leaves() {
+		for _, id := range bt.Screens {
+			if bt.Blocked && !judged[id] {
+				skipped[id], stalled[id] = true, bt.BlockedReason
+			}
+		}
+	}
 	b.Reviewed = []string{}
 	for id := range judged {
 		if !skipped[id] {
@@ -1638,11 +1716,12 @@ func MergeReview(pass int, previous *Backlog, raws []rawReview, batches BatchesF
 		}
 	}
 	sort.Strings(b.Reviewed)
-	unreviewed := []string{}
-	for id := range skipped {
-		unreviewed = append(unreviewed, id)
+	unreviewed := slices.Sorted(maps.Keys(skipped))
+	for i, id := range unreviewed {
+		if why, ok := stalled[id]; ok {
+			unreviewed[i] = id + " (stalled: " + why + ")"
+		}
 	}
-	sort.Strings(unreviewed)
 	return b, unjudged, problems, unreviewed
 }
 
@@ -1698,8 +1777,10 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (_ Result, err error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// A pass whose every screen carried has no batch, so nothing to wait for.
-	if len(paths) == 0 && len(batches.Batches) > 0 {
+	// A pass whose every screen carried has no batch, and one whose every
+	// batch is blocked has none to review, so nothing to wait for.
+	leaves := batches.leaves()
+	if len(paths) == 0 && slices.ContainsFunc(leaves, func(b Batch) bool { return !b.Blocked }) {
 		return Result{}, diag(DiagPassMissing, t.PassDir(pass)+"/review/raw holds no reviewer batch", "run the review stage first")
 	}
 	// Raw files in batch order, then by name for ids batches.json does not know.
@@ -1759,13 +1840,13 @@ func (t *Tool) MergeReview(o MergeReviewOptions) (_ Result, err error) {
 		data.Invalid = []string{}
 	}
 	var diags []runxDiagnostic
-	for _, b := range batches.Batches {
-		if !evidence.complete[b.ID] {
+	for _, b := range leaves {
+		if !evidence.complete[b.ID] && !b.Blocked {
 			data.Left = append(data.Left, b.ID)
 		}
 	}
 	if len(data.Left) > 0 {
-		diags = append(diags, warn(DiagReviewIncomplete, fmt.Sprintf("%d of %d batches have no raw file: %s", len(data.Left), len(batches.Batches), strings.Join(data.Left, ", ")),
+		diags = append(diags, warn(DiagReviewIncomplete, fmt.Sprintf("%d of %d batches have no raw file: %s", len(data.Left), len(leaves), strings.Join(data.Left, ", ")),
 			"finish the review stage before writing backlog.json"))
 	}
 	return Result{Data: data, Diagnostics: diags}, nil
