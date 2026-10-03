@@ -126,6 +126,102 @@ func TestUnshotScreensNeverHoldABatchOpen(t *testing.T) {
 	}
 }
 
+// v2Raw writes a v2 raw for batch: the screens it read, with the digests the
+// batches verb gave them, and one finding per screen.
+func v2Raw(t *testing.T, tool *Tool, pass int, file, batch string, digests map[string]string, screens ...string) {
+	t.Helper()
+	read, findings := map[string]string{}, []map[string]any{}
+	for _, s := range screens {
+		read[s] = digests[s]
+		findings = append(findings, map[string]any{"screen": s, "severity": "polish", "title": "Off " + s, "acceptance": "x", "files": []string{s + ".ts"}})
+	}
+	body, err := json.Marshal(map[string]any{"batch": batch, "area": "tasks", "screens": read, "findings": findings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(tool.reviewDir(pass), "raw", file+".json"), string(body))
+}
+
+// A v2 raw is judged screen by screen: it completes its batch at the screens'
+// current digests, and a retaken PNG reopens only its own screen — the raw's
+// word on the other screen still counts.
+func TestAV2RawIsJudgedScreenByScreen(t *testing.T) {
+	tool := newTool(t, testConfig())
+	evidenceRepo(t, tool)
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	writePass(t, tool, 1, []shot{
+		{order: 1, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 2, id: "task-detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+	})
+	res, err := tool.Batches(BatchesOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := res.Data.(BatchesData)
+	if len(b.Batches) != 1 || len(b.Batches[0].Digests) != 2 || b.Batches[0].Digests["tasks"] == b.Batches[0].Digests["task-detail"] {
+		t.Fatalf("v2 batches: %+v", b)
+	}
+	v2Raw(t, tool, 1, "tasks-1", "tasks-1", b.Batches[0].Digests, "tasks", "task-detail")
+	if done, err := tool.rawBatchIDs(1); err != nil || !done["tasks-1"] {
+		t.Fatalf("a raw that read every screen at its digest: %v %v", done, err)
+	}
+	// A --resume retake rewrites task-detail's PNG.
+	writeFile(t, filepath.Join(tool.passAbs(1), "shots", "task-detail", "phone.light.png"), "retaken")
+	if done, err := tool.rawBatchIDs(1); err != nil || done["tasks-1"] {
+		t.Fatalf("the retaken screen still counted: %v %v", done, err)
+	}
+	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := merged.Data.(MergeReviewData)
+	draft, err := LoadBacklog(filepath.Join(tool.reviewDir(1), "backlog.draft.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(draft.Reviewed, []string{"tasks"}) || !slices.Equal(m.Unreviewed, []string{"task-detail"}) || !slices.Equal(m.Left, []string{"tasks-1"}) ||
+		len(draft.Findings) != 1 || draft.Findings[0].Screen != "tasks" {
+		t.Errorf("merge after the retake: %+v, draft %+v", m, draft)
+	}
+}
+
+// Two raws that each read part of a batch complete it together, whatever
+// they are named: the split parts of a batch need no hand-stamped basis.
+func TestPartialV2RawsCompleteTheirBatchTogether(t *testing.T) {
+	tool := newTool(t, testConfig())
+	evidenceRepo(t, tool)
+	if err := tool.captureProvenance(1, false); err != nil {
+		t.Fatal(err)
+	}
+	writePass(t, tool, 1, []shot{
+		{order: 1, id: "tasks", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 1},
+		{order: 2, id: "task-detail", area: "tasks", vp: "phone", theme: "light", status: "ok", bytes: 2},
+		{order: 3, id: "task-ghost", area: "tasks", vp: "phone", theme: "light", status: "unreachable"},
+	})
+	res, err := tool.Batches(BatchesOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := res.Data.(BatchesData).Batches[0].Digests
+	v2Raw(t, tool, 1, "tasks-1a", "tasks-1", digests, "tasks")
+	if done, err := tool.rawBatchIDs(1); err != nil || done["tasks-1"] {
+		t.Fatalf("half a batch completed it: %v %v", done, err)
+	}
+	v2Raw(t, tool, 1, "tasks-1b", "tasks-1b", digests, "task-detail")
+	if done, err := tool.rawBatchIDs(1); err != nil || !done["tasks-1"] {
+		t.Fatalf("both parts: %v %v", done, err)
+	}
+	merged, err := tool.MergeReview(MergeReviewOptions{Pass: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := merged.Data.(MergeReviewData); m.Reviewed != 2 || m.Findings != 2 || len(m.Left) != 0 || !slices.Equal(m.Unreviewed, []string{"task-ghost"}) {
+		t.Errorf("merge of the parts: %+v", m)
+	}
+}
+
 // A previous finding's verdict counts only from a screen the raw judged: shot
 // entries naming every ok shot leave it unjudged, one of two shots does not.
 func TestMergeReviewTakesNoVerdictFromAScreenWithEveryShotUnreviewed(t *testing.T) {
@@ -134,7 +230,7 @@ func TestMergeReviewTakesNoVerdictFromAScreenWithEveryShotUnreviewed(t *testing.
 	if err := json.Unmarshal([]byte(`{"batch":"tasks-1","basis":"b","screensRead":["tasks","task-detail"],"acceptance":[{"key":"old","verdict":"met"}],"unreviewed":["task-detail@phone.light (blank)"]}`), &raw); err != nil {
 		t.Fatal(err)
 	}
-	batches := []Batch{{ID: "tasks-1", Area: "tasks", Screens: []string{"tasks", "task-detail"}}}
+	batches := BatchesFile{Batches: []Batch{{ID: "tasks-1", Area: "tasks", Screens: []string{"tasks", "task-detail"}}}}
 	for _, c := range []struct {
 		name   string
 		shots  []string
@@ -143,7 +239,7 @@ func TestMergeReviewTakesNoVerdictFromAScreenWithEveryShotUnreviewed(t *testing.
 		{"only ok shot unreviewed", []string{"task-detail@phone.light"}, false},
 		{"judged at its other shot", []string{"task-detail@phone.light", "task-detail@phone.dark"}, true},
 	} {
-		b, unjudged, _, unreviewed := MergeReview(2, previous, []rawReview{raw}, batches, map[string][]string{"tasks": {"tasks@phone.light"}, "task-detail": c.shots})
+		b, unjudged, _, unreviewed := MergeReview(2, previous, []rawReview{raw}, batches, map[string][]string{"tasks": {"tasks@phone.light"}, "task-detail": c.shots}, nil)
 		if slices.Contains(b.Reviewed, "task-detail") != c.judged || slices.Contains(unreviewed, "task-detail") == c.judged ||
 			(b.Findings[0].Status == "met") != c.judged || slices.Contains(unjudged, "old") == c.judged {
 			t.Errorf("%s: reviewed %v, unreviewed %v, status %s, unjudged %v", c.name, b.Reviewed, unreviewed, b.Findings[0].Status, unjudged)

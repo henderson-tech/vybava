@@ -7,7 +7,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { type BrowserContextOptions, devices, type Page, type Request } from '@playwright/test';
+import { type BrowserContextOptions, devices, type Locator, type Page, type Request } from '@playwright/test';
 
 import { type LintKey, type LintResult, type LintRule, lintCounts, lintDistinct } from './lint';
 import { MAX_WAIT_MS, type Open, type RecipeContext, type Screen, type ScreenKind, type ScreenState, type Step, type Theme, textPattern } from './manifest';
@@ -358,9 +358,9 @@ export async function runSteps(page: Page, steps: readonly Step[], ctx: RecipeCo
   }
 }
 
-/** Every `{PARAM}` the screen's route and steps need, so a missing one is `unreachable` before the browser starts. */
+/** Every `{PARAM}` the screen's route, steps and volatile selectors need, so a missing one is `unreachable` before the browser starts. */
 export function missingParams(screen: Screen, params: Readonly<Record<string, string>>): string[] {
-  const strings: string[] = [screen.route];
+  const strings: string[] = [screen.route, ...(screen.volatile ?? [])];
   if (Array.isArray(screen.open)) {
     for (const step of screen.open as readonly Step[]) {
       if ('evaluate' in step || 'press' in step || 'wait' in step) continue;
@@ -481,8 +481,13 @@ export async function freezeMotion(page: Page): Promise<void> {
   await twoFrames(page);
 }
 
-export async function shootViewport(page: Page, file: string): Promise<void> {
-  await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', scale: 'device', timeout: 30_000 });
+/** The screen's `volatile` selectors as the locators a shot masks. */
+export function volatileMask(page: Page, screen: Screen, params: Readonly<Record<string, string>>): Locator[] {
+  return (screen.volatile ?? []).map((selector) => page.locator(filled(selector, params)));
+}
+
+export async function shootViewport(page: Page, file: string, mask: Locator[] = []): Promise<void> {
+  await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', scale: 'device', mask, timeout: 30_000 });
 }
 
 export const FULL_SHOT_CAP = 6_000;
@@ -501,7 +506,7 @@ export interface FullShot {
  * is element-shot, and every touched inline style is restored. A document that
  * scrolls itself gets a clipped full-page shot with its fixed chrome hidden.
  */
-export async function shootFull(page: Page, file: string): Promise<FullShot | null> {
+export async function shootFull(page: Page, file: string, mask: Locator[] = []): Promise<FullShot | null> {
   const target = await page.evaluate((cap) => {
     const rendered = (el: Element): boolean => {
       const rect = el.getBoundingClientRect();
@@ -599,11 +604,12 @@ export async function shootFull(page: Page, file: string): Promise<FullShot | nu
         fullPage: true,
         animations: 'disabled',
         caret: 'hide',
+        mask,
         timeout: 30_000,
         clip: { x: 0, y: 0, width, height: Math.min(target.scrollHeight, FULL_SHOT_CAP) },
       });
     } else {
-      await page.locator('[data-ui-loop-full]').screenshot({ path: file, animations: 'disabled', caret: 'hide', timeout: 30_000 });
+      await page.locator('[data-ui-loop-full]').screenshot({ path: file, animations: 'disabled', caret: 'hide', mask, timeout: 30_000 });
     }
   } finally {
     await page.evaluate(() => {

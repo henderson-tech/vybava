@@ -61,6 +61,11 @@ export interface RunFile extends LoopConfig {
   /** Version of the vybava binary that wrote run.json. */
   vybava: string;
   createdAt: string;
+  /**
+   * The instant (ISO 8601) a project with `freezeClock` freezes `Date` at: the loop's first run
+   * picks it and every later run and pass carries it. Absent in a run.json of an older vybava.
+   */
+  clock?: string;
   selection: Selection;
   lint: LintConfig;
   /** Seconds a shot waits for a red dev server to turn green. */

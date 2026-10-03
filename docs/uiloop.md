@@ -69,10 +69,11 @@ uiLoop: {
   publish: { from: 'devops:ws/pwf/pwf-ui' },  // the repo on the capture box, for publish --follow
   source: ['apps', 'libs', ':(exclude,glob)**/*.spec.ts'],  // git pathspecs of the app source (default below)
   primitives: ['libs/ui-lib', 'libs/tailwind-preset'],      // lanes' default; a change here makes a verify a full reshoot
+  review: { carryTolerance: 0.001 },  // share of a shot's pixels that may differ for its screen to carry the last review
 }
 ```
 
-`source` is the application source as git pathspecs (`:(exclude)…`, `:(glob)…` magic included; git does the matching). Only a change there stales a pass (see `state`'s `drift`). Empty, it is the whole repo from its top (`:(top)`, so a config root below it still sees the library beside it) minus `out`, `.vitrinka`, `dir`, `spec` and `appMap` (relative to the config root, like every pathspec without `:(top)`), every `*.md` and every `.claude/`. `state` relays the effective list as `config.source`. `primitives` are directory prefixes (`libs/ui-lib` matches `libs/ui-lib/…`): the default of `lanes --primitives` and `state --primitives`.
+`source` is the application source as git pathspecs (`:(exclude)…`, `:(glob)…` magic included; git does the matching). Only a change there stales a pass (see `state`'s `drift`). Empty, it is the whole repo from its top (`:(top)`, so a config root below it still sees the library beside it) minus `out`, `.vitrinka`, `dir`, `spec` and `appMap` (relative to the config root, like every pathspec without `:(top)`), every `*.md` and every `.claude/`. `state` relays the effective list as `config.source`. `primitives` are directory prefixes (`libs/ui-lib` matches `libs/ui-lib/…`): the default of `lanes --primitives` and `state --primitives`. `review.carryTolerance` is the fraction of a shot's pixels that may differ from the previous pass's for its screen to carry that pass's review (see Carry-forward below): default `0.001`, `0` asks for identical pixels, and it must stay below 1.
 
 Built-in viewports, all DPR 2. The insets are top/right/bottom/left in px; `mobile` means touch, a phone/tablet UA and the touch-target lint.
 
@@ -107,6 +108,7 @@ A repo owns `<dir>/project.ts` (`defineProject`) and `<dir>/screens/*.ts` (`defi
 - `ready`, a selector or a Recipe;
 - `context` (timezone, locale, localStorage);
 - `full: false`, `knownIssues`, `unreachable` and `destructive`;
+- `volatile`: selectors (with `{PARAM}` placeholders) of content that changes between identical renders — a relative time, a live counter, a random avatar — masked in both shots (Playwright `mask`) so it never moves the pixels; the lint still reads it, `check` refuses an empty selector, and a `{PARAM}` the pass cannot fill makes the screen `unreachable` before the browser starts, as one in its route does;
 - `once: true`: shot only at the first viewport × theme the run selects, for a recipe with a side effect that must not repeat per shot (a real failed login that counts against a lockout).
 
 **`Step`** is one of `goto`, `click`, `clickText`, `clickRole` (topmost overlay first), `check`, `uncheck`, `selectOption` (`{ selector, value }`, a native `<select>` option by value or label), `wait` (ms, capped at 2000; prefer `waitFor`), `fill`, `waitFor`, `press`, `hover`, `dblclick`, `longPress`, `drag`, `evaluate` or `upload`. `clickText` takes the exact label (a substring is the last resort) or a `/regex/flags` string; `check` reports an invalid regex and a negative `wait`.
@@ -120,6 +122,9 @@ A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, ex
 - `login(page, as, app, run)`. It either returns a storage-state path or signs in on the page; the harness then saves the state.
 - `signedOut(page, as, app)`. True when a signed-in screen landed on the sign-in page (an expired session): the shot is `recipe-failed`, never `ok`. Every run, `--resume` included, signs in fresh, so a resume re-takes it.
 - `theme(context, theme, app)`, `readTheme(page)`, `settle(page, screen)` and `chrome` (selectors of app chrome that paints its own background).
+- `freezeClock: true` freezes `Date` at run.json's `clock` in every shot (Playwright `page.clock.setFixedTime`, before navigation; timers keep running). The loop's first `run` records that instant and every later run and pass carries it, so the app sees the same "now" in every pass. A run.json without a `clock` (an older vybava) fails the run's setup.
+
+**Deterministic shots.** A screen whose shot is byte-identical to the previous pass's carries that pass's review for free (see Carry-forward); one whose pixels moved by a clock or a counter is reviewed again. `freezeClock` and `volatile` remove those two causes. Data a `prepare` re-dates relative to the real time still moves the pixels.
 
 `states.ts` reaches empty, error and loading without touching seed data:
 
@@ -132,7 +137,7 @@ A recipe function mixes steps with code through `runSteps(page, steps, ctx)`, ex
 
 ## A pass
 
-`run` writes `<out>/pass-<n>/run.json`. It holds the resolved apps (an app's `env` var set on the Mac already overrides `baseUrl`), every viewport, the selection, the lint knobs, the workers and the build wait. Then it runs the command from the repo root:
+`run` writes `<out>/pass-<n>/run.json`. It holds the resolved apps (an app's `env` var set on the Mac already overrides `baseUrl`), every viewport, the selection, the lint knobs, the workers, the build wait and the `clock` a `freezeClock` project freezes `Date` at (the newest earlier run.json's, else now). Then it runs the command from the repo root:
 
 ```sh
 UILOOP_ROOT="$PWD" UILOOP_RUN="$PWD/.ui-loop/pass-3/run.json" pnpm exec playwright test -c "$PWD/tests/ui-loop/vendor/playwright.config.ts"
@@ -260,6 +265,7 @@ The fields follow these rules:
   - `open`: found this pass;
   - `met`, `partly` or `not-met`: the verdict on a previous finding's `acceptance`, which reuses that finding's `key`.
 - **Required:** `title` and `acceptance`. Every finding that is not `met` also names the `files` a fix lane edits.
+- **`carriedFrom`** (optional) is the earlier pass whose review of an unmoved screen the item was copied from by `merge-review`. It must name an earlier pass. The scoreboard leaves a carried item out of the status counts: it is that pass's verdict, not this one's.
 - **`reviewed`** lists the screen ids a reviewer actually judged this pass, whether or not they found anything. It is the only thing that makes a screen clean: a screen with no open finding that is missing from `reviewed` is counted `unreviewed` per area and in the totals, and the markdown table shows the column. A backlog without `reviewed` (the format before v0.24.1) still scores every screen without an open finding as clean, with the unreviewed column shown as `—`, and `scoreboard` warns `REVIEWED_MISSING`. An empty list means nothing was judged.
 
 ## Doctor: preflight a stage
@@ -290,7 +296,7 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 
 ```json
 {
-  "vybava": "0.32.0", "contract": 2,
+  "vybava": "0.37.0", "contract": 3,
   "pass": 1, "passDir": ".ui-loop/pass-1",
   "config": { "dir", "out", "spec", "appMap", "areas": [], "apps": [], "project", "boardPrefix", "lint": { "grid": 4, "touchTarget": 44 },
               "source": [":(top)", ":(exclude,literal).ui-loop", "…"], "primitives": ["libs/ui-lib"] },
@@ -298,9 +304,9 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
   "drift": { "app": ["apps/portal/src/app/tasks/tasks.component.ts"], "rig": ["tests/ui-loop/screens/tasks.ts"], "spec": ["PWF-B04"], "appTotal": 1 },
   "shots": 2231, "screens": 377, "areas": [{ "area": "portal-shell", "screens": 80 }],
   "published": true, "unpublished": [], "sets": [{ "area", "key", "status", "url" }],
-  "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [] },
+  "review": { "batchesFile": true, "size": 14, "planned": 31, "done": ["<batch id>"], "left": [], "reviewedAreas": [], "carried": 0, "carriedFrom": null },
   "hasBacklog": true,
-  "backlog": { "file", "findings": 340, "open": 340, "byStatus": {}, "bySeverity": {}, "reviewed": 264 },
+  "backlog": { "file", "findings": 340, "open": 340, "byStatus": {}, "bySeverity": {}, "reviewed": 264, "carried": 0 },
   "previous": { "pass", "file", "open" },
   "checkpoints": { "total": 47, "byStatus": { "done": 43, "blocked": 4 } },
   "boards": [{ "area", "url", "slug", "section" }],
@@ -311,8 +317,8 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 - `vybava` is this binary's version as `vybava --version` prints it (`dev` for a source build). `contract` is `StateContract` (`stage.go`): it is bumped whenever a field a workflow reads is added or changes format, digests included, and the review-loop refuses a lower one (`UILOOP_STATE_CONTRACT`). A `state` without it predates the contract: `brew upgrade --cask vybava`.
 - `config.lint` is the lint the pass was captured with (its `run.json`), else the config's before the first pass: `grid` and `touchTarget` with the defaults (4, 44) filled, so a reviewer brief quotes the values the shot records were measured with, even after `vybava.config.ts` changed.
 - `published`: every area with shots has its area set in `publish/index.json`, `pushed` (or `skipped`: already pushed with the same files). The index's `legacy` rows never count.
-- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, completes it (see Durable workflow evidence). An area is reviewed when none of its batches is left.
-- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
+- `review`: batches come from `review/batches.json`, else they are computed with size 14 (`batchesFile: false`). A batch is done when `review/raw/<id>.json` exists and, in a pass with provenance, when its raws complete it (see Durable workflow evidence: v1 by the whole basis, v2 screen by screen). An area is reviewed when none of its batches is left, so an area whose every screen was carried is reviewed. `carried` counts the screens `batches.json` carries into the pass (see Carry-forward) and `carriedFrom` is the pass they came from, `null` when none carry. A carried screen retaken since `batches` planned it is not counted, and its area is not reviewed.
+- `backlog`: `bySeverity` counts open findings only, and `reviewed` is -1 for a backlog without the list. `carried` counts the items copied from an earlier pass (`carriedFrom`); `byStatus` leaves them out, as the scoreboard does, so `byStatus` plus `carried` sums to `findings`. `previous` is the newest earlier pass that has a backlog. `checkpoints` counts one checkpoint per item (see Checkpoint files below).
 - `boards` is `publish/boards.json` of the pass, else of the newest earlier pass that has one.
 - `drift` is what changed from `capturedHeadSha` to the working tree (tracked edits and untracked, non-ignored files), by class. `app` is the changed paths inside `config.source`, relative to the config root (`../` for one outside it), sorted and capped at 20 (`appTotal` is the uncapped count). `rig` is the changed paths under `dir`, `vendor/` included, capped at 20. `spec` is the rule ids whose text changed in `spec`, sorted: a rule id is a token like `PWF-D01` (`[A-Z][A-Z0-9]*-[A-Z]*[0-9]+`). Each added or removed line names the ids on it, else the first id of the nearest line above it in its section, else of the nearest enclosing heading that carries one, else its section's heading text (so a spec without ids still reports something), else the spec's path. A heading closes a section, so an earlier section's last rule never claims an edit to the next section's prose. The lists are empty, never null. `drift` is null when it cannot be weighed: for a pass without provenance in a git repo, and for one whose revision this clone lacks (`state` also warns `CAPTURE_REVISION_MISSING`). `next` then treats the pass as drifted (the table below). Outside git no capture has provenance, so there is no drift to weigh and `next` routes as if there were none.
 - `sourceUnchanged` is `drift.app` being empty. **Spec and docs commits never stale a pass; only app drift does.** The rig is repaired between review and verify, the basis reads the manifest and the spec at the captured revision, and a spec edit is reported by rule in `drift.spec`, never recaptured.
@@ -334,16 +340,18 @@ A pass is too big to move through an agent's return value. On pwf-ui pass 1 (377
 
   An interrupted writer (`fix/recovery.json`) overrides them all with `fix` (`resume`). `only` is the screen ids to reshoot, sorted, on `verify` and on a `capture` that reshoots the pass; `[]` is a full reshoot, and `reason` says why. The verify selection is the screens of the open findings (any status but `met`), the `screens` of the `done` checkpoints, and every screen whose shot records' `sourceFiles` meet the full `drift.app` list (a source file meets a drift path when they are equal or one is a directory prefix of the other). Any `drift.app` path under a `--primitives` prefix (default `uiLoop.primitives`) makes it a full reshoot (`primitive changed → full reshoot: <path>`), and so does a selection that comes out empty. The `checkpoints` verb stays for a workflow that still computes the selection itself.
 
-**`batches [--pass N] [--size 14] [--areas a,b]`** gives the reviewer batches: each area's screens sorted by id, in chunks of `--size`, with areas in config order. The ids are `<area>-<n>`. The verb writes every batch to `review/batches.json` (`{v, pass, size, batches}`), the one definition the review stage and `merge-review` share. It returns `{pass, passDir, file, size, screens, batches: [{id, area, screens}], done, left}`, narrowed to `--areas` (the file never is). Without `--size` the size the file was made with stays. A different `--size` once raw batches exist is refused (`SELECTION_INVALID`), because it would redefine what a finished batch covered.
+**`batches [--pass N] [--size 14] [--areas a,b]`** gives the reviewer batches: each area's screens sorted by id, in chunks of `--size`, with areas in config order. The ids are `<area>-<n>`. The verb writes every batch to `review/batches.json` (`{v: 2, pass, size, batches, carried}`), the one definition the review stage and `merge-review` share. It returns `{pass, passDir, file, size, screens, batches: [{id, area, screens, digests}], done, left, carried: [{screen, from}]}`, narrowed to `--areas` (the file never is). `digests` maps each batch screen to its evidence digest (see Durable workflow evidence); a reviewer copies the ones of the screens it read into its raw file's `screens`. `carried` (sorted by screen) are the screens no batch holds because they carry the previous pass's review; `screens` counts only the batched ones, so the batches plus `carried` are the pass's screens. Without `--size` the size the file was made with stays. A different `--size` once raw batches exist is refused (`SELECTION_INVALID`), because it would redefine what a finished batch covered. A review that started without v2 batches (a raw file exists and `batches.json` is v1 or missing) keeps v1 batches (`{v: 1}`, no digests, no carry) until its pass is done, because a carry would re-chunk the batches its v1 raws were judged against. In the file, each `carried` entry also holds the screen's `digest` when the carry was planned (see Carry-forward).
 
 **`merge-review [--pass N]`** folds `review/raw/*.json` (in batch order) and the previous pass's backlog into `review/backlog.draft.json`, a `{v, pass, reviewed, findings}` in the scoreboard contract:
 
 - **Previous items:** each previous open item keeps its key and takes its worst verdict across the batches (`not-met` beats `partly`, which beats `met`). An item nobody judged stands as `not-met` and is listed in `unjudged`.
 - **Fresh findings** are keyed by screen + title (slugged, 80 characters). Two with one key fold into one: the worst severity wins, and viewports, themes, shots and files are unioned. A fresh finding whose key is a previous item's is that item's verdict, never a second item. A raw finding's `area` defaults to its batch's.
 - **Problems:** a raw finding missing its screen, title, acceptance, files or a valid severity stays out of the draft and is listed in `problems` (`{batch, index, screen, title, missing}`).
-- **`reviewed`** is every raw batch's screens (from `batches.json`, written now if missing) minus the screens a reviewer listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. Entries naming single shots (`<id>@<viewport>.<theme>`, or `<id>@<viewport>` for every theme) skip nothing unless they name every `ok` shot of the screen; otherwise the screen was judged at its other shots. The same rule decides whether a raw's acceptance verdict on a previous finding counts.
+- **v2 raws** (with `screens`) speak only for the screens they read at their current digest: a finding or verdict on any other screen (one retaken since, or one the raw did not list) is left out, because that screen is reopened and reviewed again.
+- **Carried screens** (`batches.json`'s `carried`, from the previous pass) take that pass's items on them as they stood, each with `carriedFrom: <that pass>`; by the carry rule they are all `met`, and an open one would stay open. They count as reviewed. A carried screen retaken since `batches` planned it (its digest moved) takes nothing and is listed `unreviewed`. The scoreboard never counts a carried item's status as this pass's verdict, nor does `byStatus` here (`carried` counts them).
+- **`reviewed`** is every v1 raw batch's screens (from `batches.json`, written now if missing), every screen a v2 raw read at its current digest and every carried screen, minus the screens a reviewer listed as `unreviewed`. A screen of a batch a v2 raw names that no raw read is listed as `unreviewed`. An entry there is read up to its first space or parenthesis, so `"formio-cc-url (unreachable: …)"` skips `formio-cc-url`. Entries naming single shots (`<id>@<viewport>.<theme>`, or `<id>@<viewport>` for every theme) skip nothing unless they name every `ok` shot of the screen; otherwise the screen was judged at its other shots. The same rule decides whether a raw's acceptance verdict on a previous finding counts.
 
-It returns counts plus what needs an agent's judgement: `{pass, passDir, file, previous, raw, left, findings, open, byStatus, bySeverity, reviewed, unreviewed, unjudged, problems, invalid}`. `invalid` is what the draft still breaks of the contract. Planned batches without a raw file are listed in `left` and warned `REVIEW_INCOMPLETE`. The synthesis agent judges only those keys, writes `backlog.json` and validates it with `scoreboard`.
+It returns counts plus what needs an agent's judgement: `{pass, passDir, file, previous, raw, left, findings, open, byStatus, bySeverity, carried, reviewed, unreviewed, unjudged, problems, invalid}`. `invalid` is what the draft still breaks of the contract. Planned batches without a raw file are listed in `left` and warned `REVIEW_INCOMPLETE`. The synthesis agent judges only those keys, writes `backlog.json` and validates it with `scoreboard`.
 
 **`lanes [--pass N] [--primitives dir,dir] [--max 4]`** plans the fix round from `review/backlog.json` by **ownership**. It writes `fix/lanes.json` and returns the same:
 
@@ -437,10 +445,25 @@ changed between capture and review, reviewed under those, holds evidence stamped
 with another basis: after the upgrade its reviews, backlog and checkpoints read as
 stale once, and the pass is reviewed again.
 
-For passes with provenance, a raw review completes its batch when it carries the
-current `basis` and its own batch id, and its `screensRead` stays inside the batch
-and names every batch screen with an `ok` shot. A screen the pass could not shoot
-need not be read. `unreviewed` entries never hold a batch open: they are capture or
+For passes with provenance, a raw review is judged by its shape. A **v1 raw**
+(`basis`, `screensRead`, written for v1 batches) completes its batch when it carries
+the current `basis` and its own batch id, and its `screensRead` stays inside the batch
+and names every batch screen with an `ok` shot. A **v2 raw** (written for v2
+batches) carries `screens: {<id>: <digest>}`, its batch's `digests` copied verbatim
+for the screens it actually read, and is judged screen by screen: a screen counts as
+read when its digest equals the screen's current one. A `--resume` retake that
+changes a PNG moves only its screen's digest, so that screen alone reopens and the
+rest of the raw still counts. A batch is complete when every screen in it with an
+`ok` shot was read by some v2 raw, whatever the raws are named: the split parts of a
+batch, or a hand-merged raw, complete it without a hand-stamped basis. A batch with
+no `ok` shot needs a v2 raw that names it in `batch`. A screen's digest is the SHA256
+of the compact JSON `{shots, screen, spec}`: the sorted `[file, SHA256]` pairs of the
+PNGs of its `ok` shots (file relative to the pass directory), its manifest entry as
+its shot records recorded it at capture (`id`, `app`, `area`, `kind`, `state`,
+`title`, `route`, `parentId`, `variantOf`, `as`, `sourceFiles`, `knownIssues`,
+`destructive`) and the spec's SHA256 as the basis reads it (at the captured
+revision). A rig or spec edit after capture moves no digest. A screen the pass could
+not shoot need not be read. `unreviewed` entries never hold a batch open: they are capture or
 recipe defects the reviewer could not judge, and `merge-review` still keeps their
 screen out of `reviewed` and lists it as `unreviewed` (a screen-level entry, or
 shot entries naming every `ok` shot of the screen). Backlogs use `review/basis.json` as a sidecar.
@@ -469,3 +492,47 @@ both the default backlog and an explicitly supplied backlog (with its adjacent
 `basis.json`). Writers persist `fix/recovery.json` before editing. State relays
 that bounded lane identity and schedules its cleanup before completed checkpoints
 can hide a dirty interrupted writer, even at the pass cap.
+
+### Carry-forward
+
+`batches` carries a screen into pass N instead of batching it when its pixels did
+not move since pass N-1 was reviewed, so a reshoot reviews only what changed.
+Nothing carries unless pass N-1 has a backlog (then the one `merge-review` folds),
+that backlog is current (its `review/basis.json` matches) and lists `reviewed`, and
+every batch of pass N-1 is complete. A pass captured after one that was never
+reviewed carries nothing, even from an older reviewed pass. A screen then carries
+when:
+
+- that backlog lists it in `reviewed` and names it in no open item (any status but `met`);
+- it has an `ok` shot in pass N;
+- its manifest entry as its shot records recorded it (the fields of its digest) and
+  the spec's SHA256 are the same in both passes: a verdict judged against other
+  known issues or other rules is not evidence for this pass;
+- its `ok` shots in both passes are the same viewport × theme set (one missing on
+  either side is a move), and every PNG of them (the viewport capture and the full
+  companion) is byte-equal, or else the same size with at most
+  `uiLoop.review.carryTolerance` (default 0.001) of its pixels differing, RGBA
+  compared exactly. A size change, or a file that holds no decodable PNG, is a move.
+
+A carried screen leaves the batches and is listed in `batches`' `carried` and in
+`batches.json`; `state.review` counts the screens (`carried`) and names the pass
+(`carriedFrom`); `merge-review` copies that pass's items on it with `carriedFrom` and
+counts it reviewed, so it stays clean on the scoreboard and can carry again into the
+next pass. A pass whose every screen carried has no batch, so `merge-review` drafts
+its backlog from the carried review without a raw file. `batches.json` records each
+carried screen's `digest` as planned, so a carried screen retaken since (a
+`--resume`) reopens at once: `state` no longer counts it and its area is not
+reviewed, and `merge-review` copies nothing onto the new pixels and lists it
+unreviewed. The review stage runs `batches` every time, and that run batches it
+(or carries it again, if the retake still matches pass N-1). A review that started
+without v2 batches never carries.
+
+Each carry copies `carriedFrom: N-1`, so a screen carried twice names the pass it
+was copied from, not the pass that judged it; that pass's backlog names the one
+before.
+
+Pixels are compared only for an eligible shot whose bytes changed, and a screen
+stops at its first moved PNG. On pwf-ui passes 3 → 4 (a fix round apart: 121
+eligible screens, about 990 PNGs, a median 13% of pixels changed) the plan took
+37 s at 220 MB and carried nothing. Byte-identical shots make carrying cheap and
+likely; see Deterministic shots (`freezeClock`, `volatile`).

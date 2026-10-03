@@ -56,6 +56,12 @@ type Record struct {
 	// CapturedAt is when the shot's test started (ISO 8601, the box's clock).
 	CapturedAt  string   `json:"capturedAt"`
 	SourceFiles []string `json:"sourceFiles"`
+	// ParentID, VariantOf, KnownIssues and Destructive complete the screen's
+	// manifest entry as recorded at capture (screenEntry).
+	ParentID    string   `json:"parentId"`
+	VariantOf   string   `json:"variantOf"`
+	KnownIssues []string `json:"knownIssues"`
+	Destructive bool     `json:"destructive"`
 
 	// Dir is the record's directory relative to the pass directory (set on load).
 	Dir string `json:"-"`

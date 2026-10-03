@@ -47,6 +47,12 @@ export interface Project<Area extends string = string, As extends string = strin
   settle?(page: Page, screen: Screen<Area, As>): Promise<void>;
   /** Selectors of app chrome the lint treats as painters of their own background (sticky bars, docks). */
   chrome?: readonly string[];
+  /**
+   * Freezes `Date` at run.json's `clock` (Playwright `page.clock.setFixedTime`; timers keep
+   * running), so a screen that shows the time shoots the same pixels every pass and an
+   * unmoved screen carries its review. Opt-in: the app sees that instant as now.
+   */
+  freezeClock?: boolean;
 }
 
 export function defineProject<const Area extends string, const As extends string>(

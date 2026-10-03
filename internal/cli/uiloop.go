@@ -268,7 +268,7 @@ func (rt *runtime) uiLoopCommand(use string) *cobra.Command {
 
 	batchesCmd := &cobra.Command{
 		Use:   "batches",
-		Short: "Plan the pass's review batches from its shot records and persist them to review/batches.json",
+		Short: "Plan the pass's review batches (per-screen digests; screens whose pixels did not move carry the previous review) and persist them to review/batches.json",
 		Args:  cobra.NoArgs,
 		RunE: withPass(func(t *uiloop.Tool) (uiloop.Result, error) {
 			return t.Batches(uiloop.BatchesOptions{Pass: pass, Size: batchSize, Areas: uiloop.SplitList(areas)})

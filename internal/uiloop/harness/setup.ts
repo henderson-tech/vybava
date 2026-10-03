@@ -39,6 +39,9 @@ export function runContext(): RunContext {
 export default async function setup(): Promise<void> {
   const run = loadRun();
   const p: Project = project;
+  if (p.freezeClock && !run.clock) {
+    throw new Error(`project.freezeClock is set, but ${run.passDir}/run.json records no clock: write it with the \`vybava ui-loop run\` that synced this harness`);
+  }
   const ctx = runContext();
   fs.mkdirSync(ctx.out, { recursive: true });
   const shots = plannedShots(p, run);
