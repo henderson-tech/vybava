@@ -189,6 +189,7 @@ func TestClaudeLogs(t *testing.T) {
 // A Codex rollout's commands count with their workdir, its patches with the
 // session's cwd.
 func TestCodexLogs(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
 	home := t.TempDir()
 	path := filepath.Join(home, ".codex", "sessions", "2026", "10", "03", "rollout-2026-10-03T09-00-00-01a0f2bb-ae9f-7430-8a3c-dc4497ed8d20.jsonl")
 	call := `{"timestamp":"2026-10-03T10:00:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"bun test\",\"workdir\":\"/w/app/.worktrees/fix\"}"}}`
@@ -198,6 +199,19 @@ func TestCodexLogs(t *testing.T) {
 	got := holdersOf(prTarget{number: 7, slug: "acme/app", worktree: "/w/app/.worktrees/fix", repoDirs: []string{"/w/app"}}, logs)
 	if len(got) != 1 || got[0].Kind != "codex" || got[0].Name != "codex 01a0f2bb" || got[0].LastEventAt != "2026-10-03T10:00:00Z" {
 		t.Fatalf("holders = %+v", got)
+	}
+}
+
+// PR #167 review: a configured $CODEX_HOME holds the rollouts, not ~/.codex.
+func TestCodexLogsHonorsCodexHome(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	call := `{"timestamp":"2026-10-03T10:00:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"bun test\",\"workdir\":\"/w/app/.worktrees/fix\"}"}}`
+	writeFile(t, filepath.Join(codexHome, "sessions", "2026", "10", "03", "rollout-2026-10-03T09-00-00-01a0f2bb-ae9f-7430-8a3c-dc4497ed8d20.jsonl"),
+		strings.Repeat(call+"\n", 3))
+	logs := codexLogs(t.TempDir(), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if got := holdersOf(prTarget{number: 7, slug: "acme/app", worktree: "/w/app/.worktrees/fix"}, logs); len(got) != 1 {
+		t.Fatalf("holders under $CODEX_HOME = %+v", got)
 	}
 }
 

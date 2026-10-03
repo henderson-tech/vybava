@@ -280,10 +280,15 @@ func claudeLogs(claudeDir string, procs []claudeProc, self string, since time.Ti
 	return logs
 }
 
-// codexLogs reads the rollouts written since since: the session_meta cwd
-// from the first line, the commands and patches from the tail.
+// codexLogs reads the rollouts under $CODEX_HOME (else ~/.codex) written
+// since since: the session_meta cwd from the first line, the commands and
+// patches from the tail.
 func codexLogs(home string, since time.Time) []agentLog {
-	paths, _ := transcripts.RolloutPaths(home, since)
+	codexDir := os.Getenv("CODEX_HOME")
+	if codexDir == "" {
+		codexDir = filepath.Join(home, ".codex")
+	}
+	paths, _ := transcripts.RolloutPathsIn(codexDir, since)
 	var logs []agentLog
 	for _, path := range paths {
 		log := agentLog{holder: Holder{Kind: "codex", Name: "codex " + rolloutShortID(path)}}
